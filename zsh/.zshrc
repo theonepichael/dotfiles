@@ -69,19 +69,19 @@ fi
 # ZOXIDE (must be last)
 # ============================================================================
 
+_zoxide_preview() {
+    local path="${1##*$'\t'}"
+    if [[ -d "$path" ]]; then
+        if command -v eza >/dev/null 2>&1; then
+            eza -lh "$path" | head -20
+        else
+            ls -lh "$path" | head -20
+        fi
+    else
+        echo "[missing dir] $path"
+    fi
+}
+
 if command -v zoxide >/dev/null 2>&1; then
     eval "$(zoxide init zsh)"
-
-    _zoxide_preview() {
-        local path="${1##*$'\t'}"
-        if [[ -d "$path" ]]; then
-            if command -v eza >/dev/null 2>&1; then
-                eza -lh "$path" | head -20
-            else
-                ls -lh "$path" | head -20
-            fi
-        else
-            echo "[missing dir] $path"
-        fi
-    }
 fi
