@@ -77,6 +77,8 @@ alias br="source ~/.bashrc && source ~/.zshrc"
 alias rz="source ~/.zshrc"
 alias rb=true  # fat-finger guard: 'rb' on RHEL triggers unwanted behavior
 
+# Git
+alias gs="git status"
 # Navigation
 alias ws="cd $HOME/Workspace"
 alias cl="clear"

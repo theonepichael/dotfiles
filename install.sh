@@ -30,7 +30,7 @@ brew install \
   oh-my-posh
 
 echo "==> Installing casks..."
-brew install --cask karabiner-elements rectangle ghostty visual-studio-code
+brew install --cask karabiner-elements rectangle ghostty visual-studio-code alt-tab
 
 # NVM (not in Homebrew — uses its own installer)
 if ! command -v nvm &>/dev/null && [[ ! -d "$HOME/.nvm" ]]; then
@@ -55,6 +55,8 @@ symlink() {
   echo "  linked $dst"
 }
 
+symlink scripts/watchcommit.py    ~/.local/bin/watchcommit
+symlink launchd/com.user.watchcommit.plist ~/Library/LaunchAgents/com.user.watchcommit.plist
 symlink vim/.vimrc                ~/.vimrc
 symlink zsh/.zshrc                ~/.zshrc
 symlink zsh/.zprofile             ~/.zprofile
@@ -123,8 +125,17 @@ fi
 # Done
 # ============================================================================
 
+# ============================================================================
+# watchcommit (launchd agent)
+# ============================================================================
+
+echo "==> Loading watchcommit launchd agent..."
+launchctl unload ~/Library/LaunchAgents/com.user.watchcommit.plist 2>/dev/null || true
+launchctl load ~/Library/LaunchAgents/com.user.watchcommit.plist
+
 echo ""
 echo "Done! A few manual steps required:"
 echo "  1. Log out and back in for Caps Lock → Escape to take effect"
 echo "  2. Open Karabiner-Elements → grant Input Monitoring + Accessibility permissions"
 echo "  3. Open Rectangle → grant Accessibility permission"
+echo "  4. Set ANTHROPIC_API_KEY in your environment to use watchcommit"
