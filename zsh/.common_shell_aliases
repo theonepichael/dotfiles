@@ -1,0 +1,126 @@
+# ~/.common_shell_aliases
+# Portable aliases and functions — sourced by both .zshrc and .bashrc
+
+# ============================================================================
+# CLIPBOARD
+# ============================================================================
+
+detect_clip_command() {
+    if command -v pbcopy >/dev/null 2>&1; then
+        printf "pbcopy"
+    elif command -v xclip >/dev/null 2>&1; then
+        printf "xclip"
+    elif command -v xsel >/dev/null 2>&1; then
+        printf "xsel"
+    elif command -v wl-copy >/dev/null 2>&1; then
+        printf "wl-copy"
+    else
+        return 1
+    fi
+}
+
+setclip() {
+    local cmd
+    cmd=$(detect_clip_command) || { printf "Error: no clipboard command found\n" >&2; return 1; }
+    case "$cmd" in
+        pbcopy)   pbcopy ;;
+        xclip)    xclip -selection clipboard ;;
+        xsel)     xsel --clipboard --input ;;
+        wl-copy)  wl-copy ;;
+    esac
+}
+
+getclip() {
+    local cmd
+    cmd=$(detect_clip_command) || { printf "Error: no clipboard command found\n" >&2; return 1; }
+    case "$cmd" in
+        pbcopy)   pbpaste ;;
+        xclip)    xclip -selection clipboard -o ;;
+        xsel)     xsel --clipboard --output ;;
+        wl-copy)  wl-paste ;;
+    esac
+}
+
+delclip() {
+    local cmd
+    cmd=$(detect_clip_command) || { printf "Error: no clipboard command found\n" >&2; return 1; }
+    case "$cmd" in
+        pbcopy)   printf "" | pbcopy ;;
+        xclip)    printf "" | xclip -selection clipboard ;;
+        xsel)     printf "" | xsel --clipboard --input ;;
+        wl-copy)  printf "" | wl-copy ;;
+    esac
+}
+
+# ============================================================================
+# PROCESS / NETWORK
+# ============================================================================
+
+kill_process_by_port() {
+    if [ -z "$1" ]; then echo "No port number supplied"; return 1; fi
+    local pid
+    pid=$(lsof -t -i:"$1")
+    if [ -z "$pid" ]; then echo "No process found on port $1"; return 1; fi
+    kill -9 "$pid"
+    echo "Killed process $pid running on port $1"
+}
+
+# ============================================================================
+# ALIASES
+# ============================================================================
+
+# Shell config
+alias ez="vi ~/.zshrc"
+alias eb="vi ~/.bashrc"
+alias ev="vi ~/.vimrc"
+alias br="source ~/.bashrc && source ~/.zshrc"
+alias rz="source ~/.zshrc"
+alias rb=true  # fat-finger guard: 'rb' on RHEL triggers unwanted behavior
+
+# Navigation
+alias ws="cd $HOME/Workspace"
+alias cl="clear"
+
+if command -v zoxide >/dev/null 2>&1; then
+    alias cd="z"
+else
+    echo "warning: zoxide not installed (cd alias not set)"
+fi
+
+# File listing
+if command -v eza >/dev/null 2>&1; then
+    alias ls="eza --icons"
+    alias ll="eza -la -h --icons"
+    alias lt="eza --tree --icons"
+else
+    echo "warning: eza not installed (falling back to system ls)"
+    alias ls="command ls --color=auto"
+    alias ll="command ls -lah --color=auto"
+fi
+
+# Enhanced viewers
+if command -v bat >/dev/null 2>&1; then
+    alias cat="bat"
+else
+    echo "warning: bat not installed (cat unchanged)"
+fi
+
+if command -v ncdu >/dev/null 2>&1; then
+    alias du="ncdu"
+else
+    echo "warning: ncdu not installed (du unchanged)"
+fi
+
+# Clipboard
+alias gc="getclip"
+alias sc="setclip"
+
+# tmux
+alias t="tmux"
+
+# Maven
+alias fmt="mvn com.spotify.fmt:fmt-maven-plugin:format -Dverbose=true"
+alias mci="mvn clean install"
+alias mdp="mvn dependency:purge-local-repository"
+alias mcd="mvn clean install -DskipTests"
+alias msr="mvn spring-boot:run"

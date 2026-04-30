@@ -1,0 +1,42 @@
+[
+  {
+    "key": "ctrl+l ctrl+c",
+    "command": "workbench.files.action.collapseExplorerFolders",
+    "when": "editorTextFocus"
+  },
+  {
+    "key": "ctrl+k ctrl+v",
+    "command": "toggleVim",
+    "when": "editorTextFocus && vim.active"
+  },
+  {
+    "key": "ctrl+e",
+    "command": "-workbench.action.quickOpen"
+  },
+  {
+    "key": "ctrl+shift+]",
+    "command": "workbench.action.terminal.focusNext"
+  },
+  {
+    "key": "ctrl+shift+[",
+    "command": "workbench.action.terminal.focusPrevious"
+  },
+  {
+    "key": "ctrl+j",
+    "command": "workbench.action.quickOpenSelectNext"
+  },
+  {
+    "key": "ctrl+k",
+    "command": "workbench.action.quickOpenSelectPrevious"
+  },
+  {
+    "key": "ctrl+j",
+    "command": "search.action.focusNextSearchResult",
+    "when": "searchViewletVisible"
+  },
+  {
+    "key": "ctrl+k",
+    "command": "search.action.focusPreviousSearchResult",
+    "when": "searchViewletVisible"
+  }
+]
