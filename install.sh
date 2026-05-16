@@ -2,38 +2,67 @@
 set -eo pipefail
 
 DOTFILES="$(cd "$(dirname "$0")" && pwd)"
+OS="$(uname -s)"
 
-# ============================================================================
-# Homebrew
-# ============================================================================
-
-if ! command -v brew &>/dev/null; then
-  echo "==> Installing Homebrew..."
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-fi
-
-# Works for both Apple Silicon (/opt/homebrew) and Intel (/usr/local)
-if [[ -x /opt/homebrew/bin/brew ]]; then
-  eval "$(/opt/homebrew/bin/brew shellenv)"
-elif [[ -x /usr/local/bin/brew ]]; then
-  eval "$(/usr/local/bin/brew shellenv)"
-fi
+is_mac()   { [[ "$OS" == "Darwin" ]] }
+is_linux() { [[ "$OS" == "Linux" ]] }
 
 # ============================================================================
 # Packages
 # ============================================================================
 
-echo "==> Installing formulae..."
-brew install \
-  python@3.13 uv ruff \
-  tmux zoxide eza bat ripgrep lsd ncdu tldr \
-  oh-my-posh
+if is_mac; then
+  if ! command -v brew &>/dev/null; then
+    echo "==> Installing Homebrew..."
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  fi
 
-echo "==> Installing casks..."
-brew install --cask karabiner-elements rectangle ghostty visual-studio-code alt-tab
+  if [[ -x /opt/homebrew/bin/brew ]]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+  elif [[ -x /usr/local/bin/brew ]]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+  fi
 
-# NVM (not in Homebrew — uses its own installer)
-if ! command -v nvm &>/dev/null && [[ ! -d "$HOME/.nvm" ]]; then
+  echo "==> Installing formulae..."
+  brew install \
+    python@3.13 uv ruff \
+    tmux zoxide eza bat ripgrep lsd ncdu tldr \
+    oh-my-posh
+
+  echo "==> Installing casks..."
+  brew install --cask karabiner-elements rectangle ghostty visual-studio-code alt-tab
+
+elif is_linux; then
+  echo "==> Installing packages (apt)..."
+  sudo apt-get install -y \
+    tmux zoxide eza bat lsd ncdu tldr ripgrep
+
+  # Ubuntu ships bat as batcat; shim it
+  if command -v batcat &>/dev/null && ! command -v bat &>/dev/null; then
+    mkdir -p ~/.local/bin
+    ln -sf "$(which batcat)" ~/.local/bin/bat
+    echo "  shimmed bat → batcat"
+  fi
+
+  # uv (not in apt)
+  if ! command -v uv &>/dev/null; then
+    echo "==> Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    [[ -f "$HOME/.local/bin/env" ]] && source "$HOME/.local/bin/env"
+  fi
+
+  # ruff via uv tool
+  uv tool install ruff
+
+  # oh-my-posh via official installer
+  if ! command -v oh-my-posh &>/dev/null; then
+    echo "==> Installing oh-my-posh..."
+    curl -s https://ohmyposh.dev/install.sh | bash -s -- -d ~/.local/bin
+  fi
+fi
+
+# NVM (both platforms — uses its own installer)
+if [[ ! -d "$HOME/.nvm" ]]; then
   echo "==> Installing NVM..."
   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/HEAD/install.sh | bash
 fi
@@ -55,34 +84,34 @@ symlink() {
   echo "  linked $dst"
 }
 
+# Common (both platforms)
 symlink scripts/watchcommit.py    ~/.local/bin/watchcommit
-symlink launchd/com.user.watchcommit.plist ~/Library/LaunchAgents/com.user.watchcommit.plist
 symlink vim/.vimrc                ~/.vimrc
 symlink zsh/.zshrc                ~/.zshrc
-symlink zsh/.zprofile             ~/.zprofile
 symlink zsh/.common_shell_aliases ~/.common_shell_aliases
 symlink shell/.poshtheme.omp.json ~/.poshtheme.omp.json
-symlink karabiner/karabiner.json  ~/.config/karabiner/karabiner.json
 symlink tmux/.tmux.conf           ~/.tmux.conf
 symlink claude/CLAUDE.md          ~/.claude/CLAUDE.md
-symlink vscode/settings.json      "$HOME/Library/Application Support/Code/User/settings.json"
-symlink vscode/keybindings.json   "$HOME/Library/Application Support/Code/User/keybindings.json"
+
+# macOS-only (.zprofile has Homebrew shellenv; not needed on Linux)
+if is_mac; then
+  symlink zsh/.zprofile             ~/.zprofile
+  symlink karabiner/karabiner.json  ~/.config/karabiner/karabiner.json
+  symlink launchd/com.user.watchcommit.plist ~/Library/LaunchAgents/com.user.watchcommit.plist
+  symlink vscode/settings.json      "$HOME/Library/Application Support/Code/User/settings.json"
+  symlink vscode/keybindings.json   "$HOME/Library/Application Support/Code/User/keybindings.json"
+fi
 
 # ============================================================================
-# Rectangle
+# macOS: Rectangle prefs, Caps Lock → Escape, launchd agent
 # ============================================================================
 
-echo "==> Importing Rectangle preferences..."
-defaults import com.knollsoft.Rectangle "$DOTFILES/rectangle/com.knollsoft.Rectangle.plist"
+if is_mac; then
+  echo "==> Importing Rectangle preferences..."
+  defaults import com.knollsoft.Rectangle "$DOTFILES/rectangle/com.knollsoft.Rectangle.plist"
 
-# ============================================================================
-# macOS: Caps Lock → Escape (via keyboard modifier mapping)
-# ============================================================================
-# Uses Python to find and update the ByHost GlobalPreferences plist directly,
-# which avoids hardcoding the keyboard ID or hardware UUID.
-
-echo "==> Setting Caps Lock → Escape..."
-python3 - << 'PYEOF'
+  echo "==> Setting Caps Lock → Escape..."
+  python3 - << 'PYEOF'
 import glob, os, plistlib
 
 caps_to_esc = [
@@ -110,8 +139,13 @@ for path in plists:
     print(f"  Updated {os.path.basename(path)}")
 PYEOF
 
+  echo "==> Loading watchcommit launchd agent..."
+  launchctl unload ~/Library/LaunchAgents/com.user.watchcommit.plist 2>/dev/null || true
+  launchctl load ~/Library/LaunchAgents/com.user.watchcommit.plist
+fi
+
 # ============================================================================
-# vim-plug
+# vim-plug (both platforms)
 # ============================================================================
 
 if [[ ! -f "$HOME/.vim/autoload/plug.vim" ]]; then
@@ -125,17 +159,16 @@ fi
 # Done
 # ============================================================================
 
-# ============================================================================
-# watchcommit (launchd agent)
-# ============================================================================
-
-echo "==> Loading watchcommit launchd agent..."
-launchctl unload ~/Library/LaunchAgents/com.user.watchcommit.plist 2>/dev/null || true
-launchctl load ~/Library/LaunchAgents/com.user.watchcommit.plist
-
 echo ""
-echo "Done! A few manual steps required:"
-echo "  1. Log out and back in for Caps Lock → Escape to take effect"
-echo "  2. Open Karabiner-Elements → grant Input Monitoring + Accessibility permissions"
-echo "  3. Open Rectangle → grant Accessibility permission"
-echo "  4. Set ANTHROPIC_API_KEY in your environment to use watchcommit"
+echo "Done!"
+if is_mac; then
+  echo "  Manual steps:"
+  echo "  1. Log out and back in for Caps Lock → Escape to take effect"
+  echo "  2. Open Karabiner-Elements → grant Input Monitoring + Accessibility"
+  echo "  3. Open Rectangle → grant Accessibility permission"
+  echo "  4. Set ANTHROPIC_API_KEY in ~/.secrets to use watchcommit"
+elif is_linux; then
+  echo "  Manual steps:"
+  echo "  1. Restart your shell to pick up the new config"
+  echo "  2. Set ANTHROPIC_API_KEY in ~/.secrets to use watchcommit"
+fi

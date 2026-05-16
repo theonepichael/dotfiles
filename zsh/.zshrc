@@ -39,15 +39,22 @@ zstyle ':completion:*:*:git:*:*' group-order 'common-commands' 'alias-commands' 
 # PATH
 # ============================================================================
 
-for pathdir in "$HOME/.local/bin" "$HOME/bin" "/opt/homebrew/opt/python@3.13/libexec/bin"; do
+for pathdir in "$HOME/.local/bin" "$HOME/bin" "$HOME/.npm-global/bin" "/opt/homebrew/opt/python@3.13/libexec/bin"; do
     if [[ -d "$pathdir" && ":$PATH:" != *":$pathdir:"* ]]; then
         PATH="$pathdir:$PATH"
     fi
 done
 
-[[ -n "$NVM_BIN" && -d "$NVM_BIN" && ":$PATH:" != *":$NVM_BIN:"* ]] && PATH="$NVM_BIN:$PATH"
+export NVM_DIR="$HOME/.nvm"
+[[ -s "$NVM_DIR/nvm.sh" ]] && source "$NVM_DIR/nvm.sh"
 
 export PATH
+
+# ============================================================================
+# SECRETS
+# ============================================================================
+
+[[ -f ~/.secrets ]] && source ~/.secrets
 
 # ============================================================================
 # COMMON ALIASES
