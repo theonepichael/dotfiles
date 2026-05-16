@@ -1,6 +1,6 @@
 # dotfiles
 
-macOS setup. Clone and run `install.sh` to go from zero to working.
+Cross-platform setup for macOS and Linux/WSL. Clone and run `install.sh` to go from zero to working.
 
 ## Quick start
 
@@ -23,30 +23,40 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 |------|-------------|
 | `vim/.vimrc` | `~/.vimrc` |
 | `zsh/.zshrc` | `~/.zshrc` |
-| `zsh/.zprofile` | `~/.zprofile` |
+| `zsh/.zprofile` | `~/.zprofile` (macOS only) |
 | `zsh/.common_shell_aliases` | `~/.common_shell_aliases` |
 | `shell/.poshtheme.omp.json` | `~/.poshtheme.omp.json` |
-| `karabiner/karabiner.json` | `~/.config/karabiner/karabiner.json` |
+| `karabiner/karabiner.json` | `~/.config/karabiner/karabiner.json` (macOS only) |
 | `tmux/.tmux.conf` | `~/.tmux.conf` |
-| `vscode/settings.json` | `~/Library/Application Support/Code/User/settings.json` |
-| `vscode/keybindings.json` | `~/Library/Application Support/Code/User/keybindings.json` |
+| `vscode/settings.json` | `~/Library/Application Support/Code/User/settings.json` (macOS only) |
+| `vscode/keybindings.json` | `~/Library/Application Support/Code/User/keybindings.json` (macOS only) |
 | `claude/CLAUDE.md` | `~/.claude/CLAUDE.md` |
 | `scripts/watchcommit.py` | `~/.local/bin/watchcommit` |
-| `launchd/com.user.watchcommit.plist` | `~/Library/LaunchAgents/com.user.watchcommit.plist` |
+| `launchd/com.user.watchcommit.plist` | `~/Library/LaunchAgents/com.user.watchcommit.plist` (macOS only) |
 
 Everything is symlinked — edits in `~/dotfiles` take effect immediately.
 
 ## install.sh does
 
-1. Installs Homebrew (if missing) — supports both Apple Silicon and Intel
-2. Installs packages: Python 3.13, uv, ruff, tmux, zoxide, eza, bat, ripgrep, lsd, ncdu, tldr, oh-my-posh
-3. Installs casks: Karabiner-Elements, Rectangle, Ghostty, VS Code
-4. Installs NVM (if missing)
-5. Symlinks all dotfiles (backs up any existing non-symlink files to `*.bak`)
-6. Imports Rectangle preferences
-7. Sets Caps Lock → Escape via macOS keyboard modifier mapping
-8. Installs vim-plug (if missing)
-9. Loads the watchcommit launchd agent
+### Both platforms
+1. Installs packages: tmux, zoxide, eza, bat, ripgrep, lsd, ncdu, tldr, oh-my-posh, uv, ruff
+2. Installs NVM (if missing)
+3. Symlinks all common dotfiles (backs up any existing non-symlink files to `*.bak`)
+4. Installs vim-plug (if missing)
+
+### macOS only
+- Installs Homebrew (if missing) — supports both Apple Silicon (`/opt/homebrew`) and Intel (`/usr/local`)
+- Installs casks: Karabiner-Elements, Rectangle, Ghostty, VS Code, AltTab
+- Symlinks macOS-specific configs (`.zprofile`, karabiner, vscode, launchd)
+- Imports Rectangle preferences
+- Sets Caps Lock → Escape via macOS keyboard modifier mapping
+- Loads the watchcommit launchd agent
+
+### Linux/WSL only
+- Installs packages via `apt`
+- Creates `~/.local/bin/bat` shim (Ubuntu ships bat as `batcat`)
+- Installs uv via astral.sh if not present
+- Installs oh-my-posh to `~/.local/bin` via official installer
 
 ## Keyboard setup (Karabiner-Elements)
 
@@ -83,13 +93,13 @@ AltTab intercepts `Option+Tab` directly, so no Karabiner rule is needed.
 
 ## watchcommit
 
-Polls `~/dotfiles` every 90 seconds, detects git changes, generates a conventional commit message via Claude Haiku, and commits + pushes automatically. Runs as a background launchd agent (starts on login, restarts on crash). Logs to `/tmp/watchcommit.log`.
+Polls `~/dotfiles` every 90 seconds, detects git changes, generates a conventional commit message via Claude Haiku, and commits + pushes automatically. Runs as a background launchd agent on macOS (starts on login, restarts on crash). Logs to `/tmp/watchcommit.log`.
 
 ```sh
 # Tail the log
 tail -f /tmp/watchcommit.log
 
-# Stop/start manually
+# macOS: stop/start manually
 launchctl unload ~/Library/LaunchAgents/com.user.watchcommit.plist
 launchctl load ~/Library/LaunchAgents/com.user.watchcommit.plist
 
@@ -101,7 +111,8 @@ Requires `ANTHROPIC_API_KEY` in `~/.secrets`.
 
 ## Notes
 
-- **Keyboard ID in macOS**: `install.sh` detects the ByHost plist automatically — no hardcoded IDs
+- **Intel Mac**: `install.sh` and `.zprofile` both detect `/usr/local/bin/brew` automatically
+- **Linux/WSL**: `.zprofile` is not symlinked; secrets and NVM are sourced from `.zshrc` instead
 - **NVM**: installed via the official script, not Homebrew. Restart your shell after install
 - **vim plugins**: run `:PlugInstall` inside vim after first launch
 - **Secrets**: `~/.secrets` is gitignored — create it manually on each new machine
