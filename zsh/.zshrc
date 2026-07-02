@@ -92,3 +92,10 @@ _zoxide_preview() {
 if command -v zoxide >/dev/null 2>&1; then
     eval "$(zoxide init zsh)"
 fi
+
+# bun completions
+[ -s "/home/yanil/.bun/_bun" ] && source "/home/yanil/.bun/_bun"
+
+# bun
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
