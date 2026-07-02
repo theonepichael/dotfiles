@@ -16,17 +16,64 @@ ITEMS_FILE = DATA_DIR / "items.json"
 VALID_STATUSES = {"open", "in-progress", "done"}
 IMMUTABLE_FIELDS = {"id", "created"}
 RESERVED_SLUGS = {
-    "render", "list", "show", "add", "update", "start", "done",
-    "rename", "block", "unblock", "prune", "all", "help", "new",
+    "render",
+    "list",
+    "show",
+    "add",
+    "update",
+    "start",
+    "done",
+    "rename",
+    "block",
+    "unblock",
+    "prune",
+    "all",
+    "help",
+    "new",
 }
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)+$")
 SLUG_MIN, SLUG_MAX = 3, 40
 
+CATEGORY_TAG = {"bug": "bug", "feature": "feat", "chore": "chore", "research": "rsrch"}
+STALE_DAYS = 7
+_RESET = "\x1b[0m"
+_COLORS = {
+    "in_progress": "\x1b[33m",
+    "ready": "\x1b[32m",
+    "blocked": "\x1b[31m",
+    "done": "\x1b[2m",
+    "warn": "\x1b[31m",
+}
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+
 def today():
     return date.today().isoformat()
+
+
+def _category_tag(category):
+    if not category:
+        return ""
+    tag = CATEGORY_TAG.get(category, category[:5])
+    return f"[{tag}] "
+
+
+def _age_days(updated_str):
+    try:
+        d = date.fromisoformat(updated_str)
+    except (TypeError, ValueError):
+        return None
+    return (date.today() - d).days
+
+
+def _use_color(out):
+    return hasattr(out, "isatty") and out.isatty()
+
+
+def _colorize(text, color_code, enabled):
+    return f"{color_code}{text}{_RESET}" if enabled else text
 
 
 def validate_slug(slug, context=""):
@@ -44,6 +91,7 @@ def validate_slug(slug, context=""):
 
 
 # ── I/O ───────────────────────────────────────────────────────────────────────
+
 
 def load_items():
     if not ITEMS_FILE.exists():
@@ -84,6 +132,7 @@ def save_items(items):
 
 # ── graph helpers ─────────────────────────────────────────────────────────────
 
+
 def build_index(items):
     return {i["id"]: i for i in items}
 
@@ -91,7 +140,8 @@ def build_index(items):
 def effective_blockers(item, index):
     """Return blocked_by slugs whose referent item is not done."""
     return [
-        s for s in item.get("blocked_by", [])
+        s
+        for s in item.get("blocked_by", [])
         if index.get(s, {}).get("status") != "done"
     ]
 
@@ -115,8 +165,9 @@ def detect_cycle(start, new_dep, index):
 
 # ── render order ──────────────────────────────────────────────────────────────
 
+
 def _render_order(items):
-    """Return (in_progress, ready, blocked, done) lists in render order."""
+    """Return (in_progress, ready, blocked, done, done_total) in render order."""
     index = build_index(items)
 
     in_progress = sorted(
@@ -134,16 +185,19 @@ def _render_order(items):
         [i for i in open_items if effective_blockers(i, index)],
         key=lambda i: (len(effective_blockers(i, index)), i.get("updated", "")),
     )
-    done = sorted(
+    done_all = sorted(
         [i for i in items if i.get("status") == "done"],
         key=lambda i: i.get("updated", ""),
         reverse=True,
-    )[:5]
+    )
+    done_total = len(done_all)
+    done = done_all[:5]
 
-    return in_progress, ready, blocked, done
+    return in_progress, ready, blocked, done, done_total
 
 
 # ── number resolution ─────────────────────────────────────────────────────────
+
 
 def resolve_id(arg, items):
     """Resolve a display number or slug string to a slug. Exits on failure."""
@@ -152,7 +206,7 @@ def resolve_id(arg, items):
     except ValueError:
         return arg  # already a slug — caller validates existence
 
-    in_progress, ready, blocked, done = _render_order(items)
+    in_progress, ready, blocked, done, _ = _render_order(items)
     ordered = in_progress + ready + blocked + done
     if not (1 <= n <= len(ordered)):
         print(f"[resolve] no item at position {n}", file=sys.stderr)
@@ -161,6 +215,7 @@ def resolve_id(arg, items):
 
 
 # ── render ────────────────────────────────────────────────────────────────────
+
 
 def render(items=None, *, out=None, err=None):
     """Pure render — no writes, no side effects."""
@@ -173,7 +228,7 @@ def render(items=None, *, out=None, err=None):
         items = load_items()
 
     index = build_index(items)
-    in_progress, ready, blocked, done = _render_order(items)
+    in_progress, ready, blocked, done, done_total = _render_order(items)
     ordered = in_progress + ready + blocked + done
 
     if not ordered:
@@ -181,19 +236,34 @@ def render(items=None, *, out=None, err=None):
         print("item-map:", file=err)
         return
 
+    color = _use_color(out)
+
     # Pre-assign all numbers so blocked-by annotations can reference any item
     slug_to_num = {item["id"]: n + 1 for n, item in enumerate(ordered)}
     item_map = {n + 1: item["id"] for n, item in enumerate(ordered)}
 
     sections = []
 
-    def add_section(title, section_items, show_blockers=False):
+    def add_section(
+        title, section_items, show_blockers=False, show_age=False, color_code=None
+    ):
         if not section_items:
             return
-        lines = [title]
+        header = (
+            _colorize(title, _COLORS.get(color_code), color) if color_code else title
+        )
+        lines = [header]
         for item in section_items:
             n = slug_to_num[item["id"]]
-            lines.append(f"  {n:2}  {item.get('summary', '')}")
+            tag = _category_tag(item.get("category", ""))
+            line = f"  {n:2}  {tag}{item.get('summary', '')}"
+            if show_age:
+                age = _age_days(item.get("updated", ""))
+                if age is not None:
+                    line += f" \u00b7 {age}d"
+                    if age > STALE_DAYS:
+                        line += " " + _colorize("\u26a0\ufe0f", _COLORS["warn"], color)
+            lines.append(line)
             if show_blockers:
                 eff = effective_blockers(item, index)
                 if eff:
@@ -210,10 +280,23 @@ def render(items=None, *, out=None, err=None):
                     lines.append(f"      \u21b3 blocked by: {', '.join(parts)}")
         sections.append(lines)
 
-    add_section("IN PROGRESS", in_progress)
-    add_section("READY", ready)
-    add_section("BLOCKED", blocked, show_blockers=True)
-    add_section("DONE", done)
+    add_section(
+        "\u26a1 IN PROGRESS", in_progress, show_age=True, color_code="in_progress"
+    )
+    add_section("\U0001f7e2 READY", ready, color_code="ready")
+    add_section(
+        "\U0001f6a7 BLOCKED",
+        blocked,
+        show_blockers=True,
+        show_age=True,
+        color_code="blocked",
+    )
+    done_title = (
+        f"\u2705 DONE (showing {len(done)} of {done_total})"
+        if done_total > len(done)
+        else "\u2705 DONE"
+    )
+    add_section(done_title, done, color_code="done")
 
     for i, section_lines in enumerate(sections):
         if i > 0:
@@ -226,6 +309,7 @@ def render(items=None, *, out=None, err=None):
 
 
 # ── subcommand handlers ───────────────────────────────────────────────────────
+
 
 def _parse_json_arg(raw, context):
     try:
@@ -408,8 +492,7 @@ def cmd_rename(args):
         if item["id"] == old_slug:
             item["id"] = new_slug
         item["blocked_by"] = [
-            new_slug if s == old_slug else s
-            for s in item.get("blocked_by", [])
+            new_slug if s == old_slug else s for s in item.get("blocked_by", [])
         ]
         for field in ("summary", "context", "next_steps"):
             if old_slug in item.get(field, ""):
@@ -492,6 +575,7 @@ def cmd_prune(args):
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="deterministic backlog dashboard v2",
@@ -509,11 +593,11 @@ def main():
     p.add_argument("id", metavar="<slug|N>")
 
     p = sub.add_parser("add", help="append a new item (id required in JSON)")
-    p.add_argument("json", metavar="'{\"id\": \"my-slug\", \"summary\": \"...\"}'")
+    p.add_argument("json", metavar='\'{"id": "my-slug", "summary": "..."}\'')
 
     p = sub.add_parser("update", help="merge JSON patch into an item")
     p.add_argument("id", metavar="<slug|N>")
-    p.add_argument("patch", metavar="'{\"field\": \"value\"}'")
+    p.add_argument("patch", metavar='\'{"field": "value"}\'')
 
     p = sub.add_parser("start", help="mark item in-progress")
     p.add_argument("id", metavar="<slug|N>")
@@ -534,8 +618,12 @@ def main():
     p.add_argument("blocker", metavar="<blocker-slug>")
 
     p = sub.add_parser("prune", help="permanently remove done items older than 14 days")
-    p.add_argument("--force", action="store_true", required=True,
-                   help="required to prevent accidental prune")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        required=True,
+        help="required to prevent accidental prune",
+    )
 
     args = parser.parse_args()
 

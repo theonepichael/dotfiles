@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,8 +16,20 @@ sys.path.insert(0, str(Path(__file__).parent))
 import dev_status
 
 
-def make_item(slug, status="open", blocked_by=None, updated="2026-01-01",
-              summary=None, context="", next_steps=""):
+class _TtyStringIO(io.StringIO):
+    def isatty(self):
+        return True
+
+
+def make_item(
+    slug,
+    status="open",
+    blocked_by=None,
+    updated="2026-01-01",
+    summary=None,
+    context="",
+    next_steps="",
+):
     return {
         "id": slug,
         "created": "2026-01-01",
@@ -118,7 +131,9 @@ class BacklogTestCase(unittest.TestCase):
     # ── 5: add with blocked_by referencing nonexistent slug rejected ──────────
 
     def test_05_add_blocked_by_nonexistent_rejected(self):
-        args = _args(json='{"id": "my-feature", "summary": "x", "blocked_by": ["ghost-slug"]}')
+        args = _args(
+            json='{"id": "my-feature", "summary": "x", "blocked_by": ["ghost-slug"]}'
+        )
         err = io.StringIO()
         with self.assertRaises(SystemExit):
             with patch("sys.stderr", err):
@@ -157,10 +172,16 @@ class BacklogTestCase(unittest.TestCase):
 
     def test_08_rename_rewrites_all_references(self):
         items = [
-            make_item("old-name", context="depends on old-name things",
-                      next_steps="finish old-name first"),
-            make_item("other-item", blocked_by=["old-name"],
-                      context="old-name is blocking this"),
+            make_item(
+                "old-name",
+                context="depends on old-name things",
+                next_steps="finish old-name first",
+            ),
+            make_item(
+                "other-item",
+                blocked_by=["old-name"],
+                context="old-name is blocking this",
+            ),
         ]
         self.write_items(items)
         args = _args(old_slug="old-name", new_slug="new-name")
@@ -231,7 +252,7 @@ class BacklogTestCase(unittest.TestCase):
         eff = dev_status.effective_blockers(items[1], index)
         self.assertEqual(eff, [])  # done blocker excluded
 
-        in_progress, ready, blocked, done = dev_status._render_order(items)
+        in_progress, ready, blocked, done, done_total = dev_status._render_order(items)
         self.assertIn(items[1], ready)
         self.assertEqual(blocked, [])
 
@@ -281,11 +302,98 @@ class BacklogTestCase(unittest.TestCase):
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("corrupted", err.getvalue())
 
+    # ── 16: category tag rendered as bracketed prefix ─────────────────────────
+
+    def test_16_category_tag_rendered_on_each_line(self):
+        items = [
+            make_item("bug-item", status="open", summary="Fix widget"),
+        ]
+        items[0]["category"] = "bug"
+        out = io.StringIO()
+        dev_status.render(items, out=out, err=io.StringIO())
+        self.assertIn("[bug] Fix widget", out.getvalue())
+
+    def test_16b_unknown_category_truncated_to_five_chars(self):
+        items = [make_item("odd-item", status="open")]
+        items[0]["category"] = "documentation"
+        out = io.StringIO()
+        dev_status.render(items, out=out, err=io.StringIO())
+        self.assertIn("[docum]", out.getvalue())
+
+    # ── 17: age suffix on IN PROGRESS/BLOCKED, warning past threshold ────────
+
+    def test_17_age_suffix_on_in_progress_only_not_ready(self):
+        old = (date.today() - timedelta(days=3)).isoformat()
+        items = [
+            make_item("active-item", status="in-progress", updated=old),
+            make_item("ready-item", status="open", updated=old),
+        ]
+        out = io.StringIO()
+        dev_status.render(items, out=out, err=io.StringIO())
+        text = out.getvalue()
+        self.assertIn("· 3d", text)
+        # only one "· Nd" occurrence — READY must not get an age suffix
+        self.assertEqual(text.count("· 3d"), 1)
+
+    def test_17b_warning_glyph_past_stale_threshold(self):
+        fresh = (date.today() - timedelta(days=2)).isoformat()
+        stale = (date.today() - timedelta(days=8)).isoformat()
+        items = [
+            make_item("fresh-item", status="in-progress", updated=fresh),
+            make_item(
+                "stale-item", status="in-progress", updated=stale, summary="Stuck task"
+            ),
+        ]
+        out = io.StringIO()
+        dev_status.render(items, out=out, err=io.StringIO())
+        lines = out.getvalue().splitlines()
+        fresh_line = next(
+            ln for ln in lines if "fresh-item" in ln or "Summary of fresh-item" in ln
+        )
+        stale_line = next(ln for ln in lines if "Stuck task" in ln)
+        self.assertNotIn("⚠️", fresh_line)
+        self.assertIn("⚠️", stale_line)
+
+    # ── 18: DONE header reports truncation ─────────────────────────────────
+
+    def test_18_done_header_shows_hidden_count_when_truncated(self):
+        items = [
+            make_item(f"done-item-{i}", status="done", updated="2026-01-01")
+            for i in range(7)
+        ]
+        out = io.StringIO()
+        dev_status.render(items, out=out, err=io.StringIO())
+        self.assertIn("DONE (showing 5 of 7)", out.getvalue())
+
+    def test_18b_done_header_plain_when_not_truncated(self):
+        items = [make_item("only-done-item", status="done")]
+        out = io.StringIO()
+        dev_status.render(items, out=out, err=io.StringIO())
+        text = out.getvalue()
+        self.assertIn("DONE", text)
+        self.assertNotIn("showing", text)
+
+    # ── 19: color gated on isatty ─────────────────────────────────────────────
+
+    def test_19_no_color_codes_when_not_a_tty(self):
+        items = [make_item("plain-item", status="open")]
+        out = io.StringIO()
+        dev_status.render(items, out=out, err=io.StringIO())
+        self.assertNotIn("\x1b[", out.getvalue())
+
+    def test_19b_color_codes_present_when_tty(self):
+        items = [make_item("colored-item", status="open")]
+        out = _TtyStringIO()
+        dev_status.render(items, out=out, err=io.StringIO())
+        self.assertIn("\x1b[", out.getvalue())
+
 
 # ── arg helper ────────────────────────────────────────────────────────────────
 
+
 class _args:
     """Minimal argparse.Namespace stand-in."""
+
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
 
