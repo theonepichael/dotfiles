@@ -29,7 +29,9 @@ Mutations echo what they did on stderr — check it matches your intent.
 If $ARGUMENTS is empty (and does not contain `--verify`), grill the plan under discussion when the conversation makes it obvious; otherwise ask the user what to grill before proceeding.
 
 **Pre-step: orient before asking.**
-Check what codebase context is already in scope from prior exploration. Do a targeted read/grep only for files directly relevant to the topic that haven't been read yet. Don't re-crawl what's already known. Never ask a question the codebase already answers. Then `grill.py new` — or, if resuming an existing session on this topic, `grill.py next` to pick up at the first open question.
+Check what codebase context is already in scope from prior exploration. Do a targeted read/grep only for files directly relevant to the topic that haven't been read yet. Don't re-crawl what's already known. Never ask a question the codebase already answers.
+
+Then check `grill.py list` for an existing session matching the topic. If one matches, resume it — `grill.py next` picks up at the first open question; tell the user you're resuming. Only `grill.py new` when nothing matches or the user says "start over".
 
 **Q&A loop:**
 
@@ -46,11 +48,13 @@ Check what codebase context is already in scope from prior exploration. Do a tar
    - If the answer introduces inconsistencies or new risks, name them and keep drilling.
    - If the user defers ("whatever you think", "you decide"), record your recommendation via `decide` with source `defaulted`.
 
-4. A branch is resolved when the answer generates no new questions. Keep drilling until every open question is decided. If the user calls it ("wrap it up", "that's enough"), stop immediately: `decide` each remaining open question with your best-guess answer and source `assumed`.
+4. A branch is resolved when the answer generates no new questions. Keep drilling until every open question is decided. Two distinct early exits — the user's words pick which:
+   - **Pause** ("let's stop here", "I need to step away", "we'll come back to this") — stop without deciding anything. Open questions stay open for a later resume; no plan is written. Offer (never auto-add) a backlog item via `dev_status.py add`: session slug in `context`, `next_steps` pointing at `grill.py next`.
+   - **Wrap up** ("wrap it up", "just finish it", "that's enough") — `decide` each remaining open question with your best-guess answer and source `assumed`, then conclude normally.
 
-**End of session:**
+**End of session** (fully decided or wrapped up — not on pause):
 
-1. Author the plan as a markdown document — a real plan someone could execute, not a decision log. The recorded decision points (`grill.py show`) inform it. Write it to the project's docs directory if the topic belongs to a project, else next to the session as `~/.claude/data/grill/<slug>-plan.md`.
+1. Author the plan as a markdown document — a real plan someone could execute, not a decision log. The recorded decision points (`grill.py show`) inform it. Plans always live centrally at `~/.claude/data/grill/<slug>-plan.md` — never in project repos; this is personal tooling, not team-facing docs.
 2. Record it: `grill.py plan <path>`.
 3. Show the user the plan and the `grill.py render` output (decision table, any open questions, verification state).
 
