@@ -1,3 +1,4 @@
 .DS_Store
 *.bak
 .secrets
+__pycache__/

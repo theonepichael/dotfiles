@@ -92,6 +92,19 @@ symlink zsh/.common_shell_aliases ~/.common_shell_aliases
 symlink shell/.poshtheme.omp.json ~/.poshtheme.omp.json
 symlink tmux/.tmux.conf           ~/.tmux.conf
 symlink claude/CLAUDE.md          ~/.claude/CLAUDE.md
+symlink claude/commands/status.md   ~/.claude/commands/status.md
+symlink claude/commands/grill-me.md ~/.claude/commands/grill-me.md
+symlink claude/scripts/dev_status.py      ~/.claude/scripts/dev_status.py
+symlink claude/scripts/test_dev_status.py ~/.claude/scripts/test_dev_status.py
+symlink claude/scripts/gen_claude_completion.py ~/.claude/scripts/gen_claude_completion.py
+symlink claude/hooks/gsd-statusline.js    ~/.claude/hooks/gsd-statusline.js
+
+# settings.json is copied, not symlinked — Claude Code rewrites it in place,
+# which would replace a symlink with a plain file and silently detach it.
+if [[ ! -f ~/.claude/settings.json ]]; then
+  cp "$DOTFILES/claude/settings.json" ~/.claude/settings.json
+  echo "  copied ~/.claude/settings.json"
+fi
 
 # macOS-only (.zprofile has Homebrew shellenv; not needed on Linux)
 if is_mac; then
