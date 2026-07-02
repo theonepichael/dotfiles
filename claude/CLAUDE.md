@@ -19,8 +19,19 @@ Infer all fields from the current conversation.
 Only include files actually relevant to picking up the work later.
 Omit related_files if there is nothing meaningful to put in them (use []).
 
-When the user pauses mid-task (says "let's stop here", "I need to step away",
-"we'll come back to this", etc.), offer to save a backlog item before ending.
+#### Proactive capture
+
+Offer to add a backlog item (never add silently) when any of these occur:
+
+- A bug, gap, or improvement is discovered but is out of scope for the current task
+- The user defers something: "later", "eventually", "not now", "we should", "someday", "v2"
+- A task finishes with loose ends (skipped tests, TODO comments, known rough edges)
+- The user pauses mid-task ("let's stop here", "I need to step away", "we'll come back to this")
+- The session is wrapping up and an unfinished thread hasn't been captured
+
+Protocol: draft the full add JSON yourself, then offer it as one line —
+``Add to backlog? `ajhp-<slug>` — <summary>`` — and run the add only on confirmation.
+At most one offer per distinct item; if declined, don't re-offer it.
 
 To update, start, or complete an item — pass the integer directly to the script.
 **Do not look up the slug in your context; the script resolves numbers internally.**
