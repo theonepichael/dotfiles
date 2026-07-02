@@ -97,6 +97,8 @@ symlink claude/commands/grill-me.md ~/.claude/commands/grill-me.md
 symlink claude/scripts/dev_status.py      ~/.claude/scripts/dev_status.py
 symlink claude/scripts/test_dev_status.py ~/.claude/scripts/test_dev_status.py
 symlink claude/scripts/gen_claude_completion.py ~/.claude/scripts/gen_claude_completion.py
+symlink claude/scripts/grill.py           ~/.claude/scripts/grill.py
+symlink claude/scripts/test_grill.py      ~/.claude/scripts/test_grill.py
 symlink claude/hooks/gsd-statusline.js    ~/.claude/hooks/gsd-statusline.js
 
 # settings.json is copied, not symlinked — Claude Code rewrites it in place,
