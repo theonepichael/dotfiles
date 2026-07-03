@@ -263,6 +263,7 @@ symlink tmux/.tmux.conf           ~/.tmux.conf
 symlink claude/CLAUDE.md          ~/.claude/CLAUDE.md
 symlink claude/commands/status.md   ~/.claude/commands/status.md
 symlink claude/commands/grill-me.md ~/.claude/commands/grill-me.md
+symlink claude/commands/make-skill.md ~/.claude/commands/make-skill.md
 symlink claude/scripts/dev_status.py      ~/.claude/scripts/dev_status.py
 symlink claude/scripts/gen_claude_completion.py ~/.claude/scripts/gen_claude_completion.py
 symlink claude/scripts/grill.py           ~/.claude/scripts/grill.py

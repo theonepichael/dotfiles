@@ -1,0 +1,40 @@
+---
+name: make-skill
+description: "Author or revise a Claude Code skill (slash command) using a trigger/structure/steering/pruning rubric. Use when the user wants to create a new skill, improve or simplify an existing one, or complains a skill isn't triggering or isn't being followed."
+---
+Work through these steps in order. Don't draft the skill body before step 1 is decided.
+
+## 1. Trigger — decide how it starts
+
+Ask (or infer and confirm): model-invoked, user-invoked, or both?
+
+- **Model-invoked** costs context in every session and can silently not fire; it buys hands-off convenience. **User-invoked** is reliable and cheap but the user must remember it exists.
+- The frontmatter `description` IS the model-invoke surface. Write it as: what the skill does + "use when" + the literal phrases the user actually says (steal them from real transcripts). For user-invoked-only skills, keep the description one terse line.
+
+## 2. Structure — steps, then reference
+
+- The body is a **procedure**: numbered/ordered steps in imperative voice, addressed to the agent.
+- Supporting material (schemas, long examples, lookup tables) does NOT go in the body. Put it in `~/dotfiles/claude/commands/ref/<skill>-<topic>.md` and point to it from the step that needs it: "Read `~/.claude/commands/ref/...` when X." Reference files need their own symlink lines (step 5).
+- Keep the body under ~50 lines. If it branches into genuinely different workflows, split into separate skills instead of one branching monster — smaller skills also hide the end goal, which stops the agent from rushing past planning/questioning steps (the way grill-me separates interviewing from plan-writing).
+
+## 3. Steering — make it stick
+
+- Use dense, industry-standard terms that carry priors ("vertical slice", "copy-once", "idempotent") instead of paragraphs of description.
+- State the failure mode you're preventing as a direct instruction ("Pass the integer directly — do not look up the slug").
+
+## 4. Verify in a fresh session
+
+Probe with headless runs: `claude -p '<a real trigger phrase>'` for model-invoke, `claude -p '/<name> <args>'` for behavior. Check the output (and reasoning, if visible) repeats your leading words back. If the agent skips a step, that step needs splitting or stronger steering — not more prose.
+
+## 5. Plumbing (house convention)
+
+1. File lives at `~/dotfiles/claude/commands/<name>.md`.
+2. Add a `symlink claude/commands/<name>.md ~/.claude/commands/<name>.md` line in install.sh next to the existing ones (same for any ref files).
+3. Create the live symlink now: `ln -s ~/dotfiles/claude/commands/<name>.md ~/.claude/commands/<name>.md`.
+4. Conventional commit: `feat(claude): add <name> skill`.
+
+## 6. Pruning (every revision, not just creation)
+
+- **Single source of truth**: never restate what CLAUDE.md or another skill already says — point to it.
+- **Remove sediment**: delete references to scripts, paths, or behaviors that no longer exist.
+- **Deletion test**: if a paragraph looks decorative, remove it and rerun the step-4 probe. Identical behavior → it was a no-op; keep it deleted.
