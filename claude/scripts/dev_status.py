@@ -498,10 +498,10 @@ def cmd_add(args):
     render(items)
 
 
-def confirm_resolution(cmd, arg, item):
+def confirm_resolution(cmd, arg, item, summary_key="summary"):
     """Echo what a mutating command resolved to, so misresolution is visible."""
     ref = f"{arg} → " if str(arg) != item["id"] else ""
-    print(f"[{cmd}] {ref}{item['id']}: {item.get('summary', '')}", file=sys.stderr)
+    print(f"[{cmd}] {ref}{item['id']}: {item.get(summary_key, '')}", file=sys.stderr)
 
 
 def cmd_update(args):
@@ -557,7 +557,8 @@ def cmd_start(args):
 
 def cmd_done(args):
     items = load_items()
-    slug = resolve_id(args.id, items)
+    kind, slug = resolve_id(args.id, items, load_pending())
+    require_kind("done", args.id, kind, "backlog")
     index = build_index(items)
     item = index.get(slug)
     if item is None:
@@ -608,7 +609,8 @@ def cmd_rename(args):
 
 def cmd_block(args):
     items = load_items()
-    slug = resolve_id(args.id, items)
+    kind, slug = resolve_id(args.id, items, load_pending())
+    require_kind("block", args.id, kind, "backlog")
     blocker = args.blocker
     index = build_index(items)
 
@@ -637,7 +639,8 @@ def cmd_block(args):
 
 def cmd_unblock(args):
     items = load_items()
-    slug = resolve_id(args.id, items)
+    kind, slug = resolve_id(args.id, items, load_pending())
+    require_kind("unblock", args.id, kind, "backlog")
     blocker = args.blocker
     index = build_index(items)
 
@@ -655,9 +658,100 @@ def cmd_unblock(args):
     render(items)
 
 
-def cmd_prune(args):
+def cmd_pending_add(args):
+    patch = _parse_json_arg(args.json, "pending add")
+
+    slug = patch.get("id", "").strip()
+    if not slug:
+        print("[pending add] 'id' is required", file=sys.stderr)
+        sys.exit(1)
+    err = validate_slug(slug, "pending add")
+    if err:
+        print(err, file=sys.stderr)
+        sys.exit(1)
+
+    description = patch.get("description", "").strip()
+    if not description:
+        print("[pending add] 'description' is required", file=sys.stderr)
+        sys.exit(1)
+
+    kind = patch.get("kind", "")
+    if kind not in VALID_PENDING_KINDS:
+        print(
+            f"[pending add] invalid kind '{kind}' — one of: "
+            f"{', '.join(sorted(VALID_PENDING_KINDS))}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    pending_items = load_pending()
+    if any(p["id"] == slug for p in pending_items):
+        print(f"[pending add] duplicate id: {slug}", file=sys.stderr)
+        sys.exit(1)
+
+    pending_items.append(
+        {
+            "id": slug,
+            "created": today(),
+            "updated": today(),
+            "status": "waiting_for_reply",
+            "description": description,
+            "kind": kind,
+            "source_ref": patch.get("source_ref", {}),
+            "context": patch.get("context", ""),
+            "next_steps": patch.get("next_steps", []),
+            "blocking": patch.get("blocking", []),
+            "outcome": None,
+        }
+    )
+    save_pending(pending_items)
+    print(f"[pending add] {slug} — {description[:60]}", file=sys.stderr)
+    render(pending_items=pending_items)
+
+
+def cmd_pending_update(args):
     items = load_items()
+    pending_items = load_pending()
+    kind, slug = resolve_id(args.id, items, pending_items)
+    require_kind("pending update", args.id, kind, "pending")
+    patch = _parse_json_arg(args.patch, "pending update")
+
+    bad = set(patch) - PENDING_MUTABLE_FIELDS
+    if bad:
+        print(
+            f"[pending update] cannot update field(s): {', '.join(sorted(bad))}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if "status" in patch and patch["status"] not in VALID_PENDING_STATUSES:
+        print(
+            f"[pending update] invalid status '{patch['status']}' — one of: "
+            f"{', '.join(sorted(VALID_PENDING_STATUSES))}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    index = {p["id"]: p for p in pending_items}
+    item = index.get(slug)
+    if item is None:
+        print(f"[pending update] not found: {slug}", file=sys.stderr)
+        sys.exit(1)
+    item.update(patch)
+    item["updated"] = today()
+    save_pending(pending_items)
+    confirm_resolution("pending update", args.id, item, summary_key="description")
+    render(pending_items=pending_items)
+
+
+def cmd_pending_list(args):
+    for item in load_pending():
+        print(json.dumps(item))
+
+
+def cmd_prune(args):
     cutoff_days = 14
+
+    items = load_items()
     keep, pruned = [], 0
     for item in items:
         if item.get("status") == "done":
@@ -671,7 +765,28 @@ def cmd_prune(args):
         keep.append(item)
     if pruned:
         save_items(keep)
-        print(f"[prune] removed {pruned} item(s)")
+
+    pending_items = load_pending()
+    pending_keep, pending_pruned = [], 0
+    for item in pending_items:
+        if item.get("status") == "resolved":
+            try:
+                age = (date.today() - date.fromisoformat(item["updated"])).days
+            except (KeyError, ValueError):
+                age = 0
+            if age >= cutoff_days:
+                pending_pruned += 1
+                continue
+        pending_keep.append(item)
+    if pending_pruned:
+        save_pending(pending_keep)
+
+    total = pruned + pending_pruned
+    if total:
+        print(
+            f"[prune] removed {pruned} backlog item(s), "
+            f"{pending_pruned} pending item(s)"
+        )
     else:
         print("[prune] nothing to prune")
 
@@ -720,13 +835,33 @@ def main():
     p.add_argument("id", metavar="<slug|N>")
     p.add_argument("blocker", metavar="<blocker-slug>")
 
-    p = sub.add_parser("prune", help="permanently remove done items older than 14 days")
+    p = sub.add_parser(
+        "prune", help="permanently remove done/resolved items older than 14 days"
+    )
     p.add_argument(
         "--force",
         action="store_true",
         required=True,
         help="required to prevent accidental prune",
     )
+
+    pending = sub.add_parser("pending", help="manage pending (waiting-on-reply) items")
+    pending_sub = pending.add_subparsers(dest="pending_cmd")
+
+    p = pending_sub.add_parser("add", help="track a new pending item")
+    p.add_argument(
+        "json",
+        metavar='\'{"id", "description", "kind", ["source_ref"], ["context"], '
+        '["next_steps"], ["blocking"]}\'',
+    )
+
+    p = pending_sub.add_parser(
+        "update", help="merge a JSON patch into an existing pending item"
+    )
+    p.add_argument("id", metavar="<slug|N>")
+    p.add_argument("patch", metavar='\'{"status": "reply_received", ...}\'')
+
+    pending_sub.add_parser("list", help="list pending items as JSON lines")
 
     args = parser.parse_args()
 
@@ -744,7 +879,18 @@ def main():
         "prune": cmd_prune,
     }
 
-    if args.cmd in dispatch:
+    if args.cmd == "pending":
+        pending_dispatch = {
+            "add": cmd_pending_add,
+            "update": cmd_pending_update,
+            "list": cmd_pending_list,
+        }
+        if args.pending_cmd in pending_dispatch:
+            pending_dispatch[args.pending_cmd](args)
+        else:
+            pending.print_help()
+            sys.exit(1)
+    elif args.cmd in dispatch:
         dispatch[args.cmd](args)
     else:
         parser.print_help()
