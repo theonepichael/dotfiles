@@ -29,6 +29,11 @@ BACKLOG_FILE = Path.home() / ".claude" / "data" / "backlog" / "items.json"
 SCHEMA_VERSION = 1
 
 VALID_KINDS = {"email", "chat", "approval"}
+VALID_PENDING_STATUSES = {"waiting_for_reply", "reply_received", "resolved"}
+PENDING_MUTABLE_FIELDS = {
+    "status", "description", "context", "next_steps", "blocking",
+    "outcome", "source_ref",
+}
 ID_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 
@@ -102,26 +107,43 @@ def cmd_pending_add(args: argparse.Namespace) -> None:
     items.append(
         {
             "id": item_id,
+            "created": today(),
+            "updated": today(),
+            "status": "waiting_for_reply",
             "description": description,
-            "source_ref": str(patch.get("source_ref", "")).strip(),
             "kind": kind,
-            "since": today(),
-            "status": "open",
+            "source_ref": patch.get("source_ref", {}),
+            "context": str(patch.get("context", "")).strip(),
+            "next_steps": patch.get("next_steps", []),
+            "blocking": patch.get("blocking", []),
+            "outcome": None,
         }
     )
     save_pending(data)
     print(f"[pending add] {item_id} — {description[:60]}", file=sys.stderr)
 
 
-def cmd_pending_resolve(args: argparse.Namespace) -> None:
+def cmd_pending_update(args: argparse.Namespace) -> None:
+    patch = json.loads(args.json)
+    bad = set(patch) - PENDING_MUTABLE_FIELDS
+    if bad:
+        die("pending update", f"cannot update field(s): {', '.join(sorted(bad))}")
+    if "status" in patch and patch["status"] not in VALID_PENDING_STATUSES:
+        die(
+            "pending update",
+            f"invalid status '{patch['status']}' — one of: "
+            f"{', '.join(sorted(VALID_PENDING_STATUSES))}",
+        )
+
     data = load_pending()
     items: list[dict[str, object]] = data["items"]  # type: ignore[assignment]
     item = next((i for i in items if i["id"] == args.id), None)
     if item is None:
-        die("pending resolve", f"no pending item '{args.id}'")
-    item["status"] = "resolved"
+        die("pending update", f"no pending item '{args.id}'")
+    item.update(patch)
+    item["updated"] = today()
     save_pending(data)
-    print(f"[pending resolve] {args.id}", file=sys.stderr)
+    print(f"[pending update] {args.id} — {json.dumps(patch)}", file=sys.stderr)
 
 
 def cmd_pending_list(_args: argparse.Namespace) -> None:
@@ -256,7 +278,7 @@ def cmd_fetch(args: argparse.Namespace) -> None:
         "assigned_items": assigned_items,
         "messages": messages,
         "calendar_events": [e for e in calendar_events if not e.get("is_recurring")],
-        "pending_items_open": [i for i in pending_state["items"] if i.get("status") == "open"],  # type: ignore[union-attr]
+        "pending_items_open": [i for i in pending_state["items"] if i.get("status") != "resolved"],  # type: ignore[union-attr]
         "pending_items_from_adapter": pending_from_adapter,
         "skipped": skipped,
     }
