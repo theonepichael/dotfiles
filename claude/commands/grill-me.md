@@ -7,9 +7,8 @@ allowed-tools: [Read, Glob, Grep, Write, AskUserQuestion, "Bash(python3 ~/.claud
 
 All session state lives in JSON under `~/.claude/data/grill/`, mutated only through
 `python3 ~/.claude/scripts/grill.py` — never write or edit session files by hand.
-The JSON is the capture mechanism: every decision point is recorded the moment it's
-identified, so an unfinished session resumes cleanly. The plan document is a separate
-markdown artifact **you author yourself**, informed by the recorded decision points.
+The plan document is a separate markdown artifact **you author yourself**, informed
+by the recorded decision points.
 
 ```
 grill.py new '{"topic": "..."}'                          # start session, prints slug
@@ -49,7 +48,7 @@ Then check `grill.py list` for an existing session matching the topic. If one ma
    - If the user defers ("whatever you think", "you decide"), record your recommendation via `decide` with source `defaulted`.
 
 4. A branch is resolved when the answer generates no new questions. Keep drilling until every open question is decided. Two distinct early exits — the user's words pick which:
-   - **Pause** ("let's stop here", "I need to step away", "we'll come back to this") — stop without deciding anything. Open questions stay open for a later resume; no plan is written. Offer (never auto-add) a backlog item via `dev_status.py add`: session slug in `context`, `next_steps` pointing at `grill.py next`.
+   - **Pause** ("let's stop here", "I need to step away", "we'll come back to this") — stop without deciding anything. Open questions stay open for a later resume; no plan is written. Offer a backlog item per CLAUDE.md's proactive-capture protocol: session slug in `context`, `next_steps` pointing at `grill.py next`.
    - **Wrap up** ("wrap it up", "just finish it", "that's enough") — `decide` each remaining open question with your best-guess answer and source `assumed`, then conclude normally.
 
 **End of session** (fully decided or wrapped up — not on pause):
