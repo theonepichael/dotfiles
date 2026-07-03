@@ -2,4 +2,4 @@
 name: watchcommit-probe
 description: "Throwaway skill used to verify watchcommit picks up new/updated skill files. Not wired into install.sh; safe to delete."
 ---
-This file exists only to test the watchcommit auto-commit/push loop. v2 — testing the update path.
+This file exists only to test the watchcommit auto-commit/push loop. v3 — second update path check.
