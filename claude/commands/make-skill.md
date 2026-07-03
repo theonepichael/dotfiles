@@ -15,7 +15,7 @@ Ask (or infer and confirm): model-invoked, user-invoked, or both?
 
 - The body is a **procedure**: numbered/ordered steps in imperative voice, addressed to the agent.
 - Supporting material (schemas, long examples, lookup tables) does NOT go in the body. Put it in `~/dotfiles/claude/commands/ref/<skill>-<topic>.md` and point to it from the step that needs it: "Read `~/.claude/commands/ref/...` when X." Reference files need their own symlink lines (step 5).
-- Keep the body under ~50 lines. If it branches into genuinely different workflows, split into separate skills instead of one branching monster — smaller skills also hide the end goal, which stops the agent from rushing past planning/questioning steps (the way grill-me separates interviewing from plan-writing).
+- Keep the body under ~50 lines. If it branches into genuinely different workflows, split into separate skills instead of one branching monster — smaller skills also hide the end goal, which stops the agent from rushing past planning/questioning steps. (Splitting isn't the only way: grill-me gets the same effect inside one skill by forbidding plan-writing until every question is decided. Don't split a skill that demonstrably works.)
 
 ## 3. Steering — make it stick
 
@@ -24,14 +24,14 @@ Ask (or infer and confirm): model-invoked, user-invoked, or both?
 
 ## 4. Verify in a fresh session
 
-Probe with headless runs: `claude -p '<a real trigger phrase>'` for model-invoke, `claude -p '/<name> <args>'` for behavior. Check the output (and reasoning, if visible) repeats your leading words back. If the agent skips a step, that step needs splitting or stronger steering — not more prose.
+Probe with headless runs: `claude -p '<a real trigger phrase>'` for model-invoke, `claude -p '/<name> <args>'` for behavior. Pass `--add-dir ~/dotfiles` when the probe must read a skill file — the headless sandbox won't follow the `~/.claude/commands` symlinks otherwise. Check the output (and reasoning, if visible) repeats your leading words back. If the agent skips a step, that step needs splitting or stronger steering — not more prose.
 
 ## 5. Plumbing (house convention)
 
 1. File lives at `~/dotfiles/claude/commands/<name>.md`.
 2. Add a `symlink claude/commands/<name>.md ~/.claude/commands/<name>.md` line in install.sh next to the existing ones (same for any ref files).
 3. Create the live symlink now: `ln -s ~/dotfiles/claude/commands/<name>.md ~/.claude/commands/<name>.md`.
-4. Conventional commit: `feat(claude): add <name> skill`.
+4. Conventional commit, scope `claude`: `feat` for a new skill, `refactor`/`docs` for revisions.
 
 ## 6. Pruning (every revision, not just creation)
 
