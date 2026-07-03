@@ -25,6 +25,7 @@ class Item:
     id: str
     title: str
     url: str
+    status: str
 
 
 @dataclass
@@ -33,6 +34,7 @@ class Message:
     text: str
     permalink: str
     timestamp: str
+    channel_or_thread: str
 
 
 @dataclass
