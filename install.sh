@@ -154,7 +154,7 @@ elif is_linux; then
 
   echo "==> Installing packages (apt)..."
   if sudo apt-get install -y \
-      tmux zoxide eza bat lsd ncdu tldr ripgrep; then
+      tmux zoxide eza bat lsd ncdu tldr ripgrep unzip; then
     record package-installed "apt packages"
   else
     note_skip "apt packages" "apt-get install failed"
@@ -193,7 +193,7 @@ elif is_linux; then
     if curl -s https://ohmyposh.dev/install.sh | bash -s -- -d ~/.local/bin; then
       record package-installed "oh-my-posh"
     else
-      note_skip "oh-my-posh" "installer failed (network blocked?)"
+      note_skip "oh-my-posh" "installer failed (network blocked, or unzip missing?)"
     fi
   fi
 fi
