@@ -29,6 +29,11 @@ Offer to add a backlog item (never add silently) when any of these occur:
 - The user pauses mid-task ("let's stop here", "I need to step away", "we'll come back to this")
 - The session is wrapping up and an unfinished thread hasn't been captured
 
+If you catch yourself narrating a finding as an aside instead of stopping for it —
+"worth noting", "separately", "out of scope for this", "a question for another day" —
+that phrasing IS the trigger. Make the offer in the same turn, not a passing mention
+to revisit later.
+
 Protocol: draft the full add JSON yourself, then offer it as one line —
 ``Add to backlog? `ajhp-<slug>` — <summary>`` — and run the add only on confirmation.
 At most one offer per distinct item; if declined, don't re-offer it.
