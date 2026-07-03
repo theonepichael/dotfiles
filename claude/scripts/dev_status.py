@@ -7,7 +7,7 @@ import os
 import re
 import sys
 import tempfile
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 DATA_DIR = Path.home() / ".claude" / "data" / "backlog"
@@ -174,6 +174,17 @@ def save_pending(pending_items):
         except OSError:
             pass
         raise
+
+
+def _backup_before_bulk_delete(path):
+    """Snapshot a data file before an operation that removes records by a
+    computed filter rather than by explicit id — the one class of mutation
+    that isn't trivially reversible by re-running a single command."""
+    if not path.exists():
+        return
+    stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    backup_path = path.with_name(f"{path.stem}.bak-{stamp}{path.suffix}")
+    backup_path.write_bytes(path.read_bytes())
 
 
 # ── graph helpers ─────────────────────────────────────────────────────────────
@@ -764,6 +775,7 @@ def cmd_prune(args):
                 continue
         keep.append(item)
     if pruned:
+        _backup_before_bulk_delete(ITEMS_FILE)
         save_items(keep)
 
     pending_items = load_pending()
@@ -779,13 +791,14 @@ def cmd_prune(args):
                 continue
         pending_keep.append(item)
     if pending_pruned:
+        _backup_before_bulk_delete(PENDING_FILE)
         save_pending(pending_keep)
 
     total = pruned + pending_pruned
     if total:
         print(
             f"[prune] removed {pruned} backlog item(s), "
-            f"{pending_pruned} pending item(s)"
+            f"{pending_pruned} pending item(s) — backup written to {DATA_DIR}"
         )
     else:
         print("[prune] nothing to prune")
