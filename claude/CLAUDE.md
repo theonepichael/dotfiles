@@ -31,8 +31,13 @@ Offer to add a backlog item (never add silently) when any of these occur:
 
 If you catch yourself narrating a finding as an aside instead of stopping for it —
 "worth noting", "separately", "out of scope for this", "a question for another day" —
-that phrasing IS the trigger. Make the offer in the same turn, not a passing mention
-to revisit later.
+that phrasing IS the trigger.
+
+Don't rely on catching it mid-sentence — before sending any response, re-scan your own
+draft for that trigger language. Anything found without a paired offer gets one added
+before you send, not after. Several findings in one turn can share a single offer line;
+none get dropped silently. (This closes the gap between noticing something and acting on
+it — it can't make you notice something you never put into words in the first place.)
 
 Protocol: draft the full add JSON yourself, then offer it as one line —
 ``Add to backlog? `ajhp-<slug>` — <summary>`` — and run the add only on confirmation.
