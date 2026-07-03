@@ -19,7 +19,7 @@ Ask (or infer and confirm): model-invoked, user-invoked, or both?
 
 ## 3. Steering — make it stick
 
-- Use dense, industry-standard terms that carry priors ("vertical slice", "copy-once", "idempotent") instead of paragraphs of description.
+- Use dense, industry-standard terms that carry priors ("vertical slice", "copy-once", "idempotent") instead of paragraphs of description. Pick words that *name the behavior you want*: the agent repeats them in its thinking and output, and every repetition re-anchors it on that behavior — that echo loop is what step 4 listens for.
 - State the failure mode you're preventing as a direct instruction ("Pass the integer directly — do not look up the slug").
 
 ## 4. Verify in a fresh session
