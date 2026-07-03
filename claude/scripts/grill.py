@@ -15,7 +15,7 @@ import os
 import re
 import sys
 import tempfile
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 DATA_DIR = Path.home() / ".claude" / "data" / "grill"
@@ -34,6 +34,13 @@ ID_MIN, ID_MAX = 2, 48
 
 def today() -> str:
     return date.today().isoformat()
+
+
+def now() -> str:
+    # Full timestamp so same-day sessions never tie in resolve_session's
+    # latest-when-omitted rule. Date-only values in old files sort correctly
+    # against these (prefix ordering), so no migration is needed.
+    return datetime.now().isoformat()
 
 
 def die(context: str, msg: str) -> None:
@@ -156,7 +163,7 @@ def confirm(context: str, session: dict[str, object], detail: str) -> None:
 
 
 def touch(session: dict[str, object]) -> None:
-    session["updated"] = today()
+    session["updated"] = now()
 
 
 # ── render ────────────────────────────────────────────────────────────────────
@@ -176,7 +183,7 @@ def render_markdown(session: dict[str, object]) -> str:
     lines = [
         f"# Grill status: {session['topic']}",
         "",
-        f"_{session['created']} · updated {session['updated']} · "
+        f"_{str(session['created'])[:10]} · updated {str(session['updated'])[:10]} · "
         f"{len(decided)}/{len(decisions)} decided · {len(verdicts)} verified_",
         "",
         f"_plan: {plan_path}_" if plan_path else "_plan: not written yet_",
@@ -240,8 +247,8 @@ def cmd_new(args: argparse.Namespace) -> None:
         "schema_version": SCHEMA_VERSION,
         "slug": slug,
         "topic": topic,
-        "created": today(),
-        "updated": today(),
+        "created": now(),
+        "updated": now(),
         "plan_path": None,
         "decisions": [],
     }
@@ -360,6 +367,17 @@ def cmd_revise(args: argparse.Namespace) -> None:
     confirm("revise", session, f"{args.decision_id} updated{note}")
 
 
+def cmd_rm(args: argparse.Namespace) -> None:
+    session = resolve_session(args.session, "rm")
+    decision = find_decision(session, args.decision_id, "rm")
+    decisions: list[dict[str, object]] = session["decisions"]  # type: ignore
+    decisions.remove(decision)
+    state = "open" if is_open(decision) else "decided"
+    touch(session)
+    save_session(session)
+    confirm("rm", session, f"removed {args.decision_id} ({state})")
+
+
 def cmd_verdict(args: argparse.Namespace) -> None:
     session = resolve_session(args.session, "verdict")
     patch = parse_json_arg(args.json, "verdict")
@@ -427,7 +445,7 @@ def cmd_list(args: argparse.Namespace) -> None:
         decided = [d for d in decisions if not is_open(d)]
         verified = sum(1 for d in decided if d.get("verdict"))
         print(
-            f"{slug}\t{session.get('updated', '')}\t"
+            f"{slug}\t{str(session.get('updated', ''))[:10]}\t"
             f"{len(decided)}/{len(decisions)} decided\t{verified} verified\t"
             f"{session.get('topic', '')}"
         )
@@ -450,7 +468,7 @@ def main() -> None:
     )
     sub = parser.add_subparsers(
         dest="cmd",
-        metavar="{new,ask,decide,revise,verdict,plan,next,render,list,show}",
+        metavar="{new,ask,decide,revise,rm,verdict,plan,next,render,list,show}",
     )
 
     def add_session_flag(p: argparse.ArgumentParser) -> None:
@@ -480,6 +498,10 @@ def main() -> None:
     p = sub.add_parser("revise", help="amend a decision (resets its verdict)")
     p.add_argument("decision_id")
     p.add_argument("patch", metavar='\'{"decision": "..."}\'')
+    add_session_flag(p)
+
+    p = sub.add_parser("rm", help="remove a decision point from a session")
+    p.add_argument("decision_id")
     add_session_flag(p)
 
     p = sub.add_parser("verdict", help="record a verification verdict")
@@ -515,6 +537,7 @@ def main() -> None:
         "ask": cmd_ask,
         "decide": cmd_decide,
         "revise": cmd_revise,
+        "rm": cmd_rm,
         "verdict": cmd_verdict,
         "plan": cmd_plan,
         "next": cmd_next,

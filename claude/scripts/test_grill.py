@@ -259,6 +259,26 @@ class GrillTestCase(unittest.TestCase):
         resolved = grill.resolve_session(None, "test")
         self.assertEqual(resolved["slug"], second)
 
+    def test_12b_same_day_sessions_resolve_to_newest_not_alphabetical(self) -> None:
+        # regression: day-granular 'updated' tied for same-day sessions and the
+        # alphabetically-later slug won; timestamps must break the tie by recency
+        self.new_session("Zeta topic")
+        second = self.new_session("Alpha topic")
+        resolved = grill.resolve_session(None, "test")
+        self.assertEqual(resolved["slug"], second)
+
+    def test_12c_timestamp_sorts_after_legacy_date_only_value(self) -> None:
+        first = self.new_session("Legacy session")
+        session = grill.load_session(first)
+        session["updated"] = "2099-01-01"  # date-only, as pre-timestamp files have
+        grill.save_session(session)
+        second = self.new_session("New session")
+        newer = grill.load_session(second)
+        newer["updated"] = "2099-01-01T08:00:00"
+        grill.save_session(newer)
+        resolved = grill.resolve_session(None, "test")
+        self.assertEqual(resolved["slug"], second)
+
     def test_13_substring_match_unique_and_ambiguous(self) -> None:
         self.new_session("Alpha plan")
         self.new_session("Beta plan")
@@ -266,6 +286,30 @@ class GrillTestCase(unittest.TestCase):
         self.assertIn("alpha-plan", resolved["slug"])
         with patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
             grill.resolve_session("plan", "test")
+
+    # ── rm ───────────────────────────────────────────────────────────────────
+
+    def test_13b_rm_removes_decision_point(self) -> None:
+        slug = self.new_session()
+        with patch("sys.stderr", io.StringIO()):
+            grill.cmd_ask(
+                ns(
+                    json=json.dumps({"id": "token-storage", "question": "Where?"}),
+                    session=slug,
+                )
+            )
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            grill.cmd_rm(ns(decision_id="token-storage", session=slug))
+        self.assertIn("removed token-storage (open)", err.getvalue())
+        self.assertEqual(grill.load_session(slug)["decisions"], [])
+
+    def test_13c_rm_unknown_id_rejected(self) -> None:
+        slug = self.new_session()
+        err = io.StringIO()
+        with patch("sys.stderr", err), self.assertRaises(SystemExit):
+            grill.cmd_rm(ns(decision_id="nope", session=slug))
+        self.assertIn("no decision 'nope'", err.getvalue())
 
     # ── render / plan artifact ───────────────────────────────────────────────
 
