@@ -162,10 +162,20 @@ watchcommit /path/to/other/repo
 ```
 
 Requires `claude login` to have been run at least once on the machine (any
-plan). On Linux/WSL, the systemd unit needs `systemd=true` under `[boot]` in
-`/etc/wsl.conf` (`wsl --shutdown` from Windows to apply) — without it,
-`install.sh` skips the service and you're back to running `watchcommit`
-manually in a terminal.
+plan) — the launchd/systemd agent runs as the same user and reuses that
+session, no separate config needed.
+
+- **macOS**: the launchd agent inherits your login session's credentials the
+  same way a Terminal-launched `claude` would. If `claude` normally stores
+  its session in the macOS Keychain rather than a plain credentials file,
+  a background LaunchAgent may not be able to read it without the session
+  unlocked, or may need a one-time Keychain access grant — not verified on
+  real macOS hardware yet, so check `/tmp/watchcommit.log` after the first
+  install for an auth error if commits aren't showing up.
+- **Linux/WSL**: the systemd unit needs `systemd=true` under `[boot]` in
+  `/etc/wsl.conf` (`wsl --shutdown` from Windows to apply) — without it,
+  `install.sh` skips the service and you're back to running `watchcommit`
+  manually in a terminal.
 
 ## Notes
 
