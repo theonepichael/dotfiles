@@ -1,7 +1,7 @@
 ---
 name: standup
 description: "Gather assigned work, chat signal, calendar events, pending replies, git commits, and backlog activity into a daily standup draft, saved to a dated file. Use when the user says 'standup', 'prep for standup', or wants their daily status pulled together."
-allowed-tools: [Read, Write, Glob, Grep, "Bash(python3 ~/.claude/scripts/standup.py:*)", "Bash(git log:*)"]
+allowed-tools: [Read, Write, Glob, Grep, "Bash(python3 ~/.claude/scripts/standup.py:*)", "Bash(python3 ~/.claude/scripts/dev_status.py:*)", "Bash(git log:*)"]
 ---
 
 Read-only against every external system. Never comments on a ticket, posts a
@@ -17,6 +17,9 @@ python3 ~/.claude/scripts/standup.py fetch
 Returns one JSON object: `git_commits`, `backlog_in_progress`,
 `backlog_recent_done`, `assigned_items`, `messages`, `calendar_events`,
 `pending_items_open`, `pending_items_from_adapter`, `skipped`.
+`pending_items_open` is a read-only view of `dev_status.py`'s canonical
+pending-items store — `standup.py` never mutates it; all pending-item writes
+below go through `dev_status.py`.
 
 `skipped` lists every source that couldn't run (adapter not yet configured,
 no git repos set up, `work_backlog_prefixes` missing, etc.) with a reason.
@@ -38,14 +41,14 @@ to the user before applying — same propose-then-confirm shape as
 pattern match:
 
 ```
-python3 ~/.claude/scripts/standup.py pending update <id> '{"status": "reply_received"}'
+python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "reply_received"}'
 ```
 
 Only move an item to `resolved` when the user confirms it's actually done,
 and record what happened:
 
 ```
-python3 ~/.claude/scripts/standup.py pending update <id> '{"status": "resolved", "outcome": "what actually happened"}'
+python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "resolved", "outcome": "what actually happened"}'
 ```
 
 For anything in the fetched data that looks like a new item worth tracking
@@ -54,8 +57,13 @@ request not yet approved) but isn't already in `pending_items_open`,
 propose adding it:
 
 ```
-python3 ~/.claude/scripts/standup.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
+python3 ~/.claude/scripts/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
 ```
+
+`<id>` can be the pending item's slug — `dev_status.py`'s cross-section
+numbering (visible via `/status`) also works, but its numbers shift as items
+change, so prefer the slug here since `standup.py`'s `fetch` output already
+gives you it directly.
 
 `kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
 object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for

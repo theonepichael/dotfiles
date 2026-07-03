@@ -61,6 +61,32 @@ When work is complete on a backlog item, mark it done with the above.
 When writing to stored fields (`summary`, `context`, `next_steps`, `related_files[].note`)
 and prose cross-references, use slugs for any item references — never raw hex IDs.
 
+### Pending Items
+
+When helping the user send an email/message that expects a reply, or take an
+action that depends on someone else's response (e.g. requesting API/access
+approval), offer explicitly — never add silently: "want me to track this as
+a pending item?"
+
+```bash
+python3 ~/.claude/scripts/dev_status.py pending add '{"id": "<slug>", "description": "<what you are waiting on>", "kind": "<email|chat|approval>", "source_ref": {...}, "context": "<why>", "next_steps": ["..."]}'
+```
+
+Status moves one step at a time — `waiting_for_reply` → `reply_received` →
+`resolved` — never jump straight to `resolved`. A reply arriving means it
+needs a look, not that it's closed:
+
+```bash
+python3 ~/.claude/scripts/dev_status.py pending update <slug|N> '{"status": "reply_received"}'
+python3 ~/.claude/scripts/dev_status.py pending update <slug|N> '{"status": "resolved", "outcome": "<what happened>"}'
+```
+
+Same proactive-capture discipline as the backlog section above: if you catch
+yourself narrating a send-and-wait action as an aside instead of asking,
+that phrasing IS the trigger — offer before you send, not after — and
+re-scan your own draft response before sending it, the same pre-send check
+used for backlog capture.
+
 ## Git
 
 - Use conventional commits: `type(scope): description` — types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `perf`, `ci`
