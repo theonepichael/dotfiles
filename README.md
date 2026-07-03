@@ -8,14 +8,58 @@ Cross-platform setup for macOS and Linux/WSL. Clone and run `install.sh` to go f
 git clone <repo-url> ~/dotfiles
 cd ~/dotfiles
 chmod +x install.sh
-./install.sh
+./install.sh          # personal machine
+./install.sh --work   # work machine (see "Work profile" below)
 ```
 
-Before running, create `~/.secrets` with your API keys (not tracked in git):
+On a personal machine, create `~/.secrets` with your API keys before running (not tracked in git):
 
 ```sh
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
+
+If GitHub isn't reachable from the target machine, transfer the repo as a git
+bundle instead (full history, offline-clonable):
+
+```sh
+# on a machine that has the repo
+git -C ~/dotfiles bundle create /path/to/usb/dotfiles.bundle --all
+
+# on the target machine
+git clone /path/to/usb/dotfiles.bundle ~/dotfiles
+# later, if GitHub opens up: git remote set-url origin <repo-url>
+```
+
+## Work profile
+
+`./install.sh --work` provisions a work machine:
+
+- **watchcommit is excluded entirely** — no binary, no agent. It auto-pushes
+  to a personal remote with a personal API key; that stays off work hardware.
+  Commit manually there.
+- Claude settings are seeded from `claude/settings.work.json` — same hooks and
+  statusline, but no `skipDangerousModePermissionPrompt` and no model pin.
+- The manual-steps output drops the personal-API-key instruction. `~/.secrets`
+  is still sourced if present, for work-issued tokens only.
+- A profile marker is written (`~/.local/state/dotfiles/profile`); later runs
+  *without* `--work` on that machine refuse unless `--force` is passed.
+
+## Failures, skips, and rollback
+
+`install.sh` never aborts on a failed step. Anything that can't run (blocked
+curl, offline apt, missing sudo) is skipped and listed in a loud end-of-run
+summary with the reason; exit code is 1 if anything was skipped.
+
+Every file mutation (symlink created, file backed up, file copied) is recorded
+in `~/.local/state/dotfiles/last-run.tsv`. If you ran with the wrong profile:
+
+```sh
+./install.sh --rollback   # reverses the last run's file mutations
+./install.sh --work       # then re-run correctly
+```
+
+Packages are never uninstalled by rollback — they're identical across
+profiles, so a wrong-profile run's real footprint is entirely file-level.
 
 ## What's included
 
@@ -40,9 +84,11 @@ Everything is symlinked — edits in `~/dotfiles` take effect immediately.
 
 ### Both platforms
 1. Installs packages: tmux, zoxide, eza, bat, ripgrep, lsd, ncdu, tldr, oh-my-posh, uv, ruff
-2. Installs NVM (if missing)
+2. Installs NVM (if missing) and Claude Code (`npm i -g @anthropic-ai/claude-code`)
 3. Symlinks all common dotfiles (backs up any existing non-symlink files to `*.bak`)
-4. Installs vim-plug (if missing)
+4. Seeds `~/.claude/settings.json` (copy-once — if it already exists, drift from
+   the repo seed is reported in the summary, never overwritten)
+5. Installs vim-plug (if missing)
 
 ### macOS only
 - Installs Homebrew (if missing) — supports both Apple Silicon (`/opt/homebrew`) and Intel (`/usr/local`)
@@ -116,3 +162,7 @@ Requires `ANTHROPIC_API_KEY` in `~/.secrets`.
 - **NVM**: installed via the official script, not Homebrew. Restart your shell after install
 - **vim plugins**: run `:PlugInstall` inside vim after first launch
 - **Secrets**: `~/.secrets` is gitignored — create it manually on each new machine
+- **Tool state**: `~/.claude/data` (dev_status backlog, grill sessions) is
+  per-machine by design and never packaged — a new machine starts fresh
+- **Tests**: live in `claude/scripts/` and run from the repo
+  (`cd claude/scripts && pytest`); they are not deployed to `~/.claude`
