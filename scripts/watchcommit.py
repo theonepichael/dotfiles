@@ -1,8 +1,4 @@
-#!/usr/bin/env -S uv run --quiet
-# /// script
-# requires-python = ">=3.13"
-# dependencies = ["anthropic>=0.50.0"]
-# ///
+#!/usr/bin/env python3
 """
 watchcommit — polls ~/dotfiles every 90 s, auto-commits changes with a
 Claude-generated conventional commit message, and pushes to the remote.
@@ -17,10 +13,8 @@ import sys
 import time
 from pathlib import Path
 
-import anthropic
-
 POLL_INTERVAL = 90
-MODEL = "claude-haiku-4-5"
+MODEL = "haiku"
 SYSTEM_PROMPT = (
     "You are a git commit message generator. "
     "Given a diff, output a single conventional commit message and nothing else.\n\n"
@@ -62,20 +56,23 @@ def build_diff(repo: Path) -> str:
 
 
 def generate_message(diff: str) -> str:
-    client = anthropic.Anthropic()
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=128,
-        system=[
-            {
-                "type": "text",
-                "text": SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }
+    result = subprocess.run(
+        [
+            "claude",
+            "--print",
+            "--system-prompt", SYSTEM_PROMPT,
+            "--model", MODEL,
+            "--output-format", "text",
+            "--no-session-persistence",
+            f"Diff:\n\n{diff}",
         ],
-        messages=[{"role": "user", "content": f"Diff:\n\n{diff}"}],
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
-    return response.content[0].text.strip()
+    if result.returncode != 0:
+        raise RuntimeError(f"claude CLI failed: {result.stderr.strip()}")
+    return result.stdout.strip()
 
 
 def commit_and_push(repo: Path, message: str) -> None:

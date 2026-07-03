@@ -8,7 +8,7 @@
     <array>
         <string>/bin/zsh</string>
         <string>-c</string>
-        <string>source ~/.secrets 2>/dev/null; exec ~/.local/bin/watchcommit</string>
+        <string>export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; exec ~/.local/bin/watchcommit</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

@@ -270,11 +270,12 @@ symlink claude/scripts/grill.py           ~/.claude/scripts/grill.py
 symlink claude/hooks/gsd-statusline.js    ~/.claude/hooks/gsd-statusline.js
 
 # watchcommit: personal machines only — it auto-pushes to a personal remote
-# with a personal API key, which has no place on work hardware.
+# under your personal Claude account login, which has no place on work hardware.
 if [[ "$PROFILE" == "work" ]]; then
   echo "  watchcommit: excluded (work profile)"
 else
   symlink scripts/watchcommit.py ~/.local/bin/watchcommit
+  is_linux && symlink systemd/watchcommit.service ~/.config/systemd/user/watchcommit.service
 fi
 
 # settings.json is copied, not symlinked — Claude Code rewrites it in place,
@@ -360,6 +361,27 @@ PYEOF
 fi
 
 # ============================================================================
+# Linux/WSL: watchcommit systemd --user service
+# ============================================================================
+
+if is_linux && [[ "$PROFILE" != "work" ]]; then
+  if command -v systemctl &>/dev/null && systemctl --user show-environment &>/dev/null; then
+    echo "==> Enabling watchcommit systemd user service..."
+    systemctl --user daemon-reload
+    if systemctl --user enable --now watchcommit.service; then
+      # Without lingering, the service dies when the last WSL/SSH session
+      # closes — enable-linger keeps the user manager (and this unit) up.
+      loginctl enable-linger "$USER" 2>/dev/null \
+        || echo "  note: loginctl enable-linger failed — service won't survive full logout"
+    else
+      note_skip "watchcommit service" "systemctl --user enable --now failed"
+    fi
+  else
+    note_skip "watchcommit service" "systemd --user unavailable (enable systemd in /etc/wsl.conf?)"
+  fi
+fi
+
+# ============================================================================
 # vim-plug (both platforms)
 # ============================================================================
 
@@ -414,7 +436,7 @@ if [[ "$PROFILE" == "work" ]]; then
   echo "  - ~/.secrets is sourced if present — for work-issued tokens only;"
   echo "    do NOT put a personal ANTHROPIC_API_KEY on this machine"
 else
-  echo "  - Set ANTHROPIC_API_KEY in ~/.secrets to use watchcommit"
+  echo "  - Run 'claude login' if you haven't, so watchcommit can generate commit messages"
 fi
 is_linux && echo "  - Restart your shell to pick up the new config"
 

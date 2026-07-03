@@ -1,0 +1,16 @@
+[Unit]
+Description=watchcommit — auto-commit and push dotfiles changes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/watchcommit
+Restart=always
+RestartSec=5
+StandardOutput=append:/tmp/watchcommit.log
+StandardError=append:/tmp/watchcommit.log
+
+[Install]
+WantedBy=default.target

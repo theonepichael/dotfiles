@@ -41,7 +41,10 @@ check "~/.claude/CLAUDE.md symlinks into repo" bash -c '[[ "$(readlink -f ~/.cla
 check "~/.claude/settings.json copied (not symlinked)" bash -c '[[ -f ~/.claude/settings.json && ! -L ~/.claude/settings.json ]]'
 check "~/.claude/settings.json matches personal seed" diff -q ~/.claude/settings.json "$DOTFILES/claude/settings.json"
 check "watchcommit symlinked on personal profile" bash -c '[[ -L ~/.local/bin/watchcommit ]]'
+check "watchcommit systemd unit symlinked on personal profile" bash -c '[[ -L ~/.config/systemd/user/watchcommit.service ]]'
 check "no profile marker written on personal run" bash -c '[[ ! -f "'"$MARKER"'" ]]'
+check "watchcommit starts and exits cleanly against a non-git dir" bash -c \
+  'timeout 10 ~/.local/bin/watchcommit /tmp 2>&1 | grep -q "not a git repo"'
 
 echo ""
 echo "=== 2. Rollback undoes the personal install ==="
@@ -51,6 +54,7 @@ check "manifest removed after rollback" bash -c '[[ ! -f "'"$MANIFEST"'" ]]'
 check "~/.vimrc symlink removed" bash -c '[[ ! -e ~/.vimrc ]]'
 check "~/.claude/settings.json removed" bash -c '[[ ! -e ~/.claude/settings.json ]]'
 check "watchcommit symlink removed" bash -c '[[ ! -e ~/.local/bin/watchcommit ]]'
+check "watchcommit systemd unit symlink removed" bash -c '[[ ! -e ~/.config/systemd/user/watchcommit.service ]]'
 
 echo ""
 echo "=== 3. Pre-existing file gets backed up, not clobbered ==="
@@ -74,6 +78,7 @@ echo "=== 4. Work profile: exclusions + settings seed ==="
 cat /tmp/work.out
 check "profile marker written as 'work'" bash -c '[[ "$(cat "'"$MARKER"'")" == "work" ]]'
 check "watchcommit excluded on work profile" bash -c '[[ ! -e ~/.local/bin/watchcommit ]]'
+check "watchcommit systemd unit excluded on work profile" bash -c '[[ ! -e ~/.config/systemd/user/watchcommit.service ]]'
 check "~/.claude/settings.json matches WORK seed" diff -q ~/.claude/settings.json "$DOTFILES/claude/settings.work.json"
 
 echo ""

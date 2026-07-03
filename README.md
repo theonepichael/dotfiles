@@ -12,11 +12,10 @@ chmod +x install.sh
 ./install.sh --work   # work machine (see "Work profile" below)
 ```
 
-On a personal machine, create `~/.secrets` with your API keys before running (not tracked in git):
-
-```sh
-export ANTHROPIC_API_KEY="sk-ant-..."
-```
+`~/.secrets` (gitignored, sourced by `.zshrc` if present) is available for any
+API keys or tokens you want on the shell PATH — nothing in this repo requires
+it today. watchcommit uses the `claude` CLI under whatever account you're
+logged into (`claude login`), not a key from `~/.secrets`.
 
 If GitHub isn't reachable from the target machine, transfer the repo as a git
 bundle instead (full history, offline-clonable):
@@ -35,12 +34,11 @@ git clone /path/to/usb/dotfiles.bundle ~/dotfiles
 `./install.sh --work` provisions a work machine:
 
 - **watchcommit is excluded entirely** — no binary, no agent. It auto-pushes
-  to a personal remote with a personal API key; that stays off work hardware.
-  Commit manually there.
+  to a personal remote under your personal Claude account login; that stays
+  off work hardware. Commit manually there.
 - Claude settings are seeded from `claude/settings.work.json` — same hooks and
   statusline, but no `skipDangerousModePermissionPrompt` and no model pin.
-- The manual-steps output drops the personal-API-key instruction. `~/.secrets`
-  is still sourced if present, for work-issued tokens only.
+- `~/.secrets` is still sourced if present, for work-issued tokens only.
 - A profile marker is written (`~/.local/state/dotfiles/profile`); later runs
   *without* `--work` on that machine refuse unless `--force` is passed.
 
@@ -77,6 +75,7 @@ profiles, so a wrong-profile run's real footprint is entirely file-level.
 | `claude/CLAUDE.md` | `~/.claude/CLAUDE.md` |
 | `scripts/watchcommit.py` | `~/.local/bin/watchcommit` |
 | `launchd/com.user.watchcommit.plist` | `~/Library/LaunchAgents/com.user.watchcommit.plist` (macOS only) |
+| `systemd/watchcommit.service` | `~/.config/systemd/user/watchcommit.service` (Linux/WSL only) |
 
 Everything is symlinked — edits in `~/dotfiles` take effect immediately.
 
@@ -103,6 +102,10 @@ Everything is symlinked — edits in `~/dotfiles` take effect immediately.
 - Creates `~/.local/bin/bat` shim (Ubuntu ships bat as `batcat`)
 - Installs uv via astral.sh if not present
 - Installs oh-my-posh to `~/.local/bin` via official installer
+- Enables and starts the watchcommit systemd `--user` service, and runs
+  `loginctl enable-linger` so it keeps running after you close the last
+  WSL/SSH session (skipped with a note if `systemd --user` isn't available —
+  e.g. WSL without `systemd=true` in `/etc/wsl.conf`)
 
 ## Keyboard setup (Karabiner-Elements)
 
@@ -139,7 +142,7 @@ AltTab intercepts `Option+Tab` directly, so no Karabiner rule is needed.
 
 ## watchcommit
 
-Polls `~/dotfiles` every 90 seconds, detects git changes, generates a conventional commit message via Claude Haiku, and commits + pushes automatically. Runs as a background launchd agent on macOS (starts on login, restarts on crash). Logs to `/tmp/watchcommit.log`.
+Polls `~/dotfiles` every 90 seconds, detects git changes, generates a conventional commit message by shelling out to the `claude` CLI (`--model haiku`), and commits + pushes automatically. Uses whatever account `claude` is already logged into on the machine (Pro, Max, or API key) — no separate `ANTHROPIC_API_KEY` needed. Runs as a background agent — launchd on macOS (starts on login, restarts on crash), systemd `--user` on Linux/WSL (starts on login, `Restart=always`, kept alive after logout via `loginctl enable-linger`). Logs to `/tmp/watchcommit.log` on both platforms.
 
 ```sh
 # Tail the log
@@ -149,11 +152,20 @@ tail -f /tmp/watchcommit.log
 launchctl unload ~/Library/LaunchAgents/com.user.watchcommit.plist
 launchctl load ~/Library/LaunchAgents/com.user.watchcommit.plist
 
+# Linux/WSL: stop/start manually
+systemctl --user stop watchcommit.service
+systemctl --user start watchcommit.service
+systemctl --user status watchcommit.service
+
 # Run manually against a different repo
 watchcommit /path/to/other/repo
 ```
 
-Requires `ANTHROPIC_API_KEY` in `~/.secrets`.
+Requires `claude login` to have been run at least once on the machine (any
+plan). On Linux/WSL, the systemd unit needs `systemd=true` under `[boot]` in
+`/etc/wsl.conf` (`wsl --shutdown` from Windows to apply) — without it,
+`install.sh` skips the service and you're back to running `watchcommit`
+manually in a terminal.
 
 ## Notes
 
