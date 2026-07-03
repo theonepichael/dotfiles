@@ -12,8 +12,15 @@ from pathlib import Path
 
 DATA_DIR = Path.home() / ".claude" / "data" / "backlog"
 ITEMS_FILE = DATA_DIR / "items.json"
+PENDING_FILE = DATA_DIR / "pending_items.json"
 
 VALID_STATUSES = {"open", "in-progress", "done"}
+VALID_PENDING_STATUSES = {"waiting_for_reply", "reply_received", "resolved"}
+VALID_PENDING_KINDS = {"email", "chat", "approval"}
+PENDING_MUTABLE_FIELDS = {
+    "status", "description", "context", "next_steps", "blocking",
+    "outcome", "source_ref",
+}
 IMMUTABLE_FIELDS = {"id", "created"}
 RESERVED_SLUGS = {
     "render",
@@ -27,6 +34,7 @@ RESERVED_SLUGS = {
     "block",
     "unblock",
     "prune",
+    "pending",
     "all",
     "help",
     "new",
@@ -42,6 +50,7 @@ _COLORS = {
     "ready": "\x1b[32m",
     "blocked": "\x1b[31m",
     "done": "\x1b[2m",
+    "pending": "\x1b[35m",
     "warn": "\x1b[31m",
 }
 
@@ -130,6 +139,43 @@ def save_items(items):
         raise
 
 
+def load_pending():
+    if not PENDING_FILE.exists():
+        return []
+    try:
+        data = json.loads(PENDING_FILE.read_text())
+    except json.JSONDecodeError as e:
+        print(
+            f"pending-items file corrupted at {PENDING_FILE}; restore from backup. ({e})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not isinstance(data, dict) or data.get("schema_version") != 1:
+        print(
+            f"pending-items file at {PENDING_FILE} is not schema_version 1; "
+            "check file or run migration.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return data.get("items", [])
+
+
+def save_pending(pending_items):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps({"schema_version": 1, "items": pending_items}, indent=2)
+    fd, tmp_path = tempfile.mkstemp(dir=DATA_DIR, prefix=".pending_tmp_")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(payload)
+        os.replace(tmp_path, PENDING_FILE)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 # ── graph helpers ─────────────────────────────────────────────────────────────
 
 
@@ -196,22 +242,51 @@ def _render_order(items):
     return in_progress, ready, blocked, done, done_total
 
 
+def _pending_render_order(pending_items):
+    """Unresolved pending items: reply_received group first, each group newest-first."""
+    unresolved = [p for p in pending_items if p.get("status") != "resolved"]
+    by_recency = sorted(unresolved, key=lambda p: p.get("updated", ""), reverse=True)
+    return sorted(by_recency, key=lambda p: 0 if p.get("status") == "reply_received" else 1)
+
+
 # ── number resolution ─────────────────────────────────────────────────────────
 
 
-def resolve_id(arg, items):
-    """Resolve a display number or slug string to a slug. Exits on failure."""
+def _unified_order(items, pending_items):
+    """Full cross-section render order: pending first, then the four backlog sections."""
+    pending_ordered = _pending_render_order(pending_items)
+    in_progress, ready, blocked, done, _ = _render_order(items)
+    return pending_ordered + in_progress + ready + blocked + done
+
+
+def resolve_id(arg, items, pending_items):
+    """Resolve a display number or slug to (kind, slug). kind is 'backlog' or 'pending'.
+    Exits on failure. For a non-numeric arg, kind is inferred by pending-id membership;
+    caller still validates existence in whichever pool it expects."""
     try:
         n = int(arg)
     except ValueError:
-        return arg  # already a slug — caller validates existence
+        pending_ids = {p["id"] for p in pending_items}
+        return ("pending" if arg in pending_ids else "backlog"), arg
 
-    in_progress, ready, blocked, done, _ = _render_order(items)
-    ordered = in_progress + ready + blocked + done
+    ordered = _unified_order(items, pending_items)
     if not (1 <= n <= len(ordered)):
         print(f"[resolve] no item at position {n}", file=sys.stderr)
         sys.exit(1)
-    return ordered[n - 1]["id"]
+    resolved = ordered[n - 1]
+    pending_ids = {p["id"] for p in pending_items}
+    kind = "pending" if resolved["id"] in pending_ids else "backlog"
+    return kind, resolved["id"]
+
+
+def require_kind(cmd, arg, kind, expected):
+    if kind != expected:
+        other = "pending update/list" if expected == "backlog" else "update/start/done/block/unblock"
+        print(
+            f"[{cmd}] position {arg} is a {kind} item — use '{other}' instead",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 # ── render ────────────────────────────────────────────────────────────────────
