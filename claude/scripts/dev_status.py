@@ -292,7 +292,16 @@ def require_kind(cmd, arg, kind, expected):
 # ── render ────────────────────────────────────────────────────────────────────
 
 
-def render(items=None, *, out=None, err=None):
+def _pending_suffix(item, color):
+    marker = ""
+    if item.get("status") == "reply_received":
+        marker = " " + _colorize("reply received", _COLORS["pending"], color)
+    age = _age_days(item.get("created", ""))
+    since = f" (waiting {age}d)" if age is not None else ""
+    return marker + since
+
+
+def render(items=None, pending_items=None, *, out=None, err=None):
     """Pure render — no writes, no side effects."""
     if out is None:
         out = sys.stdout
@@ -301,10 +310,13 @@ def render(items=None, *, out=None, err=None):
 
     if items is None:
         items = load_items()
+    if pending_items is None:
+        pending_items = load_pending()
 
     index = build_index(items)
     in_progress, ready, blocked, done, done_total = _render_order(items)
-    ordered = in_progress + ready + blocked + done
+    pending_ordered = _pending_render_order(pending_items)
+    ordered = pending_ordered + in_progress + ready + blocked + done
 
     if not ordered:
         print("(backlog is empty)", file=out)
@@ -312,15 +324,20 @@ def render(items=None, *, out=None, err=None):
         return
 
     color = _use_color(out)
+    pending_id_set = {p["id"] for p in pending_items}
 
     # Pre-assign all numbers so blocked-by annotations can reference any item
     slug_to_num = {item["id"]: n + 1 for n, item in enumerate(ordered)}
-    item_map = {n + 1: item["id"] for n, item in enumerate(ordered)}
+    item_map = {
+        n + 1: (f"pending:{item['id']}" if item["id"] in pending_id_set else f"backlog:{item['id']}")
+        for n, item in enumerate(ordered)
+    }
 
     sections = []
 
     def add_section(
-        title, section_items, show_blockers=False, show_age=False, color_code=None
+        title, section_items, show_blockers=False, show_age=False, color_code=None,
+        summary_key="summary", show_category=True, line_suffix=None,
     ):
         if not section_items:
             return
@@ -330,8 +347,10 @@ def render(items=None, *, out=None, err=None):
         lines = [header]
         for item in section_items:
             n = slug_to_num[item["id"]]
-            tag = _category_tag(item.get("category", ""))
-            line = f"  {n:2}  {tag}{item.get('summary', '')}"
+            tag = _category_tag(item.get("category", "")) if show_category else ""
+            line = f"  {n:2}  {tag}{item.get(summary_key, '')}"
+            if line_suffix:
+                line += line_suffix(item, color)
             if show_age:
                 age = _age_days(item.get("updated", ""))
                 if age is not None:
@@ -356,6 +375,10 @@ def render(items=None, *, out=None, err=None):
         sections.append(lines)
 
     add_section(
+        "\U0001f4e9 PENDING", pending_ordered, color_code="pending",
+        summary_key="description", show_category=False, line_suffix=_pending_suffix,
+    )
+    add_section(
         "\u26a1 IN PROGRESS", in_progress, show_age=True, color_code="in_progress"
     )
     add_section("\U0001f7e2 READY", ready, color_code="ready")
@@ -379,7 +402,7 @@ def render(items=None, *, out=None, err=None):
         for line in section_lines:
             print(line, file=out)
 
-    map_str = ",".join(f"{n}={slug}" for n, slug in item_map.items())
+    map_str = ",".join(f"{n}={tag}" for n, tag in item_map.items())
     print(f"item-map: {map_str}", file=err)
 
 
@@ -406,8 +429,11 @@ def cmd_list(args):
 
 def cmd_show(args):
     items = load_items()
-    slug = resolve_id(args.id, items)
-    index = build_index(items)
+    pending_items = load_pending()
+    kind, slug = resolve_id(args.id, items, pending_items)
+    index = (
+        {p["id"]: p for p in pending_items} if kind == "pending" else build_index(items)
+    )
     item = index.get(slug)
     if item is None:
         print(f"[show] not found: {slug}", file=sys.stderr)
@@ -480,7 +506,8 @@ def confirm_resolution(cmd, arg, item):
 
 def cmd_update(args):
     items = load_items()
-    slug = resolve_id(args.id, items)
+    kind, slug = resolve_id(args.id, items, load_pending())
+    require_kind("update", args.id, kind, "backlog")
     patch = _parse_json_arg(args.patch, "update")
 
     bad = set(patch) & IMMUTABLE_FIELDS
@@ -514,7 +541,8 @@ def cmd_update(args):
 
 def cmd_start(args):
     items = load_items()
-    slug = resolve_id(args.id, items)
+    kind, slug = resolve_id(args.id, items, load_pending())
+    require_kind("start", args.id, kind, "backlog")
     index = build_index(items)
     item = index.get(slug)
     if item is None:
