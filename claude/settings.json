@@ -1,4 +1,10 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(python3 ~/.claude/scripts/dev_status.py:*)",
+      "Bash(python3 ~/.claude/scripts/grill.py:*)"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {
