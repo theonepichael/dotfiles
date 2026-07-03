@@ -166,3 +166,8 @@ Requires `ANTHROPIC_API_KEY` in `~/.secrets`.
   per-machine by design and never packaged — a new machine starts fresh
 - **Tests**: live in `claude/scripts/` and run from the repo
   (`cd claude/scripts && pytest`); they are not deployed to `~/.claude`
+- **install.sh tests**: `test/` runs the full install.sh lifecycle (fresh
+  install, rollback, backup-and-restore, work profile + guard, --force,
+  argument errors) inside a throwaway Docker container so it never touches
+  the real machine. Requires Docker; run with `./test/run.sh` after any
+  change to `install.sh`
