@@ -230,7 +230,10 @@ def cmd_new(args: argparse.Namespace) -> None:
     if not topic:
         die("new", "'topic' is required")
 
-    base = str(patch.get("slug", "")).strip() or f"{today()}-{slugify(topic)[:32]}"
+    base = (
+        str(patch.get("slug", "")).strip()
+        or f"{today()}-{slugify(topic)[:32].rstrip('-')}"
+    )
     if not ID_RE.match(base):
         die("new", f"invalid slug '{base}' — lowercase kebab-case")
 
