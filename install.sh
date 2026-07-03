@@ -264,9 +264,12 @@ symlink claude/CLAUDE.md          ~/.claude/CLAUDE.md
 symlink claude/commands/status.md   ~/.claude/commands/status.md
 symlink claude/commands/grill-me.md ~/.claude/commands/grill-me.md
 symlink claude/commands/make-skill.md ~/.claude/commands/make-skill.md
+symlink claude/commands/standup.md  ~/.claude/commands/standup.md
 symlink claude/scripts/dev_status.py      ~/.claude/scripts/dev_status.py
 symlink claude/scripts/gen_claude_completion.py ~/.claude/scripts/gen_claude_completion.py
 symlink claude/scripts/grill.py           ~/.claude/scripts/grill.py
+symlink claude/scripts/standup.py         ~/.claude/scripts/standup.py
+symlink claude/scripts/standup_adapters.py ~/.claude/scripts/standup_adapters.py
 symlink claude/hooks/gsd-statusline.js    ~/.claude/hooks/gsd-statusline.js
 
 # watchcommit: personal machines only — it auto-pushes to a personal remote

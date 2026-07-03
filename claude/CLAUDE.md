@@ -13,6 +13,9 @@ python3 ~/.claude/scripts/dev_status.py add '{"id": "<prefix-slug>", "summary": 
 The `id` field is **required**. Use a kebab-case slug with a project prefix:
 - `ajhp-` for ai-job-hunter-pro items
 - `meta-` for tooling / infrastructure items
+- `fid-` for the workplace work items — this is also what `/standup`'s
+  `work_backlog_prefixes` config filters on; keep the two in sync if the
+  prefix ever changes
 - other prefixes as appropriate for the project
 
 Infer all fields from the current conversation.
