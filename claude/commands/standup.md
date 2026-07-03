@@ -27,14 +27,25 @@ the platform is now known.
 
 ## 2. Reconcile pending items
 
+Status moves one step at a time: `waiting_for_reply` → `reply_received` →
+`resolved`. A reply landing doesn't mean the thing is closed out — it means
+it needs a look. Don't jump straight to `resolved` on a hunch.
+
 For each entry in `pending_items_open`, check whether `messages` or
-`pending_items_from_adapter` shows it's been answered. Propose resolutions
+`pending_items_from_adapter` shows a reply arrived. Propose the transition
 to the user before applying — same propose-then-confirm shape as
 `grill-me`, since "was this actually answered" is a judgment call, not a
 pattern match:
 
 ```
-python3 ~/.claude/scripts/standup.py pending resolve <id>
+python3 ~/.claude/scripts/standup.py pending update <id> '{"status": "reply_received"}'
+```
+
+Only move an item to `resolved` when the user confirms it's actually done,
+and record what happened:
+
+```
+python3 ~/.claude/scripts/standup.py pending update <id> '{"status": "resolved", "outcome": "what actually happened"}'
 ```
 
 For anything in the fetched data that looks like a new item worth tracking
@@ -43,10 +54,12 @@ request not yet approved) but isn't already in `pending_items_open`,
 propose adding it:
 
 ```
-python3 ~/.claude/scripts/standup.py pending add '{"id", "description", "source_ref", "kind"}'
+python3 ~/.claude/scripts/standup.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
 ```
 
-`kind` is one of `email`, `chat`, `approval`.
+`kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
+object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for
+email) — not a free-text string.
 
 ## 3. Draft
 

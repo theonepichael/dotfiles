@@ -298,10 +298,17 @@ def main() -> None:
     pending_sub = pending.add_subparsers(dest="pending_cmd")
 
     p = pending_sub.add_parser("add", help="track a new pending item")
-    p.add_argument("json", metavar='\'{"id", "description", "source_ref", "kind"}\'')
+    p.add_argument(
+        "json",
+        metavar='\'{"id", "description", "kind", ["source_ref"], ["context"], '
+        '["next_steps"], ["blocking"]}\'',
+    )
 
-    p = pending_sub.add_parser("resolve", help="mark a pending item resolved")
+    p = pending_sub.add_parser(
+        "update", help="merge a JSON patch into an existing pending item"
+    )
     p.add_argument("id")
+    p.add_argument("json", metavar='\'{"status": "reply_received", ...}\'')
 
     pending_sub.add_parser("list", help="list pending items as JSON lines")
 
@@ -312,7 +319,7 @@ def main() -> None:
     elif args.cmd == "pending":
         pending_dispatch = {
             "add": cmd_pending_add,
-            "resolve": cmd_pending_resolve,
+            "update": cmd_pending_update,
             "list": cmd_pending_list,
         }
         if args.pending_cmd in pending_dispatch:
