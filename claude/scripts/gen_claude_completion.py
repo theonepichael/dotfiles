@@ -25,7 +25,7 @@ SECTION_RE = re.compile(r"^(Arguments|Options|Commands):\s*$")
 OPT_START_RE = re.compile(r"^ {2}(-\S)")  # option line begins with "  -"
 CMD_START_RE = re.compile(r"^ {2}(\S)")  # command line begins with "  <nonspace>"
 DEF_DESC_SPLIT = re.compile(r"^(.*?)(\s{2,})(.*)$")
-CHOICES_RE = re.compile(r'\(choices:\s*([^)]+)\)')
+CHOICES_RE = re.compile(r"\(choices:\s*([^)]+)\)")
 # Commander command/alias tokens are lowercase words, optionally with dashes/digits
 # and pipe-separated aliases. "Examples:" and other spurious tokens must be rejected.
 CMD_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*(\|[a-z][a-z0-9-]*)*$")
@@ -62,7 +62,9 @@ def run_help(path: list[str]) -> str:
         )
         return r.stdout or ""
     except Exception as e:
-        print(f"warn: help failed for {' '.join(path) or '<root>'}: {e}", file=sys.stderr)
+        print(
+            f"warn: help failed for {' '.join(path) or '<root>'}: {e}", file=sys.stderr
+        )
         return ""
 
 
@@ -187,7 +189,9 @@ def help_matches_path(text: str, path: tuple[str, ...]) -> bool:
         # trims, but placeholders like "<name>" may still appear).
         if not tokens or tokens[0] != "claude":
             return True  # Unrecognized format — don't block.
-        usage_tokens = [t for t in tokens[1:] if not (t.startswith("<") or t.startswith("["))]
+        usage_tokens = [
+            t for t in tokens[1:] if not (t.startswith("<") or t.startswith("["))
+        ]
         if len(usage_tokens) != len(path):
             return False
         # Each token may carry commander aliases ("plugin|plugins"); any match counts.
@@ -208,7 +212,10 @@ def build_tree(path: tuple[str, ...], seen: set[tuple[str, ...]]) -> Node:
     text = run_help(list(path))
     if path and not help_matches_path(text, path):
         # Commander fell back to a parent's help — this path isn't real.
-        print(f"warn: {' '.join(path)} is not a real subcommand; skipping", file=sys.stderr)
+        print(
+            f"warn: {' '.join(path)} is not a real subcommand; skipping",
+            file=sys.stderr,
+        )
         return Node(path=path)
     sections = collect_sections(text)
     node = Node(path=path)
@@ -230,7 +237,9 @@ def path_key(path: tuple[str, ...]) -> str:
 def is_dir_option(opt: Option) -> bool:
     text = (opt.arg_placeholder or "") + " " + " ".join(opt.names)
     text = text.lower()
-    return any(kw in text for kw in ("<dir", "<directory", "<directories", "--add-dir", "-dir"))
+    return any(
+        kw in text for kw in ("<dir", "<directory", "<directories", "--add-dir", "-dir")
+    )
 
 
 def is_file_option(opt: Option) -> bool:
@@ -275,11 +284,15 @@ def emit_bash(root: Node) -> str:
 
     lines: list[str] = []
     lines.append("# bash completion for the `claude` CLI — AUTO-GENERATED.")
-    lines.append("# Regenerate with: python3 ~/.claude/scripts/gen_claude_completion.py")
+    lines.append(
+        "# Regenerate with: python3 ~/.claude/scripts/gen_claude_completion.py"
+    )
     lines.append("# Do not edit by hand.")
     lines.append("")
     lines.append("declare -gA _CLAUDE_OPTS _CLAUDE_OPTARGS _CLAUDE_SUBS \\")
-    lines.append("              _CLAUDE_CHOICES _CLAUDE_FILE_FLAGS _CLAUDE_DIR_FLAGS \\")
+    lines.append(
+        "              _CLAUDE_CHOICES _CLAUDE_FILE_FLAGS _CLAUDE_DIR_FLAGS \\"
+    )
     lines.append("              _CLAUDE_ALIASES")
     lines.append("")
 
@@ -327,7 +340,7 @@ def emit_bash(root: Node) -> str:
     return "\n".join(lines) + "\n"
 
 
-_COMPLETION_FUNC = r'''
+_COMPLETION_FUNC = r"""
 _claude() {
     local cur prev words cword
     _init_completion -n = 2>/dev/null || {
@@ -415,19 +428,24 @@ _claude() {
 }
 
 complete -F _claude claude
-'''
+"""
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
-    ap.add_argument("--stdout", action="store_true", help="Print to stdout instead of writing")
+    ap.add_argument(
+        "--stdout", action="store_true", help="Print to stdout instead of writing"
+    )
     args = ap.parse_args()
 
     # Sanity check the CLI is reachable.
     probe = run_help([])
     if not probe:
-        print("error: `claude --help` produced no output; is the CLI installed?", file=sys.stderr)
+        print(
+            "error: `claude --help` produced no output; is the CLI installed?",
+            file=sys.stderr,
+        )
         return 1
 
     root = build_tree((), set())
