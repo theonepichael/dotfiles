@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(python3 ~/.claude/scripts/dev_status.py:*)",
-      "Bash(python3 ~/.claude/scripts/grill.py:*)"
+      "Bash(python3 ~/.claude/scripts/grill.py:*)",
+      "Bash(python3 ~/.claude/scripts/second_opinion.py:*)"
     ],
     "deny": [
       "Bash(python3 ~/.claude/scripts/dev_status.py prune:*)"
