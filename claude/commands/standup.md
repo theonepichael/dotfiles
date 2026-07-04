@@ -83,13 +83,15 @@ email) — not a free-text string.
 
 ## 3. Draft
 
-Write the standup update from the reconciled data — what shipped
-(`git_commits`, `backlog_recent_done`), what's in progress
+Write the standup update from the reconciled data. Ground "what I did
+yesterday" in `previous_standup`'s content when present — it's what was
+actually committed to, not a re-derivation from raw signal — supplemented
+by `git_commits`/`backlog_recent_done`. Cover what's in progress
 (`backlog_in_progress`, `assigned_items`), anything noteworthy on the
-calendar today (`calendar_events` — already filtered to non-recurring),
-and anything still blocked (`pending_items_open`, post-reconciliation).
-Skip a section entirely if its source had nothing or was skipped — don't
-pad the draft to look complete.
+calendar (`calendar_events` — yesterday's and today's, already filtered to
+non-recurring), and anything still blocked (`pending_items_open`,
+post-reconciliation). Skip a section entirely if its source had nothing or
+was skipped — don't pad the draft to look complete.
 
 ## 4. Save and show
 
