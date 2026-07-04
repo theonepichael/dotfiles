@@ -7,12 +7,18 @@ prose instructions, not here.
 
 import argparse
 import json
+import os
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
+from types import FrameType
 
 BACKEND_PRIORITY = ["agy", "ollama"]
+BACKEND_TIMEOUT_SECONDS = 300
+
+_active_process: subprocess.Popen[str] | None = None
 
 CRITIQUE_PROMPT = """\
 You are reviewing a plan written by another AI assistant (Claude).
@@ -53,26 +59,53 @@ def resolve_plan_text(arg: str) -> str:
     return arg
 
 
-def run_agy(prompt: str) -> str:
-    result = subprocess.run(
-        ["agy", "-p", prompt, "--model", "Gemini 3.1 Pro (High)"],
-        capture_output=True,
+def _kill_active_process() -> None:
+    global _active_process
+    proc = _active_process
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.wait()
+
+
+def _handle_termination(signum: int, frame: FrameType | None) -> None:
+    _kill_active_process()
+    sys.exit(128 + signum)
+
+
+def run_backend_command(cmd: list[str], label: str) -> str:
+    global _active_process
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
+        start_new_session=True,
     )
-    if result.returncode != 0:
-        die(f"agy exited {result.returncode}: {result.stderr.strip()}")
-    return result.stdout.strip()
+    _active_process = proc
+    try:
+        stdout, stderr = proc.communicate(timeout=BACKEND_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        _kill_active_process()
+        die(f"{label} timed out after {BACKEND_TIMEOUT_SECONDS}s — killed")
+    finally:
+        _active_process = None
+    if proc.returncode != 0:
+        die(f"{label} exited {proc.returncode}: {stderr.strip()}")
+    return stdout.strip()
+
+
+def run_agy(prompt: str) -> str:
+    return run_backend_command(
+        ["agy", "-p", prompt, "--model", "Gemini 3.1 Pro (High)"], "agy"
+    )
 
 
 def run_ollama(prompt: str) -> str:
-    result = subprocess.run(
-        ["ollama", "run", "gemma4:26b", prompt],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        die(f"ollama exited {result.returncode}: {result.stderr.strip()}")
-    return result.stdout.strip()
+    return run_backend_command(["ollama", "run", "gemma4:26b", prompt], "ollama")
 
 
 BACKEND_RUNNERS = {"agy": run_agy, "ollama": run_ollama}
@@ -100,6 +133,9 @@ def cmd_review(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    signal.signal(signal.SIGTERM, _handle_termination)
+    signal.signal(signal.SIGINT, _handle_termination)
+
     parser = argparse.ArgumentParser(
         description="one-shot adversarial critique of a plan from a non-Claude backend",
     )
