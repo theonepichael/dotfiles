@@ -105,7 +105,10 @@ def run_agy(prompt: str) -> str:
 
 
 def run_ollama(prompt: str) -> str:
-    return run_backend_command(["ollama", "run", "gemma4:26b", prompt], "ollama")
+    return run_backend_command(
+        ["ollama", "run", "--hidethinking", "--nowordwrap", "gemma4:26b", prompt],
+        "ollama",
+    )
 
 
 BACKEND_RUNNERS = {"agy": run_agy, "ollama": run_ollama}
