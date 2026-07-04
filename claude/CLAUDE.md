@@ -58,6 +58,10 @@ python3 ~/.claude/scripts/dev_status.py show <slug|N>
 
 When work is complete on a backlog item, mark it done with the above.
 
+`start`/`done`/`update` already render the full dashboard as part of their own
+stdout — after running one, display that stdout to the user instead of just
+narrating a one-line confirmation.
+
 When writing to stored fields (`summary`, `context`, `next_steps`, `related_files[].note`)
 and prose cross-references, use slugs for any item references — never raw hex IDs.
 
