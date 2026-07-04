@@ -253,6 +253,7 @@ def cmd_new(args: argparse.Namespace) -> None:
         "created": now(),
         "updated": now(),
         "plan_path": None,
+        "pending_execution": False,
         "decisions": [],
     }
     save_session(session)
@@ -425,6 +426,40 @@ def cmd_plan(args: argparse.Namespace) -> None:
     confirm("plan", session, f"plan artifact recorded: {path}")
 
 
+def cmd_mark_pending_execution(args: argparse.Namespace) -> None:
+    session = resolve_session(args.session, "mark-pending-execution")
+    session["pending_execution"] = True
+    touch(session)
+    save_session(session)
+    confirm("mark-pending-execution", session, "pending_execution set")
+
+
+def cmd_pending_plan(args: argparse.Namespace) -> None:
+    pending = [
+        session
+        for slug in all_session_slugs()
+        if (session := load_session(slug)).get("pending_execution")
+    ]
+    if not pending:
+        return
+
+    pending.sort(key=lambda s: str(s.get("updated", "")), reverse=True)
+    session = pending[0]
+    plan_path = session.get("plan_path")
+
+    print(f"\U0001f4cb Grill plan ready to execute: {session['slug']}")
+    if plan_path:
+        print(f"   Plan: {plan_path}")
+    print("   (If the user says go/continue, read the plan file and start")
+    print("    implementing it directly. If skip/no, take no further action —")
+    print("    this flag is already cleared.)")
+
+    if args.consume:
+        session["pending_execution"] = False
+        touch(session)
+        save_session(session)
+
+
 def cmd_next(args: argparse.Namespace) -> None:
     session = resolve_session(args.session, "next")
     for d in session["decisions"]:  # type: ignore[union-attr]
@@ -471,7 +506,10 @@ def main() -> None:
     )
     sub = parser.add_subparsers(
         dest="cmd",
-        metavar="{new,ask,decide,revise,rm,verdict,plan,next,render,list,show}",
+        metavar=(
+            "{new,ask,decide,revise,rm,verdict,plan,mark-pending-execution,"
+            "pending-plan,next,render,list,show}"
+        ),
     )
 
     def add_session_flag(p: argparse.ArgumentParser) -> None:
@@ -521,6 +559,22 @@ def main() -> None:
     p.add_argument("path")
     add_session_flag(p)
 
+    p = sub.add_parser(
+        "mark-pending-execution",
+        help="flag a session's plan as ready for clear-and-go resume",
+    )
+    add_session_flag(p)
+
+    p = sub.add_parser(
+        "pending-plan",
+        help="print (and optionally consume) the most recent pending-execution plan",
+    )
+    p.add_argument(
+        "--consume",
+        action="store_true",
+        help="clear pending_execution on the printed session (one-shot)",
+    )
+
     p = sub.add_parser("next", help="print the first open decision point")
     add_session_flag(p)
 
@@ -543,6 +597,8 @@ def main() -> None:
         "rm": cmd_rm,
         "verdict": cmd_verdict,
         "plan": cmd_plan,
+        "mark-pending-execution": cmd_mark_pending_execution,
+        "pending-plan": cmd_pending_plan,
         "next": cmd_next,
         "render": cmd_render,
         "list": cmd_list,
