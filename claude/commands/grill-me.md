@@ -56,6 +56,9 @@ Then check `grill.py list` for an existing session matching the topic. If one ma
 1. Author the plan as a markdown document — a real plan someone could execute, not a decision log. The recorded decision points (`grill.py show`) inform it. Plans always live centrally at `~/.claude/data/grill/<slug>-plan.md` — never in project repos; this is personal tooling, not team-facing docs.
 2. Record it: `grill.py plan <path>`.
 3. Show the user the plan and the `grill.py render` output (decision table, any open questions, verification state).
+4. Always offer clear-and-go, via `AskUserQuestion` — "Clear context and start executing this plan now?" with options `Yes, clear and go (recommended)` / `No, leave it for later`:
+   - **Yes** — run `grill.py mark-pending-execution` (defaults to this session), then tell the user in plain text: "Marked. Run /clear whenever you're ready — I'll pick the plan back up automatically." There's no tool to trigger `/clear` itself, so the user has to type it.
+   - **No** — nothing else happens, no state change.
 
 ---
 
