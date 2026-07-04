@@ -11,12 +11,24 @@ No autonomous scanning: this only runs when invoked.
 ## 1. Fetch
 
 ```
-python3 ~/.claude/scripts/standup.py fetch
+python3 ~/.claude/scripts/standup.py fetch [--date YYYY-MM-DD]
 ```
 
-Returns one JSON object: `git_commits`, `backlog_in_progress`,
-`backlog_recent_done`, `assigned_items`, `messages`, `calendar_events`,
-`pending_items_open`, `pending_items_from_adapter`, `skipped`.
+`--date` overrides the reference date (defaults to today) — use it after a
+gap longer than one working day (holiday, PTO) where the default
+last-working-day boundary would land on the wrong day.
+
+Returns one JSON object: `date`, `since` (the computed time boundary every
+windowed source used), `git_commits`, `backlog_in_progress`,
+`backlog_recent_done`, `assigned_items`, `messages`, `chat_thread_updates`,
+`email_correspondence`, `email_thread_updates`, `calendar_events`
+(yesterday's and today's, non-recurring only), `pending_items_open`,
+`previous_standup` (most recent saved standup file before `date`, or
+`null`), `skipped`. `chat_thread_updates`/`email_thread_updates` are
+targeted fetches against threads already in `pending_items_open` — don't
+rely on `messages`/`email_correspondence` alone to catch a reply to a
+tracked item.
+
 `pending_items_open` is a read-only view of `dev_status.py`'s canonical
 pending-items store — `standup.py` never mutates it; all pending-item writes
 below go through `dev_status.py`.
@@ -34,11 +46,11 @@ Status moves one step at a time: `waiting_for_reply` → `reply_received` →
 `resolved`. A reply landing doesn't mean the thing is closed out — it means
 it needs a look. Don't jump straight to `resolved` on a hunch.
 
-For each entry in `pending_items_open`, check whether `messages` or
-`pending_items_from_adapter` shows a reply arrived. Propose the transition
-to the user before applying — same propose-then-confirm shape as
-`grill-me`, since "was this actually answered" is a judgment call, not a
-pattern match:
+For each entry in `pending_items_open`, check `chat_thread_updates` /
+`email_thread_updates` (and `messages`/`email_correspondence` for anything
+those targeted fetches missed) for a reply. Propose the transition to the
+user in chat first — nothing gets written until they confirm, since "was
+this actually answered" is a judgment call, not a pattern match:
 
 ```
 python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "reply_received"}'

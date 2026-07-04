@@ -6,8 +6,10 @@ fully-implemented local sources (git commits, scoped backlog items) plus
 four adapter-backed sources (issue tracker, chat, email, calendar) that stay
 stubbed — and get reported under "skipped" — until the workplace's actual tools
 are known, plus dev_status.py's canonical pending-items list (read-only —
-mutate it via `dev_status.py pending add/update`, not here). See
-standup_adapters.py for the adapter interfaces.
+mutate it via `dev_status.py pending add/update`, not here). All sources
+that support a time window use the same `since` boundary (last working day,
+or `--date` to override). See standup_adapters.py for the adapter
+interfaces.
 """
 
 import argparse
@@ -23,11 +25,27 @@ from standup_adapters import ADAPTERS, NotConfiguredError
 DATA_DIR = Path.home() / ".claude" / "data" / "standup"
 CONFIG_FILE = DATA_DIR / "config.json"
 BACKLOG_FILE = Path.home() / ".claude" / "data" / "backlog" / "items.json"
-CANONICAL_PENDING_FILE = Path.home() / ".claude" / "data" / "backlog" / "pending_items.json"
+CANONICAL_PENDING_FILE = (
+    Path.home() / ".claude" / "data" / "backlog" / "pending_items.json"
+)
 
 
 def today() -> str:
     return date.today().isoformat()
+
+
+def last_working_day(ref: date) -> date:
+    # Monday -> back to Friday; every other day -> back one day.
+    return ref - timedelta(days=3 if ref.weekday() == 0 else 1)
+
+
+def find_previous_standup(before: date) -> dict[str, str] | None:
+    for offset in range(1, 15):
+        candidate = before - timedelta(days=offset)
+        path = DATA_DIR / f"{candidate.isoformat()}.md"
+        if path.exists():
+            return {"date": candidate.isoformat(), "content": path.read_text()}
+    return None
 
 
 # ── config ────────────────────────────────────────────────────────────────
@@ -50,7 +68,9 @@ def load_canonical_pending() -> list[dict[str, object]]:
 # ── local sources: git commits ───────────────────────────────────────────
 
 
-def git_commits(repos: list[str], since_days: int) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+def git_commits(
+    repos: list[str], since_days: int
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     commits: list[dict[str, str]] = []
     skipped: list[dict[str, str]] = []
     since = f"{since_days}.days.ago"
@@ -68,14 +88,21 @@ def git_commits(repos: list[str], since_days: int) -> tuple[list[dict[str, str]]
         )
         author = email_result.stdout.strip()
         if not author:
-            skipped.append({"source": "git", "reason": f"{repo} has no configured user.email"})
+            skipped.append(
+                {"source": "git", "reason": f"{repo} has no configured user.email"}
+            )
             continue
 
         log_result = subprocess.run(
             [
-                "git", "-C", str(repo), "log",
-                f"--since={since}", f"--author={author}",
-                "--pretty=format:%h\t%ad\t%s", "--date=short",
+                "git",
+                "-C",
+                str(repo),
+                "log",
+                f"--since={since}",
+                f"--author={author}",
+                "--pretty=format:%h\t%ad\t%s",
+                "--date=short",
             ],
             capture_output=True,
             text=True,
@@ -84,7 +111,12 @@ def git_commits(repos: list[str], since_days: int) -> tuple[list[dict[str, str]]
             parts = line.split("\t", 2)
             if len(parts) == 3:
                 commits.append(
-                    {"repo": repo.name, "hash": parts[0], "date": parts[1], "subject": parts[2]}
+                    {
+                        "repo": repo.name,
+                        "hash": parts[0],
+                        "date": parts[1],
+                        "subject": parts[2],
+                    }
                 )
 
     return commits, skipped
@@ -93,9 +125,20 @@ def git_commits(repos: list[str], since_days: int) -> tuple[list[dict[str, str]]
 # ── local sources: backlog ───────────────────────────────────────────────
 
 
-def backlog_items(prefixes: list[str], recent_done_days: int) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, str]]]:
+def backlog_items(
+    prefixes: list[str], recent_done_days: int
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, str]]]:
     if not prefixes:
-        return [], [], [{"source": "backlog", "reason": "work_backlog_prefixes not configured in config.json — backlog source skipped"}]
+        return (
+            [],
+            [],
+            [
+                {
+                    "source": "backlog",
+                    "reason": "work_backlog_prefixes not configured in config.json — backlog source skipped",
+                }
+            ],
+        )
     if not BACKLOG_FILE.exists():
         return [], [], [{"source": "backlog", "reason": f"{BACKLOG_FILE} not found"}]
 
@@ -126,6 +169,9 @@ def cmd_fetch(args: argparse.Namespace) -> None:
     config = load_config()
     skipped: list[dict[str, str]] = []
 
+    ref_date = date.fromisoformat(args.date) if args.date else date.today()
+    since = last_working_day(ref_date)
+
     commits, git_skips = git_commits(
         [str(r) for r in config.get("git_repos", [])],  # type: ignore[union-attr]
         int(config.get("commit_days", 1)),  # type: ignore[arg-type]
@@ -138,43 +184,70 @@ def cmd_fetch(args: argparse.Namespace) -> None:
     )
     skipped.extend(backlog_skips)
 
+    pending_items = load_canonical_pending()
+    pending_open = [i for i in pending_items if i.get("status") != "resolved"]
+    pending_chat = [i for i in pending_open if i.get("kind") == "chat"]
+    pending_email = [i for i in pending_open if i.get("kind") == "email"]
+
     assigned_items: list[dict[str, str]] = []
     try:
-        assigned_items = [asdict(i) for i in ADAPTERS["issue_tracker"].get_assigned_items()]  # type: ignore[attr-defined]
+        assigned_items = [
+            asdict(i) for i in ADAPTERS["issue_tracker"].get_assigned_items()
+        ]  # type: ignore[attr-defined]
+        assigned_items.sort(key=lambda i: str(i.get("updated_at", "")), reverse=True)
     except NotConfiguredError as e:
         skipped.append({"source": "issue_tracker", "reason": str(e)})
 
     messages: list[dict[str, str]] = []
+    chat_thread_updates: list[dict[str, str]] = []
     try:
-        since = date.today() - timedelta(days=int(config.get("commit_days", 1)))  # type: ignore[arg-type]
         messages = [asdict(m) for m in ADAPTERS["chat"].get_relevant_messages(since)]  # type: ignore[attr-defined]
+        if pending_chat:
+            chat_thread_updates = [
+                asdict(m)
+                for m in ADAPTERS["chat"].get_thread_updates(pending_chat)  # type: ignore[attr-defined]
+            ]
     except NotConfiguredError as e:
         skipped.append({"source": "chat", "reason": str(e)})
 
-    pending_from_adapter: list[dict[str, str]] = []
+    email_correspondence: list[dict[str, str]] = []
+    email_thread_updates: list[dict[str, str]] = []
     try:
-        pending_from_adapter = [asdict(p) for p in ADAPTERS["email"].get_pending_items()]  # type: ignore[attr-defined]
+        email_correspondence = [
+            asdict(m)
+            for m in ADAPTERS["email"].get_correspondence(since)  # type: ignore[attr-defined]
+        ]
+        if pending_email:
+            email_thread_updates = [
+                asdict(m)
+                for m in ADAPTERS["email"].get_thread_updates(pending_email)  # type: ignore[attr-defined]
+            ]
     except NotConfiguredError as e:
         skipped.append({"source": "email", "reason": str(e)})
 
     calendar_events: list[dict[str, object]] = []
     try:
-        calendar_events = [asdict(c) for c in ADAPTERS["calendar"].get_calendar_events(date.today())]  # type: ignore[attr-defined]
+        calendar_events = [
+            asdict(c)
+            for c in ADAPTERS["calendar"].get_calendar_events([since, ref_date])  # type: ignore[attr-defined]
+        ]
     except NotConfiguredError as e:
         skipped.append({"source": "calendar", "reason": str(e)})
 
-    pending_items = load_canonical_pending()
-
     result = {
-        "date": today(),
+        "date": ref_date.isoformat(),
+        "since": since.isoformat(),
         "git_commits": commits,
         "backlog_in_progress": in_progress,
         "backlog_recent_done": recent_done,
         "assigned_items": assigned_items,
         "messages": messages,
+        "chat_thread_updates": chat_thread_updates,
+        "email_correspondence": email_correspondence,
+        "email_thread_updates": email_thread_updates,
         "calendar_events": [e for e in calendar_events if not e.get("is_recurring")],
-        "pending_items_open": [i for i in pending_items if i.get("status") != "resolved"],
-        "pending_items_from_adapter": pending_from_adapter,
+        "pending_items_open": pending_open,
+        "previous_standup": find_previous_standup(ref_date),
         "skipped": skipped,
     }
     print(json.dumps(result, indent=2))
@@ -187,7 +260,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="/standup skill CLI")
     sub = parser.add_subparsers(dest="cmd")
 
-    sub.add_parser("fetch", help="gather all sources as JSON")
+    p = sub.add_parser("fetch", help="gather all sources as JSON")
+    p.add_argument(
+        "--date",
+        default=None,
+        help="override reference date (YYYY-MM-DD) — for re-running after a "
+        "gap (holiday, PTO) where the default last-working-day boundary "
+        "would miss it",
+    )
 
     args = parser.parse_args()
 

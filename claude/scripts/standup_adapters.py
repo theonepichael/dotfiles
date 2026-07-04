@@ -26,6 +26,7 @@ class Item:
     title: str
     url: str
     status: str
+    updated_at: str
 
 
 @dataclass
@@ -35,14 +36,6 @@ class Message:
     permalink: str
     timestamp: str
     channel_or_thread: str
-
-
-@dataclass
-class PendingItem:
-    description: str
-    source_ref: str
-    kind: str  # "email" | "chat" | "approval"
-    since: str
 
 
 @dataclass
@@ -59,13 +52,21 @@ class IssueTrackerAdapter(Protocol):
 class ChatAdapter(Protocol):
     def get_relevant_messages(self, since: date) -> list[Message]: ...
 
+    def get_thread_updates(
+        self, pending_items: list[dict[str, object]]
+    ) -> list[Message]: ...
+
 
 class EmailAdapter(Protocol):
-    def get_pending_items(self) -> list[PendingItem]: ...
+    def get_correspondence(self, since: date) -> list[Message]: ...
+
+    def get_thread_updates(
+        self, pending_items: list[dict[str, object]]
+    ) -> list[Message]: ...
 
 
 class CalendarAdapter(Protocol):
-    def get_calendar_events(self, day: date) -> list[CalEvent]: ...
+    def get_calendar_events(self, days: list[date]) -> list[CalEvent]: ...
 
 
 class StubIssueTrackerAdapter:
@@ -83,9 +84,25 @@ class StubChatAdapter:
             "the workplace, then implement ChatAdapter here"
         )
 
+    def get_thread_updates(
+        self, pending_items: list[dict[str, object]]
+    ) -> list[Message]:
+        raise NotConfiguredError(
+            "chat adapter not configured — confirm Slack vs Teams at "
+            "the workplace, then implement ChatAdapter here"
+        )
+
 
 class StubEmailAdapter:
-    def get_pending_items(self) -> list[PendingItem]:
+    def get_correspondence(self, since: date) -> list[Message]:
+        raise NotConfiguredError(
+            "email adapter not configured — see backlog item "
+            "meta-standup-email-adapter-outlook"
+        )
+
+    def get_thread_updates(
+        self, pending_items: list[dict[str, object]]
+    ) -> list[Message]:
         raise NotConfiguredError(
             "email adapter not configured — see backlog item "
             "meta-standup-email-adapter-outlook"
@@ -93,7 +110,7 @@ class StubEmailAdapter:
 
 
 class StubCalendarAdapter:
-    def get_calendar_events(self, day: date) -> list[CalEvent]:
+    def get_calendar_events(self, days: list[date]) -> list[CalEvent]:
         raise NotConfiguredError(
             "calendar adapter not configured — confirm Outlook/Google "
             "Calendar/other at the workplace, then implement CalendarAdapter here"
