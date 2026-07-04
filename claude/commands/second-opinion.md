@@ -41,7 +41,12 @@ loop:
         stop — CAPPED, converged_or_not = (no new issues this round)
 
     current_plan = revise current_plan yourself, addressing
-                   valid points from the critique
+                   valid points from the critique. For any point you
+                   reject, append a brief "Rejected feedback" note to
+                   current_plan stating what was suggested and why —
+                   the reviewer is called statelessly each round, so
+                   without this it will just repeat the same rejected
+                   suggestion instead of engaging with your reasoning.
     prior_critique = critique
     round += 1
 
@@ -50,7 +55,12 @@ show the final revised plan + a round-by-round summary of what changed and why
 
 "Raises nothing substantively new" is your judgment call, made by reading both
 critiques side by side — not delegated to the reviewer model or to
-deterministic code.
+deterministic code. A repeated suggestion you already rejected (and noted as
+rejected) does not count as new.
+
+Strip any "Rejected feedback" notes from the plan before showing or saving
+the final version — they're working scratch for the reviewer, not part of
+the plan itself.
 
 ## On convergence
 
