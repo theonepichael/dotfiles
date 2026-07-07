@@ -169,13 +169,18 @@ elif is_linux; then
   echo "==> Updating apt package lists..."
   sudo apt-get update || note_skip "apt update" "apt-get update failed (offline or blocked?)"
 
+  # One apt-get call per package: apt-get install fails atomically on the
+  # first unresolvable name, which would otherwise block every package after
+  # it — e.g. eza/lsd don't exist before Ubuntu 24.04, which silently
+  # skipped tmux/bat/ncdu/tldr/ripgrep/unzip too on 22.04 machines.
   echo "==> Installing packages (apt)..."
-  if sudo apt-get install -y \
-      tmux zoxide eza bat lsd ncdu tldr ripgrep unzip lsof xclip; then
-    record package-installed "apt packages"
-  else
-    note_skip "apt packages" "apt-get install failed"
-  fi
+  for pkg in tmux zoxide eza bat lsd ncdu tldr ripgrep unzip lsof xclip; do
+    if sudo apt-get install -y "$pkg"; then
+      record package-installed "$pkg"
+    else
+      note_skip "apt package: $pkg" "not available in this release's repos, or install failed"
+    fi
+  done
 
   # Ubuntu ships bat as batcat; shim it
   if command -v batcat &>/dev/null && ! command -v bat &>/dev/null; then
