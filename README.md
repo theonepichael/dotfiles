@@ -82,9 +82,13 @@ does not change the `--work`/personal `PROFILE` split:
   configured under Copilot, per the `--work` profile's existing
   no-personal-data-on-work-hardware rule.
 - **`copilot-work` alias** (in `zsh/.common_shell_aliases`, symlinked for
-  every profile): launches `copilot` scoped to the shared tooling only, via
-  `--allow-tool` flags for `dev_status.py`, `grill.py`, `standup.py`,
-  `second_opinion.py`, and read-only `git` commands.
+  every profile): launches `copilot` with `python3` shell calls and read-only
+  `git` commands pre-approved. Copilot's `--allow-tool` wildcard matching only
+  works on single-word command stems (`git`, `gh` — confirmed via
+  `copilot help permissions`), not full paths like
+  `python3 ~/.claude/scripts/dev_status.py`, so this pre-approves `python3`
+  broadly rather than scoping to just the shared scripts. Tighten this once
+  Copilot ships richer prefix matching.
 
 ## Failures, skips, and rollback
 
