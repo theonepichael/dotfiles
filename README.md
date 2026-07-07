@@ -10,6 +10,7 @@ cd ~/dotfiles
 chmod +x install.sh
 ./install.sh          # personal machine
 ./install.sh --work   # work machine (see "Work profile" below)
+./install.sh --copilot  # also wire up GitHub Copilot CLI (see "Copilot CLI profile" below)
 ```
 
 `~/.secrets` (gitignored, sourced by `.zshrc` if present) is available for any
