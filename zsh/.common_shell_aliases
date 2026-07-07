@@ -58,6 +58,10 @@ delclip() {
 
 kill_process_by_port() {
     if [ -z "$1" ]; then echo "No port number supplied"; return 1; fi
+    if ! command -v lsof >/dev/null 2>&1; then
+        echo "Error: lsof not found" >&2
+        return 1
+    fi
     local pid
     pid=$(lsof -t -i:"$1")
     if [ -z "$pid" ]; then echo "No process found on port $1"; return 1; fi

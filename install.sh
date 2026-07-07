@@ -171,7 +171,7 @@ elif is_linux; then
 
   echo "==> Installing packages (apt)..."
   if sudo apt-get install -y \
-      tmux zoxide eza bat lsd ncdu tldr ripgrep unzip; then
+      tmux zoxide eza bat lsd ncdu tldr ripgrep unzip lsof xclip; then
     record package-installed "apt packages"
   else
     note_skip "apt packages" "apt-get install failed"
