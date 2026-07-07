@@ -20,6 +20,11 @@ BACKEND_TIMEOUT_SECONDS = 300
 
 _active_process: subprocess.Popen[str] | None = None
 
+
+class BackendError(Exception):
+    """A backend was invoked but failed (timeout or nonzero exit)."""
+
+
 CRITIQUE_PROMPT = """\
 You are reviewing a plan written by another AI assistant (Claude).
 Your job is to find problems, not to summarize or agree.
@@ -90,11 +95,11 @@ def run_backend_command(cmd: list[str], label: str) -> str:
         stdout, stderr = proc.communicate(timeout=BACKEND_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         _kill_active_process()
-        die(f"{label} timed out after {BACKEND_TIMEOUT_SECONDS}s — killed")
+        raise BackendError(f"timed out after {BACKEND_TIMEOUT_SECONDS}s — killed")
     finally:
         _active_process = None
     if proc.returncode != 0:
-        die(f"{label} exited {proc.returncode}: {stderr.strip()}")
+        raise BackendError(f"exited {proc.returncode}: {stderr.strip()}")
     return stdout.strip()
 
 
@@ -123,16 +128,34 @@ def cmd_detect(args: argparse.Namespace) -> None:
 
 
 def cmd_review(args: argparse.Namespace) -> None:
-    backend = resolve_backend()
-    if backend is None:
-        die("no backend available — install one of: " + ", ".join(BACKEND_PRIORITY))
+    if args.backend:
+        if not shutil.which(args.backend):
+            die(f"{args.backend} not found on PATH")
+        candidates = [args.backend]
+    else:
+        candidates = available_backends()
+        if not candidates:
+            die("no backend available — install one of: " + ", ".join(BACKEND_PRIORITY))
 
     plan_text = resolve_plan_text(args.plan)
     prompt = CRITIQUE_PROMPT.format(plan_text=plan_text)
-    critique = BACKEND_RUNNERS[backend](prompt)
 
-    print(f"Second opinion via {BACKEND_LABELS[backend]}:")
-    print(critique)
+    failures = []
+    for backend in candidates:
+        try:
+            critique = BACKEND_RUNNERS[backend](prompt)
+        except BackendError as exc:
+            print(
+                f"[second_opinion] {BACKEND_LABELS[backend]} failed: {exc}",
+                file=sys.stderr,
+            )
+            failures.append(f"{backend}: {exc}")
+            continue
+        print(f"Second opinion via {BACKEND_LABELS[backend]}:")
+        print(critique)
+        return
+
+    die("all backends failed — " + "; ".join(failures))
 
 
 def main() -> None:
@@ -150,6 +173,12 @@ def main() -> None:
         "review", help="get one critique from the priority-selected backend"
     )
     p.add_argument("plan", metavar="<plan-file-or-text>")
+    p.add_argument(
+        "--backend",
+        choices=BACKEND_PRIORITY,
+        default=None,
+        help="force this backend instead of priority-order fallback",
+    )
 
     args = parser.parse_args()
 
