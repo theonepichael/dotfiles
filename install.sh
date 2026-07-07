@@ -272,6 +272,7 @@ symlink claude/scripts/grill.py           ~/.claude/scripts/grill.py
 symlink claude/scripts/second_opinion.py  ~/.claude/scripts/second_opinion.py
 symlink claude/scripts/standup.py         ~/.claude/scripts/standup.py
 symlink claude/scripts/standup_adapters.py ~/.claude/scripts/standup_adapters.py
+symlink claude/scripts/dotfiles_sync_check.py ~/.claude/scripts/dotfiles_sync_check.py
 symlink claude/hooks/gsd-statusline.js    ~/.claude/hooks/gsd-statusline.js
 
 # watchcommit: personal machines only — it auto-pushes to a personal remote
