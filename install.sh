@@ -21,7 +21,11 @@ usage: ./install.sh [--work] [--copilot] [--rollback] [--force]
               API-key setup; seeds Claude settings from settings.work.json
   --copilot   also wire up GitHub Copilot CLI: shared instructions symlink,
               sessionStart hook, and skill ports under ~/.copilot/. Additive
-              to --work (or standalone) — does not change --work's PROFILE.
+              to Claude Code when standalone (personal profile). Combined
+              with --work, it's Copilot-only: Claude Code's install and
+              ~/.claude/*-specific wiring (CLAUDE.md, commands, settings.json,
+              statusline) are skipped — the shared ~/.claude/scripts/*.py
+              stay, since Copilot's hooks/skills call those same paths.
   --rollback  reverse the previous run's file mutations (symlinks, copies,
               backups) using the manifest, then exit. Packages are reported
               but never uninstalled.
@@ -46,6 +50,14 @@ for arg in "$@"; do
     *)          echo "unknown argument: $arg" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+# --work --copilot together means Copilot is the machine's only harness (the
+# the workplace work machine has no usable Claude Code) — Claude Code's install and
+# ~/.claude/*-specific wiring are skipped. --copilot alone (personal) stays
+# additive to Claude Code. The shared ~/.claude/scripts/*.py stay symlinked
+# either way since Copilot's hooks/skills call those same paths.
+COPILOT_ONLY=0
+[[ "$PROFILE" == "work" ]] && (( COPILOT )) && COPILOT_ONLY=1
 
 # ============================================================================
 # Skip-and-report plumbing
@@ -210,8 +222,7 @@ if [[ ! -d "$HOME/.nvm" ]]; then
     || note_skip "NVM" "installer failed (network blocked?)"
 fi
 
-# Claude Code (needs node/npm from nvm)
-echo "==> Installing Claude Code..."
+# Node/npm (needed by Claude Code and/or GitHub Copilot CLI, whichever runs below)
 if ! command -v npm &>/dev/null; then
   export NVM_DIR="$HOME/.nvm"
   [[ -s "$NVM_DIR/nvm.sh" ]] && source "$NVM_DIR/nvm.sh"
@@ -219,14 +230,21 @@ if ! command -v npm &>/dev/null; then
     nvm install --lts || note_skip "node" "nvm install --lts failed"
   fi
 fi
-if command -v npm &>/dev/null; then
-  if npm install -g @anthropic-ai/claude-code; then
-    record package-installed "@anthropic-ai/claude-code"
-  else
-    note_skip "Claude Code" "npm install failed (registry blocked?)"
-  fi
+
+# Claude Code — skipped in Copilot-only mode (--work --copilot)
+if (( COPILOT_ONLY )); then
+  echo "  Claude Code: skipped (--work --copilot is Copilot-only)"
 else
-  note_skip "Claude Code" "npm unavailable (NVM install failed or skipped)"
+  echo "==> Installing Claude Code..."
+  if command -v npm &>/dev/null; then
+    if npm install -g @anthropic-ai/claude-code; then
+      record package-installed "@anthropic-ai/claude-code"
+    else
+      note_skip "Claude Code" "npm install failed (registry blocked?)"
+    fi
+  else
+    note_skip "Claude Code" "npm unavailable (NVM install failed or skipped)"
+  fi
 fi
 
 # GitHub Copilot CLI (--copilot only, needs node/npm from nvm)
@@ -279,12 +297,20 @@ symlink zsh/.zshrc                ~/.zshrc
 symlink zsh/.common_shell_aliases ~/.common_shell_aliases
 symlink shell/.poshtheme.omp.json ~/.poshtheme.omp.json
 symlink tmux/.tmux.conf           ~/.tmux.conf
-symlink claude/CLAUDE.md          ~/.claude/CLAUDE.md
-symlink claude/commands/status.md   ~/.claude/commands/status.md
-symlink claude/commands/grill-me.md ~/.claude/commands/grill-me.md
-symlink claude/commands/make-skill.md ~/.claude/commands/make-skill.md
-symlink claude/commands/standup.md  ~/.claude/commands/standup.md
-symlink claude/commands/second-opinion.md ~/.claude/commands/second-opinion.md
+
+# Claude Code-specific wiring — skipped in Copilot-only mode (--work --copilot)
+if (( ! COPILOT_ONLY )); then
+  symlink claude/CLAUDE.md          ~/.claude/CLAUDE.md
+  symlink claude/commands/status.md   ~/.claude/commands/status.md
+  symlink claude/commands/grill-me.md ~/.claude/commands/grill-me.md
+  symlink claude/commands/make-skill.md ~/.claude/commands/make-skill.md
+  symlink claude/commands/standup.md  ~/.claude/commands/standup.md
+  symlink claude/commands/second-opinion.md ~/.claude/commands/second-opinion.md
+  symlink claude/hooks/gsd-statusline.js    ~/.claude/hooks/gsd-statusline.js
+fi
+
+# Shared scripts — needed by Claude Code's hooks AND Copilot's hooks/skills,
+# so these stay symlinked regardless of COPILOT_ONLY.
 symlink claude/scripts/dev_status.py      ~/.claude/scripts/dev_status.py
 symlink claude/scripts/gen_claude_completion.py ~/.claude/scripts/gen_claude_completion.py
 symlink claude/scripts/grill.py           ~/.claude/scripts/grill.py
@@ -292,7 +318,6 @@ symlink claude/scripts/second_opinion.py  ~/.claude/scripts/second_opinion.py
 symlink claude/scripts/standup.py         ~/.claude/scripts/standup.py
 symlink claude/scripts/standup_adapters.py ~/.claude/scripts/standup_adapters.py
 symlink claude/scripts/dotfiles_sync_check.py ~/.claude/scripts/dotfiles_sync_check.py
-symlink claude/hooks/gsd-statusline.js    ~/.claude/hooks/gsd-statusline.js
 
 # GitHub Copilot CLI wiring (--copilot only)
 if (( COPILOT )); then
@@ -317,19 +342,21 @@ fi
 # settings.json is copied, not symlinked — Claude Code rewrites it in place,
 # which would replace a symlink with a plain file and silently detach it.
 # Copy-once; if the live file exists, report drift instead of touching it.
-SETTINGS_SEED="$DOTFILES/claude/settings.json"
-[[ "$PROFILE" == "work" ]] && SETTINGS_SEED="$DOTFILES/claude/settings.work.json"
+# Skipped entirely in Copilot-only mode — Copilot never reads this file.
 SETTINGS_DRIFT=""
-if [[ ! -f ~/.claude/settings.json ]]; then
-  mkdir -p ~/.claude
-  if cp "$SETTINGS_SEED" ~/.claude/settings.json; then
-    record file-copied ~/.claude/settings.json
-    echo "  copied ~/.claude/settings.json (from ${SETTINGS_SEED:t})"
+if (( ! COPILOT_ONLY )); then
+  SETTINGS_SEED="$DOTFILES/claude/settings.json"
+  [[ "$PROFILE" == "work" ]] && SETTINGS_SEED="$DOTFILES/claude/settings.work.json"
+  if [[ ! -f ~/.claude/settings.json ]]; then
+    mkdir -p ~/.claude
+    if cp "$SETTINGS_SEED" ~/.claude/settings.json; then
+      record file-copied ~/.claude/settings.json
+      echo "  copied ~/.claude/settings.json (from ${SETTINGS_SEED:t})"
+    else
+      note_skip "settings.json seed" "copy failed"
+    fi
   else
-    note_skip "settings.json seed" "copy failed"
-  fi
-else
-  SETTINGS_DRIFT="$(python3 - "$SETTINGS_SEED" "$HOME/.claude/settings.json" <<'PYEOF'
+    SETTINGS_DRIFT="$(python3 - "$SETTINGS_SEED" "$HOME/.claude/settings.json" <<'PYEOF'
 import json
 import sys
 
@@ -337,6 +364,7 @@ seed, live = (json.load(open(p)) for p in sys.argv[1:3])
 print(", ".join(k for k in sorted(set(seed) | set(live)) if seed.get(k) != live.get(k)))
 PYEOF
 )"
+  fi
 fi
 
 # macOS-only (.zprofile has Homebrew shellenv; not needed on Linux)

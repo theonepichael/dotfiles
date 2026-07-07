@@ -55,9 +55,14 @@ exists and HEAD has since moved ahead of it.
 
 ## Copilot CLI profile
 
-`./install.sh --copilot` wires up [GitHub Copilot CLI](https://github.com/github/copilot-cli)
-as a second, parallel harness — additive to `--work` (or standalone), and
-does not change the `--work`/personal `PROFILE` split:
+`./install.sh --copilot` wires up [GitHub Copilot CLI](https://github.com/github/copilot-cli).
+Standalone (personal profile), it's additive — a second, parallel harness
+alongside Claude Code. Combined with `--work` (`--work --copilot`), it's
+**Copilot-only**: the the workplace work machine has no usable Claude Code, so
+Claude Code's install and its `~/.claude/*`-specific wiring (`CLAUDE.md`,
+`commands/*.md`, `settings.json`, the statusline hook) are skipped entirely.
+The shared `~/.claude/scripts/*.py` are symlinked either way, since Copilot's
+own hooks and skills call those same paths.
 
 - Installs the Copilot CLI (`npm i -g @github/copilot`), reusing the same
   nvm/npm bootstrap as Claude Code.
