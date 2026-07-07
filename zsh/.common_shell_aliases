@@ -126,3 +126,12 @@ alias mci="mvn clean install"
 alias mdp="mvn dependency:purge-local-repository"
 alias mcd="mvn clean install -DskipTests"
 alias msr="mvn spring-boot:run"
+
+# GitHub Copilot CLI — scoped to the shared backlog/pending/standup tooling only
+alias copilot-work='copilot \
+  --allow-tool "shell(python3 ~/.claude/scripts/dev_status.py:*)" \
+  --allow-tool "shell(python3 ~/.claude/scripts/grill.py:*)" \
+  --allow-tool "shell(python3 ~/.claude/scripts/standup.py:*)" \
+  --allow-tool "shell(python3 ~/.claude/scripts/second_opinion.py:*)" \
+  --allow-tool "shell(git status)" --allow-tool "shell(git log:*)" \
+  --allow-tool "shell(git diff:*)"'

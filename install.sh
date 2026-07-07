@@ -15,10 +15,13 @@ is_linux() { [[ "$OS" == "Linux" ]] }
 
 usage() {
   cat <<'EOF'
-usage: ./install.sh [--work] [--rollback] [--force]
+usage: ./install.sh [--work] [--copilot] [--rollback] [--force]
 
   --work      provision a work machine: excludes watchcommit and personal
               API-key setup; seeds Claude settings from settings.work.json
+  --copilot   also wire up GitHub Copilot CLI: shared instructions symlink,
+              sessionStart hook, and skill ports under ~/.copilot/. Additive
+              to --work (or standalone) — does not change --work's PROFILE.
   --rollback  reverse the previous run's file mutations (symlinks, copies,
               backups) using the manifest, then exit. Packages are reported
               but never uninstalled.
@@ -32,9 +35,11 @@ EOF
 PROFILE=personal
 FORCE=0
 ROLLBACK=0
+COPILOT=0
 for arg in "$@"; do
   case "$arg" in
     --work)     PROFILE=work ;;
+    --copilot)  COPILOT=1 ;;
     --rollback) ROLLBACK=1 ;;
     --force)    FORCE=1 ;;
     -h|--help)  usage; exit 0 ;;
@@ -224,6 +229,20 @@ else
   note_skip "Claude Code" "npm unavailable (NVM install failed or skipped)"
 fi
 
+# GitHub Copilot CLI (--copilot only, needs node/npm from nvm)
+if (( COPILOT )); then
+  echo "==> Installing GitHub Copilot CLI..."
+  if command -v npm &>/dev/null; then
+    if npm install -g @github/copilot; then
+      record package-installed "@github/copilot"
+    else
+      note_skip "Copilot CLI" "npm install failed (registry blocked?)"
+    fi
+  else
+    note_skip "Copilot CLI" "npm unavailable (NVM install failed or skipped)"
+  fi
+fi
+
 # ============================================================================
 # Symlinks
 # ============================================================================
@@ -274,6 +293,17 @@ symlink claude/scripts/standup.py         ~/.claude/scripts/standup.py
 symlink claude/scripts/standup_adapters.py ~/.claude/scripts/standup_adapters.py
 symlink claude/scripts/dotfiles_sync_check.py ~/.claude/scripts/dotfiles_sync_check.py
 symlink claude/hooks/gsd-statusline.js    ~/.claude/hooks/gsd-statusline.js
+
+# GitHub Copilot CLI wiring (--copilot only)
+if (( COPILOT )); then
+  symlink claude/CLAUDE.md ~/.copilot/copilot-instructions.md
+  symlink copilot/hooks/session-start.json ~/.copilot/hooks/session-start.json
+  symlink copilot/skills/status/SKILL.md          ~/.copilot/skills/status/SKILL.md
+  symlink copilot/skills/standup/SKILL.md         ~/.copilot/skills/standup/SKILL.md
+  symlink copilot/skills/second-opinion/SKILL.md  ~/.copilot/skills/second-opinion/SKILL.md
+  symlink copilot/skills/grill-me/SKILL.md        ~/.copilot/skills/grill-me/SKILL.md
+  symlink copilot/skills/make-skill/SKILL.md      ~/.copilot/skills/make-skill/SKILL.md
+fi
 
 # watchcommit: personal machines only — it auto-pushes to a personal remote
 # under your personal Claude account login, which has no place on work hardware.

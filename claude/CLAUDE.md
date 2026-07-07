@@ -1,5 +1,10 @@
 # CLAUDE.md
 
+<!-- Shared with ~/.copilot/copilot-instructions.md (same symlink target). Gmail/
+     Calendar/Drive MCP servers are deliberately not configured under Copilot CLI,
+     per the --work profile's no-personal-data-on-work-hardware rule — intentional,
+     not a gap. -->
+
 ## Workflow Behaviors
 
 ### Backlog

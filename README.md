@@ -52,6 +52,39 @@ exists and HEAD has since moved ahead of it.
 - A profile marker is written (`~/.local/state/dotfiles/profile`); later runs
   *without* `--work` on that machine refuse unless `--force` is passed.
 
+## Copilot CLI profile
+
+`./install.sh --copilot` wires up [GitHub Copilot CLI](https://github.com/github/copilot-cli)
+as a second, parallel harness — additive to `--work` (or standalone), and
+does not change the `--work`/personal `PROFILE` split:
+
+- Installs the Copilot CLI (`npm i -g @github/copilot`), reusing the same
+  nvm/npm bootstrap as Claude Code.
+- **Shared instructions file**: `claude/CLAUDE.md` is symlinked to *both*
+  `~/.claude/CLAUDE.md` and `~/.copilot/copilot-instructions.md`. There's no
+  separate Copilot-specific instructions file to maintain — the
+  backlog/pending-items workflow is already tool-agnostic prose. A one-line
+  comment at the top of `claude/CLAUDE.md` notes this dual-symlink so it
+  reads as intentional from either side.
+- **`copilot/hooks/session-start.json`**: a `sessionStart` hook running the
+  same three shell commands as Claude Code's `SessionStart` hook chain
+  (dashboard render, pending-plan consume, dotfiles-drift check).
+- **`copilot/skills/<name>/SKILL.md`**: ports of all 5 Claude Code skills
+  (status, standup, second-opinion, grill-me, make-skill). Copilot skills are
+  **description-matched, not typed-slash** — there's no `/status` to type;
+  the skill fires when its `description` frontmatter matches the
+  conversation. `second-opinion` and `grill-me` also drop `AskUserQuestion`
+  (Copilot has no structured multi-choice prompt) in favor of plain
+  conversational back-and-forth: state the question, give a recommendation,
+  wait for a plain-text reply.
+- **Deliberately excluded**: Gmail/Calendar/Drive MCP servers are not
+  configured under Copilot, per the `--work` profile's existing
+  no-personal-data-on-work-hardware rule.
+- **`copilot-work` alias** (in `zsh/.common_shell_aliases`, symlinked for
+  every profile): launches `copilot` scoped to the shared tooling only, via
+  `--allow-tool` flags for `dev_status.py`, `grill.py`, `standup.py`,
+  `second_opinion.py`, and read-only `git` commands.
+
 ## Failures, skips, and rollback
 
 `install.sh` never aborts on a failed step. Anything that can't run (blocked
