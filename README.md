@@ -29,6 +29,16 @@ git clone /path/to/usb/dotfiles.bundle ~/dotfiles
 # later, if GitHub opens up: git remote set-url origin <repo-url>
 ```
 
+After a real transfer completes, mark it so the SessionStart hook stops
+reminding you the machine is behind:
+
+```sh
+python3 ~/.claude/scripts/dotfiles_sync_check.py mark
+```
+
+Without a mark, nothing is checked — the hook only speaks up once a baseline
+exists and HEAD has since moved ahead of it.
+
 ## Work profile
 
 `./install.sh --work` provisions a work machine:
