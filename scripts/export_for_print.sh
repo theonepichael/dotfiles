@@ -61,5 +61,6 @@ fi
 echo "wrote $out ($(wc -l < "$out") lines)" >&2
 if command -v pandoc >/dev/null 2>&1; then
     pdf="${out%.md}.pdf"
-    pandoc "$out" -o "$pdf" && echo "also wrote $pdf" >&2
+    # plain black text, no syntax-highlight color -- better scan contrast
+    pandoc "$out" -o "$pdf" --highlight-style=none && echo "also wrote $pdf" >&2
 fi
