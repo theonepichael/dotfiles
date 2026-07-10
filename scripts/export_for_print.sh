@@ -24,11 +24,19 @@ shift
 
 emit() {
     local label="$1" content="$2" ext="$3"
+    local nlines numbered
+    nlines=$(printf '%s\n' "$content" | wc -l)
+    # expand tabs to fixed-width spaces (tab rendering varies across
+    # viewers/printers and can misrepresent indentation depth on paper)
+    # and prefix every line with its number, so a mid-line print/scan
+    # wrap can never be mistaken for a real newline, and a skipped or
+    # out-of-order page shows up as a gap in the sequence.
+    numbered=$(printf '%s\n' "$content" | expand -t4 | cat -n)
     {
-        echo "## \`$label\`"
+        echo "## \`$label\` (${nlines} lines)"
         echo
         echo "\`\`\`${ext}"
-        printf '%s\n' "$content"
+        printf '%s\n' "$numbered"
         echo "\`\`\`"
         echo
         echo '***'
