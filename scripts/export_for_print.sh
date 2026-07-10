@@ -62,5 +62,9 @@ echo "wrote $out ($(wc -l < "$out") lines)" >&2
 if command -v pandoc >/dev/null 2>&1; then
     pdf="${out%.md}.pdf"
     # plain black text, no syntax-highlight color -- better scan contrast
-    pandoc "$out" -o "$pdf" --highlight-style=none && echo "also wrote $pdf" >&2
+    if pandoc "$out" -o "$pdf" --no-highlight; then
+        echo "also wrote $pdf" >&2
+    else
+        echo "pandoc PDF conversion failed; $out is still available" >&2
+    fi
 fi
