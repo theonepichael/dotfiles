@@ -31,7 +31,7 @@ emit() {
         printf '%s\n' "$content"
         echo "\`\`\`"
         echo
-        echo '---'
+        echo '***'
         echo
     } >> "$out"
 }
