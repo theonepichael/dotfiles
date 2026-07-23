@@ -103,3 +103,6 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 
 # Added by Antigravity CLI installer
 export PATH="/home/yanil/.local/bin:$PATH"
+
+# opencode
+export PATH=/home/yanil/.opencode/bin:$PATH
