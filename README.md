@@ -243,6 +243,7 @@ session, no separate config needed.
   (`cd claude/scripts && pytest`); they are not deployed to `~/.claude`
 - **install.sh tests**: `test/` runs the full install.sh lifecycle (fresh
   install, rollback, backup-and-restore, work profile + guard, --force,
-  argument errors) inside a throwaway Docker container so it never touches
-  the real machine. Requires Docker; run with `./test/run.sh` after any
-  change to `install.sh`
+  argument errors) inside throwaway Docker containers — one Ubuntu (apt
+  branch), one Fedora (dnf branch) — so it never touches the real machine.
+  Requires Docker; run with `./test/run.sh` after any change to
+  `install.sh`

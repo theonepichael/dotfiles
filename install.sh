@@ -166,23 +166,42 @@ if is_mac; then
   fi
 
 elif is_linux; then
-  echo "==> Updating apt package lists..."
-  sudo apt-get update || note_skip "apt update" "apt-get update failed (offline or blocked?)"
+  PKG_LIST=(tmux zoxide eza bat lsd ncdu tldr ripgrep unzip lsof xclip)
 
-  # One apt-get call per package: apt-get install fails atomically on the
-  # first unresolvable name, which would otherwise block every package after
-  # it — e.g. eza/lsd don't exist before Ubuntu 24.04, which silently
-  # skipped tmux/bat/ncdu/tldr/ripgrep/unzip too on 22.04 machines.
-  echo "==> Installing packages (apt)..."
-  for pkg in tmux zoxide eza bat lsd ncdu tldr ripgrep unzip lsof xclip; do
-    if sudo apt-get install -y "$pkg"; then
-      record package-installed "$pkg"
-    else
-      note_skip "apt package: $pkg" "not available in this release's repos, or install failed"
-    fi
-  done
+  if command -v dnf &>/dev/null; then
+    echo "==> Refreshing dnf package metadata..."
+    sudo dnf makecache || note_skip "dnf makecache" "dnf makecache failed (offline or blocked?)"
 
-  # Ubuntu ships bat as batcat; shim it
+    # One dnf call per package, same reasoning as the apt branch below: a
+    # single missing/renamed package shouldn't block every package after it.
+    echo "==> Installing packages (dnf)..."
+    for pkg in "${PKG_LIST[@]}"; do
+      if sudo dnf install -y "$pkg"; then
+        record package-installed "$pkg"
+      else
+        note_skip "dnf package: $pkg" "not available in this release's repos, or install failed"
+      fi
+    done
+  else
+    echo "==> Updating apt package lists..."
+    sudo apt-get update || note_skip "apt update" "apt-get update failed (offline or blocked?)"
+
+    # One apt-get call per package: apt-get install fails atomically on the
+    # first unresolvable name, which would otherwise block every package after
+    # it — e.g. eza/lsd don't exist before Ubuntu 24.04, which silently
+    # skipped tmux/bat/ncdu/tldr/ripgrep/unzip too on 22.04 machines.
+    echo "==> Installing packages (apt)..."
+    for pkg in "${PKG_LIST[@]}"; do
+      if sudo apt-get install -y "$pkg"; then
+        record package-installed "$pkg"
+      else
+        note_skip "apt package: $pkg" "not available in this release's repos, or install failed"
+      fi
+    done
+  fi
+
+  # Ubuntu ships bat as batcat; shim it (Fedora's bat package installs the
+  # `bat` binary directly, so this is a no-op there)
   if command -v batcat &>/dev/null && ! command -v bat &>/dev/null; then
     mkdir -p ~/.local/bin
     ln -sf "$(which batcat)" ~/.local/bin/bat
@@ -190,7 +209,7 @@ elif is_linux; then
     echo "  shimmed bat → batcat"
   fi
 
-  # uv (not in apt)
+  # uv (not in apt/dnf)
   if ! command -v uv &>/dev/null; then
     echo "==> Installing uv..."
     if curl -LsSf https://astral.sh/uv/install.sh | sh; then
