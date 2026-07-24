@@ -1,0 +1,190 @@
+# opencode → Claude Code parity notes
+
+Goal: make opencode (running GLM-5.2) feel like Claude Code — same muscle
+memory for keybinds, same instruction-file behavior, same slash commands,
+same session-resume workflow. Compiled 2026-07-24 from opencode's official
+docs (opencode.ai/docs/*).
+
+This is a planning/reference doc, not applied config yet. Once decisions
+below are made, the actual config files should live alongside this one
+(`opencode/agent/`, `opencode/command/`, `opencode/plugin/`, `opencode/tui.json`,
+`opencode/opencode.json`) mirroring the existing `claude/` and `copilot/`
+directories in this repo, and get symlinked into `~/.config/opencode/` by
+`install.sh` the same way `claude/settings.json` etc. are wired up.
+
+---
+
+## 1. Already matches — no work needed
+
+| Claude Code behavior | opencode equivalent | Notes |
+|---|---|---|
+| `CLAUDE.md` project/global instructions | Reads `CLAUDE.md` (project) and `~/.claude/CLAUDE.md` (global) as **legacy fallbacks** automatically | Our existing global `~/.claude/CLAUDE.md` is already being picked up — nothing to port |
+| `Esc` interrupts current turn | `session_interrupt: escape` (default) | Exact match |
+| `Shift+Tab` cycles permission mode | `Tab` / `Shift+Tab` → `agent_cycle` / `agent_cycle_reverse`, cycles Build ↔ Plan | Same gesture, but only 2 states by default vs Claude Code's 4 — see §3 |
+| `Ctrl+C` / `Ctrl+D` exit | `app_exit: ctrl+c,ctrl+d,<leader>q` (default) | Exact match |
+| `Ctrl+V` paste (incl. images) | `input_paste: ctrl+v` (default) | Works with opencode-vision (see `meta-glm-vision-opencode`, done) |
+| `claude --continue` / `--resume` | `opencode run --continue` / `-c`, `--session`/`-s <id>` | Same concept, different flag names |
+| Subagent naming (Explore, general-purpose) | Built-in subagents: `general`, `explore`, `scout` | opencode's `explore` is close to Claude Code's `Explore` agent already |
+
+---
+
+## 2. Slash commands — port with minimal edits
+
+opencode's custom-command format is nearly identical to Claude Code's:
+
+- **Location**: `~/.config/opencode/commands/` (global) or `.opencode/commands/` (project) — vs Claude Code's `~/.claude/commands/` / `.claude/commands/`
+- **Format**: markdown file, filename → command name (`test.md` → `/test`)
+- **Frontmatter**: `description`, `agent` (optional agent override), `model` (optional), `subtask` (force subagent)
+- **Placeholders**: `$ARGUMENTS` / `$1`, `$2`, ... for positional args; `` !`shell cmd` `` for shell output injection; `@filepath` for file content — all the same syntax Claude Code commands use
+
+**Action**: copy `~/dotfiles/claude/commands/*.md` → `~/dotfiles/opencode/command/*.md`, diff frontmatter fields (Claude Code's frontmatter schema differs slightly — needs a pass per file), fix anything that doesn't map (e.g. `allowed-tools` has no direct opencode equivalent — closest is per-agent `permission` config).
+
+Custom commands can also live inline in `opencode.json` under a `"command"` key if a file-based approach isn't preferred.
+
+---
+
+## 3. Extra permission-mode states (Claude Code's 4-way cycle)
+
+Claude Code's Shift+Tab cycles: **default → auto-accept edits → plan mode →
+bypass permissions**. opencode ships only Build (full access) and Plan
+(edit/bash → `ask`) as primary agents.
+
+**Plan**: define additional primary agents in `opencode.json` (or as markdown
+files in `~/.config/opencode/agents/`) with `mode: primary` and different
+`permission` blocks:
+
+```json
+{
+  "agent": {
+    "auto": {
+      "mode": "primary",
+      "description": "Auto-accept edits, still ask before bash",
+      "permission": { "edit": "allow", "bash": "ask" }
+    },
+    "yolo": {
+      "mode": "primary",
+      "description": "Bypass permissions entirely",
+      "permission": { "*": "allow" }
+    }
+  }
+}
+```
+
+`agent_cycle` (Tab) should then cycle through all `mode: primary` agents —
+**needs verification once configured**: does Tab cycle built-ins + custom in
+a stable, predictable order? Not confirmed from docs alone.
+
+Permission value reference: `"allow"` / `"ask"` / `"deny"`, wildcard `*` for
+global default, per-tool override (`read`, `edit`, `bash`, `grep`, `glob`,
+`webfetch`, `websearch`, `external_directory`, `task`, `skill`). Bash also
+supports pattern rules: `{"bash": {"*": "ask", "git *": "allow", "rm *": "deny"}}`.
+
+CLI-level equivalent of "bypass everything for this run": `opencode run --auto`
+(auto-approves anything not explicitly `deny`d — different semantics from
+setting everything to `allow`, since explicit `deny` rules still apply).
+
+---
+
+## 4. Keybind conflicts to resolve
+
+Full default keybind list pulled from `opencode.ai/docs/keybinds`. Two
+conflicts worth deciding on:
+
+- **`Ctrl+R`** is `session_rename` by default in opencode — **not** a
+  verbose/tool-output toggle like some Claude Code muscle memory expects.
+  The closest analog to "expand tool output" is
+  `session_toggle_generic_tool_output`, currently **unbound**. Options:
+  - Rebind `session_toggle_generic_tool_output` → `ctrl+r`, move
+    `session_rename` to something else (e.g. `<leader>r`)
+  - Or leave as-is and adjust habit
+
+- **Leader key** defaults to `ctrl+x` and gates a lot of actions (new
+  session `<leader>n`, model list `<leader>m`, agent list `<leader>a`,
+  sidebar toggle `<leader>b`, session export `<leader>x`, compact
+  `<leader>c`, undo/redo `<leader>u`/`<leader>r`, etc.) — Claude Code has no
+  leader-key paradigm at all. Check for collision with tmux prefix before
+  deciding whether to remap (`"leader"` key in `tui.json`).
+
+Config file: `tui.json` (global: `~/.config/opencode/tui.json`, project:
+`.opencode/tui.json` — mirrors `opencode.json`'s global/project split).
+Syntax: `"action": "key"`, comma-separated for multiple bindings, array
+form also accepted, `"action": "none"` or `false` to disable a bind.
+
+Other keybinds worth knowing about (not necessarily changes, just
+awareness — full list in this doc's source research, available on request):
+- `messages_undo` / `messages_redo`: `<leader>u` / `<leader>r` — opencode's
+  loose analog to Claude Code's double-Esc rewind-to-edit-previous-message,
+  though the trigger gesture differs
+- `model_cycle_recent`: `f2` — quick model switch
+- `session_child_cycle` / `session_child_first`: navigate subagent/session
+  tree — no direct Claude Code equivalent (Claude Code doesn't expose this)
+
+---
+
+## 5. Hooks → plugin system (bigger lift, separate decision)
+
+Claude Code hooks (`settings.json` — `SessionStart`, `PreToolUse`,
+`PostToolUse`, etc., declarative JSON shelling out to scripts) have **no
+declarative equivalent** in opencode. The analog is a TypeScript **plugin**
+system:
+
+- **Location**: `~/.config/opencode/plugin/*.ts` (global) or
+  `.opencode/plugin/*.ts` (project) — or an npm package referenced in config
+- **Shape**: an async function receiving `PluginInput` (SDK client, project
+  info, project dir, git worktree root, server URL, a Bun shell for running
+  commands), returning a hooks object
+- **25+ lifecycle events** documented, including `chat.message`,
+  `chat.params`, `permission.ask`, `tool.execute.before` /
+  `tool.execute.after` — the opencode-vision plugin we already installed
+  uses `experimental.chat.messages.transform` as one example of this system
+- Two config surfaces exist: hand-written `.ts` files, or npm packages
+  declared in `opencode.json`
+
+**Not scoped in this doc**: whether to actually port the SessionStart
+backlog-dashboard hook (`dev_status.py` dashboard render) into an opencode
+plugin. That's a real engineering task (TypeScript, not JSON config) and
+should be its own decision/backlog item once the keybind/command/agent
+parity work above is done and evaluated.
+
+---
+
+## 6. Config file location reference
+
+| File | Global | Project |
+|---|---|---|
+| Main config | `~/.config/opencode/opencode.json` | `opencode.json` in repo root |
+| Keybinds/TUI | `~/.config/opencode/tui.json` | `.opencode/tui.json` |
+| Commands | `~/.config/opencode/commands/` | `.opencode/commands/` |
+| Agents | `~/.config/opencode/agents/` (or inline in `opencode.json`) | inline in project `opencode.json` |
+| Plugins | `~/.config/opencode/plugin/` | `.opencode/plugin/` |
+| Instructions | `~/.config/opencode/AGENTS.md` (or legacy `~/.claude/CLAUDE.md`) | `AGENTS.md` (or legacy `CLAUDE.md`) |
+
+Global and project configs **merge** (project overrides global on
+conflicting keys), same pattern as Claude Code's `~/.claude/settings.json` +
+`.claude/settings.json`.
+
+---
+
+## 7. Open decisions (need user input before implementing)
+
+1. Which extra permission-mode agents to define beyond Build/Plan — just
+   "auto" (auto-accept edits) and "yolo" (bypass all), or a closer 1:1 with
+   Claude Code's exact 4 states?
+2. Remap `Ctrl+R` (session_rename → elsewhere, bind tool-output-toggle to
+   `Ctrl+R`) — yes/no?
+3. Remap the leader key off `ctrl+x` — only relevant if it collides with
+   tmux prefix or other muscle memory; needs a check of current tmux config.
+4. Scope of command porting — port all of `claude/commands/*.md`, or just
+   the ones used daily?
+5. Whether to pursue the hooks→plugin port at all right now, or leave
+   opencode without dashboard/backlog integration for the time being.
+
+## Sources
+
+- https://opencode.ai/docs/keybinds/
+- https://opencode.ai/docs/agents/
+- https://opencode.ai/docs/permissions/
+- https://opencode.ai/docs/config/
+- https://opencode.ai/docs/rules/
+- https://opencode.ai/docs/commands/
+- https://opencode.ai/docs/cli/
