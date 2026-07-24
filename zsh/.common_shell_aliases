@@ -72,9 +72,9 @@ kill_process_by_port() {
     esac
     local port="$1" pids pid rc=0 i
     if command -v ss >/dev/null 2>&1; then
-        pids=$(ss -ltnH "sport = :$port" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)
+        pids=$(ss -ltnpH "sport = :$port" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)
         if [ -z "$pids" ] && [ "$(id -u)" -ne 0 ]; then
-            pids=$(sudo ss -ltnH "sport = :$port" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)
+            pids=$(sudo ss -ltnpH "sport = :$port" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)
         fi
     elif command -v lsof >/dev/null 2>&1; then
         pids=$(lsof -t -i:"$port" 2>/dev/null | sort -u)
