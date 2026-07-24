@@ -107,10 +107,17 @@ this doc, which had `Ctrl+R`/`Ctrl+O` swapped):
 - **Claude Code `Ctrl+R`** = fuzzy search through past prompt history
   (`Ctrl+S` cycles scope: session/project/all). opencode's `Ctrl+R` is
   `session_rename` by default — genuinely different feature, and **no clean
-  opencode equivalent for history *search* was found** in the default
-  keybind list (`history_previous`/`history_next` on Up/Down only step
-  through recent entries, no fuzzy search). Real gap — not something to
-  silently rebind around; flag as unresolved.
+  opencode equivalent for history *search* exists** (`history_previous`/
+  `history_next` on Up/Down only step through recent entries, no fuzzy
+  search; confirmed open feature request `anomalyco/opencode#5062`, not
+  implemented in core).
+
+  **Decision (2026-07-24): gap accepted, not pursuing.** Considered
+  `opencode-history-search` (npm plugin) as a substitute, but it's an
+  agent-invoked tool ("search my history for X" in chat), not an inline
+  `Ctrl+R`-style popup — different enough interaction model that it's not
+  worth installing just to approximate the muscle memory. Revisit if
+  opencode ships native history search later.
 
 - **Claude Code `Ctrl+G`** = open external editor. Already matches
   functionally: opencode's `editor_open` is bound to `<leader>e`. Same
@@ -193,9 +200,7 @@ conflicting keys), same pattern as Claude Code's `~/.claude/settings.json` +
 1. ~~Which extra permission-mode agents to define beyond Build/Plan~~ —
    **decided: none, 2-state Build/Plan cycle is fine as-is (see §3)**
 2. Bind `session_toggle_generic_tool_output` → `ctrl+o` (no conflict,
-   low-risk) — yes/no? And separately: is the `Ctrl+R` history-search gap
-   (no opencode equivalent found) worth pursuing, e.g. via a plugin, or
-   accept the gap?
+   low-risk) — yes/no?
 3. ~~Remap the leader key off `ctrl+x`~~ — **decided: no, keep default**
    (no tmux collision, user wants the shortcuts as-is)
 4. Scope of command porting — port all of `claude/commands/*.md`, or just
