@@ -220,8 +220,13 @@ conflicting keys), same pattern as Claude Code's `~/.claude/settings.json` +
    (no tmux collision, user wants the shortcuts as-is)
 4. ~~Scope of command porting~~ — **decided/done: all 5 commands already
    ported (see §2)**
-5. Whether to pursue the hooks→plugin port at all right now, or leave
-   opencode without dashboard/backlog integration for the time being.
+5. ~~Whether to pursue the hooks→plugin port at all right now, or leave
+   opencode without dashboard/backlog integration for the time being.~~
+   **Decided (2026-07-24): defer the port** (real TypeScript lift, not
+   config parity work) — captured as its own backlog item
+   `meta-opencode-sessionstart-plugin` so it survives independently of this
+   doc. Revisit when there's a real need or when the opencode plugin API
+   stabilizes further.
 
 ## Sources
 
