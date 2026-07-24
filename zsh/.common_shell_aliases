@@ -104,6 +104,16 @@ kill_process_by_port() {
     return $rc
 }
 
+# watchcommit pause/resume — manage the touch-file the daemon checks at the
+# top of each poll tick (see ~/.local/bin/watchcommit). Avoids SIGSTOP-ing the
+# process when you need to do manual git history surgery (commit --amend,
+# rebase, etc.) without the daemon racing it and winning. State dir follows
+# XDG_STATE_HOME (defaults to ~/.local/state), kept consistent with the
+# daemon's PAUSE_FILE computation.
+wc-pause()  { mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/watchcommit" && touch "${XDG_STATE_HOME:-$HOME/.local/state}/watchcommit/paused" && echo "watchcommit paused"; }
+wc-resume() { rm -f "${XDG_STATE_HOME:-$HOME/.local/state}/watchcommit/paused" && echo "watchcommit resumed"; }
+wc-status() { if [ -f "${XDG_STATE_HOME:-$HOME/.local/state}/watchcommit/paused" ]; then echo "watchcommit paused"; else echo "watchcommit running"; fi; }
+
 # ============================================================================
 # ALIASES
 # ============================================================================

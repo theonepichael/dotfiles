@@ -6,8 +6,18 @@ Claude-generated conventional commit message, and pushes to the remote.
 Usage:
     watchcommit              # watch ~/dotfiles (default)
     watchcommit /other/repo  # watch a different repo
+
+Pause mechanism: if the touch-file at $XDG_STATE_HOME/watchcommit/paused (or
+~/.local/state/watchcommit/paused if XDG_STATE_HOME is unset) exists, the
+poll loop skips the commit-and-push cycle for that tick. The shell helpers
+wc-pause / wc-resume / wc-status (in dotfiles/zsh/.common_shell_aliases)
+manage the touch-file, so manual git history surgery (commit --amend,
+rebase, etc.) can block the daemon without resorting to SIGSTOP. The
+tick-skipped status is logged via stderr so `journalctl --user -u watchcommit`
+shows the gap.
 """
 
+import os
 import subprocess
 import sys
 import time
@@ -15,6 +25,7 @@ from pathlib import Path
 
 POLL_INTERVAL = 90
 MODEL = "haiku"
+PAUSE_FILE = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))) / "watchcommit" / "paused"
 SYSTEM_PROMPT = (
     "You are a git commit message generator. "
     "Given a diff, output a single conventional commit message and nothing else.\n\n"
@@ -101,7 +112,14 @@ def main() -> None:
 
     while True:
         try:
-            if has_changes(repo):
+            if PAUSE_FILE.exists():
+                # Pause guard — the touch-file is managed by wc-pause /
+                # wc-resume shell helpers (or a manual `touch`/`rm`). Skipping
+                # the cycle here holds the daemon back from racing any manual
+                # git history surgery. Logged via stderr so journalctl shows
+                # the gap alongside the regular commit lines.
+                print(f"[watchcommit] paused ({PAUSE_FILE})", file=sys.stderr)
+            elif has_changes(repo):
                 diff = build_diff(repo)
                 if diff:
                     message = generate_message(diff)
