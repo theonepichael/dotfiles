@@ -57,16 +57,51 @@ delclip() {
 # ============================================================================
 
 kill_process_by_port() {
-    if [ -z "$1" ]; then echo "No port number supplied"; return 1; fi
-    if ! command -v lsof >/dev/null 2>&1; then
-        echo "Error: lsof not found" >&2
-        return 1
+    # Kill whatever process is listening on the given TCP port.
+    #
+    # Why ss-first: lsof 4.95.x on Linux misses IPv6 dual-stack LISTEN sockets
+    # on newer kernels (verified on WSL2 kernel 6.18 — `lsof -i:3000` finds
+    # only IPv4 ESTABLISHED clients, not the `*:` LISTEN socket; ss and fuser
+    # both see it). ss is iproute2, preinstalled everywhere on Linux. lsof is
+    # retained as the macOS/BSD fallback where ss isn't present.
+    # SIGTERM with a short grace period before SIGKILL so child workers (e.g.
+    # `next dev`) get a chance to clean up.
+    if [ -z "$1" ]; then echo "No port number supplied" >&2; return 1; fi
+    case "$1" in
+        ''|*[!0-9]*) echo "Error: port must be numeric, got '$1'" >&2; return 1 ;;
+    esac
+    local port="$1" pids pid rc=0 i
+    if command -v ss >/dev/null 2>&1; then
+        pids=$(ss -ltnH "sport = :$port" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)
+        if [ -z "$pids" ] && [ "$(id -u)" -ne 0 ]; then
+            pids=$(sudo ss -ltnH "sport = :$port" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)
+        fi
+    elif command -v lsof >/dev/null 2>&1; then
+        pids=$(lsof -t -i:"$port" 2>/dev/null | sort -u)
+        if [ -z "$pids" ] && [ "$(id -u)" -ne 0 ]; then
+            pids=$(sudo lsof -t -i:"$port" 2>/dev/null | sort -u)
+        fi
+    else
+        echo "Error: neither ss nor lsof available" >&2; return 1
     fi
-    local pid
-    pid=$(lsof -t -i:"$1")
-    if [ -z "$pid" ]; then echo "No process found on port $1"; return 1; fi
-    kill -9 "$pid"
-    echo "Killed process $pid running on port $1"
+    if [ -z "$pids" ]; then echo "No process found on port $port"; return 1; fi
+    for pid in $pids; do
+        if kill -TERM "$pid" 2>/dev/null; then
+            i=0
+            while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 10 ]; do
+                sleep 0.3
+                i=$((i + 1))
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+                kill -KILL "$pid" 2>/dev/null
+            fi
+            echo "Killed process $pid running on port $port"
+        else
+            echo "Error: cannot signal pid $pid (try sudo?)" >&2
+            rc=1
+        fi
+    done
+    return $rc
 }
 
 # ============================================================================
