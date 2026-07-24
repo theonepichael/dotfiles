@@ -110,11 +110,12 @@ against Claude Code's actual shortcuts (corrected from an earlier draft of
 this doc, which had `Ctrl+R`/`Ctrl+O` swapped):
 
 - **Claude Code `Ctrl+O`** = transcript/log viewer (verbose tool output,
-  thinking tokens). **Clean 1:1 in opencode**: `session_toggle_generic_tool_output`
-  is unbound by default — bind it directly to `ctrl+o`, no conflict to
-  resolve:
+  thinking tokens). **Clean 1:1 in opencode** — `session_toggle_generic_tool_output`
+  is unbound by default. **Done (2026-07-24)**: bound to `ctrl+o` in
+  `opencode/tui.json`, symlinked into `~/.config/opencode/tui.json` via
+  `install.sh`:
   ```json
-  { "keybinds": { "session_toggle_generic_tool_output": "ctrl+o" } }
+  { "$schema": "https://opencode.ai/tui.json", "keybinds": { "session_toggle_generic_tool_output": "ctrl+o" } }
   ```
 
 - **Claude Code `Ctrl+R`** = fuzzy search through past prompt history
@@ -212,8 +213,9 @@ conflicting keys), same pattern as Claude Code's `~/.claude/settings.json` +
 
 1. ~~Which extra permission-mode agents to define beyond Build/Plan~~ —
    **decided: none, 2-state Build/Plan cycle is fine as-is (see §3)**
-2. Bind `session_toggle_generic_tool_output` → `ctrl+o` (no conflict,
-   low-risk) — yes/no?
+2. ~~Bind `session_toggle_generic_tool_output` → `ctrl+o` (no conflict,
+   low-risk) — yes/no?~~ **Done (2026-07-24): yes — applied in
+   opencode/tui.json, wired through install.sh** (see §4)
 3. ~~Remap the leader key off `ctrl+x`~~ — **decided: no, keep default**
    (no tmux collision, user wants the shortcuts as-is)
 4. ~~Scope of command porting~~ — **decided/done: all 5 commands already

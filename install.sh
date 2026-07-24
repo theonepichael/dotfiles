@@ -335,6 +335,13 @@ if (( COPILOT )); then
   symlink copilot/skills/make-skill/SKILL.md      ~/.copilot/skills/make-skill/SKILL.md
 fi
 
+# opencode — profile-agnostic (the harness this dotfiles setup is developed
+# against; runs on work and personal both). Only opencode/tui.json is
+# symlinked today; commands live at ~/.config/opencode/commands/ from a prior
+# manual port (see opencode/CLAUDE_CODE_PARITY.md §2). AGENTS.md and
+# opencode.jsonc are intentionally not managed here yet.
+symlink opencode/tui.json ~/.config/opencode/tui.json
+
 # watchcommit: personal machines only — it auto-pushes to a personal remote
 # under your personal Claude account login, which has no place on work hardware.
 if [[ "$PROFILE" == "work" ]]; then
