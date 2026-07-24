@@ -29,7 +29,20 @@ directories in this repo, and get symlinked into `~/.config/opencode/` by
 
 ---
 
-## 2. Slash commands — port with minimal edits
+## 2. Slash commands — DONE (already ported)
+
+**Status (2026-07-24): already done**, ahead of this doc. All 5 commands
+from `claude/commands/` (`grill-me`, `make-skill`, `second-opinion`,
+`standup`, `status`) exist in `~/.config/opencode/commands/`, dated
+2026-07-23 — a real adaptation pass, not a blind copy: dropped `name`
+(redundant with filename), dropped `argument-hint` and `allowed-tools`
+(neither exists in opencode's command frontmatter — tool access is
+controlled per-agent instead, see §3), reworded `make-skill`'s description
+for opencode/SKILL.md terminology, and correctly stripped the
+SessionStart-hook caveat from `status.md` (opencode has no hooks
+equivalent — see §5). No further action needed on this item.
+
+Original notes kept below for reference on the format itself.
 
 opencode's custom-command format is nearly identical to Claude Code's:
 
@@ -203,8 +216,8 @@ conflicting keys), same pattern as Claude Code's `~/.claude/settings.json` +
    low-risk) — yes/no?
 3. ~~Remap the leader key off `ctrl+x`~~ — **decided: no, keep default**
    (no tmux collision, user wants the shortcuts as-is)
-4. Scope of command porting — port all of `claude/commands/*.md`, or just
-   the ones used daily?
+4. ~~Scope of command porting~~ — **decided/done: all 5 commands already
+   ported (see §2)**
 5. Whether to pursue the hooks→plugin port at all right now, or leave
    opencode without dashboard/backlog integration for the time being.
 
