@@ -20,7 +20,8 @@ directories in this repo, and get symlinked into `~/.config/opencode/` by
 |---|---|---|
 | `CLAUDE.md` project/global instructions | Reads `CLAUDE.md` (project) and `~/.claude/CLAUDE.md` (global) as **legacy fallbacks** automatically | Our existing global `~/.claude/CLAUDE.md` is already being picked up — nothing to port |
 | `Esc` interrupts current turn | `session_interrupt: escape` (default) | Exact match |
-| `Shift+Tab` cycles permission mode | `Tab` / `Shift+Tab` → `agent_cycle` / `agent_cycle_reverse`, cycles Build ↔ Plan | Same gesture, but only 2 states by default vs Claude Code's 4 — see §3 |
+| `Shift+Tab` cycles Default→AcceptEdits→Plan→Auto | `Tab` / `Shift+Tab` → `agent_cycle` / `agent_cycle_reverse`, cycles Build ↔ Plan | Same gesture, but only 2 states by default vs Claude Code's 4 — see §3 |
+| `Ctrl+G` opens external editor | `editor_open: <leader>e` (default) | Same feature, different key — rebind if wanted, see §4 |
 | `Ctrl+C` / `Ctrl+D` exit | `app_exit: ctrl+c,ctrl+d,<leader>q` (default) | Exact match |
 | `Ctrl+V` paste (incl. images) | `input_paste: ctrl+v` (default) | Works with opencode-vision (see `meta-glm-vision-opencode`, done) |
 | `claude --continue` / `--resume` | `opencode run --continue` / `-c`, `--session`/`-s <id>` | Same concept, different flag names |
@@ -43,11 +44,15 @@ Custom commands can also live inline in `opencode.json` under a `"command"` key 
 
 ---
 
-## 3. Extra permission-mode states (Claude Code's 4-way cycle)
+## 3. Extra permission-mode states (Claude Code's 4-way cycle) — DECIDED: skip
 
-Claude Code's Shift+Tab cycles: **default → auto-accept edits → plan mode →
-bypass permissions**. opencode ships only Build (full access) and Plan
-(edit/bash → `ask`) as primary agents.
+**Decision (2026-07-24): not doing this.** Build/Plan's 2-state Tab cycle is
+fine as-is — no need to replicate Claude Code's 4-mode Default/AcceptEdits/
+Plan/Auto cycle. Section kept for reference in case this gets revisited.
+
+Claude Code's Shift+Tab cycles four named modes: **Default → AcceptEdits →
+Plan → Auto**. opencode ships only Build (full access) and Plan (edit/bash →
+`ask`) as primary agents.
 
 **Plan**: define additional primary agents in `opencode.json` (or as markdown
 files in `~/.config/opencode/agents/`) with `mode: primary` and different
@@ -87,16 +92,30 @@ setting everything to `allow`, since explicit `deny` rules still apply).
 
 ## 4. Keybind conflicts to resolve
 
-Full default keybind list pulled from `opencode.ai/docs/keybinds`. Two
-conflicts worth deciding on:
+Full default keybind list pulled from `opencode.ai/docs/keybinds`. Verified
+against Claude Code's actual shortcuts (corrected from an earlier draft of
+this doc, which had `Ctrl+R`/`Ctrl+O` swapped):
 
-- **`Ctrl+R`** is `session_rename` by default in opencode — **not** a
-  verbose/tool-output toggle like some Claude Code muscle memory expects.
-  The closest analog to "expand tool output" is
-  `session_toggle_generic_tool_output`, currently **unbound**. Options:
-  - Rebind `session_toggle_generic_tool_output` → `ctrl+r`, move
-    `session_rename` to something else (e.g. `<leader>r`)
-  - Or leave as-is and adjust habit
+- **Claude Code `Ctrl+O`** = transcript/log viewer (verbose tool output,
+  thinking tokens). **Clean 1:1 in opencode**: `session_toggle_generic_tool_output`
+  is unbound by default — bind it directly to `ctrl+o`, no conflict to
+  resolve:
+  ```json
+  { "keybinds": { "session_toggle_generic_tool_output": "ctrl+o" } }
+  ```
+
+- **Claude Code `Ctrl+R`** = fuzzy search through past prompt history
+  (`Ctrl+S` cycles scope: session/project/all). opencode's `Ctrl+R` is
+  `session_rename` by default — genuinely different feature, and **no clean
+  opencode equivalent for history *search* was found** in the default
+  keybind list (`history_previous`/`history_next` on Up/Down only step
+  through recent entries, no fuzzy search). Real gap — not something to
+  silently rebind around; flag as unresolved.
+
+- **Claude Code `Ctrl+G`** = open external editor. Already matches
+  functionally: opencode's `editor_open` is bound to `<leader>e`. Same
+  feature, different key — rebind `editor_open` to `ctrl+g` if the muscle
+  memory matters more than the leader-key consistency.
 
 - **Leader key** defaults to `ctrl+x` and gates a lot of actions (new
   session `<leader>n`, model list `<leader>m`, agent list `<leader>a`,
@@ -167,11 +186,12 @@ conflicting keys), same pattern as Claude Code's `~/.claude/settings.json` +
 
 ## 7. Open decisions (need user input before implementing)
 
-1. Which extra permission-mode agents to define beyond Build/Plan — just
-   "auto" (auto-accept edits) and "yolo" (bypass all), or a closer 1:1 with
-   Claude Code's exact 4 states?
-2. Remap `Ctrl+R` (session_rename → elsewhere, bind tool-output-toggle to
-   `Ctrl+R`) — yes/no?
+1. ~~Which extra permission-mode agents to define beyond Build/Plan~~ —
+   **decided: none, 2-state Build/Plan cycle is fine as-is (see §3)**
+2. Bind `session_toggle_generic_tool_output` → `ctrl+o` (no conflict,
+   low-risk) — yes/no? And separately: is the `Ctrl+R` history-search gap
+   (no opencode equivalent found) worth pursuing, e.g. via a plugin, or
+   accept the gap?
 3. Remap the leader key off `ctrl+x` — only relevant if it collides with
    tmux prefix or other muscle memory; needs a check of current tmux config.
 4. Scope of command porting — port all of `claude/commands/*.md`, or just
