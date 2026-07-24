@@ -117,12 +117,16 @@ this doc, which had `Ctrl+R`/`Ctrl+O` swapped):
   feature, different key — rebind `editor_open` to `ctrl+g` if the muscle
   memory matters more than the leader-key consistency.
 
-- **Leader key** defaults to `ctrl+x` and gates a lot of actions (new
+- **Leader key** — **decided (2026-07-24): keep default `ctrl+x`, no
+  remap needed.** No collision with tmux prefix (`C-a`, confirmed via
+  `~/dotfiles/tmux/`). User wants the leader shortcuts as-is — nothing to
+  configure, they already work out of the box. Reference list of what it
+  gates (new
   session `<leader>n`, model list `<leader>m`, agent list `<leader>a`,
   sidebar toggle `<leader>b`, session export `<leader>x`, compact
   `<leader>c`, undo/redo `<leader>u`/`<leader>r`, etc.) — Claude Code has no
-  leader-key paradigm at all. Check for collision with tmux prefix before
-  deciding whether to remap (`"leader"` key in `tui.json`).
+  leader-key paradigm at all, so this is pure upside: opencode-only
+  shortcuts on top of everything else.
 
 Config file: `tui.json` (global: `~/.config/opencode/tui.json`, project:
 `.opencode/tui.json` — mirrors `opencode.json`'s global/project split).
@@ -192,8 +196,8 @@ conflicting keys), same pattern as Claude Code's `~/.claude/settings.json` +
    low-risk) — yes/no? And separately: is the `Ctrl+R` history-search gap
    (no opencode equivalent found) worth pursuing, e.g. via a plugin, or
    accept the gap?
-3. Remap the leader key off `ctrl+x` — only relevant if it collides with
-   tmux prefix or other muscle memory; needs a check of current tmux config.
+3. ~~Remap the leader key off `ctrl+x`~~ — **decided: no, keep default**
+   (no tmux collision, user wants the shortcuts as-is)
 4. Scope of command porting — port all of `claude/commands/*.md`, or just
    the ones used daily?
 5. Whether to pursue the hooks→plugin port at all right now, or leave
