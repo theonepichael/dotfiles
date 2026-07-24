@@ -67,6 +67,29 @@ When work is complete on a backlog item, mark it done with the above.
 stdout — after running one, display that stdout to the user instead of just
 narrating a one-line confirmation.
 
+#### Reading an item before starting work
+
+`start` only renders the dashboard (one-line summaries). It does NOT surface the
+item's actionable detail — `context`, `next_steps`, and `related_files` are what
+you actually pick the work up from. So before beginning work on an item the user
+names ("work on 4", "let's pick up the truncation item", etc.), run `show` on it
+first and read the full record:
+
+```bash
+python3 ~/.claude/scripts/dev_status.py show <slug|N>
+```
+
+Then, with that context in hand, actually act on it — e.g. open the listed
+`related_files`, re-read the cited code, and ground the next step in the stored
+`next_steps`. Do not start writing or editing a task item from the dashboard's
+one-line summary alone. The `start` call can happen in the same batch as the
+`show`, or immediately after — the point is to have the full record loaded
+before any work begins, not merely to have marked it in-progress.
+
+If `show` returns no `context`/`next_steps`/`related_files` (empty fields), say
+so and ask the user to fill them in before proceeding — don't fabricate a plan
+from the summary title.
+
 When writing to stored fields (`summary`, `context`, `next_steps`, `related_files[].note`)
 and prose cross-references, use slugs for any item references — never raw hex IDs.
 
