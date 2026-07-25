@@ -73,7 +73,7 @@ python3 ~/.claude/scripts/dev_status.py pending add '{"id", "description", "kind
 ```
 
 `<id>` can be the pending item's slug — `dev_status.py`'s cross-section
-numbering (visible via the status skill) also works, but its numbers shift as
+numbering (visible via the dashboard skill) also works, but its numbers shift as
 items change, so prefer the slug here since `standup.py`'s `fetch` output
 already gives you it directly.
 
