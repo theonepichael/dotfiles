@@ -104,15 +104,28 @@ kill_process_by_port() {
     return $rc
 }
 
-# watchcommit pause/resume — manage the touch-file the daemon checks at the
-# top of each poll tick (see ~/.local/bin/watchcommit). Avoids SIGSTOP-ing the
-# process when you need to do manual git history surgery (commit --amend,
-# rebase, etc.) without the daemon racing it and winning. State dir follows
-# XDG_STATE_HOME (defaults to ~/.local/state), kept consistent with the
-# daemon's PAUSE_FILE computation.
+# watchcommit pause/resume + agent detection — the daemon checks a pause
+# touch-file at the top of each poll tick (manual opt-in, opt-out via
+# /proc agent-proc detection layered on top; see ~/.local/bin/watchcommit).
+# wc-pause / wc-resume manage the touch-file so manual git history surgery
+# (commit --amend, rebase, etc.) can block the daemon without SIGSTOP-ing it.
+# wc-status reports pause state AND any holding agent PIDs the daemon skipped
+# a tick for (read from the agents-active state file the daemon clears on a
+# clean tick). State dir follows XDG_STATE_HOME (defaults to ~/.local/state),
+# kept consistent with the daemon's STATE_DIR / PAUSE_FILE / AGENTS_STATE_FILE.
 wc-pause()  { mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/watchcommit" && touch "${XDG_STATE_HOME:-$HOME/.local/state}/watchcommit/paused" && echo "watchcommit paused"; }
 wc-resume() { rm -f "${XDG_STATE_HOME:-$HOME/.local/state}/watchcommit/paused" && echo "watchcommit resumed"; }
-wc-status() { if [ -f "${XDG_STATE_HOME:-$HOME/.local/state}/watchcommit/paused" ]; then echo "watchcommit paused"; else echo "watchcommit running"; fi; }
+wc-status() {
+    local state="${XDG_STATE_HOME:-$HOME/.local/state}/watchcommit"
+    if [ -f "${state}/paused" ]; then
+        echo "watchcommit paused"
+    elif [ -s "${state}/agents-active" ]; then
+        echo "watchcommit agent-active (skipping ticks):"
+        cat "${state}/agents-active"
+    else
+        echo "watchcommit running"
+    fi
+}
 
 # ============================================================================
 # ALIASES
