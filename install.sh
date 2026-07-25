@@ -360,9 +360,37 @@ fi
 # opencode/CLAUDE_CODE_PARITY.md §2) — dashboard.md is the first one pulled
 # into the repo proper (2026-07-24, after the status→dashboard rename) so
 # that one at least stays in sync automatically; the rest are still manual.
-# AGENTS.md and opencode.jsonc are intentionally not managed here yet.
+# AGENTS.md is intentionally not managed here — opencode already reads
+# ~/.claude/CLAUDE.md directly as a legacy fallback when no AGENTS.md exists
+# (see CLAUDE_CODE_PARITY.md §1), so creating one here would just duplicate
+# the same content under a second path for no behavioral gain.
 symlink opencode/tui.json ~/.config/opencode/tui.json
 symlink opencode/command/dashboard.md ~/.config/opencode/commands/dashboard.md
+
+# opencode.jsonc holds the bash permission allowlist (opencode's equivalent
+# of claude/settings.json's permissions block) — copied, not symlinked, on
+# the same reasoning as settings.json below: opencode likely rewrites this
+# file in place as permissions get approved live, which would detach a
+# symlink silently. Copy-once; if the live file exists, report drift.
+OPENCODE_JSONC_DRIFT=""
+if [[ ! -f ~/.config/opencode/opencode.jsonc ]]; then
+  mkdir -p ~/.config/opencode
+  if cp "$DOTFILES/opencode/opencode.jsonc" ~/.config/opencode/opencode.jsonc; then
+    record file-copied ~/.config/opencode/opencode.jsonc
+    echo "  copied ~/.config/opencode/opencode.jsonc"
+  else
+    note_skip "opencode.jsonc seed" "copy failed"
+  fi
+else
+  OPENCODE_JSONC_DRIFT="$(python3 - "$DOTFILES/opencode/opencode.jsonc" "$HOME/.config/opencode/opencode.jsonc" <<'PYEOF'
+import json
+import sys
+
+seed, live = (json.load(open(p)) for p in sys.argv[1:3])
+print(", ".join(k for k in sorted(set(seed) | set(live)) if seed.get(k) != live.get(k)))
+PYEOF
+)"
+fi
 
 # watchcommit: personal machines only — it auto-pushes to a personal remote
 # under your personal Claude account login, which has no place on work hardware.
@@ -519,6 +547,10 @@ else
 fi
 if [[ -n "$SETTINGS_DRIFT" ]]; then
   echo "⚠ ~/.claude/settings.json drifted from ${SETTINGS_SEED:t}: $SETTINGS_DRIFT"
+  echo "  (copy-once by design — port changes manually if wanted)"
+fi
+if [[ -n "$OPENCODE_JSONC_DRIFT" ]]; then
+  echo "⚠ ~/.config/opencode/opencode.jsonc drifted from repo: $OPENCODE_JSONC_DRIFT"
   echo "  (copy-once by design — port changes manually if wanted)"
 fi
 echo "  rollback available: ./install.sh --rollback (manifest: $MANIFEST)"

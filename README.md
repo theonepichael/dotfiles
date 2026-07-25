@@ -140,7 +140,9 @@ Everything is symlinked — edits in `~/dotfiles` take effect immediately.
 3. Symlinks all common dotfiles (backs up any existing non-symlink files to `*.bak`)
 4. Seeds `~/.claude/settings.json` (copy-once — if it already exists, drift from
    the repo seed is reported in the summary, never overwritten)
-5. Installs vim-plug (if missing)
+5. Seeds `~/.config/opencode/opencode.jsonc` (the bash permission allowlist) the
+   same copy-once way
+6. Installs vim-plug (if missing)
 
 ### macOS only
 - Installs Homebrew (if missing) — supports both Apple Silicon (`/opt/homebrew`) and Intel (`/usr/local`)

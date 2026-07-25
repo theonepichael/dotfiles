@@ -243,6 +243,22 @@ conflicting keys), same pattern as Claude Code's `~/.claude/settings.json` +
    `meta-opencode-sessionstart-plugin` so it survives independently of this
    doc. Revisit when there's a real need or when the opencode plugin API
    stabilizes further.
+6. ~~Whether `opencode.jsonc` (the bash permission allowlist, `~/.config/
+   opencode/opencode.jsonc`) should be tracked in this repo~~ — **Decided
+   (2026-07-24): yes.** It existed only as an untracked local file on the
+   machine it was set up on, so pulling this repo to a fresh machine would
+   have silently dropped back to per-command permission prompts for
+   everything. Pulled into the repo at `opencode/opencode.jsonc` and wired
+   into `install.sh` copy-once + drift-check, same pattern as
+   `claude/settings.json` (not symlinked — opencode likely rewrites this
+   file in place as permissions get approved live, same detach risk
+   `settings.json`'s comment warns about).
+7. ~~Whether `AGENTS.md` needs a repo-tracked equivalent for the backlog
+   "show before start" guidance~~ — **Decided (2026-07-24): no.** Per §1,
+   opencode already reads `~/.claude/CLAUDE.md` directly as a legacy
+   fallback when no `AGENTS.md` exists — the guidance is already live
+   without any extra file. Confirmed no local `AGENTS.md` shadows it on
+   this machine.
 
 ## Sources
 
