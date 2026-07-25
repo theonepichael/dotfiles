@@ -58,9 +58,12 @@ def resolve_backend() -> str | None:
 
 
 def resolve_plan_text(arg: str) -> str:
-    path = Path(arg).expanduser()
-    if path.is_file():
-        return path.read_text()
+    try:
+        path = Path(arg).expanduser()
+        if path.is_file():
+            return path.read_text()
+    except OSError:
+        pass  # arg is inline text too long/invalid to be a filesystem path
     return arg
 
 

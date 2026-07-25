@@ -76,6 +76,14 @@ When work is complete on a backlog item, mark it done with the above.
 stdout — after running one, display that stdout to the user instead of just
 narrating a one-line confirmation.
 
+If the item's work touched a real project repo (not this dotfiles repo) and
+left actual file changes, offer to commit — and if the repo has a remote,
+offer to push too — once the work is verified and ready. Offer, never commit
+or push silently, same as every other git action in this file. Scope the
+offered commit to the files this item actually touched, not a blanket
+`git add -A` — especially relevant if the repo has other uncommitted changes
+sitting alongside this item's work.
+
 #### Reading an item before starting work
 
 `start` only renders the dashboard (one-line summaries). It does NOT surface the
@@ -101,6 +109,39 @@ from the summary title.
 
 When writing to stored fields (`summary`, `context`, `next_steps`, `related_files[].note`)
 and prose cross-references, use slugs for any item references — never raw hex IDs.
+
+#### Checking for a concurrent session before touching a project repo
+
+Project repos (anything under `related_files`, not this dotfiles repo) get
+worked from more than one tool in parallel — Claude Code, opencode, Copilot —
+against the same checkout. Before starting work on a backlog item whose
+`related_files` point into a real project repo, check that repo for
+uncommitted changes first:
+
+```bash
+git -C <repo> status --short
+```
+
+- **Clean** — work directly in the main checkout as normal.
+- **Dirty, and you recognize the changes as this session's own prior work**
+  — continue as normal.
+- **Dirty, and the changes are unrelated or unrecognized** (different files
+  than what this session has touched, a topic that doesn't match the item
+  being started) — assume another session is actively working there. Don't
+  edit in place — create an isolated worktree instead and do the new work
+  there:
+
+  ```bash
+  git -C <repo> worktree add ../<repo-name>-<slug> -b <slug>
+  ```
+
+  Mention the worktree path when the work is done — it needs a manual merge
+  or PR back into the main branch, since it doesn't live in the main
+  checkout. Also avoid repo-wide operations (a full reformat, a
+  rename-everywhere refactor) while another session's uncommitted changes
+  are present, even from inside a worktree — those still touch the same
+  tracked files and will conflict on merge either way; scope such changes to
+  just the files the current task actually needs.
 
 ### Pending Items
 
