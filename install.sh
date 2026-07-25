@@ -166,7 +166,7 @@ if is_mac; then
   fi
 
 elif is_linux; then
-  PKG_LIST=(tmux zoxide eza bat lsd ncdu tldr ripgrep unzip lsof xclip)
+  PKG_LIST=(tmux zoxide eza bat lsd ncdu tldr ripgrep unzip lsof xclip fontconfig)
 
   if command -v dnf &>/dev/null; then
     echo "==> Refreshing dnf package metadata..."
