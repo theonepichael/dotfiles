@@ -289,8 +289,7 @@ def _render_order(items):
     open_items = [i for i in items if i.get("status") == "open"]
     ready = sorted(
         [i for i in open_items if not effective_blockers(i, index)],
-        key=lambda i: i.get("updated", ""),
-        reverse=True,
+        key=lambda i: i.get("created", ""),
     )
     blocked = sorted(
         [i for i in open_items if effective_blockers(i, index)],
