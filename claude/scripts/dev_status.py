@@ -41,9 +41,9 @@ IMMUTABLE_FIELDS = {"id", "created"}
 # `add-feature`, etc. are accepted. Argparse never confuses a hyphenated
 # slug with a subcommand (the subcommand is parsed from argv positionally),
 # and the bare-verb reservation exists purely for dashboard clarity (no
-# item literally named `remove`). Prefix-match refusal would forbid natural
-# slugs like `update-deps` for no real safety gain. See backlog item
-# meta-devstatus-reserved-slug-prefix (2026-07-25) for the decision record.
+# item literally named `remove`). Prefix-match refusal was considered and
+# rejected: it would forbid natural slugs like `update-deps` for no real
+# dispatch-safety gain (2026-07-25 decision).
 RESERVED_SLUGS = {
     "render",
     "list",

@@ -135,6 +135,19 @@ class BacklogTestCase(unittest.TestCase):
                 dev_status.cmd_add(args)
         self.assertIn("reserved", err.getvalue())
 
+    def test_03e_add_hyphenated_reserved_prefix_accepted(self):
+        # Exact-match invariant: only the bare verb is reserved. A slug like
+        # `remove-probe` (first hyphen-segment is a reserved verb) must be
+        # accepted — argparse never confuses it with the `remove`
+        # subcommand, which is parsed positionally from argv. See backlog
+        # item meta-devstatus-reserved-slug-prefix (2026-07-25) for the
+        # decision record.
+        args = _args(json='{"id": "remove-probe", "summary": "x"}')
+        dev_status.cmd_add(args)
+        items = self.read_items()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["id"], "remove-probe")
+
     # ── 4: add with duplicate slug rejected ──────────────────────────────────
 
     def test_04_add_duplicate_slug_rejected(self):
