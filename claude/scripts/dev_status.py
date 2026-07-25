@@ -66,12 +66,6 @@ SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)+$")
 SLUG_MIN, SLUG_MAX = 3, 40
 
 CATEGORY_TAG = {"bug": "bug", "feature": "feat", "chore": "chore", "research": "rsrch"}
-CATEGORY_COLOR = {
-    "bug": "\x1b[31m",
-    "feature": "\x1b[36m",
-    "chore": "\x1b[2m",
-    "research": "\x1b[35m",
-}
 STALE_DAYS = 7
 SECTION_WIDTH = 44
 _RESET = "\x1b[0m"
@@ -94,16 +88,11 @@ def today():
     return date.today().isoformat()
 
 
-def _category_tag(category, color):
-    """Colored left-bar chip + left-justified tag word, e.g. '▎ feat  '.
-    Fixed 5-char word field keeps the summary column aligned regardless of
-    which category name is longest (chore/rsrch)."""
+def _category_tag(category):
     if not category:
         return ""
     tag = CATEGORY_TAG.get(category, category[:5])
-    code = CATEGORY_COLOR.get(category, "\x1b[2m")
-    chip = _colorize("▎", code, color)
-    return f"{chip} {tag.ljust(5)} "
+    return f"[{tag}] "
 
 
 def _age_days(updated_str):
@@ -530,7 +519,7 @@ def render(items=None, pending_items=None, *, out=None, err=None, rev=None):
         for item in section_items:
             n = slug_to_num[item["id"]]
             badge = _priority_glyph(item, color) if show_priority else ""
-            tag = _category_tag(item.get("category", ""), color) if show_category else ""
+            tag = _category_tag(item.get("category", "")) if show_category else ""
             line = f"\u2502  {n:2}  {badge}{tag}{item.get(summary_key, '')}"
             if line_suffix:
                 line += line_suffix(item, color)
