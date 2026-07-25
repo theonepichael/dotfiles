@@ -505,9 +505,15 @@ def render(items=None, pending_items=None, *, out=None, err=None, rev=None):
         if not section_items:
             return
         frame_code = _COLORS.get(color_code)
-        top = _colorize(_section_top(title), frame_code, color) if frame_code else _section_top(title)
+        top = (
+            _colorize(_section_top(title), frame_code, color)
+            if frame_code
+            else _section_top(title)
+        )
         bottom = (
-            _colorize(_section_bottom(), frame_code, color) if frame_code else _section_bottom()
+            _colorize(_section_bottom(), frame_code, color)
+            if frame_code
+            else _section_bottom()
         )
         lines = [top]
         for item in section_items:
