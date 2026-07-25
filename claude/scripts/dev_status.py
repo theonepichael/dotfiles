@@ -19,6 +19,11 @@ META_FILE = DATA_DIR / "_meta.json"
 LOCK_FILE = DATA_DIR / ".backlog.lock"
 
 VALID_STATUSES = {"open", "in-progress", "done"}
+VALID_PRIORITIES = {"high", "normal", "low"}
+
+# Sort rank for priority (absence == normal). Lower sorts first.
+_PRIORITY_RANK = {"high": 0, "normal": 1, "low": 2}
+
 VALID_PENDING_STATUSES = {"waiting_for_reply", "reply_received", "resolved"}
 VALID_PENDING_KINDS = {"email", "chat", "approval"}
 PENDING_MUTABLE_FIELDS = {
@@ -277,6 +282,19 @@ def detect_cycle(start, new_dep, index):
 # ── render order ──────────────────────────────────────────────────────────────
 
 
+def _priority_rank(item):
+    """Lower sorts first. Absence and any unknown value collapse to 'normal'."""
+    return _PRIORITY_RANK.get(item.get("priority", "normal"), 1)
+
+
+def _priority_badge(item, color):
+    p = item.get("priority")
+    if p is None or p == "normal":
+        return ""
+    code = _COLORS["warn"] if p == "high" else "\x1b[2m"  # red for high, dim for low
+    return " " + _colorize(f"\u00b7{p}", code, color)
+
+
 def _render_order(items):
     """Return (in_progress, ready, blocked, done, done_total) in render order."""
     index = build_index(items)
@@ -286,15 +304,18 @@ def _render_order(items):
         key=lambda i: i.get("updated", ""),
         reverse=True,
     )
+    in_progress = sorted(in_progress, key=_priority_rank)  # stable
     open_items = [i for i in items if i.get("status") == "open"]
     ready = sorted(
         [i for i in open_items if not effective_blockers(i, index)],
         key=lambda i: i.get("created", ""),
     )
+    ready = sorted(ready, key=_priority_rank)  # stable
     blocked = sorted(
         [i for i in open_items if effective_blockers(i, index)],
         key=lambda i: (len(effective_blockers(i, index)), i.get("updated", "")),
     )
+    blocked = sorted(blocked, key=_priority_rank)  # stable
     done_all = sorted(
         [i for i in items if i.get("status") == "done"],
         key=lambda i: i.get("updated", ""),
@@ -453,6 +474,7 @@ def render(items=None, pending_items=None, *, out=None, err=None, rev=None):
         summary_key="summary",
         show_category=True,
         line_suffix=None,
+        show_priority=False,
     ):
         if not section_items:
             return
@@ -464,6 +486,8 @@ def render(items=None, pending_items=None, *, out=None, err=None, rev=None):
             n = slug_to_num[item["id"]]
             tag = _category_tag(item.get("category", "")) if show_category else ""
             line = f"  {n:2}  {tag}{item.get(summary_key, '')}"
+            if show_priority:
+                line += _priority_badge(item, color)
             if line_suffix:
                 line += line_suffix(item, color)
             if show_age:
@@ -498,14 +522,19 @@ def render(items=None, pending_items=None, *, out=None, err=None, rev=None):
         line_suffix=_pending_suffix,
     )
     add_section(
-        "\u26a1 IN PROGRESS", in_progress, show_age=True, color_code="in_progress"
+        "\u26a1 IN PROGRESS",
+        in_progress,
+        show_age=True,
+        show_priority=True,
+        color_code="in_progress",
     )
-    add_section("\U0001f7e2 READY", ready, color_code="ready")
+    add_section("\U0001f7e2 READY", ready, show_priority=True, color_code="ready")
     add_section(
         "\U0001f6a7 BLOCKED",
         blocked,
         show_blockers=True,
         show_age=True,
+        show_priority=True,
         color_code="blocked",
     )
     done_title = (
@@ -588,6 +617,14 @@ def cmd_add(args):
         print("[add] 'summary' is required", file=sys.stderr)
         sys.exit(1)
 
+    if "priority" in patch and patch["priority"] not in VALID_PRIORITIES:
+        print(
+            f"[add] invalid priority '{patch['priority']}' — must be one of: "
+            f"{', '.join(sorted(VALID_PRIORITIES))}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     with backlog_lock():
         items = load_items()
         index = build_index(items)
@@ -616,6 +653,8 @@ def cmd_add(args):
             "context": patch.get("context", ""),
             "next_steps": patch.get("next_steps", ""),
         }
+        if "priority" in patch:
+            item["priority"] = patch["priority"]
 
         items.append(item)
         save_items(items)
@@ -644,6 +683,14 @@ def cmd_update(args):
         print(
             f"[update] invalid status '{patch['status']}' — must be one of: "
             f"{', '.join(sorted(VALID_STATUSES))}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if "priority" in patch and patch["priority"] not in VALID_PRIORITIES:
+        print(
+            f"[update] invalid priority '{patch['priority']}' — must be one of: "
+            f"{', '.join(sorted(VALID_PRIORITIES))}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -993,11 +1040,14 @@ def main():
     p.add_argument("id", metavar="<slug|N>")
 
     p = sub.add_parser("add", help="append a new item (id required in JSON)")
-    p.add_argument("json", metavar='\'{"id": "my-slug", "summary": "..."}\'')
+    p.add_argument(
+        "json",
+        metavar='\'{"id": "my-slug", "summary": "...", "priority": "high"}\'',
+    )
 
     p = sub.add_parser("update", help="merge JSON patch into an item")
     p.add_argument("id", metavar="<slug|N>")
-    p.add_argument("patch", metavar='\'{"field": "value"}\'')
+    p.add_argument("patch", metavar='\'{"field": "value", "priority": "high"}\'')
     p.add_argument(
         "--if-rev",
         type=int,
