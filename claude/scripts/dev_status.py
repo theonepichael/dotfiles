@@ -300,14 +300,16 @@ def _priority_rank(item):
 
 
 def _priority_glyph(item, color):
-    """Leading 2-char gutter: bold-red up-triangle for high, dim down-triangle
-    for low, two spaces for normal/absent \u2014 keeps every line's tag column
-    aligned regardless of priority."""
+    """Leading 2-char gutter: bold-red up-arrow for high, dim down-arrow for
+    low, two spaces for normal/absent \u2014 keeps every line's tag column
+    aligned regardless of priority. Arrows block (same as the \u21b3 blocked-by
+    marker) \u2014 Geometric Shapes glyphs (\u25b2/\u25bd) fell back to an unrelated color
+    icon font on Windows Terminal (2026-07-25)."""
     p = item.get("priority")
     if p == "high":
-        return _colorize("\u25b2", _COLORS["prio_high"], color) + " "
+        return _colorize("\u2191", _COLORS["prio_high"], color) + " "
     if p == "low":
-        return _colorize("\u25bd", _COLORS["prio_low"], color) + " "
+        return _colorize("\u2193", _COLORS["prio_low"], color) + " "
     return "  "
 
 
