@@ -54,12 +54,20 @@ check "fc-list recognizes the installed Nerd Font" bash -c \
 
 echo ""
 echo "=== 1b. Re-run is idempotent — no re-download of the Nerd Font ==="
+# manifest_init() truncates $MANIFEST on every install.sh run, and symlinks
+# that already exist don't get re-recorded (the was_link gate in symlink()).
+# An extra run here would otherwise silently erase run 1's symlink-created /
+# file-copied records that section 2's rollback depends on below — back up
+# and restore the manifest so this idempotency check stays a no-op for
+# everything after it.
+cp "$MANIFEST" /tmp/manifest.bak
 font_mtime_before="$(stat -c %Y ~/.local/share/fonts/JetBrainsMonoNerdFont/.nerd-fonts-version)"
 ./install.sh >/tmp/install-rerun.out 2>&1
 cat /tmp/install-rerun.out
 font_mtime_after="$(stat -c %Y ~/.local/share/fonts/JetBrainsMonoNerdFont/.nerd-fonts-version)"
 check "version marker untouched by re-run (no re-download)" bash -c \
   "[[ '$font_mtime_before' -eq '$font_mtime_after' ]]"
+cp /tmp/manifest.bak "$MANIFEST"
 
 echo ""
 echo "=== 2. Rollback undoes the personal install ==="
