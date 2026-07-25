@@ -146,21 +146,33 @@ Everything is symlinked — edits in `~/dotfiles` take effect immediately.
 
 ### macOS only
 - Installs Homebrew (if missing) — supports both Apple Silicon (`/opt/homebrew`) and Intel (`/usr/local`)
-- Installs casks: Karabiner-Elements, Rectangle, Ghostty, VS Code, AltTab
+- Installs casks: Karabiner-Elements, Rectangle, Ghostty, VS Code, AltTab, JetBrainsMono Nerd Font
 - Symlinks macOS-specific configs (`.zprofile`, karabiner, vscode, launchd)
 - Imports Rectangle preferences
 - Sets Caps Lock → Escape via macOS keyboard modifier mapping
 - Loads the watchcommit launchd agent
 
 ### Linux/WSL only
-- Installs packages via `apt`
+- Installs packages via `apt` (Debian/Ubuntu) or `dnf` (Fedora)
 - Creates `~/.local/bin/bat` shim (Ubuntu ships bat as `batcat`)
 - Installs uv via astral.sh if not present
 - Installs oh-my-posh to `~/.local/bin` via official installer
+- Installs JetBrainsMono Nerd Font (pinned version, see below) to
+  `~/.local/share/fonts/JetBrainsMonoNerdFont`, then `fc-cache -f`
 - Enables and starts the watchcommit systemd `--user` service, and runs
   `loginctl enable-linger` so it keeps running after you close the last
   WSL/SSH session (skipped with a note if `systemd --user` isn't available —
   e.g. WSL without `systemd=true` in `/etc/wsl.conf`)
+
+### Nerd Font versioning
+The JetBrainsMono Nerd Font is pinned to a specific release
+(`NERD_FONT_VERSION` near the top of the Linux branch in `install.sh`) rather
+than always fetching latest — every machine ends up with byte-identical font
+files, and reinstalls are reproducible. A version-marker file
+(`~/.local/share/fonts/JetBrainsMonoNerdFont/.nerd-fonts-version`) makes
+re-runs skip the download/extract instead of redoing it every time. To
+upgrade: bump `NERD_FONT_VERSION` in `install.sh` and re-run — the marker
+mismatch triggers a fresh download.
 
 ## Keyboard setup (Karabiner-Elements)
 

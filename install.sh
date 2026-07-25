@@ -237,6 +237,31 @@ elif is_linux; then
       note_skip "oh-my-posh" "installer failed (network blocked, or unzip missing?)"
     fi
   fi
+
+  # JetBrainsMono Nerd Font — not in apt/dnf as the patched (icon-glyph)
+  # variant, so pull the pinned release directly. Pinned rather than
+  # "latest" so every machine ends up with byte-identical fonts; bump
+  # NERD_FONT_VERSION manually to update. Version-marker file makes this
+  # idempotent without re-downloading/re-extracting 90+ files every run.
+  NERD_FONT_VERSION="3.4.0"
+  NERD_FONT_DIR="$HOME/.local/share/fonts/JetBrainsMonoNerdFont"
+  NERD_FONT_MARKER="$NERD_FONT_DIR/.nerd-fonts-version"
+  if [[ "$(cat "$NERD_FONT_MARKER" 2>/dev/null)" != "$NERD_FONT_VERSION" ]]; then
+    echo "==> Installing JetBrainsMono Nerd Font v${NERD_FONT_VERSION}..."
+    NERD_FONT_TMP="$(mktemp -d)"
+    if curl -fLo "$NERD_FONT_TMP/JetBrainsMono.zip" \
+        "https://github.com/ryanoasis/nerd-fonts/releases/download/v${NERD_FONT_VERSION}/JetBrainsMono.zip" \
+        && mkdir -p "$NERD_FONT_DIR" \
+        && unzip -oq "$NERD_FONT_TMP/JetBrainsMono.zip" -d "$NERD_FONT_DIR" \
+        && echo "$NERD_FONT_VERSION" > "$NERD_FONT_MARKER"; then
+      record package-installed "JetBrainsMono Nerd Font v${NERD_FONT_VERSION}"
+      fc-cache -f "$NERD_FONT_DIR" &>/dev/null
+      echo "  installed to $NERD_FONT_DIR"
+    else
+      note_skip "JetBrainsMono Nerd Font" "download/extract failed (network blocked, or unzip missing?)"
+    fi
+    rm -rf "$NERD_FONT_TMP"
+  fi
 fi
 
 # NVM (both platforms — uses its own installer)
