@@ -816,36 +816,34 @@ def cmd_pending_add(args):
         )
         sys.exit(1)
 
-    pending_items = load_pending()
-    if any(p["id"] == slug for p in pending_items):
-        print(f"[pending add] duplicate id: {slug}", file=sys.stderr)
-        sys.exit(1)
+    with backlog_lock():
+        pending_items = load_pending()
+        if any(p["id"] == slug for p in pending_items):
+            print(f"[pending add] duplicate id: {slug}", file=sys.stderr)
+            sys.exit(1)
 
-    pending_items.append(
-        {
-            "id": slug,
-            "created": today(),
-            "updated": today(),
-            "status": "waiting_for_reply",
-            "description": description,
-            "kind": kind,
-            "source_ref": patch.get("source_ref", {}),
-            "context": patch.get("context", ""),
-            "next_steps": patch.get("next_steps", []),
-            "blocking": patch.get("blocking", []),
-            "outcome": None,
-        }
-    )
-    save_pending(pending_items)
+        pending_items.append(
+            {
+                "id": slug,
+                "created": today(),
+                "updated": today(),
+                "status": "waiting_for_reply",
+                "description": description,
+                "kind": kind,
+                "source_ref": patch.get("source_ref", {}),
+                "context": patch.get("context", ""),
+                "next_steps": patch.get("next_steps", []),
+                "blocking": patch.get("blocking", []),
+                "outcome": None,
+            }
+        )
+        save_pending(pending_items)
+        new_rev = bump_rev()
     print(f"[pending add] {slug} — {description[:60]}", file=sys.stderr)
-    render(pending_items=pending_items)
+    render(pending_items=pending_items, rev=new_rev)
 
 
 def cmd_pending_update(args):
-    items = load_items()
-    pending_items = load_pending()
-    kind, slug = resolve_id(args.id, items, pending_items)
-    require_kind("pending update", args.id, kind, "pending")
     patch = _parse_json_arg(args.patch, "pending update")
 
     bad = set(patch) - PENDING_MUTABLE_FIELDS
@@ -863,16 +861,28 @@ def cmd_pending_update(args):
         )
         sys.exit(1)
 
-    index = {p["id"]: p for p in pending_items}
-    item = index.get(slug)
-    if item is None:
-        print(f"[pending update] not found: {slug}", file=sys.stderr)
-        sys.exit(1)
-    item.update(patch)
-    item["updated"] = today()
-    save_pending(pending_items)
-    confirm_resolution("pending update", args.id, item, summary_key="description")
-    render(pending_items=pending_items)
+    with backlog_lock():
+        items = load_items()
+        pending_items = load_pending()
+        current_rev = load_rev()
+        enforce_rev_guard(
+            "pending update", args.id, args.if_rev, current_rev, items, pending_items
+        )
+
+        kind, slug = resolve_id(args.id, items, pending_items)
+        require_kind("pending update", args.id, kind, "pending")
+
+        index = {p["id"]: p for p in pending_items}
+        item = index.get(slug)
+        if item is None:
+            print(f"[pending update] not found: {slug}", file=sys.stderr)
+            sys.exit(1)
+        item.update(patch)
+        item["updated"] = today()
+        save_pending(pending_items)
+        new_rev = bump_rev()
+        confirm_resolution("pending update", args.id, item, summary_key="description")
+    render(pending_items=pending_items, rev=new_rev)
 
 
 def cmd_pending_list(args):
@@ -883,46 +893,48 @@ def cmd_pending_list(args):
 def cmd_prune(args):
     cutoff_days = 14
 
-    items = load_items()
-    keep, pruned = [], 0
-    for item in items:
-        if item.get("status") == "done":
-            try:
-                age = (date.today() - date.fromisoformat(item["updated"])).days
-            except (KeyError, ValueError):
-                age = 0
-            if age >= cutoff_days:
-                pruned += 1
-                continue
-        keep.append(item)
-    if pruned:
-        _backup_before_bulk_delete(ITEMS_FILE)
-        save_items(keep)
+    with backlog_lock():
+        items = load_items()
+        keep, pruned = [], 0
+        for item in items:
+            if item.get("status") == "done":
+                try:
+                    age = (date.today() - date.fromisoformat(item["updated"])).days
+                except (KeyError, ValueError):
+                    age = 0
+                if age >= cutoff_days:
+                    pruned += 1
+                    continue
+            keep.append(item)
+        if pruned:
+            _backup_before_bulk_delete(ITEMS_FILE)
+            save_items(keep)
 
-    pending_items = load_pending()
-    pending_keep, pending_pruned = [], 0
-    for item in pending_items:
-        if item.get("status") == "resolved":
-            try:
-                age = (date.today() - date.fromisoformat(item["updated"])).days
-            except (KeyError, ValueError):
-                age = 0
-            if age >= cutoff_days:
-                pending_pruned += 1
-                continue
-        pending_keep.append(item)
-    if pending_pruned:
-        _backup_before_bulk_delete(PENDING_FILE)
-        save_pending(pending_keep)
+        pending_items = load_pending()
+        pending_keep, pending_pruned = [], 0
+        for item in pending_items:
+            if item.get("status") == "resolved":
+                try:
+                    age = (date.today() - date.fromisoformat(item["updated"])).days
+                except (KeyError, ValueError):
+                    age = 0
+                if age >= cutoff_days:
+                    pending_pruned += 1
+                    continue
+            pending_keep.append(item)
+        if pending_pruned:
+            _backup_before_bulk_delete(PENDING_FILE)
+            save_pending(pending_keep)
 
-    total = pruned + pending_pruned
-    if total:
-        print(
-            f"[prune] removed {pruned} backlog item(s), "
-            f"{pending_pruned} pending item(s) — backup written to {DATA_DIR}"
-        )
-    else:
-        print("[prune] nothing to prune")
+        total = pruned + pending_pruned
+        if total:
+            bump_rev()
+            print(
+                f"[prune] removed {pruned} backlog item(s), "
+                f"{pending_pruned} pending item(s) — backup written to {DATA_DIR}"
+            )
+        else:
+            print("[prune] nothing to prune")
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -950,12 +962,27 @@ def main():
     p = sub.add_parser("update", help="merge JSON patch into an item")
     p.add_argument("id", metavar="<slug|N>")
     p.add_argument("patch", metavar='\'{"field": "value"}\'')
+    p.add_argument(
+        "--if-rev", type=int, default=None, metavar="<N>",
+        help="required when <id> is numeric; get the current value from "
+             "render/list/show immediately before this call",
+    )
 
     p = sub.add_parser("start", help="mark item in-progress")
     p.add_argument("id", metavar="<slug|N>")
+    p.add_argument(
+        "--if-rev", type=int, default=None, metavar="<N>",
+        help="required when <id> is numeric; get the current value from "
+             "render/list/show immediately before this call",
+    )
 
     p = sub.add_parser("done", help="mark item done")
     p.add_argument("id", metavar="<slug|N>")
+    p.add_argument(
+        "--if-rev", type=int, default=None, metavar="<N>",
+        help="required when <id> is numeric; get the current value from "
+             "render/list/show immediately before this call",
+    )
 
     p = sub.add_parser("rename", help="rename slug (rewrites all references)")
     p.add_argument("old_slug")
@@ -964,10 +991,20 @@ def main():
     p = sub.add_parser("block", help="add a blocker to an item")
     p.add_argument("id", metavar="<slug|N>")
     p.add_argument("blocker", metavar="<blocker-slug>")
+    p.add_argument(
+        "--if-rev", type=int, default=None, metavar="<N>",
+        help="required when <id> is numeric; get the current value from "
+             "render/list/show immediately before this call",
+    )
 
     p = sub.add_parser("unblock", help="remove a blocker from an item")
     p.add_argument("id", metavar="<slug|N>")
     p.add_argument("blocker", metavar="<blocker-slug>")
+    p.add_argument(
+        "--if-rev", type=int, default=None, metavar="<N>",
+        help="required when <id> is numeric; get the current value from "
+             "render/list/show immediately before this call",
+    )
 
     p = sub.add_parser(
         "prune", help="permanently remove done/resolved items older than 14 days"
@@ -994,6 +1031,11 @@ def main():
     )
     p.add_argument("id", metavar="<slug|N>")
     p.add_argument("patch", metavar='\'{"status": "reply_received", ...}\'')
+    p.add_argument(
+        "--if-rev", type=int, default=None, metavar="<N>",
+        help="required when <id> is numeric; get the current value from "
+             "render/list/show immediately before this call",
+    )
 
     pending_sub.add_parser("list", help="list pending items as JSON lines")
 

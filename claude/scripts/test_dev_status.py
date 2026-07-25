@@ -48,9 +48,15 @@ class BacklogTestCase(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.data_dir = Path(self.tmpdir) / "backlog"
         self.items_file = self.data_dir / "items.json"
+        self.pending_file = self.data_dir / "pending_items.json"
+        self.meta_file = self.data_dir / "_meta.json"
+        self.lock_file = self.data_dir / ".backlog.lock"
         self._patches = [
             patch.object(dev_status, "DATA_DIR", self.data_dir),
             patch.object(dev_status, "ITEMS_FILE", self.items_file),
+            patch.object(dev_status, "PENDING_FILE", self.pending_file),
+            patch.object(dev_status, "META_FILE", self.meta_file),
+            patch.object(dev_status, "LOCK_FILE", self.lock_file),
         ]
         for p in self._patches:
             p.start()
@@ -65,8 +71,16 @@ class BacklogTestCase(unittest.TestCase):
         data = {"schema_version": 2, "items": items}
         self.items_file.write_text(json.dumps(data, indent=2))
 
+    def write_pending(self, pending_items):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        data = {"schema_version": 1, "items": pending_items}
+        self.pending_file.write_text(json.dumps(data, indent=2))
+
     def read_items(self):
         return dev_status.load_items()
+
+    def read_rev(self):
+        return dev_status.load_rev()
 
     # ── 1: add with valid slug succeeds ──────────────────────────────────────
 
