@@ -164,7 +164,7 @@ class BacklogTestCase(unittest.TestCase):
         self.write_items(items)
         # Render order: IN PROGRESS (alpha=1), READY (beta=2, gamma=3)
         # done 2 should resolve to beta-item
-        args = _args(id="2")
+        args = _args(id="2", if_rev=0)
         dev_status.cmd_done(args)
         result = {i["id"]: i["status"] for i in self.read_items()}
         self.assertEqual(result["beta-item"], "done")
@@ -284,7 +284,9 @@ class BacklogTestCase(unittest.TestCase):
         dev_status.render(items, out=out, err=err)
         map_line = err.getvalue().strip()
         self.assertTrue(map_line.startswith("item-map:"))
-        pairs = map_line.replace("item-map: ", "").split(",")
+        self.assertIn("rev=0", map_line)
+        # format: "item-map: rev=0 1=backlog:..,2=.."; strip prefix + rev token
+        pairs = map_line.replace("item-map: ", "").split(" ", 1)[1].split(",")
         numbers = [int(p.split("=")[0]) for p in pairs if p]
         self.assertEqual(numbers, list(range(1, len(numbers) + 1)))
 
@@ -400,12 +402,203 @@ class BacklogTestCase(unittest.TestCase):
         dev_status.render(items, out=out, err=io.StringIO())
         self.assertIn("\x1b[", out.getvalue())
 
+    # ── 20: rev increments on each mutating op, not on reads ───────────────
+
+    def test_20a_rev_increments_on_add(self):
+        self.assertEqual(self.read_rev(), 0)
+        args = _args(json='{"id": "my-item", "summary": "x"}')
+        dev_status.cmd_add(args)
+        self.assertEqual(self.read_rev(), 1)
+
+    def test_20b_rev_increments_on_start(self):
+        self.write_items([make_item("my-item")])
+        dev_status.cmd_start(_args(id="my-item"))
+        self.assertEqual(self.read_rev(), 1)
+
+    def test_20c_rev_increments_on_done(self):
+        self.write_items([make_item("my-item", status="in-progress")])
+        dev_status.cmd_done(_args(id="my-item"))
+        self.assertEqual(self.read_rev(), 1)
+
+    def test_20d_rev_increments_on_update(self):
+        self.write_items([make_item("my-item")])
+        args = _args(id="my-item", patch='{"context": "ctx"}')
+        dev_status.cmd_update(args)
+        self.assertEqual(self.read_rev(), 1)
+
+    def test_20e_rev_increments_on_block(self):
+        self.write_items([make_item("item-a"), make_item("item-b")])
+        dev_status.cmd_block(_args(id="item-b", blocker="item-a"))
+        self.assertEqual(self.read_rev(), 1)
+
+    def test_20f_rev_increments_on_unblock(self):
+        self.write_items([make_item("item-a"), make_item("item-b", blocked_by=["item-a"])])
+        dev_status.cmd_unblock(_args(id="item-b", blocker="item-a"))
+        self.assertEqual(self.read_rev(), 1)
+
+    def test_20g_rev_increments_on_rename(self):
+        self.write_items([make_item("old-name")])
+        dev_status.cmd_rename(_args(old_slug="old-name", new_slug="new-name"))
+        self.assertEqual(self.read_rev(), 1)
+
+    def test_20h_rev_increments_on_prune_only_when_removed(self):
+        old = (date.today() - timedelta(days=20)).isoformat()
+        self.write_items([make_item("done-old", status="done", updated=old)])
+        dev_status.cmd_prune(_args(force=True))
+        self.assertEqual(self.read_rev(), 1)
+
+    def test_20i_rev_unchanged_on_prune_nothing(self):
+        self.write_items([make_item("my-item")])
+        dev_status.cmd_prune(_args(force=True))
+        self.assertEqual(self.read_rev(), 0)
+
+    def test_20j_rev_increments_on_pending_add(self):
+        args = _args(
+            json='{"id": "pend-item", "description": "waiting", "kind": "email"}'
+        )
+        dev_status.cmd_pending_add(args)
+        self.assertEqual(self.read_rev(), 1)
+
+    def test_20k_rev_increments_on_pending_update(self):
+        self.write_pending(
+            [{"id": "pend-item", "created": "2026-01-01", "updated": "2026-01-01",
+              "status": "waiting_for_reply", "description": "w", "kind": "email"}]
+        )
+        dev_status.cmd_pending_update(
+            _args(id="pend-item", patch='{"status": "reply_received"}')
+        )
+        self.assertEqual(self.read_rev(), 1)
+
+    def test_20l_rev_unchanged_on_reads(self):
+        self.write_items([make_item("my-item")])
+        out, err = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            dev_status.cmd_render(_args())
+            dev_status.cmd_list(_args())
+        dev_status.cmd_show(_args(id="my-item"))
+        self.assertEqual(self.read_rev(), 0)
+
+    # ── 21: numeric id without --if-rev refused, no write ─────────────────
+
+    def test_21_numeric_id_without_if_rev_refused(self):
+        self.write_items([make_item("item-a", status="in-progress")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_start(_args(id="1", if_rev=None))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("requires --if-rev", err.getvalue())
+        # no write, no rev bump
+        self.assertEqual(self.read_rev(), 0)
+        self.assertEqual(
+            {i["id"]: i["status"] for i in self.read_items()}["item-a"],
+            "in-progress",
+        )
+
+    # ── 22: stale --if-rev refused, no write ──────────────────────────────
+
+    def test_22_numeric_id_stale_if_rev_refused(self):
+        self.write_items([make_item("item-a", status="in-progress")])
+        # bump rev to 1 via a slug mutation first
+        dev_status.cmd_done(_args(id="item-a"))
+        self.assertEqual(self.read_rev(), 1)
+        items = self.read_items()
+        items[0]["status"] = "in-progress"
+        items[0]["updated"] = "2026-01-01"
+        self.write_items(items)
+        self.write_text_meta(0)  # simulate a stale caller's view
+        # actually set rev back to 0 on disk to force mismatch with stale --if-rev 0
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_start(_args(id="1", if_rev=0))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("stale rev", err.getvalue())
+
+    # ── 23: matching --if-rev succeeds ─────────────────────────────────────
+
+    def test_23_numeric_id_matching_if_rev_succeeds(self):
+        self.write_items([make_item("item-a", status="in-progress")])
+        dev_status.cmd_done(_args(id="item-a"))  # rev -> 1, item now done
+        # reset item to in-progress on disk without bumping rev, so numeric call is meaningful
+        items = self.read_items()
+        items[0]["status"] = "in-progress"
+        self.write_items(items)
+        cur_rev = self.read_rev()
+        dev_status.cmd_start(_args(id="1", if_rev=cur_rev))
+        self.assertEqual(
+            {i["id"]: i["status"] for i in self.read_items()}["item-a"],
+            "in-progress",
+        )
+        self.assertEqual(self.read_rev(), cur_rev + 1)
+
+    # ── 24: slug id never requires --if-rev ────────────────────────────────
+
+    def test_24_slug_id_never_requires_if_rev(self):
+        self.write_items([make_item("my-task", status="in-progress")])
+        dev_status.cmd_done(_args(id="my-task"))
+        self.assertEqual(
+            {i["id"]: i["status"] for i in self.read_items()}["my-task"], "done"
+        )
+
+    # ── 25: _meta.json lazy-created on first mutation ─────────────────────
+
+    def test_25_meta_file_lazy_created(self):
+        self.assertFalse(self.meta_file.exists())
+        dev_status.cmd_add(_args(json='{"id": "my-item", "summary": "x"}'))
+        self.assertTrue(self.meta_file.exists())
+        self.assertEqual(json.loads(self.meta_file.read_text()), {"rev": 1})
+
+    # ── 26: concurrent writes serialize, no lost update ───────────────────
+
+    def test_26_concurrent_writes_serialize_no_lost_update(self):
+        import threading
+        self.write_items([make_item("item-a")])
+        results = {}
+
+        def writer(name):
+            # each thread opens its own fd on LOCK_FILE (per open-file-description flock)
+            dev_status.cmd_add(
+                _args(json=f'{{"id": "child-{name}", "summary": "x"}}')
+            )
+            results[name] = self.read_rev()
+
+        # hold the lock in the main thread so the spawned writers block
+        with dev_status.backlog_lock():
+            t1 = threading.Thread(target=writer, args=("one",))
+            t2 = threading.Thread(target=writer, args=("two",))
+            t1.start()
+            t2.start()
+            # give them a moment to block on flock
+            import time
+            time.sleep(0.1)
+            self.assertTrue(t1.is_alive())
+            self.assertTrue(t2.is_alive())
+            # now release; both should proceed serialized
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+        self.assertFalse(t1.is_alive())
+        self.assertFalse(t2.is_alive())
+        # both writes landed + rev bumped twice (no lost update)
+        ids = {i["id"] for i in self.read_items()}
+        self.assertIn("child-one", ids)
+        self.assertIn("child-two", ids)
+        self.assertEqual(self.read_rev(), 2)
+
+    # ── helper for test_22: write _meta.json with a chosen rev ─────────────
+
+    def write_text_meta(self, rev):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.meta_file.write_text(json.dumps({"rev": rev}))
+
 
 # ── arg helper ────────────────────────────────────────────────────────────────
 
 
 class _args:
     """Minimal argparse.Namespace stand-in."""
+
+    if_rev = None  # default; argparse always sets --if-rev (default None)
 
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
