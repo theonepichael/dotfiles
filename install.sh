@@ -156,7 +156,7 @@ if is_mac; then
     fi
 
     echo "==> Installing casks..."
-    if brew install --cask karabiner-elements rectangle ghostty visual-studio-code alt-tab; then
+    if brew install --cask karabiner-elements rectangle ghostty visual-studio-code alt-tab font-jetbrains-mono-nerd-font; then
       record package-installed "brew casks"
     else
       note_skip "brew casks" "brew install --cask failed"
