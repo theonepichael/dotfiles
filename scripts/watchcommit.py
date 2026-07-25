@@ -48,6 +48,14 @@ def has_changes(repo: Path) -> bool:
     return bool(git(repo, "status", "--porcelain").stdout.strip())
 
 
+def has_unpushed_commits(repo: Path) -> bool:
+    """True if HEAD has commits its upstream doesn't — the state a stalled
+    push leaves behind: working tree clean, so has_changes() is False, but
+    there's still a local commit sitting there waiting to go out."""
+    result = git(repo, "rev-list", "@{u}..HEAD")
+    return bool(result.stdout.strip())
+
+
 def build_diff(repo: Path) -> str:
     parts: list[str] = []
 
