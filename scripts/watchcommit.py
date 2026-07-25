@@ -94,6 +94,47 @@ def generate_message(diff: str) -> str:
     return result.stdout.strip()
 
 
+def current_branch(repo: Path) -> str:
+    return git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+
+
+def rebase_onto_remote(repo: Path) -> bool:
+    """Fetch and rebase local commits onto the remote branch, so `push`
+    fast-forwards even if another machine's watchcommit pushed in between.
+    Returns False on a real conflict — the rebase is aborted immediately
+    (no auto-resolution attempted) and local state is left exactly as it
+    was, so the commit stays local and gets retried next tick."""
+    fetch = git(repo, "fetch", "origin")
+    if fetch.returncode != 0:
+        print(f"[watchcommit] fetch failed: {fetch.stderr.strip()}", file=sys.stderr)
+        return False
+
+    branch = current_branch(repo)
+    result = git(repo, "rebase", f"origin/{branch}")
+    if result.returncode != 0:
+        git(repo, "rebase", "--abort")
+        print(
+            f"[watchcommit] rebase onto origin/{branch} conflicted — aborted, "
+            "local state untouched. Resolve manually (e.g. git pull --rebase) "
+            "before the next push will succeed.",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def push(repo: Path, success_message: str) -> None:
+    """Rebase onto the remote, then push. Safe to call whenever there are
+    local commits not yet on the remote, regardless of what put them there."""
+    if not rebase_onto_remote(repo):
+        return
+    result = git(repo, "push")
+    if result.returncode != 0:
+        print(f"[watchcommit] push failed: {result.stderr.strip()}", file=sys.stderr)
+    else:
+        print(f"[watchcommit] {success_message}")
+
+
 def commit_and_push(repo: Path, message: str) -> None:
     git(repo, "add", "-A")
 
@@ -102,11 +143,7 @@ def commit_and_push(repo: Path, message: str) -> None:
         print(f"[watchcommit] commit failed: {result.stderr.strip()}", file=sys.stderr)
         return
 
-    result = git(repo, "push")
-    if result.returncode != 0:
-        print(f"[watchcommit] push failed: {result.stderr.strip()}", file=sys.stderr)
-    else:
-        print(f"[watchcommit] {message}")
+    push(repo, message)
 
 
 def main() -> None:
@@ -132,6 +169,21 @@ def main() -> None:
                 if diff:
                     message = generate_message(diff)
                     commit_and_push(repo, message)
+            elif has_unpushed_commits(repo):
+                # Working tree is clean, but a prior cycle committed and then
+                # failed to push (remote had diverged in between). Retry —
+                # this is the case that used to get stuck silently forever,
+                # since has_changes() is False here and the old loop did
+                # nothing at all in that state.
+                push(repo, "pushed previously-stuck commit(s)")
+            else:
+                # Nothing local to protect, so a plain fast-forward pull is
+                # always safe here — can only fast-forward or no-op, never
+                # conflict. Keeps the working copy current even on machines
+                # that only ever read this repo.
+                result = git(repo, "pull", "--ff-only")
+                if result.returncode != 0:
+                    print(f"[watchcommit] background sync failed: {result.stderr.strip()}", file=sys.stderr)
         except KeyboardInterrupt:
             print("\n[watchcommit] stopped")
             sys.exit(0)
