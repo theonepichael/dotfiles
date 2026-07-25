@@ -61,9 +61,9 @@
   },
   "agent": {
     "adversary": {
-      "description": "Adversarial critique subagent for grill-me's --auto mode. Argues against a proposed decision using a model different from the primary session's default, so the critique is genuinely independent rather than the same model second-guessing itself.",
-      "mode": "subagent",
-      "model": "deepinfra/moonshotai/Kimi-K2.7-Code"
+      "description": "Adversarial critique agent for grill-me's --auto mode and second_opinion.py's opencode backend. Argues against a proposed decision/plan using a model different from the primary session's default, so the critique is genuinely independent rather than the same model second-guessing itself. mode \"all\" (not \"subagent\") is required: opencode run --agent silently falls back to the default agent for anything marked subagent-only.",
+      "mode": "all",
+      "model": "deepinfra/Qwen/Qwen3.7-Max"
     }
   }
 }

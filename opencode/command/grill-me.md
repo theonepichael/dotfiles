@@ -98,37 +98,40 @@ it trades interactivity for adversarial rigor instead of just guessing.
    every decision point up front.
 
 2. For each open question, instead of asking the user: form your own leading
-   answer, then run `second_opinion.py review` on a short write-up of the
-   question, your answer, and enough surrounding context for an outside model
-   to attack it credibly (the same adversarial-critique backend `/second-opinion`
-   uses — reuse it rather than inventing a separate critique mechanism).
-   "Adversarial" here means exactly what `second_opinion.py`'s own
-   `CRITIQUE_PROMPT` already asks for — find problems rather than summarize or
-   agree, name what's underspecified or assumed without justification,
-   disagree explicitly where warranted, and propose a simpler approach if one
-   exists; a critique that just restates or praises your answer isn't
-   adversarial and doesn't count as a round. Revise your answer if the
-   critique lands a real objection, and repeat until a round surfaces nothing
-   new or you hit a round cap (3 is a reasonable default). Record the
-   surviving answer with `decide` and source `assumed` — summarize the
-   critique exchange (what was challenged, what survived, what changed) in
-   `reasoning`, since that's the only record of how the decision was actually
-   stress-tested.
+   answer, then critique it adversarially before recording it. Two paths exist
+   — prefer the native one, since you're already running inside opencode:
 
-   **Fallback if no backend is available**: run `second_opinion.py detect`
-   first. If it reports no usable backend, opencode has a native alternative —
-   its Task tool can spawn the `adversary` subagent (configured in
-   `opencode.jsonc` under `agent.adversary`, currently pointed at
-   `deepinfra/moonshotai/Kimi-K2.7-Code`) with the same adversarial framing
-   (argue against your answer per the bar above). This is not a weaker
-   substitute: `adversary` is deliberately configured with a model different
-   from the primary session's default, so it's genuine cross-model critique,
-   not the same model second-guessing itself — a subagent spawned without a
-   configured model would inherit the primary's model and *would* be weaker,
-   which is why this skill always targets `adversary` by name rather than the
-   generic `general` subagent. Note in `reasoning` which path was used
-   (`second_opinion.py` vs. `adversary`) purely for the record, not because
-   one deserves more skepticism than the other.
+   - **Primary — Task tool, native, no subprocess**: spawn the `adversary`
+     agent directly (configured in `opencode.jsonc` under `agent.adversary`,
+     currently `deepinfra/Qwen/Qwen3.7-Max`) with a prompt that argues against
+     your answer. This is genuine cross-model critique, not the same model
+     second-guessing itself, because `adversary` is deliberately configured
+     with a model different from the primary session's default — a subagent
+     spawned *without* a configured model would inherit the primary's model
+     and be a weaker, same-model critique, which is why this always targets
+     `adversary` by name rather than the generic `general` subagent.
+   - **Alternative — `second_opinion.py review`**: use this instead (or in
+     addition, for a third opinion) when you specifically want `agy`'s Gemini
+     backend rather than `adversary`'s DeepInfra model, or if `adversary` is
+     erroring. Don't route through `second_opinion.py`'s own `opencode`
+     backend from inside opencode itself — that backend exists for Claude
+     Code and Copilot, which have no other way to reach `adversary`; from
+     opencode it would just shell out to `opencode run --agent adversary` as
+     a subprocess of itself, redoing what the Task tool already does natively
+     and more cheaply. Force `--backend agy` if you go this route.
+
+   "Adversarial" here means exactly what `second_opinion.py`'s own
+   `CRITIQUE_PROMPT` asks for regardless of which path you use — find
+   problems rather than summarize or agree, name what's underspecified or
+   assumed without justification, disagree explicitly where warranted, and
+   propose a simpler approach if one exists; a critique that just restates or
+   praises your answer isn't adversarial and doesn't count as a round.
+   Revise your answer if the critique lands a real objection, and repeat
+   until a round surfaces nothing new or you hit a round cap (3 is a
+   reasonable default). Record the surviving answer with `decide` and source
+   `assumed` — summarize the critique exchange (what was challenged, what
+   survived, what changed, and which path produced it) in `reasoning`, since
+   that's the only record of how the decision was actually stress-tested.
 
 3. Batch topics (a backlog list) run this per-item, each as its own session.
 

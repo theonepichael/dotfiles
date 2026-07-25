@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from types import FrameType
 
-BACKEND_PRIORITY = ["agy", "ollama"]
+BACKEND_PRIORITY = ["agy", "opencode"]
 BACKEND_TIMEOUT_SECONDS = 300
 
 _active_process: subprocess.Popen[str] | None = None
@@ -81,7 +81,7 @@ def _handle_termination(signum: int, frame: FrameType | None) -> None:
     sys.exit(128 + signum)
 
 
-def run_backend_command(cmd: list[str], label: str) -> str:
+def _run_command(cmd: list[str]) -> tuple[int, str, str]:
     global _active_process
     proc = subprocess.Popen(
         cmd,
@@ -98,28 +98,71 @@ def run_backend_command(cmd: list[str], label: str) -> str:
         raise BackendError(f"timed out after {BACKEND_TIMEOUT_SECONDS}s — killed")
     finally:
         _active_process = None
-    if proc.returncode != 0:
-        raise BackendError(f"exited {proc.returncode}: {stderr.strip()}")
+    return proc.returncode, stdout, stderr
+
+
+def run_backend_command(cmd: list[str]) -> str:
+    returncode, stdout, stderr = _run_command(cmd)
+    if returncode != 0:
+        raise BackendError(f"exited {returncode}: {stderr.strip()}")
     return stdout.strip()
 
 
 def run_agy(prompt: str) -> str:
     return run_backend_command(
-        ["agy", "-p", prompt, "--model", "Gemini 3.1 Pro (High)"], "agy"
+        ["agy", "-p", prompt, "--model", "Gemini 3.1 Pro (High)"]
     )
 
 
-def run_ollama(prompt: str) -> str:
-    return run_backend_command(
-        ["ollama", "run", "--hidethinking", "--nowordwrap", "gemma4:26b", prompt],
-        "ollama",
+def _opencode_json_events(raw_output: str) -> list[dict[str, object]]:
+    events = []
+    for line in raw_output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return events
+
+
+def run_opencode(prompt: str) -> str:
+    # Not run_backend_command: opencode's --format json puts both the
+    # critique text and any error detail in stdout JSON events regardless of
+    # exit code, so the error message has to come from parsing stdout, not
+    # from stderr or the bare exit code.
+    _, stdout, stderr = _run_command(
+        [
+            "opencode",
+            "run",
+            "--agent",
+            "adversary",
+            "--auto",
+            "--format",
+            "json",
+            prompt,
+        ]
     )
+    events = _opencode_json_events(stdout)
+    chunks = [
+        e["part"]["text"]
+        for e in events
+        if e.get("type") == "text" and e.get("part", {}).get("text")
+    ]
+    if chunks:
+        return "".join(chunks).strip()
+    for e in events:
+        if e.get("type") == "error":
+            message = e.get("error", {}).get("data", {}).get("message")
+            raise BackendError(f"adversary agent error: {message or e['error']}")
+    raise BackendError(f"no text output: {stderr.strip() or stdout.strip()[:200]}")
 
 
-BACKEND_RUNNERS = {"agy": run_agy, "ollama": run_ollama}
+BACKEND_RUNNERS = {"agy": run_agy, "opencode": run_opencode}
 BACKEND_LABELS = {
     "agy": "agy (Gemini 3.1 Pro, High)",
-    "ollama": "ollama (gemma4:26b)",
+    "opencode": "opencode (adversary agent, deepinfra/Qwen/Qwen3.7-Max)",
 }
 
 

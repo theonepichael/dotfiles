@@ -6,7 +6,7 @@ allowed-tools: [Read, Write, AskUserQuestion, "Bash(python3 ~/.claude/scripts/se
 ---
 
 All backend I/O goes through `python3 ~/.claude/scripts/second_opinion.py` —
-never shell out to `agy`/`ollama` directly. It is single-round: one call, one
+never shell out to `agy`/`opencode` directly. It is single-round: one call, one
 critique. The multi-round loop and plan revision are your job, not the script's.
 
 ```
@@ -85,5 +85,8 @@ pick a side when the round cap is hit mid-disagreement.
 ## No backend available
 
 `second_opinion.py review` exits nonzero with a clear message when neither
-`agy` nor `ollama` is on `PATH`. Relay that message and stop — don't retry or
-fall back to critiquing the plan yourself.
+`agy` nor `opencode` is on `PATH`, or when the available backend(s) fail
+(e.g. opencode's `adversary` agent errors out — check with
+`opencode run --agent adversary --auto --format json <text> 2>&1` if that
+happens). Relay that message and stop — don't retry or fall back to
+critiquing the plan yourself.
