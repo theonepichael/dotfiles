@@ -139,9 +139,9 @@ class BacklogTestCase(unittest.TestCase):
         # Exact-match invariant: only the bare verb is reserved. A slug like
         # `remove-probe` (first hyphen-segment is a reserved verb) must be
         # accepted — argparse never confuses it with the `remove`
-        # subcommand, which is parsed positionally from argv. See backlog
-        # item meta-devstatus-reserved-slug-prefix (2026-07-25) for the
-        # decision record.
+        # subcommand, which is parsed positionally from argv. Prefix-match
+        # refusal was considered and rejected (2026-07-25) to keep natural
+        # slugs like `update-deps` addable.
         args = _args(json='{"id": "remove-probe", "summary": "x"}')
         dev_status.cmd_add(args)
         items = self.read_items()
