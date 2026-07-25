@@ -28,10 +28,12 @@ def make_item(
     summary=None,
     context="",
     next_steps="",
+    created="2026-01-01",
+    priority=None,
 ):
-    return {
+    item = {
         "id": slug,
-        "created": "2026-01-01",
+        "created": created,
         "updated": updated,
         "status": status,
         "summary": summary or f"Summary of {slug}",
@@ -41,6 +43,9 @@ def make_item(
         "context": context,
         "next_steps": next_steps,
     }
+    if priority is not None:
+        item["priority"] = priority
+    return item
 
 
 class BacklogTestCase(unittest.TestCase):
@@ -599,6 +604,154 @@ class BacklogTestCase(unittest.TestCase):
         self.assertIn("child-one", ids)
         self.assertIn("child-two", ids)
         self.assertEqual(self.read_rev(), 2)
+
+    # ── 27-36: priority field (high/normal/low, absence == normal) ───────────
+
+    def test_27_add_priority_high_present_in_show(self):
+        dev_status.cmd_add(
+            _args(json='{"id": "p-high", "summary": "x", "priority": "high"}')
+        )
+        items = self.read_items()
+        self.assertEqual(items[0].get("priority"), "high")
+
+    def test_28_add_priority_absent_omits_key(self):
+        dev_status.cmd_add(_args(json='{"id": "p-none", "summary": "x"}'))
+        items = self.read_items()
+        self.assertNotIn("priority", items[0])
+
+    def test_29_add_invalid_priority_refused(self):
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_add(
+                    _args(json='{"id": "p-bad", "summary": "x", "priority": "urgent"}')
+                )
+        self.assertEqual(cm.exception.code, 1)
+        msg = err.getvalue()
+        self.assertIn("invalid priority 'urgent'", msg)
+        self.assertIn("high, low, normal", msg)
+        self.assertEqual(len(self.read_items()), 0)
+
+    def test_30_update_priority_high_floats_to_top_of_ready(self):
+        # FIFO setup: A (oldest), B, C (newest) — READY renders A,B,C
+        self.write_items(
+            [
+                make_item("a", created="2026-01-01"),
+                make_item("b", created="2026-01-02"),
+                make_item("c", created="2026-01-03"),
+            ]
+        )
+        dev_status.cmd_update(_args(id="b", patch='{"priority": "high"}'))
+        _, ready, _, _, _ = dev_status._render_order(self.read_items())
+        self.assertEqual([i["id"] for i in ready], ["b", "a", "c"])
+
+    def test_31_update_priority_low_sinks_to_bottom_of_ready(self):
+        self.write_items(
+            [
+                make_item("a", created="2026-01-01"),
+                make_item("b", created="2026-01-02"),
+                make_item("c", created="2026-01-03"),
+            ]
+        )
+        dev_status.cmd_update(_args(id="a", patch='{"priority": "low"}'))
+        _, ready, _, _, _ = dev_status._render_order(self.read_items())
+        self.assertEqual([i["id"] for i in ready], ["b", "c", "a"])
+
+    def test_32_priority_does_not_move_item_after_update_other_field(self):
+        self.write_items(
+            [
+                make_item("a", created="2026-01-01"),
+                make_item("b", created="2026-01-02", priority="high"),
+                make_item("c", created="2026-01-03"),
+            ]
+        )
+        # B starts at top due to high priority.
+        _, ready_before, _, _, _ = dev_status._render_order(self.read_items())
+        self.assertEqual([i["id"] for i in ready_before], ["b", "a", "c"])
+        # Updating B's context bumps `updated` but must not change READY order.
+        dev_status.cmd_update(_args(id="b", patch='{"context": "x"}'))
+        _, ready_after, _, _, _ = dev_status._render_order(self.read_items())
+        self.assertEqual([i["id"] for i in ready_after], ["b", "a", "c"])
+
+    def test_33_blocked_priority_secondary_within_blocker_count(self):
+        # Three blocked items, all with 1 blocker each, created A<B<C.
+        # B is high-priority; A,C normal. BLOCKED order should be B,A,C —
+        # priority lands between blocker-count and updated-asc tiebreak.
+        # All share updated==created so the A-vs-C tiebreak is created-asc.
+        blocker = make_item("blocker", status="open", updated="2026-01-01")
+        self.write_items(
+            [
+                blocker,
+                make_item(
+                    "a",
+                    created="2026-01-01",
+                    updated="2026-01-01",
+                    blocked_by=["blocker"],
+                ),
+                make_item(
+                    "b",
+                    created="2026-01-02",
+                    updated="2026-01-02",
+                    blocked_by=["blocker"],
+                    priority="high",
+                ),
+                make_item(
+                    "c",
+                    created="2026-01-03",
+                    updated="2026-01-03",
+                    blocked_by=["blocker"],
+                ),
+            ]
+        )
+        _, _, blocked, _, _ = dev_status._render_order(self.read_items())
+        self.assertEqual([i["id"] for i in blocked], ["b", "a", "c"])
+
+    def test_34_done_ignores_priority(self):
+        old = (date.today() - timedelta(days=10)).isoformat()
+        newer = (date.today() - timedelta(days=2)).isoformat()
+        newest = (date.today() - timedelta(days=1)).isoformat()
+        self.write_items(
+            [
+                make_item("old", status="done", updated=old, priority="high"),
+                make_item("newer", status="done", updated=newer),
+                make_item("newest", status="done", updated=newest),
+            ]
+        )
+        _, _, _, done, _ = dev_status._render_order(self.read_items())
+        # Pure updated-desc; the high-priority "old" must NOT float.
+        self.assertEqual([i["id"] for i in done], ["newest", "newer", "old"])
+
+    def test_35_render_priority_badge_for_high_and_low(self):
+        self.write_items(
+            [
+                make_item("hip", priority="high"),
+                make_item("lop", priority="low"),
+                make_item("nor"),
+            ]
+        )
+        out = _TtyStringIO()
+        dev_status.render(self.read_items(), out=out, err=io.StringIO())
+        rendered = out.getvalue()
+        self.assertIn("\u00b7high", rendered)
+        self.assertIn("\u00b7low", rendered)
+        # "nor" item's line must not carry a badge — match its summary line
+        # specifically (badge appears between summary and age suffix).
+        nor_line = next(ln for ln in rendered.splitlines() if "Summary of nor" in ln)
+        self.assertNotIn("\u00b7", nor_line.split("Summary of nor")[1])
+
+    def test_36_render_priority_default_for_unknown_value_is_normal(self):
+        # Bypass validation: hand-write an item with priority:"urgent".
+        items = [
+            make_item("weird", priority="urgent"),
+            make_item("ok"),
+        ]
+        # _render_order must not raise; unknown collapses to normal's rank.
+        _, ready, _, _, _ = dev_status._render_order(items)
+        self.assertEqual([i["id"] for i in ready], ["weird", "ok"])
+        # _priority_rank treats both as rank 1 (normal).
+        self.assertEqual(
+            dev_status._priority_rank(items[0]), dev_status._priority_rank(items[1])
+        )
 
 
 # ── arg helper ────────────────────────────────────────────────────────────────
