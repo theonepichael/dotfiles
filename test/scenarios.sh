@@ -45,6 +45,21 @@ check "watchcommit systemd unit symlinked on personal profile" bash -c '[[ -L ~/
 check "no profile marker written on personal run" bash -c '[[ ! -f "'"$MARKER"'" ]]'
 check "watchcommit starts and exits cleanly against a non-git dir" bash -c \
   'timeout 10 ~/.local/bin/watchcommit /tmp 2>&1 | grep -q "not a git repo"'
+check "JetBrainsMono Nerd Font extracted (ttf files present)" bash -c \
+  '[[ -n "$(ls ~/.local/share/fonts/JetBrainsMonoNerdFont/*.ttf 2>/dev/null)" ]]'
+check "Nerd Font version marker written" bash -c \
+  '[[ "$(cat ~/.local/share/fonts/JetBrainsMonoNerdFont/.nerd-fonts-version 2>/dev/null)" == "3.4.0" ]]'
+check "fc-list recognizes the installed Nerd Font" bash -c \
+  'fc-list | grep -q "JetBrainsMono Nerd Font"'
+
+echo ""
+echo "=== 1b. Re-run is idempotent — no re-download of the Nerd Font ==="
+font_mtime_before="$(stat -c %Y ~/.local/share/fonts/JetBrainsMonoNerdFont/.nerd-fonts-version)"
+./install.sh >/tmp/install-rerun.out 2>&1
+cat /tmp/install-rerun.out
+font_mtime_after="$(stat -c %Y ~/.local/share/fonts/JetBrainsMonoNerdFont/.nerd-fonts-version)"
+check "version marker untouched by re-run (no re-download)" bash -c \
+  "[[ '$font_mtime_before' -eq '$font_mtime_after' ]]"
 
 echo ""
 echo "=== 2. Rollback undoes the personal install ==="
@@ -55,6 +70,8 @@ check "~/.vimrc symlink removed" bash -c '[[ ! -e ~/.vimrc ]]'
 check "~/.claude/settings.json removed" bash -c '[[ ! -e ~/.claude/settings.json ]]'
 check "watchcommit symlink removed" bash -c '[[ ! -e ~/.local/bin/watchcommit ]]'
 check "watchcommit systemd unit symlink removed" bash -c '[[ ! -e ~/.config/systemd/user/watchcommit.service ]]'
+check "Nerd Font NOT removed by rollback (packages aren't rolled back)" bash -c \
+  '[[ -n "$(ls ~/.local/share/fonts/JetBrainsMonoNerdFont/*.ttf 2>/dev/null)" ]]'
 
 echo ""
 echo "=== 3. Pre-existing file gets backed up, not clobbered ==="
