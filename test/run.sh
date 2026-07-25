@@ -28,8 +28,14 @@ for entry in "${DISTROS[@]}"; do
   fi
 
   echo "==> Running scenario suite ($distro)..."
+  # :ro,Z relabels the bind mount for SELinux (rootless podman on an
+  # enforcing host otherwise rejects the mount with a bare "Permission
+  # denied" inside the container, even for root — no AVC denial logged, so
+  # this is easy to misdiagnose as a UID/GID mapping issue instead). Safe
+  # under plain Docker too — the SELinux label flag is a documented bind-mount
+  # option there as well, just a no-op without SELinux enforcing.
   if ! docker run --rm \
-    -v "$REPO:/dotfiles:ro" \
+    -v "$REPO:/dotfiles:ro,Z" \
     -w /home/tester \
     "$IMAGE" \
     bash -c 'cp -r /dotfiles /home/tester/dotfiles && bash /home/tester/dotfiles/test/scenarios.sh'; then
