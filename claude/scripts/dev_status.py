@@ -22,8 +22,13 @@ VALID_STATUSES = {"open", "in-progress", "done"}
 VALID_PENDING_STATUSES = {"waiting_for_reply", "reply_received", "resolved"}
 VALID_PENDING_KINDS = {"email", "chat", "approval"}
 PENDING_MUTABLE_FIELDS = {
-    "status", "description", "context", "next_steps", "blocking",
-    "outcome", "source_ref",
+    "status",
+    "description",
+    "context",
+    "next_steps",
+    "blocking",
+    "outcome",
+    "source_ref",
 }
 IMMUTABLE_FIELDS = {"id", "created"}
 RESERVED_SLUGS = {
@@ -306,7 +311,9 @@ def _pending_render_order(pending_items):
     """Unresolved pending items: reply_received group first, each group newest-first."""
     unresolved = [p for p in pending_items if p.get("status") != "resolved"]
     by_recency = sorted(unresolved, key=lambda p: p.get("updated", ""), reverse=True)
-    return sorted(by_recency, key=lambda p: 0 if p.get("status") == "reply_received" else 1)
+    return sorted(
+        by_recency, key=lambda p: 0 if p.get("status") == "reply_received" else 1
+    )
 
 
 # ── number resolution ─────────────────────────────────────────────────────────
@@ -341,7 +348,11 @@ def resolve_id(arg, items, pending_items):
 
 def require_kind(cmd, arg, kind, expected):
     if kind != expected:
-        other = "pending update/list" if expected == "backlog" else "update/start/done/block/unblock"
+        other = (
+            "pending update/list"
+            if expected == "backlog"
+            else "update/start/done/block/unblock"
+        )
         print(
             f"[{cmd}] position {arg} is a {kind} item — use '{other}' instead",
             file=sys.stderr,
@@ -424,15 +435,25 @@ def render(items=None, pending_items=None, *, out=None, err=None, rev=None):
     # Pre-assign all numbers so blocked-by annotations can reference any item
     slug_to_num = {item["id"]: n + 1 for n, item in enumerate(ordered)}
     item_map = {
-        n + 1: (f"pending:{item['id']}" if item["id"] in pending_id_set else f"backlog:{item['id']}")
+        n + 1: (
+            f"pending:{item['id']}"
+            if item["id"] in pending_id_set
+            else f"backlog:{item['id']}"
+        )
         for n, item in enumerate(ordered)
     }
 
     sections = []
 
     def add_section(
-        title, section_items, show_blockers=False, show_age=False, color_code=None,
-        summary_key="summary", show_category=True, line_suffix=None,
+        title,
+        section_items,
+        show_blockers=False,
+        show_age=False,
+        color_code=None,
+        summary_key="summary",
+        show_category=True,
+        line_suffix=None,
     ):
         if not section_items:
             return
@@ -470,8 +491,12 @@ def render(items=None, pending_items=None, *, out=None, err=None, rev=None):
         sections.append(lines)
 
     add_section(
-        "\U0001f4e9 PENDING", pending_ordered, color_code="pending",
-        summary_key="description", show_category=False, line_suffix=_pending_suffix,
+        "\U0001f4e9 PENDING",
+        pending_ordered,
+        color_code="pending",
+        summary_key="description",
+        show_category=False,
+        line_suffix=_pending_suffix,
     )
     add_section(
         "\u26a1 IN PROGRESS", in_progress, show_age=True, color_code="in_progress"
@@ -575,7 +600,9 @@ def cmd_add(args):
         blocked_by = patch.get("blocked_by", [])
         for dep in blocked_by:
             if dep not in index:
-                print(f"[add] blocked_by references unknown slug: {dep}", file=sys.stderr)
+                print(
+                    f"[add] blocked_by references unknown slug: {dep}", file=sys.stderr
+                )
                 sys.exit(1)
 
         item = {
@@ -626,7 +653,9 @@ def cmd_update(args):
         items = load_items()
         pending_items = load_pending()
         current_rev = load_rev()
-        enforce_rev_guard("update", args.id, args.if_rev, current_rev, items, pending_items)
+        enforce_rev_guard(
+            "update", args.id, args.if_rev, current_rev, items, pending_items
+        )
 
         kind, slug = resolve_id(args.id, items, pending_items)
         require_kind("update", args.id, kind, "backlog")
@@ -650,7 +679,9 @@ def cmd_start(args):
         items = load_items()
         pending_items = load_pending()
         current_rev = load_rev()
-        enforce_rev_guard("start", args.id, args.if_rev, current_rev, items, pending_items)
+        enforce_rev_guard(
+            "start", args.id, args.if_rev, current_rev, items, pending_items
+        )
 
         kind, slug = resolve_id(args.id, items, pending_items)
         require_kind("start", args.id, kind, "backlog")
@@ -672,7 +703,9 @@ def cmd_done(args):
         items = load_items()
         pending_items = load_pending()
         current_rev = load_rev()
-        enforce_rev_guard("done", args.id, args.if_rev, current_rev, items, pending_items)
+        enforce_rev_guard(
+            "done", args.id, args.if_rev, current_rev, items, pending_items
+        )
 
         kind, slug = resolve_id(args.id, items, pending_items)
         require_kind("done", args.id, kind, "backlog")
@@ -733,7 +766,9 @@ def cmd_block(args):
         items = load_items()
         pending_items = load_pending()
         current_rev = load_rev()
-        enforce_rev_guard("block", args.id, args.if_rev, current_rev, items, pending_items)
+        enforce_rev_guard(
+            "block", args.id, args.if_rev, current_rev, items, pending_items
+        )
 
         kind, slug = resolve_id(args.id, items, pending_items)
         require_kind("block", args.id, kind, "backlog")
@@ -769,7 +804,9 @@ def cmd_unblock(args):
         items = load_items()
         pending_items = load_pending()
         current_rev = load_rev()
-        enforce_rev_guard("unblock", args.id, args.if_rev, current_rev, items, pending_items)
+        enforce_rev_guard(
+            "unblock", args.id, args.if_rev, current_rev, items, pending_items
+        )
 
         kind, slug = resolve_id(args.id, items, pending_items)
         require_kind("unblock", args.id, kind, "backlog")
@@ -963,25 +1000,34 @@ def main():
     p.add_argument("id", metavar="<slug|N>")
     p.add_argument("patch", metavar='\'{"field": "value"}\'')
     p.add_argument(
-        "--if-rev", type=int, default=None, metavar="<N>",
+        "--if-rev",
+        type=int,
+        default=None,
+        metavar="<N>",
         help="required when <id> is numeric; get the current value from "
-             "render/list/show immediately before this call",
+        "render/list/show immediately before this call",
     )
 
     p = sub.add_parser("start", help="mark item in-progress")
     p.add_argument("id", metavar="<slug|N>")
     p.add_argument(
-        "--if-rev", type=int, default=None, metavar="<N>",
+        "--if-rev",
+        type=int,
+        default=None,
+        metavar="<N>",
         help="required when <id> is numeric; get the current value from "
-             "render/list/show immediately before this call",
+        "render/list/show immediately before this call",
     )
 
     p = sub.add_parser("done", help="mark item done")
     p.add_argument("id", metavar="<slug|N>")
     p.add_argument(
-        "--if-rev", type=int, default=None, metavar="<N>",
+        "--if-rev",
+        type=int,
+        default=None,
+        metavar="<N>",
         help="required when <id> is numeric; get the current value from "
-             "render/list/show immediately before this call",
+        "render/list/show immediately before this call",
     )
 
     p = sub.add_parser("rename", help="rename slug (rewrites all references)")
@@ -992,18 +1038,24 @@ def main():
     p.add_argument("id", metavar="<slug|N>")
     p.add_argument("blocker", metavar="<blocker-slug>")
     p.add_argument(
-        "--if-rev", type=int, default=None, metavar="<N>",
+        "--if-rev",
+        type=int,
+        default=None,
+        metavar="<N>",
         help="required when <id> is numeric; get the current value from "
-             "render/list/show immediately before this call",
+        "render/list/show immediately before this call",
     )
 
     p = sub.add_parser("unblock", help="remove a blocker from an item")
     p.add_argument("id", metavar="<slug|N>")
     p.add_argument("blocker", metavar="<blocker-slug>")
     p.add_argument(
-        "--if-rev", type=int, default=None, metavar="<N>",
+        "--if-rev",
+        type=int,
+        default=None,
+        metavar="<N>",
         help="required when <id> is numeric; get the current value from "
-             "render/list/show immediately before this call",
+        "render/list/show immediately before this call",
     )
 
     p = sub.add_parser(
@@ -1032,9 +1084,12 @@ def main():
     p.add_argument("id", metavar="<slug|N>")
     p.add_argument("patch", metavar='\'{"status": "reply_received", ...}\'')
     p.add_argument(
-        "--if-rev", type=int, default=None, metavar="<N>",
+        "--if-rev",
+        type=int,
+        default=None,
+        metavar="<N>",
         help="required when <id> is numeric; get the current value from "
-             "render/list/show immediately before this call",
+        "render/list/show immediately before this call",
     )
 
     pending_sub.add_parser("list", help="list pending items as JSON lines")

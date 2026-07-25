@@ -432,7 +432,9 @@ class BacklogTestCase(unittest.TestCase):
         self.assertEqual(self.read_rev(), 1)
 
     def test_20f_rev_increments_on_unblock(self):
-        self.write_items([make_item("item-a"), make_item("item-b", blocked_by=["item-a"])])
+        self.write_items(
+            [make_item("item-a"), make_item("item-b", blocked_by=["item-a"])]
+        )
         dev_status.cmd_unblock(_args(id="item-b", blocker="item-a"))
         self.assertEqual(self.read_rev(), 1)
 
@@ -461,8 +463,16 @@ class BacklogTestCase(unittest.TestCase):
 
     def test_20k_rev_increments_on_pending_update(self):
         self.write_pending(
-            [{"id": "pend-item", "created": "2026-01-01", "updated": "2026-01-01",
-              "status": "waiting_for_reply", "description": "w", "kind": "email"}]
+            [
+                {
+                    "id": "pend-item",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "w",
+                    "kind": "email",
+                }
+            ]
         )
         dev_status.cmd_pending_update(
             _args(id="pend-item", patch='{"status": "reply_received"}')
@@ -499,21 +509,26 @@ class BacklogTestCase(unittest.TestCase):
 
     def test_22_numeric_id_stale_if_rev_refused(self):
         self.write_items([make_item("item-a", status="in-progress")])
-        # bump rev to 1 via a slug mutation first
+        # slug mutation bumps rev to 1
         dev_status.cmd_done(_args(id="item-a"))
         self.assertEqual(self.read_rev(), 1)
+        # reset item to in-progress on disk WITHOUT bumping rev (disk rev stays 1)
         items = self.read_items()
         items[0]["status"] = "in-progress"
-        items[0]["updated"] = "2026-01-01"
         self.write_items(items)
-        self.write_text_meta(0)  # simulate a stale caller's view
-        # actually set rev back to 0 on disk to force mismatch with stale --if-rev 0
+        # caller still holds stale rev 0 and uses a numeric id — must refuse
         err = io.StringIO()
         with self.assertRaises(SystemExit) as cm:
             with patch("sys.stderr", err):
                 dev_status.cmd_start(_args(id="1", if_rev=0))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("stale rev", err.getvalue())
+        # no write, rev unchanged
+        self.assertEqual(self.read_rev(), 1)
+        self.assertEqual(
+            {i["id"]: i["status"] for i in self.read_items()}["item-a"],
+            "in-progress",
+        )
 
     # ── 23: matching --if-rev succeeds ─────────────────────────────────────
 
@@ -553,14 +568,13 @@ class BacklogTestCase(unittest.TestCase):
 
     def test_26_concurrent_writes_serialize_no_lost_update(self):
         import threading
+
         self.write_items([make_item("item-a")])
         results = {}
 
         def writer(name):
             # each thread opens its own fd on LOCK_FILE (per open-file-description flock)
-            dev_status.cmd_add(
-                _args(json=f'{{"id": "child-{name}", "summary": "x"}}')
-            )
+            dev_status.cmd_add(_args(json=f'{{"id": "child-{name}", "summary": "x"}}'))
             results[name] = self.read_rev()
 
         # hold the lock in the main thread so the spawned writers block
@@ -571,6 +585,7 @@ class BacklogTestCase(unittest.TestCase):
             t2.start()
             # give them a moment to block on flock
             import time
+
             time.sleep(0.1)
             self.assertTrue(t1.is_alive())
             self.assertTrue(t2.is_alive())
@@ -584,12 +599,6 @@ class BacklogTestCase(unittest.TestCase):
         self.assertIn("child-one", ids)
         self.assertIn("child-two", ids)
         self.assertEqual(self.read_rev(), 2)
-
-    # ── helper for test_22: write _meta.json with a chosen rev ─────────────
-
-    def write_text_meta(self, rev):
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.meta_file.write_text(json.dumps({"rev": rev}))
 
 
 # ── arg helper ────────────────────────────────────────────────────────────────
