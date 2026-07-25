@@ -67,6 +67,7 @@ SLUG_MIN, SLUG_MAX = 3, 40
 
 CATEGORY_TAG = {"bug": "bug", "feature": "feat", "chore": "chore", "research": "rsrch"}
 STALE_DAYS = 7
+SECTION_WIDTH = 44
 _RESET = "\x1b[0m"
 _COLORS = {
     "in_progress": "\x1b[33m",
@@ -75,6 +76,8 @@ _COLORS = {
     "done": "\x1b[2m",
     "pending": "\x1b[35m",
     "warn": "\x1b[31m",
+    "prio_high": "\x1b[1;31m",
+    "prio_low": "\x1b[2m",
 }
 
 
@@ -296,12 +299,26 @@ def _priority_rank(item):
     return _PRIORITY_RANK.get(item.get("priority", "normal"), 1)
 
 
-def _priority_badge(item, color):
+def _priority_glyph(item, color):
+    """Leading 2-char gutter: bold-red up-triangle for high, dim down-triangle
+    for low, two spaces for normal/absent \u2014 keeps every line's tag column
+    aligned regardless of priority."""
     p = item.get("priority")
-    if p is None or p == "normal":
-        return ""
-    code = _COLORS["warn"] if p == "high" else "\x1b[2m"  # red for high, dim for low
-    return " " + _colorize(f"\u00b7{p}", code, color)
+    if p == "high":
+        return _colorize("\u25b2", _COLORS["prio_high"], color) + " "
+    if p == "low":
+        return _colorize("\u25bd", _COLORS["prio_low"], color) + " "
+    return "  "
+
+
+def _section_top(title, width=SECTION_WIDTH):
+    prefix = f"\u250c\u2500 {title} "
+    fill = max(width - len(prefix), 3)
+    return prefix + ("\u2500" * fill)
+
+
+def _section_bottom(width=SECTION_WIDTH):
+    return "\u2514" + ("\u2500" * (width - 1))
 
 
 def _render_order(items):
@@ -487,16 +504,17 @@ def render(items=None, pending_items=None, *, out=None, err=None, rev=None):
     ):
         if not section_items:
             return
-        header = (
-            _colorize(title, _COLORS.get(color_code), color) if color_code else title
+        frame_code = _COLORS.get(color_code)
+        top = _colorize(_section_top(title), frame_code, color) if frame_code else _section_top(title)
+        bottom = (
+            _colorize(_section_bottom(), frame_code, color) if frame_code else _section_bottom()
         )
-        lines = [header]
+        lines = [top]
         for item in section_items:
             n = slug_to_num[item["id"]]
+            badge = _priority_glyph(item, color) if show_priority else ""
             tag = _category_tag(item.get("category", "")) if show_category else ""
-            line = f"  {n:2}  {tag}{item.get(summary_key, '')}"
-            if show_priority:
-                line += _priority_badge(item, color)
+            line = f"\u2502  {n:2}  {badge}{tag}{item.get(summary_key, '')}"
             if line_suffix:
                 line += line_suffix(item, color)
             if show_age:
@@ -519,11 +537,12 @@ def render(items=None, pending_items=None, *, out=None, err=None, rev=None):
                             parts.append(f"{ref} ({hint})")
                         else:
                             parts.append(ref)
-                    lines.append(f"      \u21b3 blocked by: {', '.join(parts)}")
+                    lines.append(f"\u2502      \u21b3 blocked by: {', '.join(parts)}")
+        lines.append(bottom)
         sections.append(lines)
 
     add_section(
-        "\U0001f4e9 PENDING",
+        "PENDING",
         pending_ordered,
         color_code="pending",
         summary_key="description",
@@ -531,15 +550,15 @@ def render(items=None, pending_items=None, *, out=None, err=None, rev=None):
         line_suffix=_pending_suffix,
     )
     add_section(
-        "\u26a1 IN PROGRESS",
+        "IN PROGRESS",
         in_progress,
         show_age=True,
         show_priority=True,
         color_code="in_progress",
     )
-    add_section("\U0001f7e2 READY", ready, show_priority=True, color_code="ready")
+    add_section("READY", ready, show_priority=True, color_code="ready")
     add_section(
-        "\U0001f6a7 BLOCKED",
+        "BLOCKED",
         blocked,
         show_blockers=True,
         show_age=True,
@@ -547,9 +566,9 @@ def render(items=None, pending_items=None, *, out=None, err=None, rev=None):
         color_code="blocked",
     )
     done_title = (
-        f"\u2705 DONE (showing {len(done)} of {done_total})"
+        f"DONE (showing {len(done)} of {done_total})"
         if done_total > len(done)
-        else "\u2705 DONE"
+        else "DONE"
     )
     add_section(done_title, done, color_code="done")
 
