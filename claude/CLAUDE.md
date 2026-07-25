@@ -61,6 +61,15 @@ python3 ~/.claude/scripts/dev_status.py update <slug|N> '{"field": "value"}'
 python3 ~/.claude/scripts/dev_status.py show <slug|N>
 ```
 
+When passing a numeric position (not a slug) to `start`/`done`/`update`/`block`/
+`unblock`/`pending update`, fetch the current rev first — the `item-map:` line of
+`render` (or `# rev=N` of `list`/`show`) output — in the same tool-call step
+immediately before the mutating call, and pass it as `--if-rev <N>`. The script
+refuses (no write) if `--if-rev` is missing or stale on a numeric call, so this is
+guidance for the fast path, not the safety net — a numeric call that omits it fails
+loudly with a fresh render printed for retry, it never silently mutates the wrong
+item. Slug-based calls are exempt and need nothing extra.
+
 When work is complete on a backlog item, mark it done with the above.
 
 `start`/`done`/`update` already render the full dashboard as part of their own
