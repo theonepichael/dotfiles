@@ -18,10 +18,6 @@
           },
           {
             "type": "command",
-            "command": "python3 ~/.claude/scripts/grill.py pending-plan --consume 2>/dev/null"
-          },
-          {
-            "type": "command",
             "command": "python3 ~/.claude/scripts/dotfiles_sync_check.py 2>/dev/null"
           }
         ]

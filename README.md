@@ -73,8 +73,8 @@ own hooks and skills call those same paths.
   comment at the top of `claude/CLAUDE.md` notes this dual-symlink so it
   reads as intentional from either side.
 - **`copilot/hooks/session-start.json`**: a `sessionStart` hook running the
-  same three shell commands as Claude Code's `SessionStart` hook chain
-  (dashboard render, pending-plan consume, dotfiles-drift check).
+  same shell commands as Claude Code's `SessionStart` hook chain
+  (dashboard render, dotfiles-drift check).
 - **`copilot/skills/<name>/SKILL.md`**: ports of all 5 Claude Code skills
   (dashboard, standup, second-opinion, grill-me, make-skill). Copilot skills are
   **description-matched, not typed-slash** — there's no `/dashboard` to type;
