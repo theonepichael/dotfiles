@@ -301,14 +301,14 @@ def _priority_rank(item):
 
 def _priority_glyph(item, color):
     """Leading 2-char gutter: bold-red up-triangle for high, dim down-triangle
-    for low, two spaces for normal/absent \u2014 keeps every line's tag column
-    aligned regardless of priority."""
+    for low, dim middle dot for normal/absent \u2014 keeps every line's tag column
+    aligned and gives every row a mark instead of a blank hole."""
     p = item.get("priority")
     if p == "high":
         return _colorize("\u25b2", _COLORS["prio_high"], color) + " "
     if p == "low":
         return _colorize("\u25bd", _COLORS["prio_low"], color) + " "
-    return "  "
+    return _colorize("\u00b7", _COLORS["prio_low"], color) + " "
 
 
 def _section_top(title, width=SECTION_WIDTH):
