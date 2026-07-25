@@ -2,17 +2,21 @@
 """dev_status.py v2 — slug IDs, structured dependency graph, pure render."""
 
 import argparse
+import fcntl
 import json
 import os
 import re
 import sys
 import tempfile
+from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 
 DATA_DIR = Path.home() / ".claude" / "data" / "backlog"
 ITEMS_FILE = DATA_DIR / "items.json"
 PENDING_FILE = DATA_DIR / "pending_items.json"
+META_FILE = DATA_DIR / "_meta.json"
+LOCK_FILE = DATA_DIR / ".backlog.lock"
 
 VALID_STATUSES = {"open", "in-progress", "done"}
 VALID_PENDING_STATUSES = {"waiting_for_reply", "reply_received", "resolved"}
@@ -176,6 +180,51 @@ def save_pending(pending_items):
         raise
 
 
+@contextmanager
+def backlog_lock():
+    """Exclusive lock over the full read-modify-write cycle of any mutating
+    command. Held across items.json + pending_items.json + _meta.json so two
+    concurrent writers (e.g. Claude Code and opencode sharing this store)
+    serialize instead of racing."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with open(LOCK_FILE, "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def load_rev():
+    """Read current rev. Missing file == rev 0 (lazy auto-init, no migration)."""
+    if not META_FILE.exists():
+        return 0
+    try:
+        return json.loads(META_FILE.read_text()).get("rev", 0)
+    except json.JSONDecodeError:
+        return 0
+
+
+def bump_rev():
+    """Increment and persist rev. MUST be called while holding backlog_lock().
+    Returns the new value."""
+    rev = load_rev() + 1
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps({"rev": rev})
+    fd, tmp_path = tempfile.mkstemp(dir=DATA_DIR, prefix=".meta_tmp_")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(payload)
+        os.replace(tmp_path, META_FILE)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    return rev
+
+
 def _backup_before_bulk_delete(path):
     """Snapshot a data file before an operation that removes records by a
     computed filter rather than by explicit id — the one class of mutation
@@ -300,6 +349,39 @@ def require_kind(cmd, arg, kind, expected):
         sys.exit(1)
 
 
+def enforce_rev_guard(cmd, id_arg, if_rev_arg, current_rev, items, pending_items):
+    """Numeric id args must carry a matching --if-rev or the command refuses
+    with no write. Slug id args are exempt — slug identity never goes stale."""
+    try:
+        int(id_arg)
+    except (ValueError, TypeError):
+        return  # slug-based call, no guard needed
+
+    if if_rev_arg is None:
+        print(
+            f"[{cmd}] numeric id '{id_arg}' requires --if-rev <N> to guard "
+            f"against a stale position — refusing (no write).",
+            file=sys.stderr,
+        )
+        print(
+            f"[{cmd}] current rev is {current_rev}. Re-confirm your target "
+            f"below, then retry with --if-rev {current_rev}.",
+            file=sys.stderr,
+        )
+        render(items, pending_items, rev=current_rev)
+        sys.exit(1)
+
+    if if_rev_arg != current_rev:
+        print(
+            f"[{cmd}] stale rev: --if-rev {if_rev_arg} given, current is "
+            f"{current_rev} — the backlog changed since you last read it. "
+            f"Refusing (no write).",
+            file=sys.stderr,
+        )
+        render(items, pending_items, rev=current_rev)
+        sys.exit(1)
+
+
 # ── render ────────────────────────────────────────────────────────────────────
 
 
@@ -312,7 +394,7 @@ def _pending_suffix(item, color):
     return marker + since
 
 
-def render(items=None, pending_items=None, *, out=None, err=None):
+def render(items=None, pending_items=None, *, out=None, err=None, rev=None):
     """Pure render — no writes, no side effects."""
     if out is None:
         out = sys.stdout
@@ -323,6 +405,8 @@ def render(items=None, pending_items=None, *, out=None, err=None):
         items = load_items()
     if pending_items is None:
         pending_items = load_pending()
+    if rev is None:
+        rev = load_rev()
 
     index = build_index(items)
     in_progress, ready, blocked, done, done_total = _render_order(items)
@@ -331,7 +415,7 @@ def render(items=None, pending_items=None, *, out=None, err=None):
 
     if not ordered:
         print("(backlog is empty)", file=out)
-        print("item-map:", file=err)
+        print(f"item-map: rev={rev}", file=err)
         return
 
     color = _use_color(out)
@@ -414,7 +498,7 @@ def render(items=None, pending_items=None, *, out=None, err=None):
             print(line, file=out)
 
     map_str = ",".join(f"{n}={tag}" for n, tag in item_map.items())
-    print(f"item-map: {map_str}", file=err)
+    print(f"item-map: rev={rev} {map_str}", file=err)
 
 
 # ── subcommand handlers ───────────────────────────────────────────────────────
@@ -434,6 +518,7 @@ def cmd_render(args):
 
 def cmd_list(args):
     items = load_items()
+    print(f"# rev={load_rev()}")
     for item in items:
         print(f"{item['id']}\t{item.get('status', '')}\t{item.get('summary', '')}")
 
@@ -449,6 +534,7 @@ def cmd_show(args):
     if item is None:
         print(f"[show] not found: {slug}", file=sys.stderr)
         sys.exit(1)
+    print(f"# rev={load_rev()}", file=sys.stderr)
     print(json.dumps(item, indent=2))
 
 
@@ -478,35 +564,37 @@ def cmd_add(args):
         print("[add] 'summary' is required", file=sys.stderr)
         sys.exit(1)
 
-    items = load_items()
-    index = build_index(items)
+    with backlog_lock():
+        items = load_items()
+        index = build_index(items)
 
-    if slug in index:
-        print(f"[add] duplicate slug: {slug}", file=sys.stderr)
-        sys.exit(1)
-
-    blocked_by = patch.get("blocked_by", [])
-    for dep in blocked_by:
-        if dep not in index:
-            print(f"[add] blocked_by references unknown slug: {dep}", file=sys.stderr)
+        if slug in index:
+            print(f"[add] duplicate slug: {slug}", file=sys.stderr)
             sys.exit(1)
 
-    item = {
-        "id": slug,
-        "created": today(),
-        "updated": today(),
-        "status": "open",
-        "summary": patch["summary"].strip(),
-        "category": patch.get("category", "feature"),
-        "blocked_by": blocked_by,
-        "related_files": patch.get("related_files", []),
-        "context": patch.get("context", ""),
-        "next_steps": patch.get("next_steps", ""),
-    }
+        blocked_by = patch.get("blocked_by", [])
+        for dep in blocked_by:
+            if dep not in index:
+                print(f"[add] blocked_by references unknown slug: {dep}", file=sys.stderr)
+                sys.exit(1)
 
-    items.append(item)
-    save_items(items)
-    render(items)
+        item = {
+            "id": slug,
+            "created": today(),
+            "updated": today(),
+            "status": "open",
+            "summary": patch["summary"].strip(),
+            "category": patch.get("category", "feature"),
+            "blocked_by": blocked_by,
+            "related_files": patch.get("related_files", []),
+            "context": patch.get("context", ""),
+            "next_steps": patch.get("next_steps", ""),
+        }
+
+        items.append(item)
+        save_items(items)
+        new_rev = bump_rev()
+    render(items, rev=new_rev)
 
 
 def confirm_resolution(cmd, arg, item, summary_key="summary"):
@@ -516,9 +604,6 @@ def confirm_resolution(cmd, arg, item, summary_key="summary"):
 
 
 def cmd_update(args):
-    items = load_items()
-    kind, slug = resolve_id(args.id, items, load_pending())
-    require_kind("update", args.id, kind, "backlog")
     patch = _parse_json_arg(args.patch, "update")
 
     bad = set(patch) & IMMUTABLE_FIELDS
@@ -537,49 +622,71 @@ def cmd_update(args):
         )
         sys.exit(1)
 
-    index = build_index(items)
-    item = index.get(slug)
-    if item is None:
-        print(f"[update] not found: {slug}", file=sys.stderr)
-        sys.exit(1)
+    with backlog_lock():
+        items = load_items()
+        pending_items = load_pending()
+        current_rev = load_rev()
+        enforce_rev_guard("update", args.id, args.if_rev, current_rev, items, pending_items)
 
-    item.update(patch)
-    item["updated"] = today()
-    save_items(items)
-    confirm_resolution("update", args.id, item)
-    render(items)
+        kind, slug = resolve_id(args.id, items, pending_items)
+        require_kind("update", args.id, kind, "backlog")
+
+        index = build_index(items)
+        item = index.get(slug)
+        if item is None:
+            print(f"[update] not found: {slug}", file=sys.stderr)
+            sys.exit(1)
+
+        item.update(patch)
+        item["updated"] = today()
+        save_items(items)
+        new_rev = bump_rev()
+        confirm_resolution("update", args.id, item)
+    render(items, rev=new_rev)
 
 
 def cmd_start(args):
-    items = load_items()
-    kind, slug = resolve_id(args.id, items, load_pending())
-    require_kind("start", args.id, kind, "backlog")
-    index = build_index(items)
-    item = index.get(slug)
-    if item is None:
-        print(f"[start] not found: {slug}", file=sys.stderr)
-        sys.exit(1)
-    item["status"] = "in-progress"
-    item["updated"] = today()
-    save_items(items)
-    confirm_resolution("start", args.id, item)
-    render(items)
+    with backlog_lock():
+        items = load_items()
+        pending_items = load_pending()
+        current_rev = load_rev()
+        enforce_rev_guard("start", args.id, args.if_rev, current_rev, items, pending_items)
+
+        kind, slug = resolve_id(args.id, items, pending_items)
+        require_kind("start", args.id, kind, "backlog")
+        index = build_index(items)
+        item = index.get(slug)
+        if item is None:
+            print(f"[start] not found: {slug}", file=sys.stderr)
+            sys.exit(1)
+        item["status"] = "in-progress"
+        item["updated"] = today()
+        save_items(items)
+        new_rev = bump_rev()
+        confirm_resolution("start", args.id, item)
+    render(items, rev=new_rev)
 
 
 def cmd_done(args):
-    items = load_items()
-    kind, slug = resolve_id(args.id, items, load_pending())
-    require_kind("done", args.id, kind, "backlog")
-    index = build_index(items)
-    item = index.get(slug)
-    if item is None:
-        print(f"[done] not found: {slug}", file=sys.stderr)
-        sys.exit(1)
-    item["status"] = "done"
-    item["updated"] = today()
-    save_items(items)
-    confirm_resolution("done", args.id, item)
-    render(items)
+    with backlog_lock():
+        items = load_items()
+        pending_items = load_pending()
+        current_rev = load_rev()
+        enforce_rev_guard("done", args.id, args.if_rev, current_rev, items, pending_items)
+
+        kind, slug = resolve_id(args.id, items, pending_items)
+        require_kind("done", args.id, kind, "backlog")
+        index = build_index(items)
+        item = index.get(slug)
+        if item is None:
+            print(f"[done] not found: {slug}", file=sys.stderr)
+            sys.exit(1)
+        item["status"] = "done"
+        item["updated"] = today()
+        save_items(items)
+        new_rev = bump_rev()
+        confirm_resolution("done", args.id, item)
+    render(items, rev=new_rev)
 
 
 def cmd_rename(args):
@@ -591,82 +698,96 @@ def cmd_rename(args):
         print(err, file=sys.stderr)
         sys.exit(1)
 
-    items = load_items()
-    index = build_index(items)
+    with backlog_lock():
+        items = load_items()
+        index = build_index(items)
 
-    if old_slug not in index:
-        print(f"[rename] not found: {old_slug}", file=sys.stderr)
-        sys.exit(1)
-    if new_slug in index:
-        print(f"[rename] collision: '{new_slug}' already exists", file=sys.stderr)
-        sys.exit(1)
+        if old_slug not in index:
+            print(f"[rename] not found: {old_slug}", file=sys.stderr)
+            sys.exit(1)
+        if new_slug in index:
+            print(f"[rename] collision: '{new_slug}' already exists", file=sys.stderr)
+            sys.exit(1)
 
-    word_re = re.compile(r"\b" + re.escape(old_slug) + r"\b")
+        word_re = re.compile(r"\b" + re.escape(old_slug) + r"\b")
 
-    for item in items:
-        if item["id"] == old_slug:
-            item["id"] = new_slug
-        item["blocked_by"] = [
-            new_slug if s == old_slug else s for s in item.get("blocked_by", [])
-        ]
-        for field in ("summary", "context", "next_steps"):
-            if old_slug in item.get(field, ""):
-                item[field] = word_re.sub(new_slug, item[field])
+        for item in items:
+            if item["id"] == old_slug:
+                item["id"] = new_slug
+            item["blocked_by"] = [
+                new_slug if s == old_slug else s for s in item.get("blocked_by", [])
+            ]
+            for field in ("summary", "context", "next_steps"):
+                if old_slug in item.get(field, ""):
+                    item[field] = word_re.sub(new_slug, item[field])
 
-    save_items(items)
+        save_items(items)
+        new_rev = bump_rev()
     print(f"[rename] {old_slug} \u2192 {new_slug}", file=sys.stderr)
-    render(items)
+    render(items, rev=new_rev)
 
 
 def cmd_block(args):
-    items = load_items()
-    kind, slug = resolve_id(args.id, items, load_pending())
-    require_kind("block", args.id, kind, "backlog")
     blocker = args.blocker
-    index = build_index(items)
+    with backlog_lock():
+        items = load_items()
+        pending_items = load_pending()
+        current_rev = load_rev()
+        enforce_rev_guard("block", args.id, args.if_rev, current_rev, items, pending_items)
 
-    item = index.get(slug)
-    if item is None:
-        print(f"[block] not found: {slug}", file=sys.stderr)
-        sys.exit(1)
-    if blocker not in index:
-        print(f"[block] blocker not found: {blocker}", file=sys.stderr)
-        sys.exit(1)
-    if blocker in item.get("blocked_by", []):
-        print(f"[block] {slug} already blocked by {blocker}", file=sys.stderr)
-        sys.exit(1)
-    if detect_cycle(slug, blocker, index):
-        print(
-            f"[block] would create a cycle: {blocker} already depends on {slug}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        kind, slug = resolve_id(args.id, items, pending_items)
+        require_kind("block", args.id, kind, "backlog")
+        index = build_index(items)
 
-    item.setdefault("blocked_by", []).append(blocker)
-    item["updated"] = today()
-    save_items(items)
-    render(items)
+        item = index.get(slug)
+        if item is None:
+            print(f"[block] not found: {slug}", file=sys.stderr)
+            sys.exit(1)
+        if blocker not in index:
+            print(f"[block] blocker not found: {blocker}", file=sys.stderr)
+            sys.exit(1)
+        if blocker in item.get("blocked_by", []):
+            print(f"[block] {slug} already blocked by {blocker}", file=sys.stderr)
+            sys.exit(1)
+        if detect_cycle(slug, blocker, index):
+            print(
+                f"[block] would create a cycle: {blocker} already depends on {slug}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        item.setdefault("blocked_by", []).append(blocker)
+        item["updated"] = today()
+        save_items(items)
+        new_rev = bump_rev()
+    render(items, rev=new_rev)
 
 
 def cmd_unblock(args):
-    items = load_items()
-    kind, slug = resolve_id(args.id, items, load_pending())
-    require_kind("unblock", args.id, kind, "backlog")
     blocker = args.blocker
-    index = build_index(items)
+    with backlog_lock():
+        items = load_items()
+        pending_items = load_pending()
+        current_rev = load_rev()
+        enforce_rev_guard("unblock", args.id, args.if_rev, current_rev, items, pending_items)
 
-    item = index.get(slug)
-    if item is None:
-        print(f"[unblock] not found: {slug}", file=sys.stderr)
-        sys.exit(1)
-    if blocker not in item.get("blocked_by", []):
-        print(f"[unblock] {slug} is not blocked by {blocker}", file=sys.stderr)
-        sys.exit(1)
+        kind, slug = resolve_id(args.id, items, pending_items)
+        require_kind("unblock", args.id, kind, "backlog")
+        index = build_index(items)
 
-    item["blocked_by"] = [s for s in item["blocked_by"] if s != blocker]
-    item["updated"] = today()
-    save_items(items)
-    render(items)
+        item = index.get(slug)
+        if item is None:
+            print(f"[unblock] not found: {slug}", file=sys.stderr)
+            sys.exit(1)
+        if blocker not in item.get("blocked_by", []):
+            print(f"[unblock] {slug} is not blocked by {blocker}", file=sys.stderr)
+            sys.exit(1)
+
+        item["blocked_by"] = [s for s in item["blocked_by"] if s != blocker]
+        item["updated"] = today()
+        save_items(items)
+        new_rev = bump_rev()
+    render(items, rev=new_rev)
 
 
 def cmd_pending_add(args):
