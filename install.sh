@@ -325,7 +325,7 @@ symlink tmux/.tmux.conf           ~/.tmux.conf
 # Claude Code-specific wiring — skipped in Copilot-only mode (--work --copilot)
 if (( ! COPILOT_ONLY )); then
   symlink claude/CLAUDE.md          ~/.claude/CLAUDE.md
-  symlink claude/commands/status.md   ~/.claude/commands/status.md
+  symlink claude/commands/dashboard.md   ~/.claude/commands/dashboard.md
   symlink claude/commands/grill-me.md ~/.claude/commands/grill-me.md
   symlink claude/commands/make-skill.md ~/.claude/commands/make-skill.md
   symlink claude/commands/standup.md  ~/.claude/commands/standup.md
@@ -347,7 +347,7 @@ symlink claude/scripts/dotfiles_sync_check.py ~/.claude/scripts/dotfiles_sync_ch
 if (( COPILOT )); then
   symlink claude/CLAUDE.md ~/.copilot/copilot-instructions.md
   symlink copilot/hooks/session-start.json ~/.copilot/hooks/session-start.json
-  symlink copilot/skills/status/SKILL.md          ~/.copilot/skills/status/SKILL.md
+  symlink copilot/skills/dashboard/SKILL.md       ~/.copilot/skills/dashboard/SKILL.md
   symlink copilot/skills/standup/SKILL.md         ~/.copilot/skills/standup/SKILL.md
   symlink copilot/skills/second-opinion/SKILL.md  ~/.copilot/skills/second-opinion/SKILL.md
   symlink copilot/skills/grill-me/SKILL.md        ~/.copilot/skills/grill-me/SKILL.md

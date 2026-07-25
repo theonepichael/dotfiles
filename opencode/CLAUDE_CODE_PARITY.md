@@ -33,14 +33,22 @@ directories in this repo, and get symlinked into `~/.config/opencode/` by
 
 **Status (2026-07-24): already done**, ahead of this doc. All 5 commands
 from `claude/commands/` (`grill-me`, `make-skill`, `second-opinion`,
-`standup`, `status`) exist in `~/.config/opencode/commands/`, dated
+`standup`, `dashboard`) exist in `~/.config/opencode/commands/`, dated
 2026-07-23 — a real adaptation pass, not a blind copy: dropped `name`
 (redundant with filename), dropped `argument-hint` and `allowed-tools`
 (neither exists in opencode's command frontmatter — tool access is
 controlled per-agent instead, see §3), reworded `make-skill`'s description
 for opencode/SKILL.md terminology, and correctly stripped the
-SessionStart-hook caveat from `status.md` (opencode has no hooks
-equivalent — see §5). No further action needed on this item.
+SessionStart-hook caveat from `dashboard.md` (opencode has no hooks
+equivalent — see §5).
+
+NOTE (2026-07-24): the Claude Code command was renamed `status.md` →
+`dashboard.md` (collided with Claude Code's built-in `/status`). This repo
+doesn't track the opencode-side files directly — they live only at
+`~/.config/opencode/commands/` on whatever machine had opencode configured,
+copied there manually rather than symlinked. That machine's `status.md`
+needs the same rename + the frontmatter/prose fixes below applied by hand;
+this repo has no way to push it there automatically.
 
 Original notes kept below for reference on the format itself.
 

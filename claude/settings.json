@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/scripts/dev_status.py render 2>&1 || echo '[dev_status] render failed — run /status to debug'"
+            "command": "python3 ~/.claude/scripts/dev_status.py render 2>&1 || echo '[dev_status] render failed — run /dashboard to debug'"
           },
           {
             "type": "command",

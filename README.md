@@ -76,8 +76,8 @@ own hooks and skills call those same paths.
   same three shell commands as Claude Code's `SessionStart` hook chain
   (dashboard render, pending-plan consume, dotfiles-drift check).
 - **`copilot/skills/<name>/SKILL.md`**: ports of all 5 Claude Code skills
-  (status, standup, second-opinion, grill-me, make-skill). Copilot skills are
-  **description-matched, not typed-slash** — there's no `/status` to type;
+  (dashboard, standup, second-opinion, grill-me, make-skill). Copilot skills are
+  **description-matched, not typed-slash** — there's no `/dashboard` to type;
   the skill fires when its `description` frontmatter matches the
   conversation. `second-opinion` and `grill-me` also drop `AskUserQuestion`
   (Copilot has no structured multi-choice prompt) in favor of plain
