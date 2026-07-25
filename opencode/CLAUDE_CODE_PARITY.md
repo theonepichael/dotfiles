@@ -43,12 +43,20 @@ SessionStart-hook caveat from `dashboard.md` (opencode has no hooks
 equivalent — see §5).
 
 NOTE (2026-07-24): the Claude Code command was renamed `status.md` →
-`dashboard.md` (collided with Claude Code's built-in `/status`). This repo
-doesn't track the opencode-side files directly — they live only at
-`~/.config/opencode/commands/` on whatever machine had opencode configured,
-copied there manually rather than symlinked. That machine's `status.md`
-needs the same rename + the frontmatter/prose fixes below applied by hand;
-this repo has no way to push it there automatically.
+`dashboard.md` (collided with Claude Code's built-in `/status`). Rather than
+require a manual fix on whatever machine has opencode configured, `dashboard`
+was pulled into this repo properly at `opencode/command/dashboard.md` and
+wired into `install.sh` (`symlink opencode/command/dashboard.md
+~/.config/opencode/commands/dashboard.md`) — `git pull` + `install.sh` on
+that machine now creates it automatically. The stale, un-symlinked
+`~/.config/opencode/commands/status.md` from the old manual port is
+harmless leftover clutter at that point — delete it whenever, or leave it.
+
+The other 4 (`grill-me`, `make-skill`, `second-opinion`, `standup`) are
+still the original manual, untracked port — not touched by this rename, so
+left as-is. Same "no way to push automatically" caveat still applies to
+those specifically until someone does the same pull-into-repo treatment for
+them.
 
 Original notes kept below for reference on the format itself.
 

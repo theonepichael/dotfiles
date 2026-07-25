@@ -355,11 +355,14 @@ if (( COPILOT )); then
 fi
 
 # opencode — profile-agnostic (the harness this dotfiles setup is developed
-# against; runs on work and personal both). Only opencode/tui.json is
-# symlinked today; commands live at ~/.config/opencode/commands/ from a prior
-# manual port (see opencode/CLAUDE_CODE_PARITY.md §2). AGENTS.md and
-# opencode.jsonc are intentionally not managed here yet.
+# against; runs on work and personal both). Most commands still live at
+# ~/.config/opencode/commands/ from a prior manual, untracked port (see
+# opencode/CLAUDE_CODE_PARITY.md §2) — dashboard.md is the first one pulled
+# into the repo proper (2026-07-24, after the status→dashboard rename) so
+# that one at least stays in sync automatically; the rest are still manual.
+# AGENTS.md and opencode.jsonc are intentionally not managed here yet.
 symlink opencode/tui.json ~/.config/opencode/tui.json
+symlink opencode/command/dashboard.md ~/.config/opencode/commands/dashboard.md
 
 # watchcommit: personal machines only — it auto-pushes to a personal remote
 # under your personal Claude account login, which has no place on work hardware.
