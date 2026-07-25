@@ -382,15 +382,17 @@ fi
 # opencode — profile-agnostic (the harness this dotfiles setup is developed
 # against; runs on work and personal both). Most commands still live at
 # ~/.config/opencode/commands/ from a prior manual, untracked port (see
-# opencode/CLAUDE_CODE_PARITY.md §2) — dashboard.md is the first one pulled
-# into the repo proper (2026-07-24, after the status→dashboard rename) so
-# that one at least stays in sync automatically; the rest are still manual.
+# opencode/CLAUDE_CODE_PARITY.md §2) — dashboard.md (2026-07-24, after the
+# status→dashboard rename) and grill-me.md (2026-07-25) are pulled into the
+# repo proper so those two at least stay in sync automatically; the rest are
+# still manual.
 # AGENTS.md is intentionally not managed here — opencode already reads
 # ~/.claude/CLAUDE.md directly as a legacy fallback when no AGENTS.md exists
 # (see CLAUDE_CODE_PARITY.md §1), so creating one here would just duplicate
 # the same content under a second path for no behavioral gain.
 symlink opencode/tui.json ~/.config/opencode/tui.json
 symlink opencode/command/dashboard.md ~/.config/opencode/commands/dashboard.md
+symlink opencode/command/grill-me.md ~/.config/opencode/commands/grill-me.md
 
 # opencode.jsonc holds the bash permission allowlist (opencode's equivalent
 # of claude/settings.json's permissions block) — copied, not symlinked, on

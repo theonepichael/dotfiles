@@ -58,5 +58,12 @@
       "xargs *": "allow",
       "rm -f *": "allow"
     }
+  },
+  "agent": {
+    "adversary": {
+      "description": "Adversarial critique subagent for grill-me's --auto mode. Argues against a proposed decision using a model different from the primary session's default, so the critique is genuinely independent rather than the same model second-guessing itself.",
+      "mode": "subagent",
+      "model": "deepinfra/moonshotai/Kimi-K2.7-Code"
+    }
   }
 }
