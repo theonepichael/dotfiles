@@ -1,6 +1,6 @@
 ---
-name: status
-description: "surfaces backlog and pending items as a dashboard. use when the user says 'status', 'what's pending', 'show backlog', 'dashboard', 'where we at', 'what am i working on', 'open items', or any variant of checking current work status. (session start is covered by a SessionStart hook — do not run this again unprompted.)"
+name: dashboard
+description: "surfaces backlog and pending items as a dashboard. use when the user says 'dashboard', 'what's pending', 'show backlog', 'where we at', 'what am i working on', 'open items', or any variant of checking current work status. Renamed from /status to avoid colliding with Claude Code's built-in /status (plan usage/rate-limit view) — a naming collision with a built-in command can silently break custom command loading. (session start is covered by a SessionStart hook — do not run this again unprompted.)"
 ---
 Run:
 
