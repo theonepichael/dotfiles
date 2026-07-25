@@ -45,6 +45,7 @@ RESERVED_SLUGS = {
     "start",
     "done",
     "rename",
+    "remove",
     "block",
     "unblock",
     "prune",
@@ -973,6 +974,29 @@ def cmd_pending_list(args):
         print(json.dumps(item))
 
 
+def cmd_remove(args):
+    with backlog_lock():
+        items = load_items()
+        pending_items = load_pending()
+        current_rev = load_rev()
+        enforce_rev_guard(
+            "remove", args.id, args.if_rev, current_rev, items, pending_items
+        )
+
+        kind, slug = resolve_id(args.id, items, pending_items)
+        require_kind("remove", args.id, kind, "backlog")
+        index = build_index(items)
+        item = index.get(slug)
+        if item is None:
+            print(f"[remove] not found: {slug}", file=sys.stderr)
+            sys.exit(1)
+        keep = [i for i in items if i["id"] != slug]
+        save_items(keep)
+        new_rev = bump_rev()
+    confirm_resolution("remove", args.id, item)
+    render(keep, rev=new_rev)
+
+
 def cmd_prune(args):
     cutoff_days = 14
 
@@ -1030,7 +1054,7 @@ def main():
     )
     sub = parser.add_subparsers(
         dest="cmd",
-        metavar="{render,list,show,add,update,start,done,rename,block,unblock,prune}",
+        metavar="{render,list,show,add,update,start,done,rename,remove,block,unblock,prune}",
     )
 
     sub.add_parser("render", help="render dashboard (pure — no side effects)")
@@ -1082,6 +1106,17 @@ def main():
     p = sub.add_parser("rename", help="rename slug (rewrites all references)")
     p.add_argument("old_slug")
     p.add_argument("new_slug")
+
+    p = sub.add_parser("remove", help="permanently remove one item by slug or number")
+    p.add_argument("id", metavar="<slug|N>")
+    p.add_argument(
+        "--if-rev",
+        type=int,
+        default=None,
+        metavar="<N>",
+        help="required when <id> is numeric; get the current value from "
+        "render/list/show immediately before this call",
+    )
 
     p = sub.add_parser("block", help="add a blocker to an item")
     p.add_argument("id", metavar="<slug|N>")
@@ -1154,6 +1189,7 @@ def main():
         "start": cmd_start,
         "done": cmd_done,
         "rename": cmd_rename,
+        "remove": cmd_remove,
         "block": cmd_block,
         "unblock": cmd_unblock,
         "prune": cmd_prune,

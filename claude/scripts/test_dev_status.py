@@ -753,6 +753,191 @@ class BacklogTestCase(unittest.TestCase):
             dev_status._priority_rank(items[0]), dev_status._priority_rank(items[1])
         )
 
+    # ── 37: remove by slug deletes one item ─────────────────────────────────
+
+    def test_37_remove_by_slug_deletes_item(self):
+        self.write_items([make_item("item-a"), make_item("item-b")])
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_remove(_args(id="item-a"))
+        self.assertEqual(len(self.read_items()), 1)
+        self.assertEqual(self.read_items()[0]["id"], "item-b")
+        self.assertIn("[remove] item-a: Summary of item-a", err.getvalue())
+
+    # ── 38: remove by number resolves through the unified render order ──────
+
+    def test_38_remove_by_number_resolves_via_render(self):
+        # two open items; render orders them by created (FIFO), so a=1, b=2.
+        self.write_items([make_item("item-a"), make_item("item-b")])
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_remove(_args(id="2", if_rev=0))
+        remaining = [i["id"] for i in self.read_items()]
+        self.assertEqual(remaining, ["item-a"])
+        self.assertIn("[remove] 2 → item-b: Summary of item-b", err.getvalue())
+
+    # ── 39: numeric id without --if-rev refused, no write ──────────────────
+
+    def test_39_remove_numeric_without_if_rev_refused(self):
+        self.write_items([make_item("item-a"), make_item("item-b")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_remove(_args(id="1"))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("requires --if-rev", err.getvalue())
+        # no write, no rev bump
+        self.assertEqual(self.read_rev(), 0)
+        self.assertEqual({i["id"] for i in self.read_items()}, {"item-a", "item-b"})
+
+    # ── 40: stale --if-rev refused, no write ───────────────────────────────
+
+    def test_40_remove_numeric_stale_if_rev_refused(self):
+        self.write_items([make_item("item-a"), make_item("item-b")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_remove(_args(id="1", if_rev=99))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("stale rev", err.getvalue())
+        self.assertEqual(self.read_rev(), 0)
+        self.assertEqual({i["id"] for i in self.read_items()}, {"item-a", "item-b"})
+
+    # ── 41: slug id never requires --if-rev ────────────────────────────────
+
+    def test_41_remove_slug_never_requires_if_rev(self):
+        # write items, bump rev by writing meta directly so rev is non-zero
+        self.write_items([make_item("item-a")])
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.meta_file.write_text(json.dumps({"rev": 7}))
+        # slug call succeeds without --if-rev regardless of rev state
+        dev_status.cmd_remove(_args(id="item-a"))
+        self.assertEqual(self.read_items(), [])
+
+    # ── 42: pending item refused by require_kind ────────────────────────────
+
+    def test_42_remove_pending_refused(self):
+        self.write_pending(
+            [
+                {
+                    "id": "pend-item",
+                    "description": "waiting",
+                    "kind": "email",
+                    "status": "waiting_for_reply",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                }
+            ]
+        )
+        # No backlog items, so the pending item sits at render position 1;
+        # pass --if-rev to get past the rev-guard and reach require_kind.
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_remove(_args(id="1", if_rev=0))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("is a pending item", err.getvalue())
+        # pending item survives intact
+        self.assertEqual(len(dev_status.load_pending()), 1)
+        self.assertEqual(dev_status.load_pending()[0]["id"], "pend-item")
+
+    # ── 43: unknown slug exits cleanly, no write ────────────────────────────
+
+    def test_43_remove_unknown_slug_exits(self):
+        self.write_items([make_item("item-a")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_remove(_args(id="nope-item"))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("[remove] not found: nope-item", err.getvalue())
+        self.assertEqual(len(self.read_items()), 1)
+        self.assertEqual(self.read_rev(), 0)
+
+    # ── 44: out-of-range numeric exits via resolve_id, no write ─────────────
+
+    def test_44_remove_unknown_number_exits(self):
+        self.write_items([make_item("item-a")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_remove(_args(id="9", if_rev=0))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("no item at position 9", err.getvalue())
+        self.assertEqual(len(self.read_items()), 1)
+        self.assertEqual(self.read_rev(), 0)
+
+    # ── 45: remove leaves dependent blocked_by refs dangling ────────────────
+
+    def test_45_remove_leaves_dangling_blocked_by(self):
+        self.write_items(
+            [
+                make_item("blocker", status="done"),
+                make_item("dep", blocked_by=["blocker"]),
+            ]
+        )
+        dev_status.cmd_remove(_args(id="blocker"))
+        remaining = self.read_items()
+        self.assertEqual([i["id"] for i in remaining], ["dep"])
+        index = dev_status.build_index(remaining)
+        # blocked_by slug still listed even though referent is gone
+        self.assertEqual(
+            dev_status.effective_blockers(remaining[0], index), ["blocker"]
+        )
+
+    # ── 46: remove bumps rev exactly once ──────────────────────────────────
+
+    def test_46_remove_bumps_rev(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.meta_file.write_text(json.dumps({"rev": 5}))
+        self.write_items([make_item("item-a"), make_item("item-b")])
+        dev_status.cmd_remove(_args(id="item-a"))
+        self.assertEqual(self.read_rev(), 6)
+
+    # ── 47: remove subparser has no --force flag ────────────────────────────
+
+    def test_47_remove_no_force_flag_required(self):
+        # The remove subparser must parse a bare "remove <id>" call without
+        # error (no --force required for symmetry with start/done/etc.), and
+        # must reject --force (it is not a registered argument of remove).
+        self.write_items([make_item("item-a")])
+        out = io.StringIO()
+        err = io.StringIO()
+        with (
+            patch("sys.argv", ["dev_status", "remove", "item-a"]),
+            patch("sys.stdout", out),
+            patch("sys.stderr", err),
+        ):
+            try:
+                dev_status.main()
+            except SystemExit as e:
+                self.fail(
+                    f"argparse rejected a --force-free remove call: {e.code} / "
+                    f"stderr={err.getvalue()!r}"
+                )
+        # --force is not a registered argument of the remove subparser.
+        with self.assertRaises(SystemExit):
+            with (
+                patch("sys.argv", ["dev_status", "remove", "item-a", "--force"]),
+                patch("sys.stderr", io.StringIO()),
+                patch("sys.stdout", io.StringIO()),
+            ):
+                dev_status.main()
+
+    # ── 48: metavar string lists remove between rename and block ───────────
+
+    def test_48_remove_acked_in_help_metavar(self):
+        # The top-level subparsers metavar is the {…} set shown next to the
+        # program name in --help. Parse with -h and capture the usage line.
+        out = io.StringIO()
+        with self.assertRaises(SystemExit):
+            with patch("sys.argv", ["dev_status", "-h"]), patch("sys.stdout", out):
+                dev_status.main()
+        usage = out.getvalue()
+        # rename appears before remove, remove before block in the metavar.
+        self.assertLess(usage.index("rename"), usage.index("remove"))
+        self.assertLess(usage.index("remove"), usage.index("block"))
+
 
 # ── arg helper ────────────────────────────────────────────────────────────────
 
