@@ -64,6 +64,11 @@ if [[ -f "$HOME/.common_shell_aliases" ]]; then
     source "$HOME/.common_shell_aliases"
 fi
 
+# Copilot-specific aliases — only present when the copilot harness was
+# selected during install.sh (symlinked to ~/.copilot_aliases); absent
+# (and silently skipped) otherwise.
+[[ -f "$HOME/.copilot_aliases" ]] && source "$HOME/.copilot_aliases"
+
 # ============================================================================
 # OH-MY-POSH
 # ============================================================================

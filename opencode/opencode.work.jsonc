@@ -18,11 +18,8 @@
       "npm test*": "allow",
       "npm install*": "allow",
       "npm install": "allow",
-      "npx *": "allow",
       "node scripts/*": "allow",
-      "node -e *": "allow",
       "uv *": "allow",
-      "curl *": "allow",
       "lsof *": "allow",
       "ps *": "allow",
       "ls*": "allow",
@@ -30,8 +27,6 @@
       "cp *": "allow",
       "mv *": "allow",
       "touch *": "allow",
-      "nohup *": "allow",
-      "kill*": "allow",
       "sleep *": "allow",
       "echo *": "allow",
       "pwd": "allow",
@@ -53,8 +48,7 @@
       "env": "allow",
       "printenv*": "allow",
       "cat *": "allow",
-      "sed -n *": "allow",
-      "rm -f *": "allow"
+      "sed -n *": "allow"
     }
   },
   "agent": {

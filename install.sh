@@ -12,25 +12,38 @@ PROFILE_MARKER="$STATE_DIR/profile"
 
 is_mac()   { [[ "$OS" == "Darwin" ]] }
 is_linux() { [[ "$OS" == "Linux" ]] }
+is_wsl()   { is_linux && { [[ -n "$WSL_DISTRO_NAME" ]] || grep -qi microsoft /proc/version 2>/dev/null } }
 
 usage() {
   cat <<'EOF'
-usage: ./install.sh [--work] [--copilot] [--rollback] [--force]
+usage: ./install.sh --harness=<claude,copilot,opencode>[,...] [--profile=personal|work] [--rollback] [--force]
 
-  --work      provision a work machine: excludes watchcommit and personal
-              API-key setup; seeds Claude settings from settings.work.json
-  --copilot   also wire up GitHub Copilot CLI: shared instructions symlink,
-              sessionStart hook, and skill ports under ~/.copilot/. Additive
-              to Claude Code when standalone (personal profile). Combined
-              with --work, it's Copilot-only: Claude Code's install and
-              ~/.claude/*-specific wiring (CLAUDE.md, commands, settings.json,
-              statusline) are skipped — the shared ~/.claude/scripts/*.py
-              stay, since Copilot's hooks/skills call those same paths.
+  --harness   required unless --rollback. Comma-separated, at least one of:
+              claude, copilot, opencode. No default — every run must state
+              its intent explicitly. Purely additive: omitting a harness
+              you previously selected does NOT uninstall or clean it up,
+              it just skips re-provisioning it this run. Removal is a
+              --rollback concern (the most recent run's manifest only) or
+              manual cleanup.
+  --profile   personal (default) or work. Controls machine-level concerns
+              ONLY: excludes watchcommit, excludes personal API-key setup,
+              and seeds tightened settings/permission files where a
+              profile-specific variant exists (settings.work.json,
+              opencode.work.jsonc). Never restricts which harness(es) you
+              can choose — --profile=work --harness=claude is honored as
+              stated.
   --rollback  reverse the previous run's file mutations (symlinks, copies,
               backups) using the manifest, then exit. Packages are reported
-              but never uninstalled.
+              but never uninstalled. Must be used alone (no --harness,
+              --profile, or --force).
   --force     override the work-profile guard on a machine previously
-              provisioned with --work
+              provisioned with --profile=work
+
+Examples:
+  ./install.sh --harness=claude
+  ./install.sh --profile=work --harness=copilot
+  ./install.sh --harness=claude,opencode
+  ./install.sh --profile=work --harness=copilot,opencode
 
 Exits 0 if every step ran, 1 if any step was skipped (see summary).
 EOF
@@ -39,25 +52,58 @@ EOF
 PROFILE=personal
 FORCE=0
 ROLLBACK=0
-COPILOT=0
+typeset -a HARNESSES
+HARNESS_SET=0
 for arg in "$@"; do
   case "$arg" in
-    --work)     PROFILE=work ;;
-    --copilot)  COPILOT=1 ;;
-    --rollback) ROLLBACK=1 ;;
-    --force)    FORCE=1 ;;
-    -h|--help)  usage; exit 0 ;;
-    *)          echo "unknown argument: $arg" >&2; usage >&2; exit 2 ;;
+    --profile=*) PROFILE="${arg#--profile=}" ;;
+    # Append, not overwrite: --harness=claude --harness=copilot must
+    # accumulate both, not silently drop the first on the second flag.
+    --harness=*) HARNESSES+=("${(s:,:)${arg#--harness=}}"); HARNESS_SET=1 ;;
+    --rollback)  ROLLBACK=1 ;;
+    --force)     FORCE=1 ;;
+    -h|--help)   usage; exit 0 ;;
+    *)           echo "unknown argument: $arg" >&2; usage >&2; exit 2 ;;
   esac
 done
 
-# --work --copilot together means Copilot is the machine's only harness (the
-# the workplace work machine has no usable Claude Code) — Claude Code's install and
-# ~/.claude/*-specific wiring are skipped. --copilot alone (personal) stays
-# additive to Claude Code. The shared ~/.claude/scripts/*.py stay symlinked
-# either way since Copilot's hooks/skills call those same paths.
-COPILOT_ONLY=0
-[[ "$PROFILE" == "work" ]] && (( COPILOT )) && COPILOT_ONLY=1
+if [[ "$PROFILE" != "personal" && "$PROFILE" != "work" ]]; then
+  echo "invalid --profile: $PROFILE (must be personal or work)" >&2
+  exit 2
+fi
+
+# Empty --harness= (e.g. a stray trailing comma or a copy-paste mistake)
+# gets its own message — checked before the generic validation loop below,
+# since its catch-all case would otherwise match an empty string too and
+# report it as an "unknown harness" with a blank name.
+for h in "${HARNESSES[@]}"; do
+  [[ -z "$h" ]] && { echo "--harness has an empty value — check for a stray comma" >&2; exit 2; }
+done
+
+for h in "${HARNESSES[@]}"; do
+  case "$h" in
+    claude|copilot|opencode) ;;
+    *) echo "unknown harness: $h (must be claude, copilot, and/or opencode)" >&2; exit 2 ;;
+  esac
+done
+
+# --rollback is an undo-only action — reject it combined with anything
+# that implies a forward install (not just --harness; --profile/--force
+# alongside --rollback would otherwise be silently ignored, misleading
+# someone into thinking they rolled back "as work" or similar).
+if (( ROLLBACK )) && { (( HARNESS_SET )) || [[ "$PROFILE" != personal ]] || (( FORCE )); }; then
+  echo "--rollback must be used alone, with no other flags" >&2
+  exit 2
+fi
+
+# --rollback doesn't need a harness; every other invocation does.
+if (( ! ROLLBACK )) && (( ! HARNESS_SET )); then
+  echo "no --harness specified — pass at least one of: claude, copilot, opencode" >&2
+  usage >&2
+  exit 2
+fi
+
+has_harness() { (( ${HARNESSES[(Ie)$1]} )) }
 
 # ============================================================================
 # Skip-and-report plumbing
@@ -120,7 +166,7 @@ do_rollback() {
 if [[ "$PROFILE" == "personal" && -f "$PROFILE_MARKER" ]] \
    && [[ "$(<"$PROFILE_MARKER")" == "work" ]] && (( ! FORCE )); then
   echo "This machine is provisioned as WORK (marker: $PROFILE_MARKER)." >&2
-  echo "Pass --work, or --force to provision as personal anyway." >&2
+  echo "Pass --profile=work, or --force to provision as personal anyway." >&2
   exit 2
 fi
 
@@ -149,7 +195,7 @@ if is_mac; then
     if brew install \
         python@3.13 uv ruff \
         tmux zoxide eza bat ripgrep lsd ncdu tldr \
-        oh-my-posh; then
+        oh-my-posh neovim fd; then
       record package-installed "brew formulae"
     else
       note_skip "brew formulae" "brew install failed"
@@ -166,7 +212,7 @@ if is_mac; then
   fi
 
 elif is_linux; then
-  PKG_LIST=(tmux zoxide eza bat lsd ncdu tldr ripgrep unzip lsof xclip fontconfig)
+  PKG_LIST=(tmux zoxide eza bat lsd ncdu tldr ripgrep unzip lsof xclip fontconfig neovim fd-find)
 
   if command -v dnf &>/dev/null; then
     echo "==> Refreshing dnf package metadata..."
@@ -207,6 +253,16 @@ elif is_linux; then
     ln -sf "$(which batcat)" ~/.local/bin/bat
     record symlink-created ~/.local/bin/bat
     echo "  shimmed bat → batcat"
+  fi
+
+  # Same deal for fd: Debian/Ubuntu's fd-find package installs as fdfind
+  # (name conflict with an unrelated existing `fd` package); Fedora's
+  # fd-find installs the `fd` binary directly, so this is a no-op there.
+  if command -v fdfind &>/dev/null && ! command -v fd &>/dev/null; then
+    mkdir -p ~/.local/bin
+    ln -sf "$(which fdfind)" ~/.local/bin/fd
+    record symlink-created ~/.local/bin/fd
+    echo "  shimmed fd → fdfind"
   fi
 
   # uv (not in apt/dnf)
@@ -264,26 +320,30 @@ elif is_linux; then
   fi
 fi
 
-# NVM (both platforms — uses its own installer)
-if [[ ! -d "$HOME/.nvm" ]]; then
-  echo "==> Installing NVM..."
-  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/HEAD/install.sh | bash \
-    || note_skip "NVM" "installer failed (network blocked?)"
-fi
+# NVM + Node/npm — only needed by Claude Code and/or Copilot CLI; opencode
+# manages its own runtime externally (this script never installs the
+# opencode binary itself either). Not provisioned when opencode is the
+# only harness selected.
+if has_harness claude || has_harness copilot; then
+  # NVM (both platforms — uses its own installer)
+  if [[ ! -d "$HOME/.nvm" ]]; then
+    echo "==> Installing NVM..."
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/HEAD/install.sh | bash \
+      || note_skip "NVM" "installer failed (network blocked?)"
+  fi
 
-# Node/npm (needed by Claude Code and/or GitHub Copilot CLI, whichever runs below)
-if ! command -v npm &>/dev/null; then
-  export NVM_DIR="$HOME/.nvm"
-  [[ -s "$NVM_DIR/nvm.sh" ]] && source "$NVM_DIR/nvm.sh"
-  if ! command -v npm &>/dev/null && command -v nvm &>/dev/null; then
-    nvm install --lts || note_skip "node" "nvm install --lts failed"
+  # Node/npm
+  if ! command -v npm &>/dev/null; then
+    export NVM_DIR="$HOME/.nvm"
+    [[ -s "$NVM_DIR/nvm.sh" ]] && source "$NVM_DIR/nvm.sh"
+    if ! command -v npm &>/dev/null && command -v nvm &>/dev/null; then
+      nvm install --lts || note_skip "node" "nvm install --lts failed"
+    fi
   fi
 fi
 
-# Claude Code — skipped in Copilot-only mode (--work --copilot)
-if (( COPILOT_ONLY )); then
-  echo "  Claude Code: skipped (--work --copilot is Copilot-only)"
-else
+# Claude Code
+if has_harness claude; then
   echo "==> Installing Claude Code..."
   if command -v npm &>/dev/null; then
     if npm install -g @anthropic-ai/claude-code; then
@@ -294,10 +354,12 @@ else
   else
     note_skip "Claude Code" "npm unavailable (NVM install failed or skipped)"
   fi
+else
+  echo "  Claude Code: skipped (not in --harness)"
 fi
 
-# GitHub Copilot CLI (--copilot only, needs node/npm from nvm)
-if (( COPILOT )); then
+# GitHub Copilot CLI
+if has_harness copilot; then
   echo "==> Installing GitHub Copilot CLI..."
   if command -v npm &>/dev/null; then
     if npm install -g @github/copilot; then
@@ -308,6 +370,8 @@ if (( COPILOT )); then
   else
     note_skip "Copilot CLI" "npm unavailable (NVM install failed or skipped)"
   fi
+else
+  echo "  Copilot CLI: skipped (not in --harness)"
 fi
 
 # ============================================================================
@@ -342,13 +406,14 @@ symlink() {
 
 # Common (both platforms)
 symlink vim/.vimrc                ~/.vimrc
+symlink nvim                      ~/.config/nvim
 symlink zsh/.zshrc                ~/.zshrc
 symlink zsh/.common_shell_aliases ~/.common_shell_aliases
 symlink shell/.poshtheme.omp.json ~/.poshtheme.omp.json
 symlink tmux/.tmux.conf           ~/.tmux.conf
 
-# Claude Code-specific wiring — skipped in Copilot-only mode (--work --copilot)
-if (( ! COPILOT_ONLY )); then
+# Claude Code-specific wiring
+if has_harness claude; then
   symlink claude/CLAUDE.md          ~/.claude/CLAUDE.md
   symlink claude/commands/dashboard.md   ~/.claude/commands/dashboard.md
   symlink claude/commands/grill-me.md ~/.claude/commands/grill-me.md
@@ -358,8 +423,10 @@ if (( ! COPILOT_ONLY )); then
   symlink claude/hooks/gsd-statusline.js    ~/.claude/hooks/gsd-statusline.js
 fi
 
-# Shared scripts — needed by Claude Code's hooks AND Copilot's hooks/skills,
-# so these stay symlinked regardless of COPILOT_ONLY.
+# Shared scripts — needed by Claude Code's hooks AND Copilot's AND opencode's
+# hooks/skills (opencode's own dashboard.md/grill-me.md commands call these
+# same paths), so these stay symlinked regardless of which harness(es) are
+# selected.
 symlink claude/scripts/dev_status.py      ~/.claude/scripts/dev_status.py
 symlink claude/scripts/gen_claude_completion.py ~/.claude/scripts/gen_claude_completion.py
 symlink claude/scripts/grill.py           ~/.claude/scripts/grill.py
@@ -368,8 +435,8 @@ symlink claude/scripts/standup.py         ~/.claude/scripts/standup.py
 symlink claude/scripts/standup_adapters.py ~/.claude/scripts/standup_adapters.py
 symlink claude/scripts/dotfiles_sync_check.py ~/.claude/scripts/dotfiles_sync_check.py
 
-# GitHub Copilot CLI wiring (--copilot only)
-if (( COPILOT )); then
+# GitHub Copilot CLI wiring
+if has_harness copilot; then
   symlink claude/CLAUDE.md ~/.copilot/copilot-instructions.md
   symlink copilot/hooks/session-start.json ~/.copilot/hooks/session-start.json
   symlink copilot/skills/dashboard/SKILL.md       ~/.copilot/skills/dashboard/SKILL.md
@@ -377,46 +444,67 @@ if (( COPILOT )); then
   symlink copilot/skills/second-opinion/SKILL.md  ~/.copilot/skills/second-opinion/SKILL.md
   symlink copilot/skills/grill-me/SKILL.md        ~/.copilot/skills/grill-me/SKILL.md
   symlink copilot/skills/make-skill/SKILL.md      ~/.copilot/skills/make-skill/SKILL.md
+  symlink copilot/aliases.zsh ~/.copilot_aliases
 fi
 
-# opencode — profile-agnostic (the harness this dotfiles setup is developed
-# against; runs on work and personal both). Most commands still live at
-# ~/.config/opencode/commands/ from a prior manual, untracked port (see
-# opencode/CLAUDE_CODE_PARITY.md §2) — dashboard.md (2026-07-24, after the
-# status→dashboard rename) and grill-me.md (2026-07-25) are pulled into the
-# repo proper so those two at least stay in sync automatically; the rest are
-# still manual.
+# opencode. Most commands still live at ~/.config/opencode/commands/ from a
+# prior manual, untracked port (see opencode/CLAUDE_CODE_PARITY.md §2) —
+# dashboard.md (2026-07-24, after the status→dashboard rename) and
+# grill-me.md (2026-07-25) are pulled into the repo proper so those two at
+# least stay in sync automatically; the rest are still manual.
 # AGENTS.md is intentionally not managed here — opencode already reads
 # ~/.claude/CLAUDE.md directly as a legacy fallback when no AGENTS.md exists
 # (see CLAUDE_CODE_PARITY.md §1), so creating one here would just duplicate
 # the same content under a second path for no behavioral gain.
-symlink opencode/tui.json ~/.config/opencode/tui.json
-symlink opencode/command/dashboard.md ~/.config/opencode/commands/dashboard.md
-symlink opencode/command/grill-me.md ~/.config/opencode/commands/grill-me.md
-
-# opencode.jsonc holds the bash permission allowlist (opencode's equivalent
-# of claude/settings.json's permissions block) — copied, not symlinked, on
-# the same reasoning as settings.json below: opencode likely rewrites this
-# file in place as permissions get approved live, which would detach a
-# symlink silently. Copy-once; if the live file exists, report drift.
 OPENCODE_JSONC_DRIFT=""
-if [[ ! -f ~/.config/opencode/opencode.jsonc ]]; then
-  mkdir -p ~/.config/opencode
-  if cp "$DOTFILES/opencode/opencode.jsonc" ~/.config/opencode/opencode.jsonc; then
-    record file-copied ~/.config/opencode/opencode.jsonc
-    echo "  copied ~/.config/opencode/opencode.jsonc"
+if has_harness opencode; then
+  symlink opencode/tui.json ~/.config/opencode/tui.json
+  symlink opencode/command/dashboard.md ~/.config/opencode/commands/dashboard.md
+  symlink opencode/command/grill-me.md ~/.config/opencode/commands/grill-me.md
+
+  # opencode.jsonc holds the bash permission allowlist (opencode's equivalent
+  # of claude/settings.json's permissions block) — copied, not symlinked, on
+  # the same reasoning as settings.json below: opencode likely rewrites this
+  # file in place as permissions get approved live, which would detach a
+  # symlink silently. Copy-once; if the live file exists, report drift.
+  # Profile-specific seed, same pattern as settings.json/settings.work.json:
+  # opencode.work.jsonc additionally drops a handful of individually-risky
+  # (but not allowlist-bypassing) commands that opencode.jsonc keeps for
+  # personal-machine convenience.
+  OPENCODE_SEED="$DOTFILES/opencode/opencode.jsonc"
+  [[ "$PROFILE" == "work" ]] && OPENCODE_SEED="$DOTFILES/opencode/opencode.work.jsonc"
+  if [[ ! -f ~/.config/opencode/opencode.jsonc ]]; then
+    mkdir -p ~/.config/opencode
+    if cp "$OPENCODE_SEED" ~/.config/opencode/opencode.jsonc; then
+      record file-copied ~/.config/opencode/opencode.jsonc
+      echo "  copied ~/.config/opencode/opencode.jsonc (from ${OPENCODE_SEED:t})"
+    else
+      note_skip "opencode.jsonc seed" "copy failed"
+    fi
   else
-    note_skip "opencode.jsonc seed" "copy failed"
-  fi
-else
-  OPENCODE_JSONC_DRIFT="$(python3 - "$DOTFILES/opencode/opencode.jsonc" "$HOME/.config/opencode/opencode.jsonc" <<'PYEOF'
+    OPENCODE_JSONC_DRIFT="$(python3 - "$OPENCODE_SEED" "$HOME/.config/opencode/opencode.jsonc" <<'PYEOF'
 import json
 import sys
 
 seed, live = (json.load(open(p)) for p in sys.argv[1:3])
-print(", ".join(k for k in sorted(set(seed) | set(live)) if seed.get(k) != live.get(k)))
+drift = sorted(k for k in set(seed) | set(live) if seed.get(k) != live.get(k))
+
+# xargs/awk are allowlist bypasses (xargs invokes arbitrary commands as its
+# own argument; awk has a system() call) — call these out specifically
+# rather than folding them into the generic top-level key list, since they
+# live nested under permission.bash and a top-level diff would just say
+# "permission" changed without saying which command pattern moved.
+seed_bash = seed.get("permission", {}).get("bash", {})
+live_bash = live.get("permission", {}).get("bash", {})
+bypass_gone = [k for k in ("xargs *", "awk *") if k in live_bash and k not in seed_bash]
+if bypass_gone:
+    print(f"SECURITY: {', '.join(bypass_gone)} still allowed in your live "
+          f"opencode.jsonc (allowlist bypass) — delete the file and re-run to fix")
+elif drift:
+    print(", ".join(drift))
 PYEOF
 )"
+  fi
 fi
 
 # watchcommit: personal machines only — it auto-pushes to a personal remote
@@ -431,9 +519,9 @@ fi
 # settings.json is copied, not symlinked — Claude Code rewrites it in place,
 # which would replace a symlink with a plain file and silently detach it.
 # Copy-once; if the live file exists, report drift instead of touching it.
-# Skipped entirely in Copilot-only mode — Copilot never reads this file.
+# Skipped entirely when Claude Code isn't selected — nothing else reads this file.
 SETTINGS_DRIFT=""
-if (( ! COPILOT_ONLY )); then
+if has_harness claude; then
   SETTINGS_SEED="$DOTFILES/claude/settings.json"
   [[ "$PROFILE" == "work" ]] && SETTINGS_SEED="$DOTFILES/claude/settings.work.json"
   if [[ ! -f ~/.claude/settings.json ]]; then
@@ -460,11 +548,33 @@ fi
 if is_mac; then
   symlink zsh/.zprofile             ~/.zprofile
   symlink karabiner/karabiner.json  ~/.config/karabiner/karabiner.json
-  symlink vscode/settings.json      "$HOME/Library/Application Support/Code/User/settings.json"
-  symlink vscode/keybindings.json   "$HOME/Library/Application Support/Code/User/keybindings.json"
   if [[ "$PROFILE" != "work" ]]; then
     symlink launchd/com.user.watchcommit.plist ~/Library/LaunchAgents/com.user.watchcommit.plist
   fi
+fi
+
+# VS Code settings/keybindings — not mac-only, VS Code runs on Linux and WSL
+# too, just at a different config path per OS.
+if is_mac; then
+  symlink vscode/settings.json    "$HOME/Library/Application Support/Code/User/settings.json"
+  symlink vscode/keybindings.json "$HOME/Library/Application Support/Code/User/keybindings.json"
+elif is_wsl; then
+  # Under WSL, VS Code is normally driven from the Windows-side GUI via the
+  # Remote-WSL extension, so the real user settings.json lives in the Windows
+  # user profile, not in the WSL filesystem. Derive that profile dir from the
+  # Windows-side `code` shim's own path (inherited onto PATH via WSL interop)
+  # rather than hardcoding a username.
+  CODE_BIN="$(command -v code 2>/dev/null)"
+  if [[ "$CODE_BIN" == /mnt/*/Users/*/AppData/* ]]; then
+    WIN_USER_DIR="${CODE_BIN%%/AppData/*}"
+    symlink vscode/settings.json    "$WIN_USER_DIR/AppData/Roaming/Code/User/settings.json"
+    symlink vscode/keybindings.json "$WIN_USER_DIR/AppData/Roaming/Code/User/keybindings.json"
+  else
+    note_skip "VS Code settings" "WSL detected but no Windows-side 'code' CLI found on PATH"
+  fi
+else
+  symlink vscode/settings.json    ~/.config/Code/User/settings.json
+  symlink vscode/keybindings.json ~/.config/Code/User/keybindings.json
 fi
 
 # ============================================================================
@@ -550,6 +660,33 @@ if [[ ! -f "$HOME/.vim/autoload/plug.vim" ]]; then
 fi
 
 # ============================================================================
+# Neovim: lazy.nvim plugin bootstrap (both platforms)
+# ============================================================================
+
+# The vendored config (nvim/, from theonepichael/nvim-config) targets
+# Neovim 0.11+. Older distro repos (e.g. Ubuntu 22.04's apt package) can
+# ship older builds — same class of version gap as the eza/lsd note above —
+# so this degrades to a skip rather than the upstream config's own
+# hard `exit 1`, consistent with this script never aborting the run.
+if ! command -v nvim &>/dev/null; then
+  note_skip "Neovim plugin bootstrap" "nvim not installed"
+else
+  NVIM_VERSION="$(nvim --version | head -n1 | sed 's/^NVIM v//')"
+  NVIM_MAJOR="${NVIM_VERSION%%.*}"
+  NVIM_MINOR="$(echo "$NVIM_VERSION" | cut -d. -f2)"
+  if (( NVIM_MAJOR == 0 && NVIM_MINOR < 11 )); then
+    note_skip "Neovim plugin bootstrap" "nvim $NVIM_VERSION found, config needs >=0.11"
+  else
+    echo "==> Bootstrapping Neovim plugins (lazy.nvim sync, nvim $NVIM_VERSION)..."
+    if nvim --headless "+Lazy! sync" +qa; then
+      echo "  plugins synced"
+    else
+      note_skip "Neovim plugin sync" "'Lazy! sync' reported errors — run :Lazy sync manually inside nvim"
+    fi
+  fi
+fi
+
+# ============================================================================
 # Profile marker (guards later no-flag runs on a work machine)
 # ============================================================================
 
@@ -577,7 +714,7 @@ if [[ -n "$SETTINGS_DRIFT" ]]; then
   echo "  (copy-once by design — port changes manually if wanted)"
 fi
 if [[ -n "$OPENCODE_JSONC_DRIFT" ]]; then
-  echo "⚠ ~/.config/opencode/opencode.jsonc drifted from repo: $OPENCODE_JSONC_DRIFT"
+  echo "⚠ ~/.config/opencode/opencode.jsonc drifted from ${OPENCODE_SEED:t}: $OPENCODE_JSONC_DRIFT"
   echo "  (copy-once by design — port changes manually if wanted)"
 fi
 echo "  rollback available: ./install.sh --rollback (manifest: $MANIFEST)"
@@ -592,7 +729,7 @@ fi
 if [[ "$PROFILE" == "work" ]]; then
   echo "  - ~/.secrets is sourced if present — for work-issued tokens only;"
   echo "    do NOT put a personal ANTHROPIC_API_KEY on this machine"
-else
+elif has_harness claude; then
   echo "  - Run 'claude login' if you haven't, so watchcommit can generate commit messages"
 fi
 is_linux && echo "  - Restart your shell to pick up the new config"

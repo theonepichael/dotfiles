@@ -8,10 +8,16 @@ Cross-platform setup for macOS and Linux/WSL. Clone and run `install.sh` to go f
 git clone <repo-url> ~/dotfiles
 cd ~/dotfiles
 chmod +x install.sh
-./install.sh          # personal machine
-./install.sh --work   # work machine (see "Work profile" below)
-./install.sh --copilot  # also wire up GitHub Copilot CLI (see "Copilot CLI profile" below)
+./install.sh --harness=claude                        # personal machine, Claude Code
+./install.sh --profile=work --harness=copilot         # work machine, Copilot only
+./install.sh --harness=claude,opencode                # both harnesses, personal
 ```
+
+`--harness` is required on every run — there's no default. Pick any
+combination of `claude`, `copilot`, `opencode` (comma-separated); `--profile`
+(personal by default) controls machine-level concerns like watchcommit and
+personal API-key setup, and never restricts which harness(es) you can
+choose. See "Harness selection" and "Work profile" below.
 
 `~/.secrets` (gitignored, sourced by `.zshrc` if present) is available for any
 API keys or tokens you want on the shell PATH — nothing in this repo requires
@@ -40,60 +46,77 @@ python3 ~/.claude/scripts/dotfiles_sync_check.py mark
 Without a mark, nothing is checked — the hook only speaks up once a baseline
 exists and HEAD has since moved ahead of it.
 
+## Harness selection
+
+`--harness` picks which coding-agent harness(es) get installed and wired up
+— comma-separated, at least one of `claude`, `copilot`, `opencode`. No
+default; every run states its intent explicitly. Selecting fewer harnesses
+on a later run doesn't uninstall the ones left out — this script is purely
+additive, same as everything else it does. Use `--rollback` (the most
+recent run only) or manual cleanup to actually remove something.
+
+- **`claude`** — installs Claude Code (`npm i -g @anthropic-ai/claude-code`)
+  and its `~/.claude/*` wiring (`CLAUDE.md`, `commands/*.md`,
+  `settings.json`, the statusline hook).
+- **`copilot`** — installs [GitHub Copilot CLI](https://github.com/github/copilot-cli)
+  (`npm i -g @github/copilot`) and its wiring:
+  - **Shared instructions file**: `claude/CLAUDE.md` is symlinked to *both*
+    `~/.claude/CLAUDE.md` and `~/.copilot/copilot-instructions.md` — no
+    separate Copilot-specific instructions file to maintain, since the
+    backlog/pending-items workflow is already tool-agnostic prose.
+  - **`copilot/hooks/session-start.json`**: a `sessionStart` hook running the
+    same shell commands as Claude Code's `SessionStart` hook chain
+    (dashboard render, dotfiles-drift check).
+  - **`copilot/skills/<name>/SKILL.md`**: ports of all 5 Claude Code skills
+    (dashboard, standup, second-opinion, grill-me, make-skill). Copilot
+    skills are **description-matched, not typed-slash** — there's no
+    `/dashboard` to type; the skill fires when its `description` frontmatter
+    matches the conversation. `second-opinion` and `grill-me` also drop
+    `AskUserQuestion` (Copilot has no structured multi-choice prompt) in
+    favor of plain conversational back-and-forth.
+  - **`copilot/aliases.zsh`** (symlinked to `~/.copilot_aliases`, sourced by
+    `.zshrc` only when present): `copilot-work` launches `copilot` with
+    `python3` shell calls and read-only `git` commands pre-approved.
+    Copilot's `--allow-tool` wildcard matching only works on single-word
+    command stems (`git`, `gh` — confirmed via `copilot help permissions`),
+    not full paths like `python3 ~/.claude/scripts/dev_status.py`, so this
+    pre-approves `python3` broadly rather than scoping to just the shared
+    scripts. Tighten this once Copilot ships richer prefix matching.
+  - **Deliberately excluded**: Gmail/Calendar/Drive MCP servers are not
+    configured under Copilot, per the work profile's
+    no-personal-data-on-work-hardware rule.
+- **`opencode`** — wires `~/.config/opencode/tui.json`, the `dashboard`/
+  `grill-me` commands, and `opencode.jsonc` (the bash permission allowlist).
+  `opencode.jsonc` is profile-specific, same copy-once-and-report-drift
+  pattern as Claude's `settings.json`: personal keeps a broader allowlist
+  (`curl`, `npx`, `node -e`, `rm -f`, `kill`, `nohup` all pre-approved);
+  `--profile=work` seeds a tightened `opencode.work.jsonc` without those.
+  Two patterns — `xargs`, `awk` — are removed from *both* variants
+  regardless of profile, since they're allowlist bypasses (each can invoke
+  an arbitrary other command as its own argument), not individually-risky
+  commands a profile could reasonably allow.
+
+The shared `~/.claude/scripts/*.py` (dev_status, grill, second_opinion,
+standup, etc.) are symlinked regardless of which harness(es) are selected —
+all three harnesses' skills/hooks call these same paths.
+
 ## Work profile
 
-`./install.sh --work` provisions a work machine:
+`--profile=work` controls machine-level concerns only — it never
+restricts which harness(es) you can choose (`--profile=work
+--harness=claude` is honored exactly as stated):
 
 - **watchcommit is excluded entirely** — no binary, no agent. It auto-pushes
   to a personal remote under your personal Claude account login; that stays
   off work hardware. Commit manually there.
 - Claude settings are seeded from `claude/settings.work.json` — same hooks and
   statusline, but no `skipDangerousModePermissionPrompt` and no model pin.
+- opencode's permission allowlist is seeded from `opencode/opencode.work.jsonc`
+  (see "Harness selection" above) when `opencode` is selected.
 - `~/.secrets` is still sourced if present, for work-issued tokens only.
 - A profile marker is written (`~/.local/state/dotfiles/profile`); later runs
-  *without* `--work` on that machine refuse unless `--force` is passed.
-
-## Copilot CLI profile
-
-`./install.sh --copilot` wires up [GitHub Copilot CLI](https://github.com/github/copilot-cli).
-Standalone (personal profile), it's additive — a second, parallel harness
-alongside Claude Code. Combined with `--work` (`--work --copilot`), it's
-**Copilot-only**: the the workplace work machine has no usable Claude Code, so
-Claude Code's install and its `~/.claude/*`-specific wiring (`CLAUDE.md`,
-`commands/*.md`, `settings.json`, the statusline hook) are skipped entirely.
-The shared `~/.claude/scripts/*.py` are symlinked either way, since Copilot's
-own hooks and skills call those same paths.
-
-- Installs the Copilot CLI (`npm i -g @github/copilot`), reusing the same
-  nvm/npm bootstrap as Claude Code.
-- **Shared instructions file**: `claude/CLAUDE.md` is symlinked to *both*
-  `~/.claude/CLAUDE.md` and `~/.copilot/copilot-instructions.md`. There's no
-  separate Copilot-specific instructions file to maintain — the
-  backlog/pending-items workflow is already tool-agnostic prose. A one-line
-  comment at the top of `claude/CLAUDE.md` notes this dual-symlink so it
-  reads as intentional from either side.
-- **`copilot/hooks/session-start.json`**: a `sessionStart` hook running the
-  same shell commands as Claude Code's `SessionStart` hook chain
-  (dashboard render, dotfiles-drift check).
-- **`copilot/skills/<name>/SKILL.md`**: ports of all 5 Claude Code skills
-  (dashboard, standup, second-opinion, grill-me, make-skill). Copilot skills are
-  **description-matched, not typed-slash** — there's no `/dashboard` to type;
-  the skill fires when its `description` frontmatter matches the
-  conversation. `second-opinion` and `grill-me` also drop `AskUserQuestion`
-  (Copilot has no structured multi-choice prompt) in favor of plain
-  conversational back-and-forth: state the question, give a recommendation,
-  wait for a plain-text reply.
-- **Deliberately excluded**: Gmail/Calendar/Drive MCP servers are not
-  configured under Copilot, per the `--work` profile's existing
-  no-personal-data-on-work-hardware rule.
-- **`copilot-work` alias** (in `zsh/.common_shell_aliases`, symlinked for
-  every profile): launches `copilot` with `python3` shell calls and read-only
-  `git` commands pre-approved. Copilot's `--allow-tool` wildcard matching only
-  works on single-word command stems (`git`, `gh` — confirmed via
-  `copilot help permissions`), not full paths like
-  `python3 ~/.claude/scripts/dev_status.py`, so this pre-approves `python3`
-  broadly rather than scoping to just the shared scripts. Tighten this once
-  Copilot ships richer prefix matching.
+  with `--profile=personal` (the default) on that machine refuse unless
+  `--force` is passed.
 
 ## Failures, skips, and rollback
 
@@ -105,8 +128,8 @@ Every file mutation (symlink created, file backed up, file copied) is recorded
 in `~/.local/state/dotfiles/last-run.tsv`. If you ran with the wrong profile:
 
 ```sh
-./install.sh --rollback   # reverses the last run's file mutations
-./install.sh --work       # then re-run correctly
+./install.sh --rollback                          # reverses the last run's file mutations
+./install.sh --profile=work --harness=claude      # then re-run correctly
 ```
 
 Packages are never uninstalled by rollback — they're identical across
@@ -117,15 +140,18 @@ profiles, so a wrong-profile run's real footprint is entirely file-level.
 | File | Destination |
 |------|-------------|
 | `vim/.vimrc` | `~/.vimrc` |
+| `nvim/` | `~/.config/nvim` |
 | `zsh/.zshrc` | `~/.zshrc` |
 | `zsh/.zprofile` | `~/.zprofile` (macOS only) |
 | `zsh/.common_shell_aliases` | `~/.common_shell_aliases` |
 | `shell/.poshtheme.omp.json` | `~/.poshtheme.omp.json` |
 | `karabiner/karabiner.json` | `~/.config/karabiner/karabiner.json` (macOS only) |
 | `tmux/.tmux.conf` | `~/.tmux.conf` |
-| `vscode/settings.json` | `~/Library/Application Support/Code/User/settings.json` (macOS only) |
-| `vscode/keybindings.json` | `~/Library/Application Support/Code/User/keybindings.json` (macOS only) |
-| `claude/CLAUDE.md` | `~/.claude/CLAUDE.md` |
+| `vscode/settings.json` | macOS: `~/Library/Application Support/Code/User/settings.json`; WSL: Windows-side `AppData/Roaming/Code/User/settings.json` (derived from the `code` CLI on PATH); native Linux: `~/.config/Code/User/settings.json` |
+| `vscode/keybindings.json` | same per-OS destination as `settings.json`, `keybindings.json` |
+| `claude/CLAUDE.md` | `~/.claude/CLAUDE.md` and, with `--harness=copilot`, also `~/.copilot/copilot-instructions.md` |
+| `copilot/aliases.zsh` | `~/.copilot_aliases` (only with `--harness=copilot`) |
+| `opencode/opencode.jsonc` or `opencode.work.jsonc` | `~/.config/opencode/opencode.jsonc` (only with `--harness=opencode`; picked by `--profile`) |
 | `scripts/watchcommit.py` | `~/.local/bin/watchcommit` |
 | `launchd/com.user.watchcommit.plist` | `~/Library/LaunchAgents/com.user.watchcommit.plist` (macOS only) |
 | `systemd/watchcommit.service` | `~/.config/systemd/user/watchcommit.service` (Linux/WSL only) |
@@ -135,19 +161,27 @@ Everything is symlinked — edits in `~/dotfiles` take effect immediately.
 ## install.sh does
 
 ### Both platforms
-1. Installs packages: tmux, zoxide, eza, bat, ripgrep, lsd, ncdu, tldr, oh-my-posh, uv, ruff
-2. Installs NVM (if missing) and Claude Code (`npm i -g @anthropic-ai/claude-code`)
-3. Symlinks all common dotfiles (backs up any existing non-symlink files to `*.bak`)
-4. Seeds `~/.claude/settings.json` (copy-once — if it already exists, drift from
-   the repo seed is reported in the summary, never overwritten)
-5. Seeds `~/.config/opencode/opencode.jsonc` (the bash permission allowlist) the
-   same copy-once way
-6. Installs vim-plug (if missing)
+1. Installs packages: tmux, zoxide, eza, bat, ripgrep, lsd, ncdu, tldr, oh-my-posh, neovim, fd, uv, ruff
+2. Installs NVM and Node/npm — only if `claude` and/or `copilot` is in `--harness`
+   (`opencode` manages its own runtime separately, not installed by this script)
+3. Installs the harness(es) named in `--harness` (`claude`: Claude Code via
+   `npm i -g @anthropic-ai/claude-code`; `copilot`: GitHub Copilot CLI via
+   `npm i -g @github/copilot`; `opencode`: assumed already installed, this
+   script only wires its config) and their `~/.claude`/`~/.copilot`/
+   `~/.config/opencode` wiring — see "Harness selection" above
+4. Symlinks all common dotfiles (backs up any existing non-symlink files to `*.bak`)
+5. Seeds `~/.claude/settings.json` (copy-once — if it already exists, drift from
+   the repo seed is reported in the summary, never overwritten) — only when
+   `claude` is selected
+6. Seeds `~/.config/opencode/opencode.jsonc` (the bash permission allowlist,
+   profile-specific) the same copy-once way — only when `opencode` is selected
+7. Installs vim-plug (if missing)
+8. Bootstraps Neovim plugins (`lazy.nvim` sync) if `nvim` on PATH is >=0.11
 
 ### macOS only
 - Installs Homebrew (if missing) — supports both Apple Silicon (`/opt/homebrew`) and Intel (`/usr/local`)
 - Installs casks: Karabiner-Elements, Rectangle, Ghostty, VS Code, AltTab, JetBrainsMono Nerd Font
-- Symlinks macOS-specific configs (`.zprofile`, karabiner, vscode, launchd)
+- Symlinks macOS-specific configs (`.zprofile`, karabiner, launchd)
 - Imports Rectangle preferences
 - Sets Caps Lock → Escape via macOS keyboard modifier mapping
 - Loads the watchcommit launchd agent
