@@ -1,0 +1,22 @@
+-- ~/.config/nvim/after/ftplugin/java.lua
+--
+-- Java LSP note: the old plugin/config/java-lsp.lua configured
+-- lspconfig's `java_language_server` with `cmd = { "jdtls" }`. Those are
+-- two DIFFERENT servers (georgewfraser/java-language-server vs Eclipse
+-- JDT LS) with incompatible launch protocols, so it could never start
+-- correctly.
+--
+-- With Neovim 0.11 native LSP, jdtls is enabled from lua/plugins/lsp.lua
+-- via vim.lsp.enable("jdtls") whenever a `jdtls` binary is on PATH,
+-- using nvim-lspconfig's base jdtls config. Nothing to do here.
+--
+-- If you later want per-project jdtls features (debugging, extensions),
+-- install mfussenegger/nvim-jdtls and start it from this file instead:
+--
+-- local ok, jdtls = pcall(require, "jdtls")
+-- if ok then
+--   jdtls.start_or_attach({
+--     cmd = { "jdtls" },
+--     root_dir = vim.fs.root(0, { "gradlew", "mvnw", ".git" }),
+--   })
+-- end
