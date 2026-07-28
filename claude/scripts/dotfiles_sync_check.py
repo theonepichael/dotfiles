@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """SessionStart hook: flag when the dotfiles repo has drifted from the last
-commit bundled over to the the workplace machine.
+commit bundled over to a GitHub-blocked work machine.
 
 Usage:
     dotfiles_sync_check.py [check]   print a drift note if HEAD is ahead of the marker (default)
@@ -42,7 +42,7 @@ def cmd_check() -> None:
     if not count or count == "0":
         return
     print(
-        f"dotfiles: {count} commit(s) ahead of last the workplace bundle ({marker_sha[:7]})"
+        f"dotfiles: {count} commit(s) ahead of last bundled transfer ({marker_sha[:7]})"
     )
 
 

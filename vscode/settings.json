@@ -51,7 +51,7 @@
   "rust-analyzer.inlayHints.parameterHints.enable": true,
   "rust-analyzer.inlayHints.typeHints.enable": true,
   "rust-analyzer.server.extraEnv": {
-    "PATH": "/home/redacted-user/.cargo/bin:${env:PATH}"
+    "PATH": "${env:HOME}/.cargo/bin:${env:PATH}"
   },
   "security.workspace.trust.untrustedFiles": "open",
   "terminal.integrated.copyOnSelection": true,

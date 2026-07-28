@@ -99,7 +99,7 @@ if command -v zoxide >/dev/null 2>&1; then
 fi
 
 # bun completions
-[ -s "/home/yanil/.bun/_bun" ] && source "/home/yanil/.bun/_bun"
+[ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"
 
 # bun
 export BUN_INSTALL="$HOME/.bun"
@@ -107,7 +107,7 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 
 
 # Added by Antigravity CLI installer
-export PATH="/home/yanil/.local/bin:$PATH"
+export PATH="$HOME/.local/bin:$PATH"
 
 # opencode
-export PATH=/home/yanil/.opencode/bin:$PATH
+export PATH="$HOME/.opencode/bin:$PATH"

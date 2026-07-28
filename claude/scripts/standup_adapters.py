@@ -73,7 +73,7 @@ class StubIssueTrackerAdapter:
     def get_assigned_items(self) -> list[Item]:
         raise NotConfiguredError(
             "issue tracker adapter not configured — confirm GitHub vs GitLab "
-            "vs Jira at the workplace, then implement IssueTrackerAdapter here"
+            "vs Jira at work, then implement IssueTrackerAdapter here"
         )
 
 
@@ -81,7 +81,7 @@ class StubChatAdapter:
     def get_relevant_messages(self, since: date) -> list[Message]:
         raise NotConfiguredError(
             "chat adapter not configured — confirm Slack vs Teams at "
-            "the workplace, then implement ChatAdapter here"
+            "work, then implement ChatAdapter here"
         )
 
     def get_thread_updates(
@@ -89,7 +89,7 @@ class StubChatAdapter:
     ) -> list[Message]:
         raise NotConfiguredError(
             "chat adapter not configured — confirm Slack vs Teams at "
-            "the workplace, then implement ChatAdapter here"
+            "work, then implement ChatAdapter here"
         )
 
 
@@ -113,7 +113,7 @@ class StubCalendarAdapter:
     def get_calendar_events(self, days: list[date]) -> list[CalEvent]:
         raise NotConfiguredError(
             "calendar adapter not configured — confirm Outlook/Google "
-            "Calendar/other at the workplace, then implement CalendarAdapter here"
+            "Calendar/other at work, then implement CalendarAdapter here"
         )
 
 

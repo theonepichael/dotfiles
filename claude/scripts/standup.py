@@ -4,8 +4,8 @@
 `fetch` gathers everything a standup draft needs and prints it as JSON: two
 fully-implemented local sources (git commits, scoped backlog items) plus
 four adapter-backed sources (issue tracker, chat, email, calendar) that stay
-stubbed — and get reported under "skipped" — until the workplace's actual tools
-are known, plus dev_status.py's canonical pending-items list (read-only —
+stubbed — and get reported under "skipped" — until the workplace's actual
+tools are known, plus dev_status.py's canonical pending-items list (read-only —
 mutate it via `dev_status.py pending add/update`, not here). All sources
 that support a time window use the same `since` boundary (last working day,
 or `--date` to override). See standup_adapters.py for the adapter
