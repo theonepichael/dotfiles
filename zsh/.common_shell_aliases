@@ -132,6 +132,7 @@ wc-status() {
 # ============================================================================
 
 # Shell config
+alias vi="nvim"
 alias ez="vi ~/.zshrc"
 alias eb="vi ~/.bashrc"
 alias ev="vi ~/.vimrc"
