@@ -122,7 +122,7 @@ uncommitted changes first:
 git -C <repo> status --short
 ```
 
-- **Clean** — work directly in the main checkout as normal.
+- **Clean** — create/switch to a feature branch in the main checkout and work there as normal (never commit straight to `main`, per the Git policy above).
 - **Dirty, and you recognize the changes as this session's own prior work**
   — continue as normal.
 - **Dirty, and the changes are unrelated or unrecognized** (different files
@@ -172,6 +172,7 @@ used for backlog capture.
 ## Git
 
 - Use conventional commits: `type(scope): description` — types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `perf`, `ci`
+- Never commit directly to `main`/`master`, in any repo — this dotfiles repo included, and even in solo sessions with no concurrent activity. Always create and switch to a feature branch first. Reserve `git worktree add` (see below) for the specific case of isolating from another session's uncommitted work — a plain branch in the existing checkout is enough otherwise.
 
 ## Scripts
 
