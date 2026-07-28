@@ -16,7 +16,7 @@ is_wsl()   { is_linux && { [[ -n "$WSL_DISTRO_NAME" ]] || grep -qi microsoft /pr
 
 usage() {
   cat <<'EOF'
-usage: ./install.sh --harness=<claude,copilot,opencode>[,...] [--profile=personal|work] [--rollback] [--force]
+usage: ./install.sh --harness=<claude,copilot,opencode>[,...] [--profile=personal|work] [--rollback] [--force] [--dry-run]
 
   --harness   required unless --rollback. Comma-separated, at least one of:
               claude, copilot, opencode. No default — every run must state
@@ -35,15 +35,23 @@ usage: ./install.sh --harness=<claude,copilot,opencode>[,...] [--profile=persona
   --rollback  reverse the previous run's file mutations (symlinks, copies,
               backups) using the manifest, then exit. Packages are reported
               but never uninstalled. Must be used alone (no --harness,
-              --profile, or --force).
+              --profile, or --force) — except --dry-run, see below.
   --force     override the work-profile guard on a machine previously
               provisioned with --profile=work
+  --dry-run   print what every step would do without doing it: no packages
+              installed, no files written/symlinked/removed, no manifest
+              written. Detection (what's already installed, which
+              profile/harness branches apply) still runs for real, so the
+              preview reflects actual machine state. The one flag allowed
+              alongside --rollback, to preview an undo before running it.
 
 Examples:
   ./install.sh --harness=claude
   ./install.sh --profile=work --harness=copilot
   ./install.sh --harness=claude,opencode
   ./install.sh --profile=work --harness=copilot,opencode
+  ./install.sh --dry-run --harness=claude
+  ./install.sh --dry-run --rollback
 
 Exits 0 if every step ran, 1 if any step was skipped (see summary).
 EOF
@@ -52,6 +60,7 @@ EOF
 PROFILE=personal
 FORCE=0
 ROLLBACK=0
+DRY_RUN=0
 typeset -a HARNESSES
 HARNESS_SET=0
 for arg in "$@"; do
@@ -62,6 +71,7 @@ for arg in "$@"; do
     --harness=*) HARNESSES+=("${(s:,:)${arg#--harness=}}"); HARNESS_SET=1 ;;
     --rollback)  ROLLBACK=1 ;;
     --force)     FORCE=1 ;;
+    --dry-run)   DRY_RUN=1 ;;
     -h|--help)   usage; exit 0 ;;
     *)           echo "unknown argument: $arg" >&2; usage >&2; exit 2 ;;
   esac
@@ -120,11 +130,16 @@ note_skip() {  # note_skip <step> <reason>
 # ============================================================================
 
 manifest_init() {
+  if (( DRY_RUN )); then
+    echo "  [dry-run] would initialize run manifest at $MANIFEST"
+    return
+  fi
   mkdir -p "$STATE_DIR"
   printf 'run\t%s\t%s\n' "$(date -Iseconds)" "$PROFILE" > "$MANIFEST"
 }
 
 record() {  # record <action> <path> [extra]  (paths never contain tabs)
+  (( DRY_RUN )) && return
   printf '%s\t%s\t%s\n' "$1" "$2" "${3:-}" >> "$MANIFEST"
 }
 
@@ -135,25 +150,45 @@ do_rollback() {
   fi
   local -a lines
   lines=("${(@f)$(<"$MANIFEST")}")
-  echo "==> Rolling back run recorded at $MANIFEST"
+  if (( DRY_RUN )); then
+    echo "==> Would roll back run recorded at $MANIFEST"
+  else
+    echo "==> Rolling back run recorded at $MANIFEST"
+  fi
   local i action a b
   for (( i = ${#lines}; i >= 1; i-- )); do
     IFS=$'\t' read -r action a b <<< "${lines[i]}"
     case "$action" in
       symlink-created)
-        [[ -L "$a" ]] && rm "$a" && echo "  removed symlink $a" ;;
+        if (( DRY_RUN )); then
+          [[ -L "$a" ]] && echo "  [dry-run] would remove symlink $a"
+        else
+          [[ -L "$a" ]] && rm "$a" && echo "  removed symlink $a"
+        fi ;;
       file-copied)
-        [[ -f "$a" ]] && rm "$a" && echo "  removed $a" ;;
+        if (( DRY_RUN )); then
+          [[ -f "$a" ]] && echo "  [dry-run] would remove $a"
+        else
+          [[ -f "$a" ]] && rm "$a" && echo "  removed $a"
+        fi ;;
       file-backed-up)
-        [[ -e "$b" ]] && mv "$b" "$a" && echo "  restored $a from $b" ;;
+        if (( DRY_RUN )); then
+          [[ -e "$b" ]] && echo "  [dry-run] would restore $a from $b"
+        else
+          [[ -e "$b" ]] && mv "$b" "$a" && echo "  restored $a from $b"
+        fi ;;
       package-installed)
         echo "  package left installed (profile-independent): $a" ;;
       run)
         echo "  (run was: $a, profile: $b)" ;;
     esac
   done
-  rm "$MANIFEST"
-  echo "Rollback complete. Re-run ./install.sh with the intended profile."
+  if (( DRY_RUN )); then
+    echo "Dry run complete — nothing was changed. Re-run without --dry-run to roll back for real."
+  else
+    rm "$MANIFEST"
+    echo "Rollback complete. Re-run ./install.sh with the intended profile."
+  fi
   exit 0
 }
 
@@ -171,7 +206,11 @@ if [[ "$PROFILE" == "personal" && -f "$PROFILE_MARKER" ]] \
 fi
 
 manifest_init
-echo "==> Installing with profile: $PROFILE"
+if (( DRY_RUN )); then
+  echo "==> DRY RUN — no changes will be made. Profile: $PROFILE"
+else
+  echo "==> Installing with profile: $PROFILE"
+fi
 
 # ============================================================================
 # Packages
@@ -179,9 +218,18 @@ echo "==> Installing with profile: $PROFILE"
 
 if is_mac; then
   if ! command -v brew &>/dev/null; then
-    echo "==> Installing Homebrew..."
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
-      || note_skip "Homebrew" "installer failed (network blocked?)"
+    if (( DRY_RUN )); then
+      # Homebrew itself is a real mutation, so it's skipped here too — which
+      # means the "brew unavailable" branch below fires in dry-run on a
+      # brew-less machine just like it would for real. Preview can only show
+      # one install-time dependency deep; a real run is needed before the
+      # formulae/casks step downstream of Homebrew can itself be previewed.
+      echo "  [dry-run] would install Homebrew (curl raw.githubusercontent.com/Homebrew/install | bash)"
+    else
+      echo "==> Installing Homebrew..."
+      /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
+        || note_skip "Homebrew" "installer failed (network blocked?)"
+    fi
   fi
 
   if [[ -x /opt/homebrew/bin/brew ]]; then
@@ -191,21 +239,26 @@ if is_mac; then
   fi
 
   if command -v brew &>/dev/null; then
-    echo "==> Installing formulae..."
-    if brew install \
-        python@3.13 uv ruff \
-        tmux zoxide eza bat ripgrep lsd ncdu tldr \
-        oh-my-posh neovim fd; then
-      record package-installed "brew formulae"
+    if (( DRY_RUN )); then
+      echo "  [dry-run] would install formulae: python@3.13 uv ruff tmux zoxide eza bat ripgrep lsd ncdu tldr oh-my-posh neovim fd"
+      echo "  [dry-run] would install casks: karabiner-elements rectangle ghostty visual-studio-code alt-tab font-jetbrains-mono-nerd-font"
     else
-      note_skip "brew formulae" "brew install failed"
-    fi
+      echo "==> Installing formulae..."
+      if brew install \
+          python@3.13 uv ruff \
+          tmux zoxide eza bat ripgrep lsd ncdu tldr \
+          oh-my-posh neovim fd; then
+        record package-installed "brew formulae"
+      else
+        note_skip "brew formulae" "brew install failed"
+      fi
 
-    echo "==> Installing casks..."
-    if brew install --cask karabiner-elements rectangle ghostty visual-studio-code alt-tab font-jetbrains-mono-nerd-font; then
-      record package-installed "brew casks"
-    else
-      note_skip "brew casks" "brew install --cask failed"
+      echo "==> Installing casks..."
+      if brew install --cask karabiner-elements rectangle ghostty visual-studio-code alt-tab font-jetbrains-mono-nerd-font; then
+        record package-installed "brew casks"
+      else
+        note_skip "brew casks" "brew install --cask failed"
+      fi
     fi
   else
     note_skip "brew formulae + casks" "brew unavailable"
@@ -215,22 +268,32 @@ elif is_linux; then
   PKG_LIST=(tmux zoxide eza bat lsd ncdu tldr ripgrep unzip lsof xclip fontconfig neovim fd-find)
 
   if command -v dnf &>/dev/null; then
-    echo "==> Refreshing dnf package metadata..."
-    sudo dnf makecache || note_skip "dnf makecache" "dnf makecache failed (offline or blocked?)"
+    if (( DRY_RUN )); then
+      echo "  [dry-run] would run: sudo dnf makecache"
+    else
+      echo "==> Refreshing dnf package metadata..."
+      sudo dnf makecache || note_skip "dnf makecache" "dnf makecache failed (offline or blocked?)"
+    fi
 
     # One dnf call per package, same reasoning as the apt branch below: a
     # single missing/renamed package shouldn't block every package after it.
     echo "==> Installing packages (dnf)..."
     for pkg in "${PKG_LIST[@]}"; do
-      if sudo dnf install -y "$pkg"; then
+      if (( DRY_RUN )); then
+        echo "  [dry-run] would run: sudo dnf install -y $pkg"
+      elif sudo dnf install -y "$pkg"; then
         record package-installed "$pkg"
       else
         note_skip "dnf package: $pkg" "not available in this release's repos, or install failed"
       fi
     done
   else
-    echo "==> Updating apt package lists..."
-    sudo apt-get update || note_skip "apt update" "apt-get update failed (offline or blocked?)"
+    if (( DRY_RUN )); then
+      echo "  [dry-run] would run: sudo apt-get update"
+    else
+      echo "==> Updating apt package lists..."
+      sudo apt-get update || note_skip "apt update" "apt-get update failed (offline or blocked?)"
+    fi
 
     # One apt-get call per package: apt-get install fails atomically on the
     # first unresolvable name, which would otherwise block every package after
@@ -238,7 +301,9 @@ elif is_linux; then
     # skipped tmux/bat/ncdu/tldr/ripgrep/unzip too on 22.04 machines.
     echo "==> Installing packages (apt)..."
     for pkg in "${PKG_LIST[@]}"; do
-      if sudo apt-get install -y "$pkg"; then
+      if (( DRY_RUN )); then
+        echo "  [dry-run] would run: sudo apt-get install -y $pkg"
+      elif sudo apt-get install -y "$pkg"; then
         record package-installed "$pkg"
       else
         note_skip "apt package: $pkg" "not available in this release's repos, or install failed"
@@ -249,48 +314,68 @@ elif is_linux; then
   # Ubuntu ships bat as batcat; shim it (Fedora's bat package installs the
   # `bat` binary directly, so this is a no-op there)
   if command -v batcat &>/dev/null && ! command -v bat &>/dev/null; then
-    mkdir -p ~/.local/bin
-    ln -sf "$(which batcat)" ~/.local/bin/bat
-    record symlink-created ~/.local/bin/bat
-    echo "  shimmed bat → batcat"
+    if (( DRY_RUN )); then
+      echo "  [dry-run] would shim bat → batcat (~/.local/bin/bat)"
+    else
+      mkdir -p ~/.local/bin
+      ln -sf "$(which batcat)" ~/.local/bin/bat
+      record symlink-created ~/.local/bin/bat
+      echo "  shimmed bat → batcat"
+    fi
   fi
 
   # Same deal for fd: Debian/Ubuntu's fd-find package installs as fdfind
   # (name conflict with an unrelated existing `fd` package); Fedora's
   # fd-find installs the `fd` binary directly, so this is a no-op there.
   if command -v fdfind &>/dev/null && ! command -v fd &>/dev/null; then
-    mkdir -p ~/.local/bin
-    ln -sf "$(which fdfind)" ~/.local/bin/fd
-    record symlink-created ~/.local/bin/fd
-    echo "  shimmed fd → fdfind"
+    if (( DRY_RUN )); then
+      echo "  [dry-run] would shim fd → fdfind (~/.local/bin/fd)"
+    else
+      mkdir -p ~/.local/bin
+      ln -sf "$(which fdfind)" ~/.local/bin/fd
+      record symlink-created ~/.local/bin/fd
+      echo "  shimmed fd → fdfind"
+    fi
   fi
 
   # uv (not in apt/dnf)
   if ! command -v uv &>/dev/null; then
-    echo "==> Installing uv..."
-    if curl -LsSf https://astral.sh/uv/install.sh | sh; then
-      record package-installed "uv"
-      [[ -f "$HOME/.local/bin/env" ]] && source "$HOME/.local/bin/env"
+    if (( DRY_RUN )); then
+      echo "  [dry-run] would install uv (curl astral.sh/uv/install.sh | sh)"
     else
-      note_skip "uv" "installer failed (network blocked?)"
+      echo "==> Installing uv..."
+      if curl -LsSf https://astral.sh/uv/install.sh | sh; then
+        record package-installed "uv"
+        [[ -f "$HOME/.local/bin/env" ]] && source "$HOME/.local/bin/env"
+      else
+        note_skip "uv" "installer failed (network blocked?)"
+      fi
     fi
   fi
 
   # ruff via uv tool
   if command -v uv &>/dev/null; then
-    uv tool install ruff && record package-installed "ruff" \
-      || note_skip "ruff" "uv tool install failed"
+    if (( DRY_RUN )); then
+      echo "  [dry-run] would run: uv tool install ruff"
+    else
+      uv tool install ruff && record package-installed "ruff" \
+        || note_skip "ruff" "uv tool install failed"
+    fi
   else
     note_skip "ruff" "uv unavailable"
   fi
 
   # oh-my-posh via official installer
   if ! command -v oh-my-posh &>/dev/null; then
-    echo "==> Installing oh-my-posh..."
-    if curl -s https://ohmyposh.dev/install.sh | bash -s -- -d ~/.local/bin; then
-      record package-installed "oh-my-posh"
+    if (( DRY_RUN )); then
+      echo "  [dry-run] would install oh-my-posh (curl ohmyposh.dev/install.sh | bash -s -- -d ~/.local/bin)"
     else
-      note_skip "oh-my-posh" "installer failed (network blocked, or unzip missing?)"
+      echo "==> Installing oh-my-posh..."
+      if curl -s https://ohmyposh.dev/install.sh | bash -s -- -d ~/.local/bin; then
+        record package-installed "oh-my-posh"
+      else
+        note_skip "oh-my-posh" "installer failed (network blocked, or unzip missing?)"
+      fi
     fi
   fi
 
@@ -303,20 +388,24 @@ elif is_linux; then
   NERD_FONT_DIR="$HOME/.local/share/fonts/JetBrainsMonoNerdFont"
   NERD_FONT_MARKER="$NERD_FONT_DIR/.nerd-fonts-version"
   if [[ "$(cat "$NERD_FONT_MARKER" 2>/dev/null)" != "$NERD_FONT_VERSION" ]]; then
-    echo "==> Installing JetBrainsMono Nerd Font v${NERD_FONT_VERSION}..."
-    NERD_FONT_TMP="$(mktemp -d)"
-    if curl -fLo "$NERD_FONT_TMP/JetBrainsMono.zip" \
-        "https://github.com/ryanoasis/nerd-fonts/releases/download/v${NERD_FONT_VERSION}/JetBrainsMono.zip" \
-        && mkdir -p "$NERD_FONT_DIR" \
-        && unzip -oq "$NERD_FONT_TMP/JetBrainsMono.zip" -d "$NERD_FONT_DIR" \
-        && echo "$NERD_FONT_VERSION" > "$NERD_FONT_MARKER"; then
-      record package-installed "JetBrainsMono Nerd Font v${NERD_FONT_VERSION}"
-      fc-cache -f "$NERD_FONT_DIR" &>/dev/null
-      echo "  installed to $NERD_FONT_DIR"
+    if (( DRY_RUN )); then
+      echo "  [dry-run] would install JetBrainsMono Nerd Font v${NERD_FONT_VERSION} to $NERD_FONT_DIR"
     else
-      note_skip "JetBrainsMono Nerd Font" "download/extract failed (network blocked, or unzip missing?)"
+      echo "==> Installing JetBrainsMono Nerd Font v${NERD_FONT_VERSION}..."
+      NERD_FONT_TMP="$(mktemp -d)"
+      if curl -fLo "$NERD_FONT_TMP/JetBrainsMono.zip" \
+          "https://github.com/ryanoasis/nerd-fonts/releases/download/v${NERD_FONT_VERSION}/JetBrainsMono.zip" \
+          && mkdir -p "$NERD_FONT_DIR" \
+          && unzip -oq "$NERD_FONT_TMP/JetBrainsMono.zip" -d "$NERD_FONT_DIR" \
+          && echo "$NERD_FONT_VERSION" > "$NERD_FONT_MARKER"; then
+        record package-installed "JetBrainsMono Nerd Font v${NERD_FONT_VERSION}"
+        fc-cache -f "$NERD_FONT_DIR" &>/dev/null
+        echo "  installed to $NERD_FONT_DIR"
+      else
+        note_skip "JetBrainsMono Nerd Font" "download/extract failed (network blocked, or unzip missing?)"
+      fi
+      rm -rf "$NERD_FONT_TMP"
     fi
-    rm -rf "$NERD_FONT_TMP"
   fi
 fi
 
@@ -327,9 +416,13 @@ fi
 if has_harness claude || has_harness copilot; then
   # NVM (both platforms — uses its own installer)
   if [[ ! -d "$HOME/.nvm" ]]; then
-    echo "==> Installing NVM..."
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/HEAD/install.sh | bash \
-      || note_skip "NVM" "installer failed (network blocked?)"
+    if (( DRY_RUN )); then
+      echo "  [dry-run] would install NVM (curl nvm-sh/nvm install.sh | bash)"
+    else
+      echo "==> Installing NVM..."
+      curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/HEAD/install.sh | bash \
+        || note_skip "NVM" "installer failed (network blocked?)"
+    fi
   fi
 
   # Node/npm
@@ -337,19 +430,27 @@ if has_harness claude || has_harness copilot; then
     export NVM_DIR="$HOME/.nvm"
     [[ -s "$NVM_DIR/nvm.sh" ]] && source "$NVM_DIR/nvm.sh"
     if ! command -v npm &>/dev/null && command -v nvm &>/dev/null; then
-      nvm install --lts || note_skip "node" "nvm install --lts failed"
+      if (( DRY_RUN )); then
+        echo "  [dry-run] would run: nvm install --lts"
+      else
+        nvm install --lts || note_skip "node" "nvm install --lts failed"
+      fi
     fi
   fi
 fi
 
 # Claude Code
 if has_harness claude; then
-  echo "==> Installing Claude Code..."
   if command -v npm &>/dev/null; then
-    if npm install -g @anthropic-ai/claude-code; then
-      record package-installed "@anthropic-ai/claude-code"
+    if (( DRY_RUN )); then
+      echo "  [dry-run] would run: npm install -g @anthropic-ai/claude-code"
     else
-      note_skip "Claude Code" "npm install failed (registry blocked?)"
+      echo "==> Installing Claude Code..."
+      if npm install -g @anthropic-ai/claude-code; then
+        record package-installed "@anthropic-ai/claude-code"
+      else
+        note_skip "Claude Code" "npm install failed (registry blocked?)"
+      fi
     fi
   else
     note_skip "Claude Code" "npm unavailable (NVM install failed or skipped)"
@@ -360,12 +461,16 @@ fi
 
 # GitHub Copilot CLI
 if has_harness copilot; then
-  echo "==> Installing GitHub Copilot CLI..."
   if command -v npm &>/dev/null; then
-    if npm install -g @github/copilot; then
-      record package-installed "@github/copilot"
+    if (( DRY_RUN )); then
+      echo "  [dry-run] would run: npm install -g @github/copilot"
     else
-      note_skip "Copilot CLI" "npm install failed (registry blocked?)"
+      echo "==> Installing GitHub Copilot CLI..."
+      if npm install -g @github/copilot; then
+        record package-installed "@github/copilot"
+      else
+        note_skip "Copilot CLI" "npm install failed (registry blocked?)"
+      fi
     fi
   else
     note_skip "Copilot CLI" "npm unavailable (NVM install failed or skipped)"
@@ -382,6 +487,24 @@ echo "==> Symlinking dotfiles..."
 
 symlink() {
   local src="$DOTFILES/$1" dst="$2" was_link=0
+
+  if (( DRY_RUN )); then
+    if [[ -L "$dst" ]]; then
+      local current_target
+      current_target="$(readlink "$dst")"
+      if [[ "$current_target" == "$src" ]]; then
+        echo "  [dry-run] $dst already correctly linked → $src, no-op"
+      else
+        echo "  [dry-run] would relink $dst → $src (currently → $current_target)"
+      fi
+    elif [[ -e "$dst" ]]; then
+      echo "  [dry-run] would back up $dst → $dst.bak, then link $dst → $src"
+    else
+      echo "  [dry-run] would link $dst → $src"
+    fi
+    return 0
+  fi
+
   if ! mkdir -p "$(dirname "$dst")"; then
     note_skip "symlink $dst" "could not create parent directory"
     return 1
@@ -474,12 +597,16 @@ if has_harness opencode; then
   OPENCODE_SEED="$DOTFILES/opencode/opencode.jsonc"
   [[ "$PROFILE" == "work" ]] && OPENCODE_SEED="$DOTFILES/opencode/opencode.work.jsonc"
   if [[ ! -f ~/.config/opencode/opencode.jsonc ]]; then
-    mkdir -p ~/.config/opencode
-    if cp "$OPENCODE_SEED" ~/.config/opencode/opencode.jsonc; then
-      record file-copied ~/.config/opencode/opencode.jsonc
-      echo "  copied ~/.config/opencode/opencode.jsonc (from ${OPENCODE_SEED:t})"
+    if (( DRY_RUN )); then
+      echo "  [dry-run] would copy ~/.config/opencode/opencode.jsonc (from ${OPENCODE_SEED:t})"
     else
-      note_skip "opencode.jsonc seed" "copy failed"
+      mkdir -p ~/.config/opencode
+      if cp "$OPENCODE_SEED" ~/.config/opencode/opencode.jsonc; then
+        record file-copied ~/.config/opencode/opencode.jsonc
+        echo "  copied ~/.config/opencode/opencode.jsonc (from ${OPENCODE_SEED:t})"
+      else
+        note_skip "opencode.jsonc seed" "copy failed"
+      fi
     fi
   else
     OPENCODE_JSONC_DRIFT="$(python3 - "$OPENCODE_SEED" "$HOME/.config/opencode/opencode.jsonc" <<'PYEOF'
@@ -525,12 +652,16 @@ if has_harness claude; then
   SETTINGS_SEED="$DOTFILES/claude/settings.json"
   [[ "$PROFILE" == "work" ]] && SETTINGS_SEED="$DOTFILES/claude/settings.work.json"
   if [[ ! -f ~/.claude/settings.json ]]; then
-    mkdir -p ~/.claude
-    if cp "$SETTINGS_SEED" ~/.claude/settings.json; then
-      record file-copied ~/.claude/settings.json
-      echo "  copied ~/.claude/settings.json (from ${SETTINGS_SEED:t})"
+    if (( DRY_RUN )); then
+      echo "  [dry-run] would copy ~/.claude/settings.json (from ${SETTINGS_SEED:t})"
     else
-      note_skip "settings.json seed" "copy failed"
+      mkdir -p ~/.claude
+      if cp "$SETTINGS_SEED" ~/.claude/settings.json; then
+        record file-copied ~/.claude/settings.json
+        echo "  copied ~/.claude/settings.json (from ${SETTINGS_SEED:t})"
+      else
+        note_skip "settings.json seed" "copy failed"
+      fi
     fi
   else
     SETTINGS_DRIFT="$(python3 - "$SETTINGS_SEED" "$HOME/.claude/settings.json" <<'PYEOF'
@@ -582,10 +713,17 @@ fi
 # ============================================================================
 
 if is_mac; then
-  echo "==> Importing Rectangle preferences..."
-  defaults import com.knollsoft.Rectangle "$DOTFILES/rectangle/com.knollsoft.Rectangle.plist" \
-    || note_skip "Rectangle preferences" "defaults import failed"
+  if (( DRY_RUN )); then
+    echo "  [dry-run] would import Rectangle preferences from $DOTFILES/rectangle/com.knollsoft.Rectangle.plist"
+  else
+    echo "==> Importing Rectangle preferences..."
+    defaults import com.knollsoft.Rectangle "$DOTFILES/rectangle/com.knollsoft.Rectangle.plist" \
+      || note_skip "Rectangle preferences" "defaults import failed"
+  fi
 
+  if (( DRY_RUN )); then
+    echo "  [dry-run] would set Caps Lock → Escape (rewrite ~/Library/Preferences/ByHost/.GlobalPreferences.*.plist)"
+  else
   echo "==> Setting Caps Lock → Escape..."
   python3 - << 'PYEOF' || note_skip "Caps Lock → Escape" "plist rewrite failed"
 import glob, os, plistlib
@@ -614,12 +752,17 @@ for path in plists:
         plistlib.dump(prefs, f)
     print(f"  Updated {os.path.basename(path)}")
 PYEOF
+  fi
 
   if [[ "$PROFILE" != "work" ]]; then
-    echo "==> Loading watchcommit launchd agent..."
-    launchctl unload ~/Library/LaunchAgents/com.user.watchcommit.plist 2>/dev/null || true
-    launchctl load ~/Library/LaunchAgents/com.user.watchcommit.plist \
-      || note_skip "watchcommit agent" "launchctl load failed"
+    if (( DRY_RUN )); then
+      echo "  [dry-run] would (re)load watchcommit launchd agent"
+    else
+      echo "==> Loading watchcommit launchd agent..."
+      launchctl unload ~/Library/LaunchAgents/com.user.watchcommit.plist 2>/dev/null || true
+      launchctl load ~/Library/LaunchAgents/com.user.watchcommit.plist \
+        || note_skip "watchcommit agent" "launchctl load failed"
+    fi
   fi
 fi
 
@@ -629,15 +772,19 @@ fi
 
 if is_linux && [[ "$PROFILE" != "work" ]]; then
   if command -v systemctl &>/dev/null && systemctl --user show-environment &>/dev/null; then
-    echo "==> Enabling watchcommit systemd user service..."
-    systemctl --user daemon-reload
-    if systemctl --user enable --now watchcommit.service; then
-      # Without lingering, the service dies when the last WSL/SSH session
-      # closes — enable-linger keeps the user manager (and this unit) up.
-      loginctl enable-linger "$USER" 2>/dev/null \
-        || echo "  note: loginctl enable-linger failed — service won't survive full logout"
+    if (( DRY_RUN )); then
+      echo "  [dry-run] would enable+start watchcommit systemd user service, enable-linger for $USER"
     else
-      note_skip "watchcommit service" "systemctl --user enable --now failed"
+      echo "==> Enabling watchcommit systemd user service..."
+      systemctl --user daemon-reload
+      if systemctl --user enable --now watchcommit.service; then
+        # Without lingering, the service dies when the last WSL/SSH session
+        # closes — enable-linger keeps the user manager (and this unit) up.
+        loginctl enable-linger "$USER" 2>/dev/null \
+          || echo "  note: loginctl enable-linger failed — service won't survive full logout"
+      else
+        note_skip "watchcommit service" "systemctl --user enable --now failed"
+      fi
     fi
   else
     note_skip "watchcommit service" "systemd --user unavailable (enable systemd in /etc/wsl.conf?)"
@@ -649,13 +796,17 @@ fi
 # ============================================================================
 
 if [[ ! -f "$HOME/.vim/autoload/plug.vim" ]]; then
-  echo "==> Installing vim-plug..."
-  if curl -fLo ~/.vim/autoload/plug.vim --create-dirs \
-      https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim; then
-    record file-copied ~/.vim/autoload/plug.vim
-    echo "  Run :PlugInstall inside vim to install plugins"
+  if (( DRY_RUN )); then
+    echo "  [dry-run] would install vim-plug to ~/.vim/autoload/plug.vim"
   else
-    note_skip "vim-plug" "download failed (network blocked?)"
+    echo "==> Installing vim-plug..."
+    if curl -fLo ~/.vim/autoload/plug.vim --create-dirs \
+        https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim; then
+      record file-copied ~/.vim/autoload/plug.vim
+      echo "  Run :PlugInstall inside vim to install plugins"
+    else
+      note_skip "vim-plug" "download failed (network blocked?)"
+    fi
   fi
 fi
 
@@ -676,6 +827,8 @@ else
   NVIM_MINOR="$(echo "$NVIM_VERSION" | cut -d. -f2)"
   if (( NVIM_MAJOR == 0 && NVIM_MINOR < 11 )); then
     note_skip "Neovim plugin bootstrap" "nvim $NVIM_VERSION found, config needs >=0.11"
+  elif (( DRY_RUN )); then
+    echo "  [dry-run] would run: nvim --headless \"+Lazy! sync\" +qa (nvim $NVIM_VERSION)"
   else
     echo "==> Bootstrapping Neovim plugins (lazy.nvim sync, nvim $NVIM_VERSION)..."
     if nvim --headless "+Lazy! sync" +qa; then
@@ -691,8 +844,12 @@ fi
 # ============================================================================
 
 if [[ "$PROFILE" == "work" && ! -f "$PROFILE_MARKER" ]]; then
-  echo "work" > "$PROFILE_MARKER"
-  record file-copied "$PROFILE_MARKER"
+  if (( DRY_RUN )); then
+    echo "  [dry-run] would write profile marker: $PROFILE_MARKER"
+  else
+    echo "work" > "$PROFILE_MARKER"
+    record file-copied "$PROFILE_MARKER"
+  fi
 fi
 
 # ============================================================================
@@ -700,12 +857,18 @@ fi
 # ============================================================================
 
 echo ""
-echo "════════ Install summary — profile: $PROFILE ════════"
+if (( DRY_RUN )); then
+  echo "════════ Dry run summary — profile: $PROFILE ════════"
+else
+  echo "════════ Install summary — profile: $PROFILE ════════"
+fi
 if (( ${#SKIPPED} )); then
   echo "⚠ ${#SKIPPED} step(s) DID NOT run:"
   for s in "${SKIPPED[@]}"; do
     echo "  ✗ $s"
   done
+elif (( DRY_RUN )); then
+  echo "✓ all steps previewed cleanly (no real detection failures)"
 else
   echo "✓ all steps completed"
 fi
@@ -717,21 +880,27 @@ if [[ -n "$OPENCODE_JSONC_DRIFT" ]]; then
   echo "⚠ ~/.config/opencode/opencode.jsonc drifted from ${OPENCODE_SEED:t}: $OPENCODE_JSONC_DRIFT"
   echo "  (copy-once by design — port changes manually if wanted)"
 fi
-echo "  rollback available: ./install.sh --rollback (manifest: $MANIFEST)"
+if (( DRY_RUN )); then
+  echo "  dry run — nothing was changed; re-run without --dry-run to apply"
+else
+  echo "  rollback available: ./install.sh --rollback (manifest: $MANIFEST)"
+fi
 
-echo ""
-echo "Manual steps:"
-if is_mac; then
-  echo "  - Log out and back in for Caps Lock → Escape to take effect"
-  echo "  - Open Karabiner-Elements → grant Input Monitoring + Accessibility"
-  echo "  - Open Rectangle → grant Accessibility permission"
+if (( ! DRY_RUN )); then
+  echo ""
+  echo "Manual steps:"
+  if is_mac; then
+    echo "  - Log out and back in for Caps Lock → Escape to take effect"
+    echo "  - Open Karabiner-Elements → grant Input Monitoring + Accessibility"
+    echo "  - Open Rectangle → grant Accessibility permission"
+  fi
+  if [[ "$PROFILE" == "work" ]]; then
+    echo "  - ~/.secrets is sourced if present — for work-issued tokens only;"
+    echo "    do NOT put a personal ANTHROPIC_API_KEY on this machine"
+  elif has_harness claude; then
+    echo "  - Run 'claude login' if you haven't, so watchcommit can generate commit messages"
+  fi
+  is_linux && echo "  - Restart your shell to pick up the new config"
 fi
-if [[ "$PROFILE" == "work" ]]; then
-  echo "  - ~/.secrets is sourced if present — for work-issued tokens only;"
-  echo "    do NOT put a personal ANTHROPIC_API_KEY on this machine"
-elif has_harness claude; then
-  echo "  - Run 'claude login' if you haven't, so watchcommit can generate commit messages"
-fi
-is_linux && echo "  - Restart your shell to pick up the new config"
 
 exit $(( ${#SKIPPED} > 0 ))
