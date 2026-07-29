@@ -108,7 +108,15 @@ def run_backend_command(cmd: list[str]) -> str:
     returncode, stdout, stderr = _run_command(cmd)
     if returncode != 0:
         raise BackendError(f"exited {returncode}: {stderr.strip()}")
-    return stdout.strip()
+    result = stdout.strip()
+    if not result:
+        # Exit 0 with empty stdout is still a failure — e.g. agy in headless
+        # mode has its tool calls auto-denied, prints "no output produced" to
+        # stderr, and exits 0. Treating that as success would silently pass
+        # the empty critique through and skip the priority fallback.
+        detail = stderr.strip() or "(no stderr)"
+        raise BackendError(f"exited 0 but produced no output: {detail}")
+    return result
 
 
 def run_agy(prompt: str) -> str:
