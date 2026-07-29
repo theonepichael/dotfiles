@@ -76,9 +76,10 @@ the plan itself.
 ## On convergence
 
 Show the final revised plan and the summary. If the input came from an
-existing file (e.g. a `grill.py` `plan_path`), confirm before overwriting it —
-`AskUserQuestion`: `Yes, overwrite (recommended)` / `No, leave as-is`. Never
-silently rewrite a file.
+existing file (e.g. a `grill.py` `plan_path`), confirm before overwriting it
+— apply CLAUDE.md's convention for asking the user to choose: `Yes,
+overwrite (recommended)` / `No, leave as-is`. Never silently rewrite a
+file.
 
 ## On cap-out without convergence
 
@@ -89,9 +90,10 @@ Stopped after 3 rounds — not converged.
 Unresolved: <specific remaining disagreement>.
 ```
 
-Then `AskUserQuestion`: `Keep Claude's approach (recommended)` /
-`Use the reviewer's suggestion` / `Let me decide manually`. Never silently
-pick a side when the round cap is hit mid-disagreement.
+Then apply CLAUDE.md's convention for asking the user to choose: `Keep
+Claude's approach (recommended)` / `Use the reviewer's suggestion` / `Let me
+decide manually`. Never silently pick a side when the round cap is hit
+mid-disagreement.
 
 ## Recording it in the backlog
 

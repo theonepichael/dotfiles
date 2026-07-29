@@ -75,10 +75,10 @@ the plan itself.
 ## On convergence
 
 Show the final revised plan and the summary. If the input came from an
-existing file (e.g. a `grill.py` `plan_path`), confirm before overwriting it:
-state plainly "Overwrite the plan file at `<path>`, or leave it as-is?",
-recommend overwriting, and wait for a plain-text answer. Never silently
-rewrite a file.
+existing file (e.g. a `grill.py` `plan_path`), confirm before overwriting it
+— apply the shared instructions file's convention for asking the user to
+choose: overwrite (recommended) or leave as-is. Never silently rewrite a
+file.
 
 ## On cap-out without convergence
 
@@ -89,10 +89,10 @@ Stopped after 3 rounds — not converged.
 Unresolved: <specific remaining disagreement>.
 ```
 
-Then ask in plain text which way to go: keep your (Claude's) approach
-(recommended), use the reviewer's suggestion, or let the user decide
-manually — state the options, give your recommendation, and wait for their
-answer. Never silently pick a side when the round cap is hit mid-disagreement.
+Then apply the shared instructions file's convention for asking the user to
+choose: keep your approach (recommended), use the reviewer's suggestion, or
+let the user decide manually. Never silently pick a side when the round cap
+is hit mid-disagreement.
 
 ## Recording it in the backlog
 

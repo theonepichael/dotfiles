@@ -42,44 +42,24 @@ the platform is now known.
 
 ## 2. Reconcile pending items
 
-Status moves one step at a time: `waiting_for_reply` → `reply_received` →
-`resolved`. A reply landing doesn't mean the thing is closed out — it means
-it needs a look. Don't jump straight to `resolved` on a hunch.
-
-For each entry in `pending_items_open`, check `chat_thread_updates` /
-`email_thread_updates` (and `messages`/`email_correspondence` for anything
-those targeted fetches missed) for a reply. Propose the transition to the
-user in chat first — nothing gets written until they confirm, since "was
-this actually answered" is a judgment call, not a pattern match:
-
-```
-python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "reply_received"}'
-```
-
-Only move an item to `resolved` when the user confirms it's actually done,
-and record what happened:
-
-```
-python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "resolved", "outcome": "what actually happened"}'
-```
+Apply the shared instructions file's pending-item status-transition rule
+(one step at a time, never jump straight to `resolved`). For each entry in
+`pending_items_open`, check `chat_thread_updates` / `email_thread_updates`
+(and `messages`/`email_correspondence` for anything those targeted fetches
+missed) for a reply. Propose the transition to the user in chat first —
+nothing gets written until they confirm, since "was this actually answered"
+is a judgment call, not a pattern match. Only move an item to `resolved`
+when the user confirms it's actually done, and record the `outcome`.
 
 For anything in the fetched data that looks like a new item worth tracking
 across days (an email/chat message still awaiting a reply, an access
 request not yet approved) but isn't already in `pending_items_open`,
-propose adding it:
-
-```
-python3 ~/.claude/scripts/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
-```
+propose adding it per the shared instructions file's pending-item protocol.
 
 `<id>` can be the pending item's slug — `dev_status.py`'s cross-section
 numbering (visible via the dashboard skill) also works, but its numbers shift as
 items change, so prefer the slug here since `standup.py`'s `fetch` output
 already gives you it directly.
-
-`kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
-object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for
-email) — not a free-text string.
 
 ## 3. Draft
 
