@@ -53,28 +53,49 @@ Trigger section reflecting agy's progressive-disclosure model instead of
 Claude Code's model-invoked/user-invoked split or Copilot's pure
 description-match).
 
-## 3. Known gaps / not yet decided
+## 3. Verification results (probed 2026-07-28, agy 1.1.8)
 
-- **Whether agy supports an explicit user-typed invocation** of a skill
-  (something slash-command-like) separate from model-decision activation —
-  the docs read so far only confirm "the model (or the user) explicitly
-  decides to activate it," without spelling out the user-side mechanism.
-  Verify empirically (e.g. does typing a skill's name in-conversation
-  trigger it, or is there a dedicated command).
-- **No session-start-hook equivalent confirmed.** `dashboard`'s Claude
-  Code/Copilot versions both note a SessionStart hook auto-renders the
-  dashboard; agy's version doesn't claim this, since no such wiring has been
-  set up or confirmed possible here. agy's customization docs do list
-  `hooks.json` as a supported customization type (`Lifecycle Event`
-  scope) — revisit if this is wanted.
+Resolved against `agy --help`, `agy help`, `agy agent`, and agy's own bundled
+customization docs (`~/.gemini/antigravity-cli/builtin/skills/agy-customizations/
+docs/{skills,hooks,rules}.md`). A live end-to-end invocation probe (`agy -p` →
+"run the dashboard skill") was attempted but **blocked by quota** ("Individual
+quota reached... Resets in 162h12m18s"), so skill discovery *from the new path*
+is confirmed by install-state symlink resolution + the renamed-away stale dir
+(no longer in the discovery path) rather than by a successful model-driven run.
+Re-probe with a live invocation once quota resets to fully close it out.
+
+- **No explicit user-typed skill invocation** (no slash-command or dedicated
+  subcommand). `agy --help`/`agy help` list only `agent`(s)/`changelog`/`help`/
+  `install`/`models`/`plugin`(s)/`update` — there is **no `skill` subcommand**
+  and no flag for invoking a skill by name. `skills.md` describes **only**
+  model-decision activation: "The primary agent reads this `description` to
+  decide whether to activate the skill for a given user prompt." So for agy
+  there is no Claude-Code-style `/dashboard` user trigger — the user-side
+  mechanism, to the extent one exists, is just naming the workflow in plain
+  language and relying on the model to match the skill's `description`. The
+  ported skills already phrase their Triggers in those terms, so no change
+  needed.
+- **No SessionStart hook event type.** `hooks.md` lists exactly five events:
+  `PreToolUse`, `PostToolUse`, `PreInvocation`, `PostInvocation`, `Stop`.
+  There is no `SessionStart` (or `OnSessionStart`/`Startup`) event. The
+  nearest, `PreInvocation`, fires before **every** model invocation, not once
+  per session, so it can't cleanly drive a one-shot dashboard auto-render
+  without a self-clearing guard (e.g. a flag file the hook checks then
+  unlinks) — and that fires on the *first* invocation only by side effect,
+  not by design. **Conclusion: not worth wiring** an auto-render hook for
+  agy; `dashboard`'s agy version correctly makes no SessionStart claim.
 - **MCP config format differs**: `~/.gemini/config/mcp_config.json` with a
   `serverUrl` key, replacing inline `~/.gemini/settings.json` declarations
   from the Gemini CLI era. Not touched by this port; this repo doesn't
-  manage MCP server config for any harness today.
-- **Structured multi-choice prompt**: not confirmed to exist for agy. All
-  ported skills treat agy like Copilot/opencode (plain-text questions with a
-  stated recommendation) per CLAUDE.md's "Asking the user to choose"
-  convention, pending confirmation either way.
+  manage MCP server config for any harness today. (Unchanged from prior.)
+- **No structured multi-choice prompt widget.** Nothing in `--help` (`only
+  `--json-schema`, which constrains *print-mode output shape*, not
+  interactive user prompts), `agy help`, the agent/plugin subcommands, or
+  the customization docs exposes an AskUserQuestion-style multi-choice
+  surface. **Confirmed: agy is in the Copilot/opencode tier** (plain-text
+  questions with a stated recommendation), not the Claude Code tier. The
+  ported skills' existing treatment (plain-text question, recommendation
+  first) is correct and needs no change.
 
 ## 4. Install state on this machine (versioning note)
 
