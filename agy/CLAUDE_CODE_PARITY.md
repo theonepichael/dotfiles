@@ -55,14 +55,15 @@ description-match).
 
 ## 3. Verification results (probed 2026-07-28, agy 1.1.8)
 
-Resolved against `agy --help`, `agy help`, `agy agent`, and agy's own bundled
+Resolved against `agy --help`, `agy help`, `agy agent`, agy's own bundled
 customization docs (`~/.gemini/antigravity-cli/builtin/skills/agy-customizations/
-docs/{skills,hooks,rules}.md`). A live end-to-end invocation probe (`agy -p` →
-"run the dashboard skill") was attempted but **blocked by quota** ("Individual
-quota reached... Resets in 162h12m18s"), so skill discovery *from the new path*
-is confirmed by install-state symlink resolution + the renamed-away stale dir
-(no longer in the discovery path) rather than by a successful model-driven run.
-Re-probe with a live invocation once quota resets to fully close it out.
+docs/{skills,hooks,rules}.md`), and a **live end-to-end invocation probe**
+(`agy --dangerously-skip-permissions -p "<activate dashboard; run
+dev_status.py render; show stdout verbatim>"`), which produced the dashboard
+verbatim — empirically confirming agy loads skills from the new
+`~/.gemini/antigravity-cli/skills/` path in normal use. The legacy
+`~/.gemini/skills/` directory (previously moved aside as
+`~/.gemini/skills.stale-bak-20260728`) has been **permanently deleted**.
 
 - **No explicit user-typed skill invocation** (no slash-command or dedicated
   subcommand). `agy --help`/`agy help` list only `agent`(s)/`changelog`/`help`/
@@ -88,14 +89,14 @@ Re-probe with a live invocation once quota resets to fully close it out.
   `serverUrl` key, replacing inline `~/.gemini/settings.json` declarations
   from the Gemini CLI era. Not touched by this port; this repo doesn't
   manage MCP server config for any harness today. (Unchanged from prior.)
-- **No structured multi-choice prompt widget.** Nothing in `--help` (`only
-  `--json-schema`, which constrains *print-mode output shape*, not
-  interactive user prompts), `agy help`, the agent/plugin subcommands, or
-  the customization docs exposes an AskUserQuestion-style multi-choice
-  surface. **Confirmed: agy is in the Copilot/opencode tier** (plain-text
-  questions with a stated recommendation), not the Claude Code tier. The
-  ported skills' existing treatment (plain-text question, recommendation
-  first) is correct and needs no change.
+- **No structured multi-choice prompt widget.** Nothing in `--help`
+  (`--json-schema` constrains *print-mode output shape*, not interactive
+  user prompts), `agy help`, the agent/plugin subcommands, or the
+  customization docs exposes an AskUserQuestion-style multi-choice surface.
+  **Confirmed: agy is in the Copilot/opencode tier** (plain-text questions
+  with a stated recommendation), not the Claude Code tier. The ported
+  skills' existing treatment (plain-text question, recommendation first) is
+  correct and needs no change.
 
 ## 4. Install state on this machine (versioning note)
 
