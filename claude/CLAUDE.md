@@ -41,6 +41,16 @@ Infer all fields from the current conversation.
 Only include files actually relevant to picking up the work later.
 Omit related_files if there is nothing meaningful to put in them (use []).
 
+Never let a backlog slug (`iron-lb-instructions-truncation`, `ilb-rederive-drift`,
+etc.) leak into a file that ships in git history — code comments, README,
+AGENTS.md, and the like. Those ids only resolve inside this personal backlog
+store; a collaborator or anyone reading the repo without `dev_status.py`
+access hits a dangling reference to nothing. When a comment or doc needs to
+explain *why* something exists, describe the defect/rationale directly in
+prose — symptoms, mechanism, counts — instead of citing a backlog id as the
+explanation. Slugs are fine in conversation, `dev_status.py` calls, and
+scratch notes; just not in anything that gets committed.
+
 #### Proactive capture
 
 Offer to add a backlog item (never add silently) when any of these occur:
