@@ -127,38 +127,11 @@ from the summary title.
 When writing to stored fields (`summary`, `context`, `next_steps`, `related_files[].note`)
 and prose cross-references, use slugs for any item references — never raw hex IDs.
 
-#### Checking for a concurrent session before touching a project repo
+#### Starting work on a backlog item
 
-Project repos (anything under `related_files`, not this dotfiles repo) get
-worked from more than one tool in parallel — Claude Code, opencode, Copilot —
-against the same checkout. Before starting work on a backlog item whose
-`related_files` point into a real project repo, check that repo for
-uncommitted changes first:
-
-```bash
-git -C <repo> status --short
-```
-
-- **Clean** — create/switch to a feature branch in the main checkout and work there as normal (never commit straight to `main`, per the Git policy above).
-- **Dirty, and you recognize the changes as this session's own prior work**
-  — continue as normal.
-- **Dirty, and the changes are unrelated or unrecognized** (different files
-  than what this session has touched, a topic that doesn't match the item
-  being started) — assume another session is actively working there. Don't
-  edit in place — create an isolated worktree instead and do the new work
-  there:
-
-  ```bash
-  git -C <repo> worktree add ../<repo-name>-<slug> -b <slug>
-  ```
-
-  Mention the worktree path when the work is done — it needs a manual merge
-  or PR back into the main branch, since it doesn't live in the main
-  checkout. Also avoid repo-wide operations (a full reformat, a
-  rename-everywhere refactor) while another session's uncommitted changes
-  are present, even from inside a worktree — those still touch the same
-  tracked files and will conflict on merge either way; scope such changes to
-  just the files the current task actually needs.
+Follow the Git section's worktree-first policy below: create a fresh
+worktree scoped to the item's slug before touching the repo under
+`related_files`, rather than branching in the main checkout.
 
 ### Pending Items
 
@@ -189,7 +162,27 @@ used for backlog capture.
 ## Git
 
 - Use conventional commits: `type(scope): description` — types: `feat`, `fix`, `refactor`, `chore`, `docs`, `test`, `perf`, `ci`
-- Never commit directly to `main`/`master`, in any repo — this dotfiles repo included, and even in solo sessions with no concurrent activity. Always create and switch to a feature branch first. Reserve `git worktree add` (see below) for the specific case of isolating from another session's uncommitted work — a plain branch in the existing checkout is enough otherwise.
+- Never commit directly to `main`/`master`, in any repo. Before starting new
+  work — this dotfiles repo included, regardless of whether the checkout is
+  currently clean or dirty, and even in solo sessions with no concurrent
+  activity — create a fresh worktree for it rather than branching in the
+  existing checkout:
+
+  ```bash
+  git -C <repo> worktree add ../<repo-name>-<slug> -b <slug>
+  ```
+
+  This sidesteps concurrent-session collisions by construction — repos
+  routinely get worked from more than one tool in parallel (Claude Code,
+  opencode, Copilot) against the same checkout — instead of detecting and
+  reacting to them after the fact. If you're already mid-task in a worktree
+  this session created, keep working there; don't spin up a second one for
+  the same task just because a new tool call starts. Mention the worktree
+  path when the work is done — it needs a manual merge or PR back into the
+  main branch, since it doesn't live in the main checkout. Avoid repo-wide
+  operations (a full reformat, a rename-everywhere refactor) that could
+  conflict with whatever else is active in the repo — scope changes to just
+  the files the current task actually needs.
 
 ## Scripts
 
