@@ -1,9 +1,9 @@
 # CLAUDE.md
 
-<!-- Shared with ~/.copilot/copilot-instructions.md (same symlink target). Gmail/
-     Calendar/Drive MCP servers are deliberately not configured under Copilot CLI,
-     per the --work profile's no-personal-data-on-work-hardware rule — intentional,
-     not a gap. -->
+<!-- Shared with ~/.copilot/copilot-instructions.md and ~/.gemini/GEMINI.md (same
+     symlink target). Gmail/Calendar/Drive MCP servers are deliberately not
+     configured under Copilot CLI, per the --work profile's
+     no-personal-data-on-work-hardware rule — intentional, not a gap. -->
 
 ## Workflow Behaviors
 
@@ -18,9 +18,9 @@ When a step specifically needs the user to pick among 2–4 concrete,
 enumerable options, state the recommendation first. In harnesses with a
 structured multi-choice prompt (Claude Code's `AskUserQuestion`), use it,
 labeling the recommendation "(Recommended)". In harnesses without one
-(Copilot CLI, opencode), state the options in plain conversational text with
-the same recommendation, and wait for a plain-text reply — never design a
-step around a UI widget a harness doesn't have.
+(Copilot CLI, opencode, agy), state the options in plain conversational text
+with the same recommendation, and wait for a plain-text reply — never design
+a step around a UI widget a harness doesn't have.
 
 For genuinely open-ended questions, ask in plain text regardless of harness:
 state the question directly, give your recommended answer with brief
@@ -220,8 +220,8 @@ used for backlog capture.
 
   This sidesteps concurrent-session collisions by construction — repos
   routinely get worked from more than one tool in parallel (Claude Code,
-  opencode, Copilot) against the same checkout — instead of detecting and
-  reacting to them after the fact. If you're already mid-task in a worktree
+  opencode, Copilot, agy) against the same checkout — instead of detecting
+  and reacting to them after the fact. If you're already mid-task in a worktree
   this session created, keep working there; don't spin up a second one for
   the same task just because a new tool call starts. Mention the worktree
   path when the work is done — it needs a manual merge or PR back into the
