@@ -63,6 +63,43 @@ Infer all fields from the current conversation.
 Only include files actually relevant to picking up the work later.
 Omit related_files if there is nothing meaningful to put in them (use []).
 
+#### Checking for blocker relationships at add-time
+
+`add` and `pending add` print a one-line reminder to stderr after a
+successful add, when other READY or IN PROGRESS items exist — the items
+themselves are already visible in that same command's dashboard output
+just above it. Read them and judge, semantically, whether any listed item
+has a blocker relationship with the one just added, in either direction.
+
+**Use `block`, not `update`, to record it.** `update`'s `blocked_by` patch
+is a raw replacement (`item.update(patch)`) with no existence check and no
+cycle detection — it would silently clobber anything already set and skip
+`cmd_add`'s own validation. `block <id> <blocker>` is additive, validated,
+and duplicate/cycle-safe:
+
+- An existing item should block the new one:
+  `python3 ~/.claude/scripts/dev_status.py block <new-slug> <existing-slug>`
+- The new item should block an existing one:
+  `python3 ~/.claude/scripts/dev_status.py block <existing-slug> <new-slug>`
+
+(`block`'s arguments are `<id> <blocker>` — the item being blocked comes
+first, the blocker second.)
+
+**After `pending add`, only one direction is possible** — pending items
+have no `blocked_by` field of their own, only `blocking`, and there's no
+`pending block` command, so this has to go through `pending update`
+directly. `pending update`'s patch is also a raw replacement (same clobber
+risk as `update` above), so check the item's current `blocking` first and
+include it in the patch:
+
+```bash
+python3 ~/.claude/scripts/dev_status.py show <new-slug>
+python3 ~/.claude/scripts/dev_status.py pending update <new-slug> '{"blocking": ["<existing-slug>", ...already-present entries...]}'
+```
+
+If nothing looks related, do nothing — this is a judgment call per add, not
+a mandatory link.
+
 Never let a backlog slug (`iron-lb-instructions-truncation`, `ilb-rederive-drift`,
 etc.) leak into a file that ships in git history — code comments, README,
 AGENTS.md, and the like. Those ids only resolve inside this personal backlog

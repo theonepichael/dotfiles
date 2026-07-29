@@ -360,6 +360,23 @@ def _render_order(items):
     return in_progress, ready, blocked, done, done_total
 
 
+def _blocker_check_reminder(items, exclude_slug, *, cmd, err=None):
+    """One-line stderr reminder to check for blocker relationships against
+    READY/IN PROGRESS items — render() already printed the list above this,
+    so this only adds the imperative, not a re-print. No matching
+    heuristic; the caller (human or agent) makes the judgment call."""
+    if err is None:
+        err = sys.stderr
+    in_progress, ready, _, _, _ = _render_order(items)
+    candidates = [i for i in in_progress + ready if i["id"] != exclude_slug]
+    if not candidates:
+        return
+    print(
+        f"[{cmd}] check the READY/IN PROGRESS items above for blocker relationships",
+        file=err,
+    )
+
+
 def _pending_render_order(pending_items):
     """Unresolved pending items: reply_received group first, each group newest-first."""
     unresolved = [p for p in pending_items if p.get("status") != "resolved"]
@@ -701,6 +718,7 @@ def cmd_add(args):
         save_items(items)
         new_rev = bump_rev()
     render(items, rev=new_rev)
+    _blocker_check_reminder(items, slug, cmd="add")
 
 
 def confirm_resolution(cmd, arg, item, summary_key="summary"):
@@ -922,7 +940,8 @@ def cmd_pending_add(args):
             print(f"[pending add] duplicate id: {slug}", file=sys.stderr)
             sys.exit(1)
 
-        index = build_index(load_items())
+        backlog_items = load_items()
+        index = build_index(backlog_items)
         blocking = patch.get("blocking", [])
         for dep in blocking:
             if dep not in index:
@@ -951,6 +970,7 @@ def cmd_pending_add(args):
         new_rev = bump_rev()
     print(f"[pending add] {slug} — {description[:60]}", file=sys.stderr)
     render(pending_items=pending_items, rev=new_rev)
+    _blocker_check_reminder(backlog_items, None, cmd="pending add")
 
 
 def cmd_pending_update(args):

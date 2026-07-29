@@ -1041,6 +1041,73 @@ class BacklogTestCase(unittest.TestCase):
         pending = dev_status.load_pending()
         self.assertEqual(pending[0]["blocking"], ["a"])
 
+    def test_55_add_blocker_reminder_shown_with_ready_item(self):
+        self.write_items([make_item("a")])
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_add(_args(json='{"id": "new-item", "summary": "New item"}'))
+        self.assertIn(
+            "check the READY/IN PROGRESS items above for blocker relationships",
+            err.getvalue(),
+        )
+
+    def test_56_add_blocker_reminder_shown_with_in_progress_item(self):
+        self.write_items([make_item("a", status="in-progress")])
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_add(_args(json='{"id": "new-item", "summary": "New item"}'))
+        self.assertIn(
+            "check the READY/IN PROGRESS items above for blocker relationships",
+            err.getvalue(),
+        )
+
+    def test_57_add_blocker_reminder_silent_when_only_new_item(self):
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_add(_args(json='{"id": "new-item", "summary": "New item"}'))
+        self.assertNotIn("check the READY/IN PROGRESS items", err.getvalue())
+
+    def test_58_add_blocker_reminder_silent_when_none_ready_or_in_progress(self):
+        # "b" is blocked (its blocker "ghost" isn't in the index at all, which
+        # effective_blockers still counts as unresolved) so it's neither READY
+        # nor IN PROGRESS, and "a" is done — no candidates besides the new item.
+        self.write_items(
+            [
+                make_item("a", status="done"),
+                make_item("b", status="open", blocked_by=["ghost"]),
+            ]
+        )
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_add(
+                _args(json='{"id": "third-item", "summary": "New item"}')
+            )
+        self.assertNotIn("check the READY/IN PROGRESS items", err.getvalue())
+
+    def test_59_pending_add_blocker_reminder_shown(self):
+        self.write_items([make_item("a")])
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_pending_add(
+                _args(
+                    json='{"id": "wait-y", "description": "waiting", "kind": "email"}'
+                )
+            )
+        self.assertIn(
+            "check the READY/IN PROGRESS items above for blocker relationships",
+            err.getvalue(),
+        )
+
+    def test_60_pending_add_blocker_reminder_silent_when_backlog_empty(self):
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_pending_add(
+                _args(
+                    json='{"id": "wait-z", "description": "waiting", "kind": "email"}'
+                )
+            )
+        self.assertNotIn("check the READY/IN PROGRESS items", err.getvalue())
+
 
 # ── arg helper ────────────────────────────────────────────────────────────────
 
