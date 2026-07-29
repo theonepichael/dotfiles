@@ -745,12 +745,21 @@ class BacklogTestCase(unittest.TestCase):
         out = _TtyStringIO()
         dev_status.render(self.read_items(), out=out, err=io.StringIO())
         rendered = out.getvalue()
-        self.assertIn("\u00b7high", rendered)
-        self.assertIn("\u00b7low", rendered)
-        # "nor" item's line must not carry a badge — match its summary line
-        # specifically (badge appears between summary and age suffix).
+        # _priority_glyph renders ▲ for high, ▽ for low, and ·
+        # for absent/normal on every row (no blank gutter) -- this test
+        # previously asserted literal "\u00b7high"/"\u00b7low" text, which
+        # _priority_glyph has never emitted; fixed to check the glyph that
+        # actually appears on each item's own line.
+        hip_line = next(ln for ln in rendered.splitlines() if "Summary of hip" in ln)
+        lop_line = next(ln for ln in rendered.splitlines() if "Summary of lop" in ln)
         nor_line = next(ln for ln in rendered.splitlines() if "Summary of nor" in ln)
-        self.assertNotIn("\u00b7", nor_line.split("Summary of nor")[1])
+        self.assertIn("\u25b2", hip_line)
+        self.assertIn("\u25bd", lop_line)
+        # "nor" has no explicit priority -- still gets the normal-priority
+        # middle-dot glyph, not the high/low triangle.
+        self.assertIn("\u00b7", nor_line)
+        self.assertNotIn("\u25b2", nor_line)
+        self.assertNotIn("\u25bd", nor_line)
 
     def test_36_render_priority_default_for_unknown_value_is_normal(self):
         # Bypass validation: hand-write an item with priority:"urgent".
@@ -950,6 +959,87 @@ class BacklogTestCase(unittest.TestCase):
         # rename appears before remove, remove before block in the metavar.
         self.assertLess(usage.index("rename"), usage.index("remove"))
         self.assertLess(usage.index("remove"), usage.index("block"))
+
+    # ── 49-54: update field allowlist + pending blocking validation ────────
+
+    def test_49_update_unrecognized_field_rejected(self):
+        self.write_items([make_item("a")])
+        rev_before = self.read_rev()
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_update(_args(id="a", patch='{"typo_sumamry": "oops"}'))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("unrecognized field(s): typo_sumamry", err.getvalue())
+        self.assertNotIn("typo_sumamry", self.read_items()[0])
+        self.assertEqual(self.read_rev(), rev_before)
+
+    def test_50_update_mutable_fields_all_accepted(self):
+        self.write_items([make_item("a"), make_item("b")])
+        patch_json = json.dumps(
+            {
+                "summary": "new summary",
+                "category": "bug",
+                "blocked_by": ["b"],
+                "related_files": [{"path": "/x", "note": "y"}],
+                "context": "ctx",
+                "next_steps": "next",
+                "priority": "high",
+                "status": "in-progress",
+            }
+        )
+        dev_status.cmd_update(_args(id="a", patch=patch_json))
+        item = dev_status.build_index(self.read_items())["a"]
+        self.assertEqual(item["summary"], "new summary")
+        self.assertEqual(item["category"], "bug")
+        self.assertEqual(item["blocked_by"], ["b"])
+        self.assertEqual(item["related_files"], [{"path": "/x", "note": "y"}])
+        self.assertEqual(item["context"], "ctx")
+        self.assertEqual(item["next_steps"], "next")
+        self.assertEqual(item["priority"], "high")
+        self.assertEqual(item["status"], "in-progress")
+
+    def test_51_update_priority_null_unsets_key(self):
+        self.write_items([make_item("a", priority="high")])
+        dev_status.cmd_update(_args(id="a", patch='{"priority": null}'))
+        item = dev_status.build_index(self.read_items())["a"]
+        self.assertNotIn("priority", item)
+
+    def test_52_update_invalid_priority_rejected(self):
+        self.write_items([make_item("a")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_update(_args(id="a", patch='{"priority": "urgent"}'))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("invalid priority 'urgent'", err.getvalue())
+        self.assertNotIn("priority", dev_status.build_index(self.read_items())["a"])
+
+    def test_53_pending_add_blocking_unknown_slug_rejected(self):
+        self.write_items([make_item("a")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_pending_add(
+                    _args(
+                        json='{"id": "wait-x", "description": "waiting", '
+                        '"kind": "email", "blocking": ["ghost-slug"]}'
+                    )
+                )
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("blocking references unknown slug: ghost-slug", err.getvalue())
+        self.assertEqual(dev_status.load_pending(), [])
+
+    def test_54_pending_add_blocking_known_slug_accepted(self):
+        self.write_items([make_item("a")])
+        dev_status.cmd_pending_add(
+            _args(
+                json='{"id": "wait-x", "description": "waiting", '
+                '"kind": "email", "blocking": ["a"]}'
+            )
+        )
+        pending = dev_status.load_pending()
+        self.assertEqual(pending[0]["blocking"], ["a"])
 
 
 # ── arg helper ────────────────────────────────────────────────────────────────
