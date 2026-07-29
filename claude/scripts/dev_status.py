@@ -35,7 +35,7 @@ PENDING_MUTABLE_FIELDS = {
     "outcome",
     "source_ref",
 }
-IMMUTABLE_FIELDS = {"id", "created"}
+IMMUTABLE_FIELDS = {"id", "created", "completed_at"}
 # Subcommand names blocked from use as item slugs. Match is exact: only a
 # slug equal to one of these bare verbs is refused — `remove-probe`,
 # `add-feature`, etc. are accepted. Argparse never confuses a hyphenated
@@ -86,6 +86,17 @@ _COLORS = {
 
 def today():
     return date.today().isoformat()
+
+
+def _apply_status_transition(item, new_status, stamp_field, done_value):
+    """Stamp `stamp_field` when status enters `done_value`; clear it when
+    status leaves `done_value`. Called from every path that can change
+    status, so the stamp can't be bypassed or left stale."""
+    old_status = item.get("status")
+    if new_status == done_value and old_status != done_value:
+        item[stamp_field] = today()
+    elif old_status == done_value and new_status != done_value:
+        item.pop(stamp_field, None)
 
 
 def _category_tag(category):
@@ -746,6 +757,8 @@ def cmd_update(args):
             print(f"[update] not found: {slug}", file=sys.stderr)
             sys.exit(1)
 
+        if "status" in patch:
+            _apply_status_transition(item, patch["status"], "completed_at", "done")
         item.update(patch)
         item["updated"] = today()
         save_items(items)
@@ -794,6 +807,7 @@ def cmd_done(args):
         if item is None:
             print(f"[done] not found: {slug}", file=sys.stderr)
             sys.exit(1)
+        _apply_status_transition(item, "done", "completed_at", "done")
         item["status"] = "done"
         item["updated"] = today()
         save_items(items)
@@ -994,6 +1008,8 @@ def cmd_pending_update(args):
         if item is None:
             print(f"[pending update] not found: {slug}", file=sys.stderr)
             sys.exit(1)
+        if "status" in patch:
+            _apply_status_transition(item, patch["status"], "resolved_at", "resolved")
         item.update(patch)
         item["updated"] = today()
         save_pending(pending_items)
@@ -1038,11 +1054,14 @@ def cmd_prune(args):
         keep, pruned = [], 0
         for item in items:
             if item.get("status") == "done":
-                try:
-                    age = (date.today() - date.fromisoformat(item["updated"])).days
-                except (KeyError, ValueError):
-                    age = 0
-                if age >= cutoff_days:
+                age = _age_days(item.get("completed_at") or item.get("updated", ""))
+                if age is None:
+                    print(
+                        f"[prune] skipping {item.get('id', '?')}: "
+                        "no valid completed_at/updated date",
+                        file=sys.stderr,
+                    )
+                elif age >= cutoff_days:
                     pruned += 1
                     continue
             keep.append(item)
@@ -1054,11 +1073,14 @@ def cmd_prune(args):
         pending_keep, pending_pruned = [], 0
         for item in pending_items:
             if item.get("status") == "resolved":
-                try:
-                    age = (date.today() - date.fromisoformat(item["updated"])).days
-                except (KeyError, ValueError):
-                    age = 0
-                if age >= cutoff_days:
+                age = _age_days(item.get("resolved_at") or item.get("updated", ""))
+                if age is None:
+                    print(
+                        f"[prune] skipping {item.get('id', '?')}: "
+                        "no valid resolved_at/updated date",
+                        file=sys.stderr,
+                    )
+                elif age >= cutoff_days:
                     pending_pruned += 1
                     continue
             pending_keep.append(item)
