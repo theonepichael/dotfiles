@@ -572,11 +572,11 @@ if has_harness copilot; then
   symlink copilot/aliases.zsh ~/.copilot_aliases
 fi
 
-# opencode. Most commands still live at ~/.config/opencode/commands/ from a
-# prior manual, untracked port (see opencode/CLAUDE_CODE_PARITY.md §2) —
-# dashboard.md (2026-07-24, after the status→dashboard rename) and
-# grill-me.md (2026-07-25) are pulled into the repo proper so those two at
-# least stay in sync automatically; the rest are still manual.
+# opencode. All 5 commands (dashboard, grill-me, make-skill, second-opinion,
+# standup) live in the repo at opencode/command/ and are symlinked into
+# ~/.config/opencode/commands/ (see opencode/CLAUDE_CODE_PARITY.md §2 for
+# the format, the official-docs-informed frontmatter schema, and the history
+# of the staged pull-into-repo).
 # AGENTS.md is intentionally not managed here — opencode already reads
 # ~/.claude/CLAUDE.md directly as a legacy fallback when no AGENTS.md exists
 # (see CLAUDE_CODE_PARITY.md §1), so creating one here would just duplicate
@@ -584,8 +584,11 @@ fi
 OPENCODE_JSONC_DRIFT=""
 if has_harness opencode; then
   symlink opencode/tui.json ~/.config/opencode/tui.json
-  symlink opencode/command/dashboard.md ~/.config/opencode/commands/dashboard.md
-  symlink opencode/command/grill-me.md ~/.config/opencode/commands/grill-me.md
+  symlink opencode/command/dashboard.md      ~/.config/opencode/commands/dashboard.md
+  symlink opencode/command/grill-me.md       ~/.config/opencode/commands/grill-me.md
+  symlink opencode/command/make-skill.md     ~/.config/opencode/commands/make-skill.md
+  symlink opencode/command/second-opinion.md ~/.config/opencode/commands/second-opinion.md
+  symlink opencode/command/standup.md        ~/.config/opencode/commands/standup.md
 
   # opencode.jsonc holds the bash permission allowlist (opencode's equivalent
   # of claude/settings.json's permissions block) — copied, not symlinked, on
