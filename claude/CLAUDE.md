@@ -84,6 +84,23 @@ offered commit to the files this item actually touched, not a blanket
 `git add -A` — especially relevant if the repo has other uncommitted changes
 sitting alongside this item's work.
 
+#### Plans and deliverables get a path on record
+
+Whenever work produces a durable plan or deliverable artifact — a `grill.py`
+plan, a plan reviewed via `/second-opinion`, a written design doc, or
+similar — a backlog item must end up with `related_files` pointing at that
+artifact's path:
+
+- **No tracking item exists yet** — this is a proactive-capture trigger (see
+  above): offer one, seeded with `related_files` pointing at the artifact
+  path from the start.
+- **An item already exists** — if `related_files` doesn't yet reference the
+  artifact, update it to add the path.
+
+The path goes in `related_files`; never the artifact's full content inlined
+into `context`/`next_steps` or any other prose field meant for short
+descriptions — those fields describe the work, they don't hold it.
+
 #### Reading an item before starting work
 
 `start` only renders the dashboard (one-line summaries). It does NOT surface the
