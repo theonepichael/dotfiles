@@ -94,6 +94,21 @@ Then ask in plain text which way to go: keep your (Claude's) approach
 manually — state the options, give your recommendation, and wait for their
 answer. Never silently pick a side when the round cap is hit mid-disagreement.
 
+## Recording it in the backlog
+
+Once the final plan is settled (converged or capped out), check whether this
+work already has a `dev_status.py` backlog item:
+
+- If one exists and its `related_files` doesn't yet point at the plan path,
+  update it to add `{"path": <plan path>, "note": "plan reviewed via
+  /second-opinion"}`.
+- If none exists, this is a proactive-capture trigger per CLAUDE.md — offer
+  one (draft it, then ask before adding), with `related_files` pointing at
+  the plan path from the start.
+
+Either way, the plan's file path — never inline plan text — is what goes in
+`related_files`.
+
 ## No backend available
 
 `second_opinion.py review` exits nonzero with a clear message when neither
