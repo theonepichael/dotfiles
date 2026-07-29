@@ -22,6 +22,17 @@ text. Otherwise infer it: prefer `grill.py show`'s most recent session
 `plan_path` if one exists, otherwise the plan or proposal visible in the
 current conversation. If neither exists, ask the user what to review.
 
+Whenever the resolved plan has no backing file yet — inline `$ARGUMENTS` text,
+or the "visible in the current conversation" fallback — write it to
+`~/.claude/data/grill/<topic-slug>-plan.md` first, the same central location
+`grill.py` plans use (never the per-session scratchpad dir — it can be gone
+by the time anything references this path later, e.g. a `dev_status.py`
+`related_files` entry read back in a future session). Use that path as
+`current_plan` for the rest of this skill. Never pass inline plan text to
+`second_opinion.py review`, and never embed full plan text into a prose field
+meant for short descriptions (a `context`/`next_steps`/note field on a
+`dev_status.py` item, etc.) — reference the file path there instead.
+
 ## Iteration loop
 
 ```
@@ -81,6 +92,21 @@ Unresolved: <specific remaining disagreement>.
 Then `AskUserQuestion`: `Keep Claude's approach (recommended)` /
 `Use the reviewer's suggestion` / `Let me decide manually`. Never silently
 pick a side when the round cap is hit mid-disagreement.
+
+## Recording it in the backlog
+
+Once the final plan is settled (converged or capped out), check whether this
+work already has a `dev_status.py` backlog item:
+
+- If one exists and its `related_files` doesn't yet point at the plan path,
+  update it to add `{"path": <plan path>, "note": "plan reviewed via
+  /second-opinion"}`.
+- If none exists, this is a proactive-capture trigger per CLAUDE.md — offer
+  one (draft it, then ask before adding), with `related_files` pointing at
+  the plan path from the start.
+
+Either way, the plan's file path — never inline plan text — is what goes in
+`related_files`.
 
 ## No backend available
 
