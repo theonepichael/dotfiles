@@ -11,11 +11,8 @@
 
 Default to stating your own recommendation rather than laying out a neutral
 menu and waiting for the user to decide cold — this holds broadly, at any
-point a judgment call surfaces mid-conversation, not just at structured
-decision points. Observed directly: across two `grill-me` sessions, the user
-answered "go with your recommendation" 38+ times when a decision point was
-framed with an explicit stated recommendation — that's the behavior to
-default to everywhere, not just inside `grill.py`'s Q&A loop.
+judgment call that surfaces mid-conversation, not just at structured
+decision points like `grill.py`'s Q&A loop.
 
 When a step specifically needs the user to pick among 2–4 concrete,
 enumerable options, state the recommendation first. In harnesses with a
@@ -25,35 +22,26 @@ labeling the recommendation "(Recommended)". In harnesses without one
 the same recommendation, and wait for a plain-text reply — never design a
 step around a UI widget a harness doesn't have.
 
-For genuinely open-ended questions, or any other point where a judgment call
-surfaces, still lead with your recommended answer and brief reasoning before
-waiting for the user's response — regardless of harness.
+For genuinely open-ended questions, ask in plain text regardless of harness:
+state the question directly, give your recommended answer with brief
+reasoning, and wait for the user's response.
 
 ### Root-causing recurring problems
 
 When something is reported as having happened before — a bug, a rough edge,
 an operational hiccup — treat "prevent the whole class, not just this
-instance" as the default bar, not something to wait to be asked for.
-Observed directly: the `dev_status.py` rev-guard and a hardened
-`second_opinion.py` subprocess-timeout fix both only happened after the user
-explicitly asked "is there a way to take care of this more
-deterministically" / "how can we prevent this from happening again" — the
-class-level fix should be the first thing proposed, not something surfaced
-only on request. If a fix genuinely only covers the specific instance (time
-pressure, unclear root cause, etc.), say so explicitly and note what a
-systemic fix would look like, rather than letting the instance-only fix pass
-as if it were complete.
+instance" as the default bar, not something to wait to be asked for. If a
+fix genuinely only covers the specific instance (time pressure, unclear root
+cause, etc.), say so explicitly and note what a systemic fix would look
+like, rather than letting the instance-only fix pass as if it were complete.
 
 ### Verification means running it
 
 Don't describe something as "verified," "confirmed working," or "should be
 fine" unless it was actually executed and its output observed — a syntax
-check, a type check, or a read-through is not verification. Observed
-directly: an edited shell script was described in terms of "verification"
-before it had been run, and the user had to ask "how do you know the script
-works?" If time or context doesn't allow actually running something, say so
-plainly ("I edited this but haven't run it yet") instead of implying it was
-checked.
+check, a type check, or a read-through is not verification. If time or
+context doesn't allow actually running something, say so plainly ("I edited
+this but haven't run it yet") instead of implying it was checked.
 
 ### Backlog
 
