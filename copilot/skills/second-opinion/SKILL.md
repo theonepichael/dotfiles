@@ -22,12 +22,15 @@ target. Otherwise infer it: prefer `grill.py show`'s most recent session
 current conversation. If neither exists, ask the user what to review.
 
 Whenever the resolved plan has no backing file yet — pasted text, or the
-"visible in the current conversation" fallback — write it to a file in the
-scratchpad directory first, and use that path as `current_plan` for the rest
-of this skill. Never pass inline plan text to `second_opinion.py review`, and
-never embed full plan text into a prose field meant for short descriptions (a
-`context`/`next_steps`/note field on a `dev_status.py` item, etc.) —
-reference the file path there instead.
+"visible in the current conversation" fallback — write it to
+`~/.claude/data/grill/<topic-slug>-plan.md` first, the same central location
+`grill.py` plans use (never a per-session scratch dir — it can be gone by the
+time anything references this path later, e.g. a `dev_status.py`
+`related_files` entry read back in a future session). Use that path as
+`current_plan` for the rest of this skill. Never pass inline plan text to
+`second_opinion.py review`, and never embed full plan text into a prose field
+meant for short descriptions (a `context`/`next_steps`/note field on a
+`dev_status.py` item, etc.) — reference the file path there instead.
 
 ## Iteration loop
 
