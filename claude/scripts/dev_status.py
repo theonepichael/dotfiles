@@ -948,6 +948,79 @@ def _parse_json_arg(raw: str, context: str) -> dict[str, object]:
         sys.exit(1)
 
 
+def _str_field(patch: dict[str, object], key: str, default: str = "") -> str:
+    """Extract a string field from a JSON patch.
+
+    Treats a missing key and an explicit JSON ``null`` identically, both
+    collapsing to ``default``. Without this, code like
+    ``cast(str, patch.get("summary", "")).strip()`` crashes with
+    ``AttributeError`` on an explicit ``summary: null`` — the default only
+    applies when the key is absent, not when it's present with value
+    ``None`` — and every ``required`` check built on that pattern is
+    bypassed the same way.
+
+    Args:
+        patch: The decoded JSON patch.
+        key: The field to extract.
+        default: Value to use when the field is missing or ``null``.
+    """
+    value = patch.get(key)
+    return default if value is None else str(value)
+
+
+def _list_field(patch: dict[str, object], key: str) -> list[object]:
+    """Extract a list field from a JSON patch, treating null/missing as ``[]``.
+
+    Without this, an explicit ``null`` for e.g. ``blocked_by`` passes
+    ``.get(key, [])``'s default straight through as ``None`` (the default
+    only applies when the key is absent), and the next ``for dep in
+    blocked_by`` crashes with ``TypeError: 'NoneType' object is not
+    iterable``.
+    """
+    value = patch.get(key)
+    return [] if value is None else cast(list[object], value)
+
+
+def _dict_field(patch: dict[str, object], key: str) -> dict[str, object]:
+    """Extract a dict field from a JSON patch, treating null/missing as ``{}``."""
+    value = patch.get(key)
+    return {} if value is None else cast(dict[str, object], value)
+
+
+def _reject_null_fields(
+    cmd: str, patch: dict[str, object], fields: tuple[str, ...]
+) -> None:
+    """Refuse a patch that sets any of ``fields`` to explicit JSON ``null``.
+
+    Used before a raw ``dict.update(patch)`` merge (``update``, ``pending
+    update``) for fields that have no "unset" state in the schema — unlike
+    ``priority``, they're always present with a meaningful default, never
+    absent — so null has no defined meaning there. Without this check, the
+    merge writes the null straight into a supposedly-never-null field:
+    some call sites crash on the next read (e.g. ``blocked_by: null``
+    breaks the next ``for dep in blocked_by``), others just quietly
+    corrupt the stored record with a value that violates the schema until
+    it's read again.
+
+    Args:
+        cmd: Command name to prefix onto the error message.
+        patch: The JSON patch about to be merged.
+        fields: Field names that must not be explicit null in ``patch``.
+
+    Raises:
+        SystemExit: If any of ``fields`` is present in ``patch`` with
+            value ``None``. Exits with status 1 after printing to stderr.
+    """
+    nulled = sorted(f for f in fields if f in patch and patch[f] is None)
+    if nulled:
+        print(
+            f"[{cmd}] field(s) cannot be null: {', '.join(nulled)} "
+            "— omit the field to leave it unchanged",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def cmd_render(args: argparse.Namespace) -> None:
     """Handle ``render``: print the dashboard with no other side effects."""
     render()
@@ -987,9 +1060,9 @@ def cmd_add(args: argparse.Namespace) -> None:
     """
     patch = _parse_json_arg(args.json, "add")
 
-    slug = cast(str, patch.get("id", "")).strip()
+    slug = _str_field(patch, "id").strip()
     if not slug:
-        summary = cast(str, patch.get("summary", ""))
+        summary = _str_field(patch, "summary")
         suggestion = re.sub(r"[^a-z0-9]+", "-", summary.lower()).strip("-")[:38]
         if not suggestion:
             suggestion = "my-item"
@@ -1006,7 +1079,7 @@ def cmd_add(args: argparse.Namespace) -> None:
         print(err, file=sys.stderr)
         sys.exit(1)
 
-    if not cast(str, patch.get("summary", "")).strip():
+    if not _str_field(patch, "summary").strip():
         print("[add] 'summary' is required", file=sys.stderr)
         sys.exit(1)
 
@@ -1026,7 +1099,7 @@ def cmd_add(args: argparse.Namespace) -> None:
             print(f"[add] duplicate slug: {slug}", file=sys.stderr)
             sys.exit(1)
 
-        blocked_by = cast(list[str], patch.get("blocked_by", []))
+        blocked_by = cast(list[str], _list_field(patch, "blocked_by"))
         for dep in blocked_by:
             if dep not in index:
                 print(
@@ -1039,14 +1112,14 @@ def cmd_add(args: argparse.Namespace) -> None:
             "created": today(),
             "updated": today(),
             "status": "open",
-            "summary": cast(str, patch["summary"]).strip(),
-            "category": cast(str, patch.get("category", "feature")),
+            "summary": _str_field(patch, "summary").strip(),
+            "category": _str_field(patch, "category", "feature"),
             "blocked_by": blocked_by,
             "related_files": cast(
-                list[dict[str, object]], patch.get("related_files", [])
+                list[dict[str, object]], _list_field(patch, "related_files")
             ),
-            "context": cast(str, patch.get("context", "")),
-            "next_steps": cast(str, patch.get("next_steps", "")),
+            "context": _str_field(patch, "context"),
+            "next_steps": _str_field(patch, "next_steps"),
         }
         if "priority" in patch:
             item["priority"] = cast(str, patch["priority"])
@@ -1186,6 +1259,12 @@ def cmd_update(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
+    _reject_null_fields(
+        "update",
+        patch,
+        ("summary", "category", "blocked_by", "related_files", "context", "next_steps"),
+    )
+
     with _backlog_mutation("update", args.id, args.if_rev, announce=True) as m:
         if "status" in patch:
             _apply_status_transition(
@@ -1309,7 +1388,7 @@ def cmd_pending_add(args: argparse.Namespace) -> None:
     """
     patch = _parse_json_arg(args.json, "pending add")
 
-    slug = cast(str, patch.get("id", "")).strip()
+    slug = _str_field(patch, "id").strip()
     if not slug:
         print("[pending add] 'id' is required", file=sys.stderr)
         sys.exit(1)
@@ -1318,12 +1397,12 @@ def cmd_pending_add(args: argparse.Namespace) -> None:
         print(err, file=sys.stderr)
         sys.exit(1)
 
-    description = cast(str, patch.get("description", "")).strip()
+    description = _str_field(patch, "description").strip()
     if not description:
         print("[pending add] 'description' is required", file=sys.stderr)
         sys.exit(1)
 
-    kind = cast(str, patch.get("kind", ""))
+    kind = _str_field(patch, "kind")
     if kind not in VALID_PENDING_KINDS:
         print(
             f"[pending add] invalid kind '{kind}' — one of: "
@@ -1340,7 +1419,7 @@ def cmd_pending_add(args: argparse.Namespace) -> None:
 
         backlog_items = load_items()
         index = build_index(backlog_items)
-        blocking = cast(list[str], patch.get("blocking", []))
+        blocking = cast(list[str], _list_field(patch, "blocking"))
         for dep in blocking:
             if dep not in index:
                 print(
@@ -1357,9 +1436,9 @@ def cmd_pending_add(args: argparse.Namespace) -> None:
                 "status": "waiting_for_reply",
                 "description": description,
                 "kind": kind,
-                "source_ref": cast(dict[str, object], patch.get("source_ref", {})),
-                "context": cast(str, patch.get("context", "")),
-                "next_steps": cast(list[str], patch.get("next_steps", [])),
+                "source_ref": _dict_field(patch, "source_ref"),
+                "context": _str_field(patch, "context"),
+                "next_steps": cast(list[str], _list_field(patch, "next_steps")),
                 "blocking": blocking,
                 "outcome": None,
             }
@@ -1389,6 +1468,15 @@ def cmd_pending_update(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # `outcome: null` is legitimate (that's its state until resolution), so
+    # it's deliberately excluded here — everything else in this allowlist
+    # is always-present/never-null per PendingItem's schema.
+    _reject_null_fields(
+        "pending update",
+        patch,
+        ("description", "context", "next_steps", "blocking", "source_ref"),
+    )
 
     with backlog_lock():
         items = load_items()
