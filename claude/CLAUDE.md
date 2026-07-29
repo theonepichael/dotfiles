@@ -7,6 +7,20 @@
 
 ## Workflow Behaviors
 
+### Asking the user to choose
+
+When a step needs the user to pick among 2–4 concrete, enumerable options,
+state your recommended option first. In harnesses with a structured
+multi-choice prompt (Claude Code's `AskUserQuestion`), use it, labeling the
+recommendation "(Recommended)". In harnesses without one (Copilot CLI,
+opencode), state the options in plain conversational text with the same
+recommendation, and wait for a plain-text reply — never design a step around
+a UI widget a harness doesn't have.
+
+For genuinely open-ended questions (not enumerable options), always ask in
+plain text regardless of harness: state the question directly, give your
+recommended answer with brief reasoning, and wait for the user's response.
+
 ### Backlog
 
 When the user says "add this as a backlog item" or a variation of it, run:

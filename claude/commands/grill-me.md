@@ -45,10 +45,7 @@ Then check `grill.py list` for an existing session matching the topic. If one ma
 
 1. Identify the top-level decisions and unknowns. Register each one immediately with `ask` (id + question) so nothing is lost if the session is cut short. Order by dependency — resolve blockers before dependent decisions. New decision points surfaced by later answers get `ask`ed as they appear.
 
-2. Ask one question at a time. When the plausible answers are enumerable (2–4 real options), use AskUserQuestion with your recommendation as the first option, labeled "(Recommended)". When the question is genuinely open-ended, ask in plain text:
-   - State the question directly.
-   - Give your recommended answer with brief reasoning.
-   - Wait for the user's response.
+2. Ask one question at a time, applying CLAUDE.md's convention for asking the user to choose.
 
 3. When the user answers:
    - If the answer is consistent and resolves the question, record it — `decide` with source `user` — and move to the next.
@@ -100,21 +97,20 @@ it trades interactivity for adversarial rigor instead of just guessing.
    every decision point up front.
 
 2. For each open question, instead of asking the user: form your own leading
-   answer, then run `second_opinion.py review` on a short write-up of the
-   question, your answer, and enough surrounding context for an outside model
-   to attack it credibly (this is the same adversarial-critique backend
-   `/second-opinion` uses — reuse it rather than inventing a separate critique
-   mechanism). "Adversarial" here means exactly what `second_opinion.py`'s own
-   `CRITIQUE_PROMPT` already asks for — find problems rather than summarize or
-   agree, name what's underspecified or assumed without justification, disagree
-   explicitly where warranted, and propose a simpler approach if one exists; a
-   critique that just restates or praises your answer isn't adversarial and
-   doesn't count as a round. Revise your answer if the critique lands a real
-   objection, and repeat until a round surfaces nothing new or you hit a round
-   cap (3 is a reasonable default). Record the surviving answer with `decide`
-   and source `assumed` — summarize the critique exchange (what was
-   challenged, what survived, what changed) in `reasoning`, since that's the
-   only record of how the decision was actually stress-tested.
+   answer, then run `/second-opinion`'s iteration loop (same convergence rule
+   and round cap — reuse that backend and loop rather than inventing a
+   separate critique mechanism) against a short write-up of the question,
+   your answer, and enough surrounding context for an outside model to
+   attack it credibly. "Adversarial" here means exactly what
+   `second_opinion.py`'s own `CRITIQUE_PROMPT` already asks for — find
+   problems rather than summarize or agree, name what's underspecified or
+   assumed without justification, disagree explicitly where warranted, and
+   propose a simpler approach if one exists; a critique that just restates
+   or praises your answer isn't adversarial and doesn't count as a round.
+   Record the surviving answer with `decide` and source `assumed` —
+   summarize the critique exchange (what was challenged, what survived, what
+   changed) in `reasoning`, since that's the only record of how the decision
+   was actually stress-tested.
 
 3. Batch topics (a backlog list) run this per-item, each as its own session.
 
