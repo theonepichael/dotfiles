@@ -29,47 +29,121 @@ directories in this repo, and get symlinked into `~/.config/opencode/` by
 
 ---
 
-## 2. Slash commands — DONE (already ported)
+## 2. Slash commands — DONE (all 5 repo-tracked as of 2026-07-28)
 
-**Status (2026-07-24): already done**, ahead of this doc. All 5 commands
-from `claude/commands/` (`grill-me`, `make-skill`, `second-opinion`,
-`standup`, `dashboard`) exist in `~/.config/opencode/commands/`, dated
-2026-07-23 — a real adaptation pass, not a blind copy: dropped `name`
-(redundant with filename), dropped `argument-hint` and `allowed-tools`
-(neither exists in opencode's command frontmatter — tool access is
-controlled per-agent instead, see §3), reworded `make-skill`'s description
-for opencode/SKILL.md terminology, and correctly stripped the
-SessionStart-hook caveat from `dashboard.md` (opencode has no hooks
-equivalent — see §5).
+**Status (2026-07-28): all 5 commands are tracked in the repo.** All 5
+(`dashboard`, `grill-me`, `make-skill`, `second-opinion`, `standup`) live at
+`opencode/command/<name>.md` and are symlinked into
+`~/.config/opencode/commands/<name>.md` by install.sh — so `git pull` +
+`install.sh --harness=opencode` reproduces the full command set on a fresh
+machine. This closes the drift class the earlier version of this section
+flagged: as of 2026-07-24 only `dashboard.md` and `grill-me.md` were in the
+repo, with the other 3 (`make-skill`, `second-opinion`, `standup`) sitting as
+untracked manual copies in `~/.config/opencode/commands/` that a fresh
+`install.sh` run would silently drop. The 3 missing files have now been
+pulled into the repo and wired into install.sh alongside the existing two.
 
-NOTE (2026-07-24): the Claude Code command was renamed `status.md` →
-`dashboard.md` (collided with Claude Code's built-in `/status`). Rather than
-require a manual fix on whatever machine has opencode configured, `dashboard`
-was pulled into this repo properly at `opencode/command/dashboard.md` and
-wired into `install.sh` (`symlink opencode/command/dashboard.md
-~/.config/opencode/commands/dashboard.md`) — `git pull` + `install.sh` on
-that machine now creates it automatically. The stale, un-symlinked
-`~/.config/opencode/commands/status.md` from the old manual port is
-harmless leftover clutter at that point — delete it whenever, or leave it.
+### Format (informed by the official Commands doc, `opencode.ai/docs/commands/`)
 
-The other 4 (`grill-me`, `make-skill`, `second-opinion`, `standup`) are
-still the original manual, untracked port — not touched by this rename, so
-left as-is. Same "no way to push automatically" caveat still applies to
-those specifically until someone does the same pull-into-repo treatment for
-them.
+opencode's custom-command format is nearly identical to Claude Code's, with
+the schema differences below. The live `.md` files in
+`~/.config/opencode/commands/` are the canonical source for this repo's
+port — every frontmatter decision was originally a deliberate adaptation
+pass from `claude/commands/`, not a blind copy.
 
-Original notes kept below for reference on the format itself.
+- **Location**: `~/.config/opencode/commands/` (global) or
+  `.opencode/commands/` (project) — vs Claude Code's `~/.claude/commands/`
+  / `.claude/commands/`. (`COPILOT_HOME` / `OPENCODE_HOME` overrides the
+  global root, but is not set on this machine.)
+- **Filename = command name**: `test.md` → `/test`. There is **no `name`
+  frontmatter field** in opencode commands (the filename plays that role),
+  which is why the live files dropped Claude Code's `name:` field.
+- **Frontmatter schema** (per the official doc's "Options" section):
+  - `description` (optional) — shown in the TUI when typing the command.
+    Not strictly required by the specifier, but every repo command carries
+    one since model-decision and user-discovery both depend on it.
+  - `agent` (optional) — override which agent executes the command. None of
+    the 5 repo commands use this; they all inherit the current agent.
+  - `model` (optional) — override the model. Unused here.
+  - `subtask` (optional bool) — force subagent invocation. Unused here.
+  - `template` is marked "required" in the doc — but that's for the
+    `opencode.json` JSON form, where the template is a string field. In the
+    markdown-file form, **the file body is the template**; no `template:`
+    frontmatter key is needed.
+  - **No `argument-hint`, no `allowed-tools`** — neither exists in
+    opencode's command frontmatter. Tool-access control lives in the agent's
+    `permission` block instead (see §3). Both fields were dropped from the
+    Claude Code originals during the manual adaptation pass.
+- **Placeholders in the template body** (per the official "Prompt config"
+  section, identical to Claude Code):
+  - `$ARGUMENTS` — all args as one string. Also `$1`, `$2`, … for positional
+    access (`/create-file config.json src "..."` → `$1`=config.json etc.).
+  - `` !`shell cmd` `` — bash output injection; the command runs in the
+    project root and its stdout becomes part of the prompt. `dashboard.md`
+    and `standup.md` don't use this (they invoke scripts via the agent
+    shell tool, not as inline command output) — `standup.md` does describe
+    shell-invocation patterns in its body, which the agent runs, not opencode's
+    parser.
+  - `@filepath` — file content inclusion. Unused by the 5 repo commands.
+- **Built-in command override**: a custom command with the same name as a
+  built-in (`/init`, `/undo`, `/redo`, `/share`, `/help`) **overrides** it.
+  None of the 5 repo commands collide with built-ins.
+- **Custom commands can also live inline in `opencode.json`** under a
+  `"command"` key. This repo uses the markdown-file form exclusively —
+  keeping each command in its own file is easier to author, lint, and review
+  than a single growing JSON object.
 
-opencode's custom-command format is nearly identical to Claude Code's:
+### Commands vs skills (different layers — both supported, different use)
 
-- **Location**: `~/.config/opencode/commands/` (global) or `.opencode/commands/` (project) — vs Claude Code's `~/.claude/commands/` / `.claude/commands/`
-- **Format**: markdown file, filename → command name (`test.md` → `/test`)
-- **Frontmatter**: `description`, `agent` (optional agent override), `model` (optional), `subtask` (force subagent)
-- **Placeholders**: `$ARGUMENTS` / `$1`, `$2`, ... for positional args; `` !`shell cmd` `` for shell output injection; `@filepath` for file content — all the same syntax Claude Code commands use
+opencode exposes two distinct extension surfaces that the official docs keep
+separate (see `opencode.ai/docs/commands/` vs `opencode.ai/docs/skills/`):
 
-**Action**: copy `~/dotfiles/claude/commands/*.md` → `~/dotfiles/opencode/command/*.md`, diff frontmatter fields (Claude Code's frontmatter schema differs slightly — needs a pass per file), fix anything that doesn't map (e.g. `allowed-tools` has no direct opencode equivalent — closest is per-agent `permission` config).
+- **Commands** (used by this repo): user-typed `/x` invocation, file body IS
+  the prompt template. The 5 commands in this repo are deliberately
+  user-typed — `/dashboard`, `/grill-me`, `/standup`, `/second-opinion`,
+  `/make-skill` — because the user explicitly initiates each one in a
+  session the same way they would in Claude Code.
+- **Skills** (not used by this repo today): model-invoked via the **native
+  `skill` tool** — agents see the available-skills list (name + description
+  in a `<available_skills>` block) and load a skill with
+  `skill({ name: "..." })` when relevant. Auto-discovered from
+  `~/.config/opencode/skills/<name>/SKILL.md`, `.opencode/skills/<name>/`,
+  and **also from the Claude-Code-compat paths** `~/.claude/skills/<name>/`
+  and `~/.agents/skills/<name>/` (per
+  `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1` env-toggle in §1). Frontmatter:
+  `name` (required, lowercase-with-hyphens, 1-64 chars, must match the
+  directory name), `description` (required, 1-1024 chars), plus optional
+  `license` / `compatibility` / `metadata` (string→string map); unknown
+  frontmatter fields are ignored. `permission.skill` (with `*` wildcard
+  patterns) gates access per-agent. The `make-skill` command in this repo
+  documents the skill-authoring rubric for opencode; **note that
+  `make-skill`'s step-5 claim "no symlinks needed — opencode auto-discovers
+  skills in configured paths" is accurate as far as discovery goes** (a
+  `SKILL.md` dropped into `~/.config/opencode/skills/<name>/` is
+  immediately discoverable, no enabling config needed), but a skill just
+  dropped there won't reproduce across machines without repo+symlink
+  wiring analogous to commands — the same drift class this section was
+  written to close.
 
-Custom commands can also live inline in `opencode.json` under a `"command"` key if a file-based approach isn't preferred.
+### History of the staged pull-into-repo (kept for reference)
+
+- **2026-07-23**: original manual port — all 5 commands placed directly at
+  `~/.config/opencode/commands/` as plain (non-symlinked) `.md` files,
+  adapted from the Claude Code originals.
+- **2026-07-24**: Claude Code's command was renamed `status.md` →
+  `dashboard.md` (collided with Claude Code's built-in `/status`). Rather
+  than require a manual fix on whatever machine has opencode configured,
+  `dashboard.md` was pulled into the repo properly at
+  `opencode/command/dashboard.md` and wired into install.sh. The stale,
+  un-symlinked `~/.config/opencode/commands/status.md` from the old manual
+  port is harmless leftover clutter on any pre-rename machine — delete it
+  whenever, or leave it.
+- **2026-07-25**: `grill-me.md` similarly pulled into the repo at
+  `opencode/command/grill-me.md` + wired into install.sh.
+- **2026-07-28 (this commit)**: the remaining 3 — `make-skill.md`,
+  `second-opinion.md`, `standup.md` — pulled into the repo at
+  `opencode/command/<name>.md` and wired into install.sh. **All 5 commands
+  are now repo-tracked.**.
 
 ---
 
