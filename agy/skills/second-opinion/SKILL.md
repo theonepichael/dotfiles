@@ -1,7 +1,6 @@
 ---
 name: second-opinion
 description: Send a plan to a non-Claude model for adversarial critique, then iterate — revise, re-send, repeat — until the critique stops surfacing anything new or a round cap is hit. Use when the user wants a second opinion, an outside critique, or to stress-test a plan against a different model.
-allowed-tools: shell
 ---
 
 All backend I/O goes through `python3 ~/.claude/scripts/second_opinion.py` —
@@ -98,9 +97,9 @@ is hit mid-disagreement.
 
 Once the final plan is settled (converged or capped out), apply the shared
 instructions file's "Plans and deliverables get a path on record" backlog
-policy: the plan's
-file path ends up in a tracking item's `related_files`, whether that means
-creating the item (offer first) or updating an existing one.
+policy: the plan's file path ends up in a tracking item's `related_files`,
+whether that means creating the item (offer first) or updating an existing
+one.
 
 ## No backend available
 

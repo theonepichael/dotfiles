@@ -16,11 +16,11 @@ is_wsl()   { is_linux && { [[ -n "$WSL_DISTRO_NAME" ]] || grep -qi microsoft /pr
 
 usage() {
   cat <<'EOF'
-usage: ./install.sh --harness=<claude,copilot,opencode>[,...] [--profile=personal|work] [--rollback] [--force] [--dry-run]
+usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=personal|work] [--rollback] [--force] [--dry-run]
 
   --harness   required unless --rollback. Comma-separated, at least one of:
-              claude, copilot, opencode. No default — every run must state
-              its intent explicitly. Purely additive: omitting a harness
+              claude, copilot, opencode, agy. No default — every run must
+              state its intent explicitly. Purely additive: omitting a harness
               you previously selected does NOT uninstall or clean it up,
               it just skips re-provisioning it this run. Removal is a
               --rollback concern (the most recent run's manifest only) or
@@ -50,6 +50,7 @@ Examples:
   ./install.sh --profile=work --harness=copilot
   ./install.sh --harness=claude,opencode
   ./install.sh --profile=work --harness=copilot,opencode
+  ./install.sh --harness=claude,agy
   ./install.sh --dry-run --harness=claude
   ./install.sh --dry-run --rollback
 
@@ -92,8 +93,8 @@ done
 
 for h in "${HARNESSES[@]}"; do
   case "$h" in
-    claude|copilot|opencode) ;;
-    *) echo "unknown harness: $h (must be claude, copilot, and/or opencode)" >&2; exit 2 ;;
+    claude|copilot|opencode|agy) ;;
+    *) echo "unknown harness: $h (must be claude, copilot, opencode, and/or agy)" >&2; exit 2 ;;
   esac
 done
 
@@ -108,7 +109,7 @@ fi
 
 # --rollback doesn't need a harness; every other invocation does.
 if (( ! ROLLBACK )) && (( ! HARNESS_SET )); then
-  echo "no --harness specified — pass at least one of: claude, copilot, opencode" >&2
+  echo "no --harness specified — pass at least one of: claude, copilot, opencode, agy" >&2
   usage >&2
   exit 2
 fi
@@ -410,9 +411,10 @@ elif is_linux; then
 fi
 
 # NVM + Node/npm — only needed by Claude Code and/or Copilot CLI; opencode
-# manages its own runtime externally (this script never installs the
-# opencode binary itself either). Not provisioned when opencode is the
-# only harness selected.
+# and agy both manage their own runtime externally (this script never
+# installs the opencode or agy binaries either — agy is a standalone Go
+# binary, not an npm package). Not provisioned when opencode/agy are the
+# only harness(es) selected.
 if has_harness claude || has_harness copilot; then
   # NVM (both platforms — uses its own installer)
   if [[ ! -d "$HOME/.nvm" ]]; then
@@ -632,6 +634,23 @@ elif drift:
 PYEOF
 )"
   fi
+fi
+
+# agy (Google Antigravity CLI, Gemini-backed). GEMINI.md is agy's own
+# CLAUDE.md-equivalent global rules file — unlike opencode (which reads
+# ~/.claude/CLAUDE.md directly as a legacy fallback, needing no file of its
+# own here), agy specifically looks for ~/.gemini/GEMINI.md, so it needs a
+# real symlink. Skills live under ~/.gemini/antigravity-cli/skills/ per
+# agy's current (post-migration) global-skills path — NOT the legacy bare
+# ~/.gemini/skills/ path some skills may have been manually copied into
+# before this wiring existed; see agy/CLAUDE_CODE_PARITY.md.
+if has_harness agy; then
+  symlink claude/CLAUDE.md ~/.gemini/GEMINI.md
+  symlink agy/skills/dashboard/SKILL.md       ~/.gemini/antigravity-cli/skills/dashboard/SKILL.md
+  symlink agy/skills/standup/SKILL.md         ~/.gemini/antigravity-cli/skills/standup/SKILL.md
+  symlink agy/skills/second-opinion/SKILL.md  ~/.gemini/antigravity-cli/skills/second-opinion/SKILL.md
+  symlink agy/skills/grill-me/SKILL.md        ~/.gemini/antigravity-cli/skills/grill-me/SKILL.md
+  symlink agy/skills/make-skill/SKILL.md      ~/.gemini/antigravity-cli/skills/make-skill/SKILL.md
 fi
 
 # watchcommit: personal machines only — it auto-pushes to a personal remote
