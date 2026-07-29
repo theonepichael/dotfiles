@@ -21,6 +21,14 @@ target. Otherwise infer it: prefer `grill.py show`'s most recent session
 `plan_path` if one exists, otherwise the plan or proposal visible in the
 current conversation. If neither exists, ask the user what to review.
 
+Whenever the resolved plan has no backing file yet — pasted text, or the
+"visible in the current conversation" fallback — write it to a file in the
+scratchpad directory first, and use that path as `current_plan` for the rest
+of this skill. Never pass inline plan text to `second_opinion.py review`, and
+never embed full plan text into a prose field meant for short descriptions (a
+`context`/`next_steps`/note field on a `dev_status.py` item, etc.) —
+reference the file path there instead.
+
 ## Iteration loop
 
 ```
