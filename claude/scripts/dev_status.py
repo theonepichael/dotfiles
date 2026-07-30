@@ -349,6 +349,113 @@ def validate_slug(slug: str, context: str = "") -> str | None:
     return None
 
 
+def _parse_json_arg(raw: str, context: str) -> dict[str, object]:
+    """Parse a CLI argument as a JSON object.
+
+    Args:
+        raw: The raw argument text.
+        context: Command name to prefix onto any error message.
+
+    Returns:
+        The decoded JSON object.
+
+    Raises:
+        SystemExit: If ``raw`` isn't valid JSON. Exits with status 1 after
+            printing to stderr.
+    """
+    try:
+        return cast(dict[str, object], json.loads(raw))
+    except json.JSONDecodeError as e:
+        print(f"[{context}] invalid JSON: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _str_field(patch: dict[str, object], key: str, default: str = "") -> str:
+    """Extract a string field from a JSON patch.
+
+    Treats a missing key and an explicit JSON ``null`` identically, both
+    collapsing to ``default``. Without this, code like
+    ``cast(str, patch.get("summary", "")).strip()`` crashes with
+    ``AttributeError`` on an explicit ``summary: null`` — the default only
+    applies when the key is absent, not when it's present with value
+    ``None`` — and every ``required`` check built on that pattern is
+    bypassed the same way.
+
+    Args:
+        patch: The decoded JSON patch.
+        key: The field to extract.
+        default: Value to use when the field is missing or ``null``.
+    """
+    value = patch.get(key)
+    return default if value is None else str(value)
+
+
+def _list_field(patch: dict[str, object], key: str) -> list[object]:
+    """Extract a list field from a JSON patch, treating null/missing as ``[]``.
+
+    Without this, an explicit ``null`` for e.g. ``blocked_by`` passes
+    ``.get(key, [])``'s default straight through as ``None`` (the default
+    only applies when the key is absent), and the next ``for dep in
+    blocked_by`` crashes with ``TypeError: 'NoneType' object is not
+    iterable``.
+
+    A non-null, non-list value (e.g. a string) is rejected with a
+    :class:`SystemExit`. Previously it was passed through via ``cast`` and
+    the next iteration walked the string one character at a time, corrupting
+    stored state silently on update.
+    """
+    value = patch.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        print(
+            f"field '{key}' must be a list, got {type(value).__name__}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return cast(list[object], value)
+
+
+def _dict_field(patch: dict[str, object], key: str) -> dict[str, object]:
+    """Extract a dict field from a JSON patch, treating null/missing as ``{}``."""
+    value = patch.get(key)
+    return {} if value is None else cast(dict[str, object], value)
+
+
+def _reject_null_fields(
+    cmd: str, patch: dict[str, object], fields: tuple[str, ...]
+) -> None:
+    """Refuse a patch that sets any of ``fields`` to explicit JSON ``null``.
+
+    Used before a raw ``dict.update(patch)`` merge (``update``, ``pending
+    update``) for fields that have no "unset" state in the schema — unlike
+    ``priority``, they're always present with a meaningful default, never
+    absent — so null has no defined meaning there. Without this check, the
+    merge writes the null straight into a supposedly-never-null field:
+    some call sites crash on the next read (e.g. ``blocked_by: null``
+    breaks the next ``for dep in blocked_by``), others just quietly
+    corrupt the stored record with a value that violates the schema until
+    it's read again.
+
+    Args:
+        cmd: Command name to prefix onto the error message.
+        patch: The JSON patch about to be merged.
+        fields: Field names that must not be explicit null in ``patch``.
+
+    Raises:
+        SystemExit: If any of ``fields`` is present in ``patch`` with
+            value ``None``. Exits with status 1 after printing to stderr.
+    """
+    nulled = sorted(f for f in fields if f in patch and patch[f] is None)
+    if nulled:
+        print(
+            f"[{cmd}] field(s) cannot be null: {', '.join(nulled)} "
+            "— omit the field to leave it unchanged",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 # ── I/O ───────────────────────────────────────────────────────────────────────
 
 
@@ -1118,114 +1225,133 @@ def render(
     print(f"item-map: rev={rev} {map_str}", file=err)
 
 
-# ── subcommand handlers ───────────────────────────────────────────────────────
+# ── mutation infrastructure ───────────────────────────────────────────────────
 
 
-def _parse_json_arg(raw: str, context: str) -> dict[str, object]:
-    """Parse a CLI argument as a JSON object.
-
-    Args:
-        raw: The raw argument text.
-        context: Command name to prefix onto any error message.
-
-    Returns:
-        The decoded JSON object.
-
-    Raises:
-        SystemExit: If ``raw`` isn't valid JSON. Exits with status 1 after
-            printing to stderr.
-    """
-    try:
-        return cast(dict[str, object], json.loads(raw))
-    except json.JSONDecodeError as e:
-        print(f"[{context}] invalid JSON: {e}", file=sys.stderr)
-        sys.exit(1)
-
-
-def _str_field(patch: dict[str, object], key: str, default: str = "") -> str:
-    """Extract a string field from a JSON patch.
-
-    Treats a missing key and an explicit JSON ``null`` identically, both
-    collapsing to ``default``. Without this, code like
-    ``cast(str, patch.get("summary", "")).strip()`` crashes with
-    ``AttributeError`` on an explicit ``summary: null`` — the default only
-    applies when the key is absent, not when it's present with value
-    ``None`` — and every ``required`` check built on that pattern is
-    bypassed the same way.
-
-    Args:
-        patch: The decoded JSON patch.
-        key: The field to extract.
-        default: Value to use when the field is missing or ``null``.
-    """
-    value = patch.get(key)
-    return default if value is None else str(value)
-
-
-def _list_field(patch: dict[str, object], key: str) -> list[object]:
-    """Extract a list field from a JSON patch, treating null/missing as ``[]``.
-
-    Without this, an explicit ``null`` for e.g. ``blocked_by`` passes
-    ``.get(key, [])``'s default straight through as ``None`` (the default
-    only applies when the key is absent), and the next ``for dep in
-    blocked_by`` crashes with ``TypeError: 'NoneType' object is not
-    iterable``.
-
-    A non-null, non-list value (e.g. a string) is rejected with a
-    :class:`SystemExit`. Previously it was passed through via ``cast`` and
-    the next iteration walked the string one character at a time, corrupting
-    stored state silently on update.
-    """
-    value = patch.get(key)
-    if value is None:
-        return []
-    if not isinstance(value, list):
-        print(
-            f"field '{key}' must be a list, got {type(value).__name__}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    return cast(list[object], value)
-
-
-def _dict_field(patch: dict[str, object], key: str) -> dict[str, object]:
-    """Extract a dict field from a JSON patch, treating null/missing as ``{}``."""
-    value = patch.get(key)
-    return {} if value is None else cast(dict[str, object], value)
-
-
-def _reject_null_fields(
-    cmd: str, patch: dict[str, object], fields: tuple[str, ...]
+def confirm_resolution(
+    cmd: str,
+    arg: str | int,
+    item: BacklogItem | PendingItem,
+    summary_key: str = "summary",
 ) -> None:
-    """Refuse a patch that sets any of ``fields`` to explicit JSON ``null``.
+    """Echo what a mutating command resolved to, so misresolution is visible."""
+    ref = f"{arg} → " if str(arg) != item["id"] else ""
+    summary = cast(dict[str, object], item).get(summary_key, "")
+    print(f"[{cmd}] {ref}{item['id']}: {summary}", file=sys.stderr)
 
-    Used before a raw ``dict.update(patch)`` merge (``update``, ``pending
-    update``) for fields that have no "unset" state in the schema — unlike
-    ``priority``, they're always present with a meaningful default, never
-    absent — so null has no defined meaning there. Without this check, the
-    merge writes the null straight into a supposedly-never-null field:
-    some call sites crash on the next read (e.g. ``blocked_by: null``
-    breaks the next ``for dep in blocked_by``), others just quietly
-    corrupt the stored record with a value that violates the schema until
-    it's read again.
+
+@dataclass
+class _MutationResult:
+    """Working set threaded through a :func:`_backlog_mutation` block.
+
+    ``item``, ``items``, ``pending_items``, ``slug``, and ``new_rev`` are
+    all populated before the caller's block runs — ``new_rev`` is bumped
+    *before* yielding, ahead of any write, so a crash between the bump and
+    the eventual write(s) never leaves changed data under a stale rev (see
+    :func:`_backlog_mutation`'s docstring). It's still named ``new_rev``
+    rather than folded into the constructor call above for API stability —
+    existing callers read it post-``with`` via ``m.new_rev``.
+
+    ``pending_items`` is exposed so mutators can render with the in-memory
+    pending set instead of re-reading it unlocked post-lock (mixed-snapshot
+    fix — the render call now belongs inside the lock).
+    """
+
+    item: BacklogItem
+    items: list[BacklogItem]
+    pending_items: list[PendingItem]
+    slug: str
+    new_rev: int | None = None
+
+
+@contextmanager
+def _backlog_mutation(
+    cmd: str, id_arg: str, if_rev_arg: int | None, announce: bool = False
+) -> Iterator[_MutationResult]:
+    """Run the shared skeleton for update/start/done/block/unblock/remove.
+
+    Acquires the lock, enforces the rev guard, resolves the target id, and
+    refuses if it isn't a backlog item. Yields a :class:`_MutationResult`
+    for the caller to mutate in place (or, for ``remove``, to reassign
+    ``items`` to a filtered list). After the caller's block completes,
+    saves ``items`` while still holding the lock, then renders — matching
+    the bump-then-write-then-optionally-announce-then-render order every
+    extracted command used before this helper existed. ``announce=True``
+    calls :func:`confirm_resolution` (still inside the lock) for the
+    update/start/done shape; ``block``/``unblock`` stay silent and
+    ``remove`` announces its own message inside the caller's block, before
+    this cleanup runs, using the pre-removal item.
+
+    The rev is bumped *before* yielding — ahead of every write, including
+    ones a caller's block makes itself (e.g. ``remove``'s extra
+    ``save_pending`` call) — not after the caller's block completes. A
+    crash between the bump and any of those writes only burns a rev number
+    (harmless: the guard just sees a numbering gap), rather than the
+    reverse order's hazard, where a crash between a write and the bump
+    left changed data sitting under a stale rev — silently letting a
+    genuinely-stale numeric ``--if-rev`` call pass the guard, since the rev
+    it was checked against hadn't advanced to reflect the change. One
+    accepted side effect: a caller's block that refuses mid-way (e.g.
+    ``block``'s cycle-detection check) now also burns a rev number even
+    though nothing was written — harmless for the same reason, and
+    preferable to threading a "did we already bump" flag through every
+    caller just to preserve a no-op call leaving rev untouched, which
+    nothing downstream relies on.
+
+    The render call lives here — after the write(s) — rather than in each
+    caller's block body: a caller-side ``render(m.items, rev=m.new_rev)``
+    would run *before* this cleanup (a ``with`` block's body always
+    finishes before the code after ``yield``), so it would render against
+    ``result.items`` before the caller's own in-block writes (like
+    ``remove``'s ``save_pending``) even though ``m.new_rev`` itself is
+    already set by then.
 
     Args:
-        cmd: Command name to prefix onto the error message.
-        patch: The JSON patch about to be merged.
-        fields: Field names that must not be explicit null in ``patch``.
+        cmd: Command name, used in error messages and announcements.
+        id_arg: The raw id argument (slug or numeric position).
+        if_rev_arg: The ``--if-rev`` value supplied, or ``None``.
+        announce: Whether to call :func:`confirm_resolution` on success.
+
+    Yields:
+        A :class:`_MutationResult` for the caller to mutate.
 
     Raises:
-        SystemExit: If any of ``fields`` is present in ``patch`` with
-            value ``None``. Exits with status 1 after printing to stderr.
+        SystemExit: Via :func:`enforce_rev_guard`, :func:`require_kind`, or
+            directly, if the target can't be resolved.
     """
-    nulled = sorted(f for f in fields if f in patch and patch[f] is None)
-    if nulled:
-        print(
-            f"[{cmd}] field(s) cannot be null: {', '.join(nulled)} "
-            "— omit the field to leave it unchanged",
-            file=sys.stderr,
+    with backlog_lock():
+        items = load_items()
+        pending_items = load_pending()
+        current_rev = load_rev()
+        enforce_rev_guard(cmd, id_arg, if_rev_arg, current_rev, items, pending_items)
+
+        kind, slug = resolve_id(id_arg, items, pending_items)
+        require_kind(cmd, id_arg, kind, "backlog")
+
+        index = build_index(items)
+        item = index.get(slug)
+        if item is None:
+            print(f"[{cmd}] not found: {slug}", file=sys.stderr)
+            sys.exit(1)
+
+        new_rev = bump_rev()
+        result = _MutationResult(
+            item=item,
+            items=items,
+            pending_items=pending_items,
+            slug=slug,
+            new_rev=new_rev,
         )
-        sys.exit(1)
+
+        yield result
+
+        save_items(result.items)
+        if announce:
+            confirm_resolution(cmd, id_arg, result.item)
+        render(result.items, result.pending_items, rev=result.new_rev)
+
+
+# ── subcommand handlers ───────────────────────────────────────────────────────
 
 
 def cmd_render(args: argparse.Namespace) -> None:
@@ -1371,129 +1497,6 @@ def cmd_add(args: argparse.Namespace) -> None:
         save_items(items)
         render(items, pending_items, rev=new_rev)
     _blocker_check_reminder(items, slug, cmd="add")
-
-
-def confirm_resolution(
-    cmd: str,
-    arg: str | int,
-    item: BacklogItem | PendingItem,
-    summary_key: str = "summary",
-) -> None:
-    """Echo what a mutating command resolved to, so misresolution is visible."""
-    ref = f"{arg} → " if str(arg) != item["id"] else ""
-    summary = cast(dict[str, object], item).get(summary_key, "")
-    print(f"[{cmd}] {ref}{item['id']}: {summary}", file=sys.stderr)
-
-
-@dataclass
-class _MutationResult:
-    """Working set threaded through a :func:`_backlog_mutation` block.
-
-    ``item``, ``items``, ``pending_items``, ``slug``, and ``new_rev`` are
-    all populated before the caller's block runs — ``new_rev`` is bumped
-    *before* yielding, ahead of any write, so a crash between the bump and
-    the eventual write(s) never leaves changed data under a stale rev (see
-    :func:`_backlog_mutation`'s docstring). It's still named ``new_rev``
-    rather than folded into the constructor call above for API stability —
-    existing callers read it post-``with`` via ``m.new_rev``.
-
-    ``pending_items`` is exposed so mutators can render with the in-memory
-    pending set instead of re-reading it unlocked post-lock (mixed-snapshot
-    fix — the render call now belongs inside the lock).
-    """
-
-    item: BacklogItem
-    items: list[BacklogItem]
-    pending_items: list[PendingItem]
-    slug: str
-    new_rev: int | None = None
-
-
-@contextmanager
-def _backlog_mutation(
-    cmd: str, id_arg: str, if_rev_arg: int | None, announce: bool = False
-) -> Iterator[_MutationResult]:
-    """Run the shared skeleton for update/start/done/block/unblock/remove.
-
-    Acquires the lock, enforces the rev guard, resolves the target id, and
-    refuses if it isn't a backlog item. Yields a :class:`_MutationResult`
-    for the caller to mutate in place (or, for ``remove``, to reassign
-    ``items`` to a filtered list). After the caller's block completes,
-    saves ``items`` while still holding the lock, then renders — matching
-    the bump-then-write-then-optionally-announce-then-render order every
-    extracted command used before this helper existed. ``announce=True``
-    calls :func:`confirm_resolution` (still inside the lock) for the
-    update/start/done shape; ``block``/``unblock`` stay silent and
-    ``remove`` announces its own message inside the caller's block, before
-    this cleanup runs, using the pre-removal item.
-
-    The rev is bumped *before* yielding — ahead of every write, including
-    ones a caller's block makes itself (e.g. ``remove``'s extra
-    ``save_pending`` call) — not after the caller's block completes. A
-    crash between the bump and any of those writes only burns a rev number
-    (harmless: the guard just sees a numbering gap), rather than the
-    reverse order's hazard, where a crash between a write and the bump
-    left changed data sitting under a stale rev — silently letting a
-    genuinely-stale numeric ``--if-rev`` call pass the guard, since the rev
-    it was checked against hadn't advanced to reflect the change. One
-    accepted side effect: a caller's block that refuses mid-way (e.g.
-    ``block``'s cycle-detection check) now also burns a rev number even
-    though nothing was written — harmless for the same reason, and
-    preferable to threading a "did we already bump" flag through every
-    caller just to preserve a no-op call leaving rev untouched, which
-    nothing downstream relies on.
-
-    The render call lives here — after the write(s) — rather than in each
-    caller's block body: a caller-side ``render(m.items, rev=m.new_rev)``
-    would run *before* this cleanup (a ``with`` block's body always
-    finishes before the code after ``yield``), so it would render against
-    ``result.items`` before the caller's own in-block writes (like
-    ``remove``'s ``save_pending``) even though ``m.new_rev`` itself is
-    already set by then.
-
-    Args:
-        cmd: Command name, used in error messages and announcements.
-        id_arg: The raw id argument (slug or numeric position).
-        if_rev_arg: The ``--if-rev`` value supplied, or ``None``.
-        announce: Whether to call :func:`confirm_resolution` on success.
-
-    Yields:
-        A :class:`_MutationResult` for the caller to mutate.
-
-    Raises:
-        SystemExit: Via :func:`enforce_rev_guard`, :func:`require_kind`, or
-            directly, if the target can't be resolved.
-    """
-    with backlog_lock():
-        items = load_items()
-        pending_items = load_pending()
-        current_rev = load_rev()
-        enforce_rev_guard(cmd, id_arg, if_rev_arg, current_rev, items, pending_items)
-
-        kind, slug = resolve_id(id_arg, items, pending_items)
-        require_kind(cmd, id_arg, kind, "backlog")
-
-        index = build_index(items)
-        item = index.get(slug)
-        if item is None:
-            print(f"[{cmd}] not found: {slug}", file=sys.stderr)
-            sys.exit(1)
-
-        new_rev = bump_rev()
-        result = _MutationResult(
-            item=item,
-            items=items,
-            pending_items=pending_items,
-            slug=slug,
-            new_rev=new_rev,
-        )
-
-        yield result
-
-        save_items(result.items)
-        if announce:
-            confirm_resolution(cmd, id_arg, result.item)
-        render(result.items, result.pending_items, rev=result.new_rev)
 
 
 def cmd_update(args: argparse.Namespace) -> None:
@@ -2119,6 +2122,23 @@ def cmd_prune(args: argparse.Namespace) -> None:
 # ── main ──────────────────────────────────────────────────────────────────────
 
 
+def _add_id_arg(parser: argparse.ArgumentParser, name: str = "id") -> None:
+    """Add the shared ``<slug|N>`` positional id argument to a subcommand parser."""
+    parser.add_argument(name, metavar="<slug|N>")
+
+
+def _add_if_rev_arg(parser: argparse.ArgumentParser, id_name: str = "id") -> None:
+    """Add the shared ``--if-rev`` staleness guard to a mutating subparser."""
+    parser.add_argument(
+        "--if-rev",
+        type=int,
+        default=None,
+        metavar="<N>",
+        help=f"required when <{id_name}> is numeric; get the current value from "
+        "render/list/show immediately before this call",
+    )
+
+
 def main() -> None:
     """Parse argv and dispatch to the matching subcommand handler."""
     parser = argparse.ArgumentParser(
@@ -2140,7 +2160,7 @@ def main() -> None:
     )
 
     p = sub.add_parser("show", help="print full JSON for an item")
-    p.add_argument("id", metavar="<slug|N>")
+    _add_id_arg(p)
 
     p = sub.add_parser("add", help="append a new item (id required in JSON)")
     p.add_argument(
@@ -2149,121 +2169,51 @@ def main() -> None:
     )
 
     p = sub.add_parser("update", help="merge JSON patch into an item")
-    p.add_argument("id", metavar="<slug|N>")
+    _add_id_arg(p)
     p.add_argument("patch", metavar='\'{"field": "value", "priority": "high"}\'')
-    p.add_argument(
-        "--if-rev",
-        type=int,
-        default=None,
-        metavar="<N>",
-        help="required when <id> is numeric; get the current value from "
-        "render/list/show immediately before this call",
-    )
+    _add_if_rev_arg(p)
 
     p = sub.add_parser("start", help="mark item in-progress")
-    p.add_argument("id", metavar="<slug|N>")
-    p.add_argument(
-        "--if-rev",
-        type=int,
-        default=None,
-        metavar="<N>",
-        help="required when <id> is numeric; get the current value from "
-        "render/list/show immediately before this call",
-    )
+    _add_id_arg(p)
+    _add_if_rev_arg(p)
 
     p = sub.add_parser("done", help="mark item done")
-    p.add_argument("id", metavar="<slug|N>")
-    p.add_argument(
-        "--if-rev",
-        type=int,
-        default=None,
-        metavar="<N>",
-        help="required when <id> is numeric; get the current value from "
-        "render/list/show immediately before this call",
-    )
+    _add_id_arg(p)
+    _add_if_rev_arg(p)
 
     p = sub.add_parser("review", help="submit (or re-submit) an item for review")
-    p.add_argument("id", metavar="<slug|N>")
-    p.add_argument(
-        "--if-rev",
-        type=int,
-        default=None,
-        metavar="<N>",
-        help="required when <id> is numeric; get the current value from "
-        "render/list/show immediately before this call",
-    )
+    _add_id_arg(p)
+    _add_if_rev_arg(p)
 
     p = sub.add_parser("approve", help="approve an in-review item, marking it done")
-    p.add_argument("id", metavar="<slug|N>")
-    p.add_argument(
-        "--if-rev",
-        type=int,
-        default=None,
-        metavar="<N>",
-        help="required when <id> is numeric; get the current value from "
-        "render/list/show immediately before this call",
-    )
+    _add_id_arg(p)
+    _add_if_rev_arg(p)
 
     p = sub.add_parser(
         "reject", help="reject an in-review item, sending it back to in-progress"
     )
-    p.add_argument("id", metavar="<slug|N>")
+    _add_id_arg(p)
     p.add_argument("feedback", metavar="<feedback>")
-    p.add_argument(
-        "--if-rev",
-        type=int,
-        default=None,
-        metavar="<N>",
-        help="required when <id> is numeric; get the current value from "
-        "render/list/show immediately before this call",
-    )
+    _add_if_rev_arg(p)
 
     p = sub.add_parser("rename", help="rename slug (rewrites all references)")
-    p.add_argument("old_slug", metavar="<slug|N>")
+    _add_id_arg(p, "old_slug")
     p.add_argument("new_slug")
-    p.add_argument(
-        "--if-rev",
-        type=int,
-        default=None,
-        metavar="<N>",
-        help="required when <old_slug> is numeric; get the current value "
-        "from render/list/show immediately before this call",
-    )
+    _add_if_rev_arg(p, "old_slug")
 
     p = sub.add_parser("remove", help="permanently remove one item by slug or number")
-    p.add_argument("id", metavar="<slug|N>")
-    p.add_argument(
-        "--if-rev",
-        type=int,
-        default=None,
-        metavar="<N>",
-        help="required when <id> is numeric; get the current value from "
-        "render/list/show immediately before this call",
-    )
+    _add_id_arg(p)
+    _add_if_rev_arg(p)
 
     p = sub.add_parser("block", help="add a blocker to an item")
-    p.add_argument("id", metavar="<slug|N>")
+    _add_id_arg(p)
     p.add_argument("blocker", metavar="<blocker-slug>")
-    p.add_argument(
-        "--if-rev",
-        type=int,
-        default=None,
-        metavar="<N>",
-        help="required when <id> is numeric; get the current value from "
-        "render/list/show immediately before this call",
-    )
+    _add_if_rev_arg(p)
 
     p = sub.add_parser("unblock", help="remove a blocker from an item")
-    p.add_argument("id", metavar="<slug|N>")
+    _add_id_arg(p)
     p.add_argument("blocker", metavar="<blocker-slug>")
-    p.add_argument(
-        "--if-rev",
-        type=int,
-        default=None,
-        metavar="<N>",
-        help="required when <id> is numeric; get the current value from "
-        "render/list/show immediately before this call",
-    )
+    _add_if_rev_arg(p)
 
     p = sub.add_parser(
         "prune", help="permanently remove done/resolved items older than 14 days"
@@ -2288,16 +2238,9 @@ def main() -> None:
     p = pending_sub.add_parser(
         "update", help="merge a JSON patch into an existing pending item"
     )
-    p.add_argument("id", metavar="<slug|N>")
+    _add_id_arg(p)
     p.add_argument("patch", metavar='\'{"status": "reply_received", ...}\'')
-    p.add_argument(
-        "--if-rev",
-        type=int,
-        default=None,
-        metavar="<N>",
-        help="required when <id> is numeric; get the current value from "
-        "render/list/show immediately before this call",
-    )
+    _add_if_rev_arg(p)
 
     pending_sub.add_parser("list", help="list pending items as JSON lines")
 
