@@ -163,18 +163,32 @@ python3 ~/.claude/scripts/dev_status.py update <slug|N> '{"field": "value"}'
 python3 ~/.claude/scripts/dev_status.py show <slug|N>
 ```
 
+Once work is ready for review, submit it and let the review/approve/reject
+cycle replace a direct `done`:
+
+```bash
+python3 ~/.claude/scripts/dev_status.py review <slug|N>
+python3 ~/.claude/scripts/dev_status.py approve <slug|N>
+python3 ~/.claude/scripts/dev_status.py reject <slug|N> "<feedback>"
+```
+
 When passing a numeric position (not a slug) to `start`/`done`/`update`/`block`/
-`unblock`/`pending update`, fetch the current rev first — the `item-map:` line of
-`render` (or `# rev=N` of `list`/`show`) output — in the same tool-call step
-immediately before the mutating call, and pass it as `--if-rev <N>`. The script
-refuses (no write) if `--if-rev` is missing or stale on a numeric call, so this is
-guidance for the fast path, not the safety net — a numeric call that omits it fails
-loudly with a fresh render printed for retry, it never silently mutates the wrong
-item. Slug-based calls are exempt and need nothing extra.
+`unblock`/`pending update`/`review`/`approve`/`reject`, fetch the current rev first —
+the `item-map:` line of `render` (or `# rev=N` of `list`/`show`) output — in the
+same tool-call step immediately before the mutating call, and pass it as
+`--if-rev <N>`. The script refuses (no write) if `--if-rev` is missing or stale on
+a numeric call, so this is guidance for the fast path, not the safety net — a
+numeric call that omits it fails loudly with a fresh render printed for retry, it
+never silently mutates the wrong item. Slug-based calls are exempt and need
+nothing extra.
 
-When work is complete on a backlog item, mark it done with the above.
+When work is ready, submit it with `review`; once a reviewer approves it (or
+you're working solo and are confident it's ready), use `approve` to mark it done.
+`done` alone now refuses on an in-review item — go through the review cycle
+(`approve` to complete, `reject <feedback>` to send back) rather than patching
+`status` directly, which is also refused for in-review items.
 
-`start`/`done`/`update` already render the full dashboard as part of their own
+`start`/`done`/`update`/`review`/`approve`/`reject` already render the full dashboard as part of their own
 stdout — after running one, display that stdout to the user instead of just
 narrating a one-line confirmation.
 

@@ -127,9 +127,15 @@ def git_commits(
 
 def backlog_items(
     prefixes: list[str], recent_done_days: int
-) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, str]]]:
+) -> tuple[
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, str]],
+]:
     if not prefixes:
         return (
+            [],
             [],
             [],
             [
@@ -140,13 +146,19 @@ def backlog_items(
             ],
         )
     if not BACKLOG_FILE.exists():
-        return [], [], [{"source": "backlog", "reason": f"{BACKLOG_FILE} not found"}]
+        return (
+            [],
+            [],
+            [],
+            [{"source": "backlog", "reason": f"{BACKLOG_FILE} not found"}],
+        )
 
     data = json.loads(BACKLOG_FILE.read_text())
     cutoff = datetime.now() - timedelta(days=recent_done_days)
 
     in_progress: list[dict[str, object]] = []
     recent_done: list[dict[str, object]] = []
+    in_review: list[dict[str, object]] = []
     for item in data.get("items", []):
         item_id = str(item.get("id", ""))
         if not any(item_id.startswith(p) for p in prefixes):
@@ -154,12 +166,14 @@ def backlog_items(
         status = item.get("status")
         if status == "in-progress":
             in_progress.append(item)
+        elif status == "in-review":
+            in_review.append(item)
         elif status == "done":
             updated = str(item.get("updated", ""))
             if updated and updated >= cutoff.isoformat():
                 recent_done.append(item)
 
-    return in_progress, recent_done, []
+    return in_progress, recent_done, in_review, []
 
 
 # ── fetch ─────────────────────────────────────────────────────────────────
@@ -178,7 +192,7 @@ def cmd_fetch(args: argparse.Namespace) -> None:
     )
     skipped.extend(git_skips)
 
-    in_progress, recent_done, backlog_skips = backlog_items(
+    in_progress, recent_done, in_review, backlog_skips = backlog_items(
         [str(p) for p in config.get("work_backlog_prefixes", [])],  # type: ignore[union-attr]
         int(config.get("recent_done_days", 2)),  # type: ignore[arg-type]
     )
@@ -240,6 +254,7 @@ def cmd_fetch(args: argparse.Namespace) -> None:
         "git_commits": commits,
         "backlog_in_progress": in_progress,
         "backlog_recent_done": recent_done,
+        "backlog_in_review": in_review,
         "assigned_items": assigned_items,
         "messages": messages,
         "chat_thread_updates": chat_thread_updates,

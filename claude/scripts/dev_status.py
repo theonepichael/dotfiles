@@ -13,6 +13,7 @@ Requires Python 3.12+.
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -31,7 +32,7 @@ PENDING_FILE = DATA_DIR / "pending_items.json"
 META_FILE = DATA_DIR / "_meta.json"
 LOCK_FILE = DATA_DIR / ".backlog.lock"
 
-VALID_STATUSES = {"open", "in-progress", "done"}
+VALID_STATUSES = {"open", "in-progress", "in-review", "done"}
 VALID_PRIORITIES = {"high", "normal", "low"}
 
 # Recency window (in hours) for the dashboard's DONE section: only items
@@ -84,6 +85,9 @@ RESERVED_SLUGS = {
     "update",
     "start",
     "done",
+    "review",
+    "approve",
+    "reject",
     "rename",
     "remove",
     "block",
@@ -105,6 +109,7 @@ _COLORS = {
     "in_progress": "\x1b[33m",
     "ready": "\x1b[32m",
     "blocked": "\x1b[31m",
+    "in_review": "\x1b[36m",
     "done": "\x1b[2m",
     "pending": "\x1b[35m",
     "warn": "\x1b[31m",
@@ -138,6 +143,8 @@ class BacklogItem(TypedDict):
     next_steps: str
     priority: NotRequired[str]
     completed_at: NotRequired[str]
+    review_feedback: NotRequired[str]
+    review_content_hash: NotRequired[str]
 
 
 class PendingItem(TypedDict):
@@ -163,7 +170,11 @@ class PendingItem(TypedDict):
 
 type BacklogIndex = dict[str, BacklogItem]
 type RenderOrder = tuple[
-    list[BacklogItem], list[BacklogItem], list[BacklogItem], list[BacklogItem]
+    list[BacklogItem],
+    list[BacklogItem],
+    list[BacklogItem],
+    list[BacklogItem],
+    list[BacklogItem],
 ]
 
 
@@ -173,6 +184,25 @@ type RenderOrder = tuple[
 def today() -> str:
     """Return today's date as an ISO-8601 string (``YYYY-MM-DD``)."""
     return date.today().isoformat()
+
+
+_HASHED_CONTENT_FIELDS = ("summary", "context", "next_steps", "related_files")
+
+
+def _content_hash(item: BacklogItem) -> str:
+    """SHA-256 over the reviewer-visible content fields, stable serialization.
+
+    Missing fields hash as ``None`` via ``.get(k)`` (not ``.get(k, "")``) —
+    a field appearing later where it was previously absent counts as
+    content drift, same as any other change. ``related_files`` list order
+    is significant: reordering entries is a content change. Nested dict key
+    order is not (``sort_keys=True`` recurses).
+    """
+    payload = json.dumps(
+        {k: cast(dict[str, object], item).get(k) for k in _HASHED_CONTENT_FIELDS},
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _apply_status_transition(
@@ -654,12 +684,12 @@ def _render_order(items: list[BacklogItem]) -> RenderOrder:
     """Bucket and sort backlog items into dashboard render order.
 
     Returns:
-        A 4-tuple of ``(in_progress, ready, blocked, done)``, where
-        ``done`` is the subset of done items completed within the last
-        :data:`DONE_RECENCY_HOURS` (keyed on ``completed_at``, falling back
-        to ``updated``), sorted most-recently-completed first using that
-        same key. The dashboard omits the DONE section entirely when this
-        is empty.
+        A 5-tuple of ``(in_progress, ready, blocked, in_review, done)``,
+        where ``done`` is the subset of done items completed within the
+        last :data:`DONE_RECENCY_HOURS` (keyed on ``completed_at``, falling
+        back to ``updated``), sorted most-recently-completed first using
+        that same key. The dashboard omits the DONE section entirely when
+        this is empty.
 
     Note:
         DONE-section membership is a function of ``datetime.now()`` vs
@@ -694,6 +724,14 @@ def _render_order(items: list[BacklogItem]) -> RenderOrder:
     # Explicit `is None` check (not `or float("inf")`): an age of exactly
     # `0.0` (a stamp dated this very second) is falsy and would otherwise
     # be excluded from the window. None (invalid stamp) still excludes.
+    in_review = sorted(
+        [i for i in items if i.get("status") == "in-review"],
+        key=lambda i: i.get("updated", ""),
+    )
+    in_review = sorted(in_review, key=_priority_rank)  # stable
+    # Explicit `is None` check (not `or float("inf")`): an age of exactly
+    # `0.0` (a stamp dated this very second) is falsy and would otherwise
+    # be excluded from the window. None (invalid stamp) still excludes.
     done_in_window = [
         i
         for i in items
@@ -703,7 +741,7 @@ def _render_order(items: list[BacklogItem]) -> RenderOrder:
     ]
     done = sorted(done_in_window, key=_done_stamp, reverse=True)
 
-    return in_progress, ready, blocked, done
+    return in_progress, ready, blocked, in_review, done
 
 
 def _blocker_check_reminder(
@@ -729,7 +767,7 @@ def _blocker_check_reminder(
     """
     if err is None:
         err = sys.stderr
-    in_progress, ready, _, _ = _render_order(items)
+    in_progress, ready, _, _, _ = _render_order(items)
     candidates = [i for i in in_progress + ready if i["id"] != exclude_slug]
     if not candidates:
         return
@@ -751,13 +789,19 @@ def _pending_render_order(pending_items: list[PendingItem]) -> list[PendingItem]
 # ── number resolution ─────────────────────────────────────────────────────────
 
 
+def _concat_order(
+    pending_ordered: list[PendingItem], buckets: RenderOrder
+) -> list[BacklogItem | PendingItem]:
+    """Concatenate pending + all five backlog buckets into one flat render order."""
+    in_progress, ready, blocked, in_review, done = buckets
+    return [*pending_ordered, *in_progress, *ready, *blocked, *in_review, *done]
+
+
 def _unified_order(
     items: list[BacklogItem], pending_items: list[PendingItem]
 ) -> list[BacklogItem | PendingItem]:
     """Return the full cross-section render order: pending first, then backlog."""
-    pending_ordered = _pending_render_order(pending_items)
-    in_progress, ready, blocked, done = _render_order(items)
-    return [*pending_ordered, *in_progress, *ready, *blocked, *done]
+    return _concat_order(_pending_render_order(pending_items), _render_order(items))
 
 
 def resolve_id(
@@ -911,7 +955,7 @@ def render(
     err: TextIO | None = None,
     rev: int | None = None,
 ) -> None:
-    """Render the full dashboard: pending items, then the four backlog sections.
+    """Render the full dashboard: pending items, then the five backlog sections.
 
     Pure render — no writes, no other side effects. Loads current state
     from disk for any of ``items``/``pending_items``/``rev`` left as
@@ -941,15 +985,10 @@ def render(
         rev = load_rev()
 
     index = build_index(items)
-    in_progress, ready, blocked, done = _render_order(items)
+    buckets = _render_order(items)
+    in_progress, ready, blocked, in_review, done = buckets
     pending_ordered = _pending_render_order(pending_items)
-    ordered: list[BacklogItem | PendingItem] = [
-        *pending_ordered,
-        *in_progress,
-        *ready,
-        *blocked,
-        *done,
-    ]
+    ordered: list[BacklogItem | PendingItem] = _concat_order(pending_ordered, buckets)
 
     if not ordered:
         print("(backlog is empty)", file=out)
@@ -1059,6 +1098,13 @@ def render(
         show_age=True,
         show_priority=True,
         color_code="blocked",
+    )
+    add_section(
+        "IN REVIEW",
+        in_review,
+        show_age=True,
+        show_priority=True,
+        color_code="in_review",
     )
     add_section("DONE", done, color_code="done")
 
@@ -1462,6 +1508,17 @@ def cmd_update(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
+    review_only_fields = {"review_feedback", "review_content_hash"} & set(patch)
+    if review_only_fields:
+        print(
+            f"[update] cannot modify {', '.join(sorted(review_only_fields))} "
+            "directly -- use 'review <id>' to submit for review, "
+            "'approve <id>' to accept, or 'reject <id> <feedback>' to send "
+            "back with feedback.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     unknown = set(patch) - BACKLOG_MUTABLE_FIELDS - IMMUTABLE_FIELDS
     if unknown:
         print(
@@ -1536,6 +1593,14 @@ def cmd_update(args: argparse.Namespace) -> None:
 def cmd_start(args: argparse.Namespace) -> None:
     """Handle ``start``: mark a backlog item in-progress."""
     with _backlog_mutation("start", args.id, args.if_rev, announce=True) as m:
+        if m.item.get("status") == "in-review":
+            print(
+                f"[start] {m.slug} is in-review -- use 'approve <id>' to "
+                "accept it or 'reject <id> <feedback>' to send it back to "
+                "in-progress.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         # Use the shared transition helper so completed_at is cleared when
         # moving an item off "done", mirroring cmd_done's behavior.
         _apply_status_transition(
@@ -1548,10 +1613,97 @@ def cmd_start(args: argparse.Namespace) -> None:
 def cmd_done(args: argparse.Namespace) -> None:
     """Handle ``done``: mark a backlog item done."""
     with _backlog_mutation("done", args.id, args.if_rev, announce=True) as m:
+        if m.item.get("status") == "in-review":
+            print(
+                f"[done] {m.slug} is in-review -- use 'approve <id>' to "
+                "complete it or 'reject <id> <feedback>' to send it back to "
+                "in-progress.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         _apply_status_transition(
             cast(dict[str, object], m.item), "done", "completed_at", "done"
         )
         m.item["status"] = "done"
+        m.item["updated"] = today()
+
+
+def cmd_review(args: argparse.Namespace) -> None:
+    """Handle ``review``: submit (or re-submit) an item for review.
+
+    Valid from ``in-progress`` (normal submission) or from ``in-review``
+    itself (re-pins the content hash after a drift refusal, clearing any
+    stale feedback, without changing status).
+    """
+    with _backlog_mutation("review", args.id, args.if_rev, announce=True) as m:
+        if m.item.get("status") not in ("in-progress", "in-review"):
+            print(
+                f"[review] {m.slug} is '{m.item.get('status')}' -- only an "
+                "in-progress (or already in-review) item can be submitted "
+                "for review.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        m.item["status"] = "in-review"
+        m.item["review_content_hash"] = _content_hash(m.item)
+        m.item.pop("review_feedback", None)
+        m.item["updated"] = today()
+
+
+def cmd_approve(args: argparse.Namespace) -> None:
+    """Handle ``approve``: accept an in-review item, marking it done."""
+    with _backlog_mutation("approve", args.id, args.if_rev, announce=True) as m:
+        if m.item.get("status") != "in-review":
+            print(
+                f"[approve] {m.slug} is '{m.item.get('status')}', not "
+                "in-review -- nothing to approve.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if m.item.get("review_content_hash") != _content_hash(m.item):
+            print(
+                f"[approve] {m.slug}'s content changed since it was "
+                "submitted for review -- run 'review <id>' again to re-pin "
+                "the current content before approving.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        _apply_status_transition(
+            cast(dict[str, object], m.item), "done", "completed_at", "done"
+        )
+        m.item["status"] = "done"
+        m.item["updated"] = today()
+
+
+def cmd_reject(args: argparse.Namespace) -> None:
+    """Handle ``reject``: send an in-review item back to in-progress with feedback."""
+    feedback = args.feedback.strip()
+    if not feedback:
+        print("[reject] feedback is required and cannot be empty", file=sys.stderr)
+        sys.exit(1)
+    with _backlog_mutation("reject", args.id, args.if_rev, announce=True) as m:
+        if m.item.get("status") != "in-review":
+            print(
+                f"[reject] {m.slug} is '{m.item.get('status')}', not "
+                "in-review -- nothing to reject.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if m.item.get("review_content_hash") != _content_hash(m.item):
+            print(
+                f"[reject] {m.slug}'s content changed since it was "
+                "submitted for review -- run 'review <id>' again to re-pin "
+                "the current content, then reject with feedback that "
+                "applies to what's actually there.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        _apply_status_transition(
+            cast(dict[str, object], m.item), "in-progress", "completed_at", "done"
+        )
+        m.item["status"] = "in-progress"
+        m.item["review_feedback"] = feedback
+        m.item.pop("review_content_hash", None)
         m.item["updated"] = today()
 
 
@@ -1975,7 +2127,7 @@ def main() -> None:
     )
     sub = parser.add_subparsers(
         dest="cmd",
-        metavar="{render,list,show,add,update,start,done,rename,remove,block,unblock,prune}",
+        metavar="{render,list,show,add,update,start,done,review,approve,reject,rename,remove,block,unblock,prune}",
     )
 
     sub.add_parser("render", help="render dashboard (pure — no side effects)")
@@ -2021,6 +2173,42 @@ def main() -> None:
 
     p = sub.add_parser("done", help="mark item done")
     p.add_argument("id", metavar="<slug|N>")
+    p.add_argument(
+        "--if-rev",
+        type=int,
+        default=None,
+        metavar="<N>",
+        help="required when <id> is numeric; get the current value from "
+        "render/list/show immediately before this call",
+    )
+
+    p = sub.add_parser("review", help="submit (or re-submit) an item for review")
+    p.add_argument("id", metavar="<slug|N>")
+    p.add_argument(
+        "--if-rev",
+        type=int,
+        default=None,
+        metavar="<N>",
+        help="required when <id> is numeric; get the current value from "
+        "render/list/show immediately before this call",
+    )
+
+    p = sub.add_parser("approve", help="approve an in-review item, marking it done")
+    p.add_argument("id", metavar="<slug|N>")
+    p.add_argument(
+        "--if-rev",
+        type=int,
+        default=None,
+        metavar="<N>",
+        help="required when <id> is numeric; get the current value from "
+        "render/list/show immediately before this call",
+    )
+
+    p = sub.add_parser(
+        "reject", help="reject an in-review item, sending it back to in-progress"
+    )
+    p.add_argument("id", metavar="<slug|N>")
+    p.add_argument("feedback", metavar="<feedback>")
     p.add_argument(
         "--if-rev",
         type=int,
@@ -2123,6 +2311,9 @@ def main() -> None:
         "update": cmd_update,
         "start": cmd_start,
         "done": cmd_done,
+        "review": cmd_review,
+        "approve": cmd_approve,
+        "reject": cmd_reject,
         "rename": cmd_rename,
         "remove": cmd_remove,
         "block": cmd_block,

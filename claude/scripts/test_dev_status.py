@@ -30,6 +30,9 @@ def make_item(
     next_steps="",
     created="2026-01-01",
     priority=None,
+    related_files=None,
+    review_feedback=None,
+    review_content_hash=None,
 ):
     item = {
         "id": slug,
@@ -39,12 +42,16 @@ def make_item(
         "summary": summary or f"Summary of {slug}",
         "category": "feature",
         "blocked_by": blocked_by or [],
-        "related_files": [],
+        "related_files": related_files if related_files is not None else [],
         "context": context,
         "next_steps": next_steps,
     }
     if priority is not None:
         item["priority"] = priority
+    if review_feedback is not None:
+        item["review_feedback"] = review_feedback
+    if review_content_hash is not None:
+        item["review_content_hash"] = review_content_hash
     return item
 
 
@@ -329,9 +336,10 @@ class BacklogTestCase(unittest.TestCase):
         eff = dev_status.effective_blockers(items[1], index)
         self.assertEqual(eff, [])  # done blocker excluded
 
-        in_progress, ready, blocked, done = dev_status._render_order(items)
+        in_progress, ready, blocked, in_review, done = dev_status._render_order(items)
         self.assertIn(items[1], ready)
         self.assertEqual(blocked, [])
+        self.assertEqual(in_review, [])
 
     # ── 13: numbering is 1..N globally, contiguous ───────────────────────────
 
@@ -494,14 +502,14 @@ class BacklogTestCase(unittest.TestCase):
             ),
         ]
         items[0]["completed_at"] = old_completion
-        _, _, _, done = dev_status._render_order(items)
+        _, _, _, _, done = dev_status._render_order(items)
         self.assertEqual([i["id"] for i in done], [])
 
     def test_18d_done_recency_falls_back_to_updated_without_completed_at(self):
         # Legacy done items without `completed_at` fall back to `updated`.
         recent = (date.today() - timedelta(days=1)).isoformat()
         items = [make_item("legacy", status="done", updated=recent)]
-        _, _, _, done = dev_status._render_order(items)
+        _, _, _, _, done = dev_status._render_order(items)
         self.assertEqual([i["id"] for i in done], ["legacy"])
 
     def test_18e_done_section_orders_by_completed_at_not_updated(self):
@@ -523,7 +531,7 @@ class BacklogTestCase(unittest.TestCase):
         ]
         items[0]["completed_at"] = (date.today() - timedelta(days=1)).isoformat()
         items[1]["completed_at"] = date.today().isoformat()
-        _, _, _, done = dev_status._render_order(items)
+        _, _, _, _, done = dev_status._render_order(items)
         self.assertEqual(
             [i["id"] for i in done],
             ["finished-later-not-edited", "finished-earlier-edited-later"],
@@ -636,6 +644,7 @@ class BacklogTestCase(unittest.TestCase):
                 make_item("b-done", status="done"),
                 make_item("c-progress", status="in-progress"),
                 make_item("d-done", status="done"),
+                make_item("e-review", status="in-review"),
             ]
         )
         for value in sorted(dev_status.VALID_STATUSES):
@@ -656,6 +665,8 @@ class BacklogTestCase(unittest.TestCase):
                 self.assertEqual(ids, {"a-open"})
             elif value == "in-progress":
                 self.assertEqual(ids, {"c-progress"})
+            elif value == "in-review":
+                self.assertEqual(ids, {"e-review"})
 
     def test_20n_list_status_invalid_rejected(self):
         # argparse rejects unknown --status values with exit code 2.
@@ -826,7 +837,7 @@ class BacklogTestCase(unittest.TestCase):
             ]
         )
         dev_status.cmd_update(_args(id="b", patch='{"priority": "high"}'))
-        _, ready, _, _ = dev_status._render_order(self.read_items())
+        _, ready, _, _, _ = dev_status._render_order(self.read_items())
         self.assertEqual([i["id"] for i in ready], ["b", "a", "c"])
 
     def test_31_update_priority_low_sinks_to_bottom_of_ready(self):
@@ -838,7 +849,7 @@ class BacklogTestCase(unittest.TestCase):
             ]
         )
         dev_status.cmd_update(_args(id="a", patch='{"priority": "low"}'))
-        _, ready, _, _ = dev_status._render_order(self.read_items())
+        _, ready, _, _, _ = dev_status._render_order(self.read_items())
         self.assertEqual([i["id"] for i in ready], ["b", "c", "a"])
 
     def test_32_priority_does_not_move_item_after_update_other_field(self):
@@ -850,11 +861,11 @@ class BacklogTestCase(unittest.TestCase):
             ]
         )
         # B starts at top due to high priority.
-        _, ready_before, _, _ = dev_status._render_order(self.read_items())
+        _, ready_before, _, _, _ = dev_status._render_order(self.read_items())
         self.assertEqual([i["id"] for i in ready_before], ["b", "a", "c"])
         # Updating B's context bumps `updated` but must not change READY order.
         dev_status.cmd_update(_args(id="b", patch='{"context": "x"}'))
-        _, ready_after, _, _ = dev_status._render_order(self.read_items())
+        _, ready_after, _, _, _ = dev_status._render_order(self.read_items())
         self.assertEqual([i["id"] for i in ready_after], ["b", "a", "c"])
 
     def test_33_blocked_priority_secondary_within_blocker_count(self):
@@ -887,7 +898,7 @@ class BacklogTestCase(unittest.TestCase):
                 ),
             ]
         )
-        _, _, blocked, _ = dev_status._render_order(self.read_items())
+        _, _, blocked, _, _ = dev_status._render_order(self.read_items())
         self.assertEqual([i["id"] for i in blocked], ["b", "a", "c"])
 
     def test_34_done_ignores_priority(self):
@@ -901,7 +912,7 @@ class BacklogTestCase(unittest.TestCase):
                 make_item("newest", status="done", updated=newest),
             ]
         )
-        _, _, _, done = dev_status._render_order(self.read_items())
+        _, _, _, _, done = dev_status._render_order(self.read_items())
         # Only the two in-window items appear, in updated-desc order; the
         # high-priority "old" is dropped by the recency window (and would
         # not float even if included — done is pure updated-desc).
@@ -941,7 +952,7 @@ class BacklogTestCase(unittest.TestCase):
             make_item("ok"),
         ]
         # _render_order must not raise; unknown collapses to normal's rank.
-        _, ready, _, _ = dev_status._render_order(items)
+        _, ready, _, _, _ = dev_status._render_order(items)
         self.assertEqual([i["id"] for i in ready], ["weird", "ok"])
         # _priority_rank treats both as rank 1 (normal).
         self.assertEqual(
@@ -1727,7 +1738,7 @@ class BacklogTestCase(unittest.TestCase):
             }
         ]
         self.write_items(items)
-        _, _, _, done = dev_status._render_order(items)
+        _, _, _, _, done = dev_status._render_order(items)
         self.assertEqual([i["id"] for i in done], ["fresh-done"])
 
     # ── #15: mutators render inside the lock using in-memory pending_items
@@ -2108,6 +2119,293 @@ class BacklogTestCase(unittest.TestCase):
         self.assertEqual(remaining[0]["blocked_by"], [])
         pending_on_disk = dev_status.load_pending()
         self.assertEqual(pending_on_disk[0]["blocking"], [])
+
+    # ── in-review state: review / approve / reject ────────────────────────────
+
+    def _item_by_id(self, slug):
+        return {i["id"]: i for i in self.read_items()}[slug]
+
+    def test_40a_review_happy_path(self):
+        self.write_items([make_item("rv-item", status="in-progress")])
+        out, err = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            dev_status.cmd_review(_args(id="rv-item"))
+        item = self._item_by_id("rv-item")
+        self.assertEqual(item["status"], "in-review")
+        self.assertIn("review_content_hash", item)
+        self.assertNotIn("review_feedback", item)
+
+    def test_40b_approve_happy_path(self):
+        self.write_items([make_item("rv-item", status="in-progress")])
+        dev_status.cmd_review(_args(id="rv-item"))
+        dev_status.cmd_approve(_args(id="rv-item"))
+        item = self._item_by_id("rv-item")
+        self.assertEqual(item["status"], "done")
+        self.assertIn("completed_at", item)
+        # audit trail left in place
+        self.assertIn("review_content_hash", item)
+
+    def test_40c_reject_empty_feedback_refused(self):
+        self.write_items(
+            [make_item("rv-item", status="in-progress", review_content_hash="x")]
+        )
+        # convert to in-review with a real hash via review
+        dev_status.cmd_review(_args(id="rv-item"))
+        for bad in ("", "   "):
+            err = io.StringIO()
+            with self.assertRaises(SystemExit) as cm:
+                with patch("sys.stderr", err):
+                    dev_status.cmd_reject(_args(id="rv-item", feedback=bad))
+            self.assertEqual(cm.exception.code, 1)
+            self.assertIn("feedback is required", err.getvalue())
+            item = self._item_by_id("rv-item")
+            self.assertEqual(item["status"], "in-review")
+
+    def test_40d_reject_happy_path(self):
+        self.write_items([make_item("rv-item", status="in-progress")])
+        dev_status.cmd_review(_args(id="rv-item"))
+        dev_status.cmd_reject(_args(id="rv-item", feedback="needs rework"))
+        item = self._item_by_id("rv-item")
+        self.assertEqual(item["status"], "in-progress")
+        self.assertEqual(item["review_feedback"], "needs rework")
+        self.assertNotIn("review_content_hash", item)
+
+    def test_40e_reject_then_resubmit_clears_feedback(self):
+        self.write_items([make_item("rv-item", status="in-progress")])
+        dev_status.cmd_review(_args(id="rv-item"))
+        dev_status.cmd_reject(_args(id="rv-item", feedback="redo"))
+        dev_status.cmd_review(_args(id="rv-item"))
+        item = self._item_by_id("rv-item")
+        self.assertEqual(item["status"], "in-review")
+        self.assertNotIn("review_feedback", item)
+        self.assertIn("review_content_hash", item)
+
+    def test_40f_update_refuses_review_only_fields(self):
+        self.write_items([make_item("rv-item", status="in-progress")])
+        for field in ("review_feedback", "review_content_hash"):
+            err = io.StringIO()
+            with self.assertRaises(SystemExit) as cm:
+                with patch("sys.stderr", err):
+                    dev_status.cmd_update(
+                        _args(id="rv-item", patch=f'{{"{field}": "x"}}')
+                    )
+            self.assertEqual(cm.exception.code, 1)
+            msg = err.getvalue()
+            self.assertIn("cannot modify", msg)
+            self.assertIn(field, msg)
+            self.assertIn("review", msg)
+            item = self._item_by_id("rv-item")
+            self.assertNotIn(field, item)
+
+    def test_40g_done_refuses_on_in_review(self):
+        self.write_items([make_item("rv-item", status="in-progress")])
+        dev_status.cmd_review(_args(id="rv-item"))
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_done(_args(id="rv-item"))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("in-review", err.getvalue())
+        self.assertIn("approve", err.getvalue())
+        self.assertEqual(self._item_by_id("rv-item")["status"], "in-review")
+
+    def test_40h_start_refuses_on_in_review(self):
+        self.write_items([make_item("rv-item", status="in-progress")])
+        dev_status.cmd_review(_args(id="rv-item"))
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_start(_args(id="rv-item"))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("in-review", err.getvalue())
+        self.assertIn("approve", err.getvalue())
+        self.assertEqual(self._item_by_id("rv-item")["status"], "in-review")
+
+    def test_40i_approve_refuses_on_non_in_review(self):
+        self.write_items([make_item("rv-open", status="open")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_approve(_args(id="rv-open"))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("approve", err.getvalue())
+        self.assertEqual(self._item_by_id("rv-open")["status"], "open")
+
+    def test_40j_reject_refuses_on_non_in_review(self):
+        self.write_items([make_item("rv-open", status="open")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_reject(_args(id="rv-open", feedback="x"))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("reject", err.getvalue())
+        self.assertEqual(self._item_by_id("rv-open")["status"], "open")
+
+    def test_40k_approve_refuses_on_drift(self):
+        self.write_items([make_item("rv-item", status="in-progress", summary="A")])
+        dev_status.cmd_review(_args(id="rv-item"))
+        # mutate summary directly on disk (simulates content change)
+        items = self.read_items()
+        items[0]["summary"] = "B"
+        self.write_items(items)
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_approve(_args(id="rv-item"))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("content changed", err.getvalue())
+        self.assertIn("review <id>", err.getvalue())
+        self.assertEqual(self._item_by_id("rv-item")["status"], "in-review")
+
+    def test_40l_reject_refuses_on_drift(self):
+        self.write_items([make_item("rv-item", status="in-progress", summary="A")])
+        dev_status.cmd_review(_args(id="rv-item"))
+        items = self.read_items()
+        items[0]["summary"] = "B"
+        self.write_items(items)
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_reject(_args(id="rv-item", feedback="x"))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("content changed", err.getvalue())
+        self.assertEqual(self._item_by_id("rv-item")["status"], "in-review")
+
+    def test_40m_approve_refuses_when_hash_absent(self):
+        # hand-edited store: in-review item with no review_content_hash
+        self.write_items([make_item("rv-item", status="in-review")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_approve(_args(id="rv-item"))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("content changed", err.getvalue())
+        self.assertEqual(self._item_by_id("rv-item")["status"], "in-review")
+
+    def test_40n_review_reinvoke_from_in_review(self):
+        self.write_items([make_item("rv-item", status="in-progress")])
+        dev_status.cmd_review(_args(id="rv-item"))
+        dev_status.cmd_reject(_args(id="rv-item", feedback="redo"))
+        # re-submit from in-progress
+        dev_status.cmd_review(_args(id="rv-item"))
+        # now status is in-review; re-pinning from in-review also works
+        dev_status.cmd_review(_args(id="rv-item"))
+        item = self._item_by_id("rv-item")
+        self.assertEqual(item["status"], "in-review")
+        self.assertNotIn("review_feedback", item)
+        self.assertIn("review_content_hash", item)
+
+    def test_40o_review_refuses_from_open_and_done(self):
+        for status in ("open", "done"):
+            self.write_items(
+                [make_item("rv-item", status=status, review_content_hash=None)]
+            )
+            err = io.StringIO()
+            with self.assertRaises(SystemExit) as cm:
+                with patch("sys.stderr", err):
+                    dev_status.cmd_review(_args(id="rv-item"))
+            self.assertEqual(cm.exception.code, 1)
+            self.assertIn("only an in-progress", err.getvalue())
+
+    def test_40p_render_order_buckets_in_review_in_4th_slot(self):
+        items = [
+            make_item("a-ip", status="in-progress"),
+            make_item("b-open"),
+            make_item("c-rev", status="in-review"),
+            make_item("d-done", status="done", updated="2026-01-01"),
+        ]
+        ip, ready, blocked, in_review, done = dev_status._render_order(items)
+        self.assertEqual([i["id"] for i in in_review], ["c-rev"])
+        self.assertEqual([i["id"] for i in ip], ["a-ip"])
+        for bucket in (ip, ready, blocked, done):
+            self.assertNotIn(
+                "c-rev",
+                [i["id"] for i in bucket],
+                "in-review leaked into another bucket",
+            )
+
+    def test_40q_in_review_section_position_in_render(self):
+        self.write_items(
+            [
+                make_item("c-rev", status="in-review"),
+                make_item("d-done", status="done", updated="2999-01-01"),
+            ]
+        )
+        out = io.StringIO()
+        err = io.StringIO()
+        dev_status.render(self.read_items(), [], out=out, err=err)
+        text = out.getvalue()
+        self.assertIn("IN REVIEW", text)
+        self.assertLess(text.index("IN REVIEW"), text.index("DONE"))
+
+    def test_40r_in_review_section_absent_when_empty(self):
+        self.write_items([make_item("a-open")])
+        out = io.StringIO()
+        err = io.StringIO()
+        dev_status.render(self.read_items(), [], out=out, err=err)
+        self.assertNotIn("IN REVIEW", out.getvalue())
+
+    def test_40s_numeric_id_in_review_in_item_map(self):
+        self.write_items([make_item("c-rev", status="in-review")])
+        err = io.StringIO()
+        dev_status.render(self.read_items(), [], out=io.StringIO(), err=err)
+        self.assertIn("backlog:c-rev", err.getvalue())
+
+    def test_40t_blocker_check_reminder_excludes_in_review(self):
+        # An in-review item should not appear in the candidate count.
+        self.write_items(
+            [
+                make_item("rv-item", status="in-review"),
+                make_item("other-item", status="open"),
+            ]
+        )
+        # `_blocker_check_reminder` uses one stderr line; just ensure it
+        # doesn't crash and the in-review slug isn't double-counted by
+        # checking the helper returns for exclude == the just-added slug.
+        err = io.StringIO()
+        dev_status._blocker_check_reminder(
+            self.read_items(), "rv-item", cmd="add", err=err
+        )
+        # one candidate (other-item), should print the reminder
+        self.assertIn("check the READY/IN PROGRESS", err.getvalue())
+
+    def test_40u_main_dispatch_smoke(self):
+        for argv, seed_status, expected in (
+            (["dev_status", "review", "rv-item"], "in-progress", "in-review"),
+            (["dev_status", "approve", "rv-item"], "in-review", "done"),
+            (["dev_status", "reject", "rv-item", "nope"], "in-review", "in-progress"),
+        ):
+            # Seed in-progress, then promote to a valid in-review state via
+            # cmd_review when the command under test needs a hash-pinned item.
+            self.write_items([make_item("rv-item", status="in-progress")])
+            if seed_status == "in-review":
+                dev_status.cmd_review(_args(id="rv-item"))
+            with (
+                patch("sys.argv", argv),
+                patch("sys.stdout", io.StringIO()),
+                patch("sys.stderr", io.StringIO()),
+            ):
+                dev_status.main()
+            self.assertEqual(self._item_by_id("rv-item")["status"], expected)
+
+    def test_40v_numeric_if_rev_guard_on_new_commands(self):
+        self.write_items([make_item("rv-item", status="in-progress")])
+        # missing --if-rev
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_review(_args(id="1", if_rev=None))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("requires --if-rev", err.getvalue())
+        self.assertEqual(self._item_by_id("rv-item")["status"], "in-progress")
+        # stale --if-rev
+        rev = self.read_rev()
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_review(_args(id="1", if_rev=rev + 99))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("stale rev", err.getvalue())
 
 
 # ── arg helper ────────────────────────────────────────────────────────────────

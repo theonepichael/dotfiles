@@ -18,8 +18,8 @@ last-working-day boundary would land on the wrong day.
 
 Returns one JSON object: `date`, `since` (the computed time boundary every
 windowed source used), `git_commits`, `backlog_in_progress`,
-`backlog_recent_done`, `assigned_items`, `messages`, `chat_thread_updates`,
-`email_correspondence`, `email_thread_updates`, `calendar_events`
+`backlog_recent_done`, `backlog_in_review`, `assigned_items`, `messages`,
+`chat_thread_updates`, `email_correspondence`, `email_thread_updates`, `calendar_events`
 (yesterday's and today's, non-recurring only), `pending_items_open`,
 `previous_standup` (most recent saved standup file before `date`, or
 `null`), `skipped`. `chat_thread_updates`/`email_thread_updates` are
@@ -85,7 +85,8 @@ Write the standup update from the reconciled data. Ground "what I did
 yesterday" in `previous_standup`'s content when present — it's what was
 actually committed to, not a re-derivation from raw signal — supplemented
 by `git_commits`/`backlog_recent_done`. Cover what's in progress
-(`backlog_in_progress`, `assigned_items`), anything noteworthy on the
+(`backlog_in_progress`, `assigned_items`), what's awaiting review
+(`backlog_in_review`), anything noteworthy on the
 calendar (`calendar_events` — yesterday's and today's, already filtered to
 non-recurring), and anything still blocked (`pending_items_open`,
 post-reconciliation). Skip a section entirely if its source had nothing or
