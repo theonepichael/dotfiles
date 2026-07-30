@@ -1703,6 +1703,106 @@ class BacklogTestCase(unittest.TestCase):
         self.assertIn("backlog is empty", out.getvalue())
         self.assertIn("item-map:", err.getvalue())
 
+    # ── found during merge review: _backlog_mutation printed a stale rev ────
+
+    def test_review_start_prints_post_bump_rev_not_stale(self):
+        """A caller-side render(rev=m.new_rev) inside the `with` block ran
+        before _backlog_mutation's cleanup bumped the rev, so every mutator
+        built on it (update/start/done/block/unblock/remove) printed the
+        rev from *before* its own mutation. Render now happens inside the
+        helper's cleanup, after bump_rev()."""
+        self.write_items([make_item("item-a", status="open")])
+        err = io.StringIO()
+        with patch("sys.stdout", io.StringIO()), patch("sys.stderr", err):
+            dev_status.cmd_start(_args(id="item-a", if_rev=0))
+        printed_rev = int(err.getvalue().split("rev=")[1].split(" ")[0])
+        self.assertEqual(printed_rev, self.read_rev())
+
+    def test_review_remove_prints_post_bump_rev_not_stale(self):
+        self.write_items([make_item("item-a", status="open")])
+        err = io.StringIO()
+        with patch("sys.stdout", io.StringIO()), patch("sys.stderr", err):
+            dev_status.cmd_remove(_args(id="item-a", if_rev=0))
+        printed_rev = int(err.getvalue().split("rev=")[1].split(" ")[0])
+        self.assertEqual(printed_rev, self.read_rev())
+
+    # ── found during merge review: pending "blocking" purge never persisted ──
+
+    def test_review_remove_persists_pending_blocking_purge(self):
+        """_purge_inbound_refs strips a removed slug from surviving pending
+        items' `blocking` lists in memory, but _backlog_mutation's cleanup
+        only calls save_items — cmd_remove must save_pending itself or the
+        purge never reaches disk."""
+        self.write_items([make_item("blocker-item", status="open")])
+        self.write_pending(
+            [
+                {
+                    "id": "pend-waiting",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "waiting on blocker-item",
+                    "kind": "email",
+                    "blocking": ["blocker-item"],
+                    "related_files": [],
+                    "next_steps": [],
+                    "outcome": None,
+                }
+            ]
+        )
+        with patch("sys.stdout", io.StringIO()), patch("sys.stderr", io.StringIO()):
+            dev_status.cmd_remove(_args(id="blocker-item", if_rev=0))
+        # Reload from disk (not the in-memory object render used) to prove
+        # the purge was actually persisted.
+        pending_on_disk = dev_status.load_pending()
+        self.assertEqual(pending_on_disk[0]["blocking"], [])
+
+    def test_review_prune_persists_pending_blocking_purge_backlog_only(self):
+        """cmd_prune only re-saved pending_keep when a pending item itself
+        was pruned, missing the case where pruning a backlog item leaves a
+        stale reference in a surviving pending item's `blocking` list."""
+        old = (date.today() - timedelta(days=30)).isoformat()
+        self.write_items(
+            [
+                {
+                    "id": "old-blocker",
+                    "created": old,
+                    "updated": old,
+                    "status": "done",
+                    "completed_at": old,
+                    "summary": "Old",
+                    "category": "feature",
+                    "blocked_by": [],
+                    "related_files": [],
+                    "context": "",
+                    "next_steps": "",
+                }
+            ]
+        )
+        self.write_pending(
+            [
+                {
+                    "id": "pend-waiting",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "waiting on old-blocker",
+                    "kind": "email",
+                    "blocking": ["old-blocker"],
+                    "related_files": [],
+                    "next_steps": [],
+                    "outcome": None,
+                }
+            ]
+        )
+        with patch("sys.stdout", io.StringIO()), patch("sys.stderr", io.StringIO()):
+            with patch.object(
+                dev_status, "_backup_before_bulk_delete", lambda _p: None
+            ):
+                dev_status.cmd_prune(_args(force=True))
+        pending_on_disk = dev_status.load_pending()
+        self.assertEqual(pending_on_disk[0]["blocking"], [])
+
 
 # ── arg helper ────────────────────────────────────────────────────────────────
 

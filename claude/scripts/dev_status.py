@@ -1349,13 +1349,21 @@ def _backlog_mutation(
     refuses if it isn't a backlog item. Yields a :class:`_MutationResult`
     for the caller to mutate in place (or, for ``remove``, to reassign
     ``items`` to a filtered list). After the caller's block completes,
-    saves ``items`` and bumps the rev while still holding the lock —
-    matching the save-then-bump-then-optionally-announce order every
-    extracted command used before this helper existed. ``announce=True``
-    calls :func:`confirm_resolution` (still inside the lock) for the
-    update/start/done shape; ``block``/``unblock`` stay silent and
-    ``remove`` announces its own message afterward using the
-    pre-removal item.
+    saves ``items`` and bumps the rev while still holding the lock, then
+    renders — matching the save-then-bump-then-optionally-announce-then-
+    render order every extracted command used before this helper existed.
+    ``announce=True`` calls :func:`confirm_resolution` (still inside the
+    lock) for the update/start/done shape; ``block``/``unblock`` stay
+    silent and ``remove`` announces its own message inside the caller's
+    block, before this cleanup runs, using the pre-removal item.
+
+    The render call lives here — after ``bump_rev()`` — rather than in each
+    caller's block body: a caller-side ``render(m.items, rev=m.new_rev)``
+    would run *before* this cleanup (a ``with`` block's body always
+    finishes before the code after ``yield``), so ``m.new_rev`` would
+    still be its ``None`` default and ``render`` would silently fall back
+    to loading the pre-bump rev from disk — printing a stale item-map one
+    revision behind the mutation that was just committed.
 
     Args:
         cmd: Command name, used in error messages and announcements.
@@ -1395,6 +1403,7 @@ def _backlog_mutation(
         result.new_rev = bump_rev()
         if announce:
             confirm_resolution(cmd, id_arg, result.item)
+        render(result.items, result.pending_items, rev=result.new_rev)
 
 
 def cmd_update(args: argparse.Namespace) -> None:
@@ -1478,7 +1487,6 @@ def cmd_update(args: argparse.Namespace) -> None:
             del patch["priority"]
         cast(dict[str, object], m.item).update(patch)
         m.item["updated"] = today()
-        render(m.items, m.pending_items, rev=m.new_rev)
 
 
 def cmd_start(args: argparse.Namespace) -> None:
@@ -1486,7 +1494,6 @@ def cmd_start(args: argparse.Namespace) -> None:
     with _backlog_mutation("start", args.id, args.if_rev, announce=True) as m:
         m.item["status"] = "in-progress"
         m.item["updated"] = today()
-        render(m.items, m.pending_items, rev=m.new_rev)
 
 
 def cmd_done(args: argparse.Namespace) -> None:
@@ -1497,7 +1504,6 @@ def cmd_done(args: argparse.Namespace) -> None:
         )
         m.item["status"] = "done"
         m.item["updated"] = today()
-        render(m.items, m.pending_items, rev=m.new_rev)
 
 
 def cmd_rename(args: argparse.Namespace) -> None:
@@ -1610,7 +1616,6 @@ def cmd_block(args: argparse.Namespace) -> None:
 
         m.item.setdefault("blocked_by", []).append(blocker)
         m.item["updated"] = today()
-        render(m.items, m.pending_items, rev=m.new_rev)
 
 
 def cmd_unblock(args: argparse.Namespace) -> None:
@@ -1623,7 +1628,6 @@ def cmd_unblock(args: argparse.Namespace) -> None:
 
         m.item["blocked_by"] = [s for s in m.item["blocked_by"] if s != blocker]
         m.item["updated"] = today()
-        render(m.items, m.pending_items, rev=m.new_rev)
 
 
 def cmd_pending_add(args: argparse.Namespace) -> None:
@@ -1794,13 +1798,17 @@ def cmd_remove(args: argparse.Namespace) -> None:
     list and every pending item's ``blocking`` list, so deleting a
     completed blocker doesn't retroactively flip its dependents from READY
     into BLOCKED via :func:`effective_blockers`'s missing-slug-is-unresolved
-    fallback.
+    fallback. The pending-side purge is saved explicitly here —
+    :func:`_backlog_mutation`'s cleanup only persists ``items``, so a
+    ``blocking``-list edit made only in memory would otherwise vanish the
+    moment this process exits, leaving the stale slug on disk for the next
+    command to reload.
     """
     with _backlog_mutation("remove", args.id, args.if_rev) as m:
         m.items = [i for i in m.items if i["id"] != m.slug]
         _purge_inbound_refs({m.slug}, m.items, m.pending_items)
+        save_pending(m.pending_items)
         confirm_resolution("remove", args.id, m.item)
-        render(m.items, m.pending_items, rev=m.new_rev)
 
 
 def cmd_prune(args: argparse.Namespace) -> None:
@@ -1859,23 +1867,25 @@ def cmd_prune(args: argparse.Namespace) -> None:
 
         total_removed = len(pruned_slugs) + len(pending_pruned_slugs)
         if total_removed:
-            # Purge inbound refs from the surviving records. Need to re-save
-            # if purge mutated a file we wouldn't otherwise have written.
+            # Purge inbound refs from the surviving records, then re-save
+            # whichever file purge may have mutated beyond what was already
+            # written above. `blocked_by` values are always backlog slugs
+            # (cmd_block rejects non-backlog blockers), so pruning a pending
+            # item alone can never touch `keep` — re-save it only when
+            # pruned_slugs is non-empty. But pending `blocking` lists
+            # reference backlog slugs, so pruning a *backlog* item alone
+            # can still leave a stale reference in a surviving pending
+            # item — pending_keep must be re-saved whenever either set is
+            # non-empty, not just when a pending item itself was pruned
+            # (the original asymmetric check silently dropped this case:
+            # `_purge_inbound_refs` would strip the reference in memory but
+            # the file on disk kept the stale slug since save_pending was
+            # never called for a backlog-only prune).
             _purge_inbound_refs(pruned_slugs | pending_pruned_slugs, keep, pending_keep)
-            # save_items was already called above only when pruned_slugs; if
-            # purge mutated `keep` we must re-save. Same for pending. The
-            # simplest invariant: re-save whichever file purge may have
-            # touched when its removal set was non-empty.
+            if pruned_slugs:
+                save_items(keep)
             if pruned_slugs or pending_pruned_slugs:
-                # If only pending was pruned, keep (backlog) may still have
-                # been mutated by purge if a pruned pending slug was in any
-                # backlog item's blocked_by — but pending slugs are not valid
-                # blockers (cmd_block rejects non-backlog slugs), so purge
-                # only touches `keep` when pruned_slugs is non-empty.
-                if pruned_slugs:
-                    save_items(keep)
-                if pending_pruned_slugs:
-                    save_pending(pending_keep)
+                save_pending(pending_keep)
             new_rev = bump_rev()
             print(
                 f"[prune] removed {len(pruned_slugs)} backlog item(s), "
