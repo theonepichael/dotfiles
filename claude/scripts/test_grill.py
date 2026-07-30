@@ -543,6 +543,63 @@ class GrillTestCase(unittest.TestCase):
         self.assertNotEqual(results["one"], results["two"])
         self.assertEqual(len(grill.all_session_slugs()), 2)
 
+    # ── pending-execution (clear-and-go) ────────────────────────────────────
+
+    def test_21_pending_plan_silent_when_nothing_pending(self) -> None:
+        self.new_session()
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            grill.cmd_pending_plan(ns(consume=False))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_21b_mark_pending_execution_sets_flag(self) -> None:
+        slug = self.new_session()
+        with patch("sys.stderr", io.StringIO()):
+            grill.cmd_mark_pending_execution(ns(session=slug))
+        self.assertTrue(grill.load_session(slug)["pending_execution"])
+
+    def test_21c_pending_plan_prints_and_consumes(self) -> None:
+        slug = self.new_session()
+        artifact = Path(self.tmpdir) / "plan.md"
+        artifact.write_text("# Plan\n")
+        with patch("sys.stderr", io.StringIO()):
+            grill.cmd_plan(ns(path=str(artifact), session=slug))
+            grill.cmd_mark_pending_execution(ns(session=slug))
+
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            grill.cmd_pending_plan(ns(consume=True))
+        self.assertIn(slug, out.getvalue())
+        self.assertIn(str(artifact), out.getvalue())
+        self.assertFalse(grill.load_session(slug)["pending_execution"])
+
+    def test_21d_pending_plan_without_consume_leaves_flag_set(self) -> None:
+        slug = self.new_session()
+        with patch("sys.stderr", io.StringIO()):
+            grill.cmd_mark_pending_execution(ns(session=slug))
+
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            grill.cmd_pending_plan(ns(consume=False))
+        self.assertIn(slug, out.getvalue())
+        self.assertTrue(grill.load_session(slug)["pending_execution"])
+
+    def test_21e_pending_plan_picks_most_recently_updated(self) -> None:
+        first = self.new_session("First topic")
+        second = self.new_session("Second topic")
+        with patch("sys.stderr", io.StringIO()):
+            grill.cmd_mark_pending_execution(ns(session=first))
+            grill.cmd_mark_pending_execution(ns(session=second))
+        session = grill.load_session(second)
+        session["updated"] = "2099-01-01T00:00:00"
+        grill.save_session(session)
+
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            grill.cmd_pending_plan(ns(consume=False))
+        self.assertIn(second, out.getvalue())
+        self.assertNotIn(first, out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
