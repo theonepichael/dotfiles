@@ -137,7 +137,9 @@ class OpencodeTextChunksTests(unittest.TestCase):
 class AvailableBackendsTests(unittest.TestCase):
     def test_17_priority_order_preserved(self) -> None:
         with patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"):
-            self.assertEqual(second_opinion.available_backends(), ["agy", "opencode"])
+            self.assertEqual(
+                second_opinion.available_backends(), ["agy", "opencode", "copilot"]
+            )
 
     def test_18_only_installed_backends_returned(self) -> None:
         with patch(
@@ -271,6 +273,14 @@ class RunBackendCommandTests(unittest.TestCase):
             ["agy", "-p", "my prompt", "--model", "Gemini 3.1 Pro (High)"]
         )
 
+    def test_36_run_copilot_builds_expected_argv(self) -> None:
+        with patch.object(
+            second_opinion, "run_backend_command", return_value="critique"
+        ) as mock_run:
+            result = second_opinion.run_copilot("my prompt")
+        self.assertEqual(result, "critique")
+        mock_run.assert_called_once_with(["copilot", "-p", "my prompt", "--silent"])
+
 
 class RunOpencodeTests(unittest.TestCase):
     @contextmanager
@@ -338,7 +348,10 @@ class CmdDetectTests(unittest.TestCase):
         ):
             with patch("sys.stdout", out):
                 second_opinion.cmd_detect(ns())
-        self.assertEqual(json.loads(out.getvalue()), {"agy": True, "opencode": False})
+        self.assertEqual(
+            json.loads(out.getvalue()),
+            {"agy": True, "opencode": False, "copilot": False},
+        )
 
 
 class CmdReviewTests(unittest.TestCase):
@@ -391,6 +404,9 @@ class CmdReviewTests(unittest.TestCase):
                     "opencode": lambda p: (_ for _ in ()).throw(
                         second_opinion.BackendError("opencode broke")
                     ),
+                    "copilot": lambda p: (_ for _ in ()).throw(
+                        second_opinion.BackendError("copilot broke")
+                    ),
                 },
             ):
                 with self.assertRaises(SystemExit) as cm:
@@ -399,6 +415,7 @@ class CmdReviewTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("agy broke", err.getvalue())
         self.assertIn("opencode broke", err.getvalue())
+        self.assertIn("copilot broke", err.getvalue())
 
     def test_46_plan_file_contents_used_not_the_path(self) -> None:
         import tempfile

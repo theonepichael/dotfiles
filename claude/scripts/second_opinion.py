@@ -18,7 +18,7 @@ from pathlib import Path
 from types import FrameType
 from typing import NoReturn
 
-BACKEND_PRIORITY = ["agy", "opencode"]
+BACKEND_PRIORITY = ["agy", "opencode", "copilot"]
 BACKEND_TIMEOUT_SECONDS = 300
 
 _active_process: subprocess.Popen[str] | None = None
@@ -283,10 +283,27 @@ def run_opencode(prompt: str) -> str:
     raise BackendError(f"no text output: {stderr.strip() or stdout.strip()[:200]}")
 
 
-BACKEND_RUNNERS = {"agy": run_agy, "opencode": run_opencode}
+def run_copilot(prompt: str) -> str:
+    """Run the ``copilot`` backend and return its critique text.
+
+    No tool-permission flags are passed. Copilot CLI's permission system
+    (``copilot help permissions``) only gates ``shell``, ``write``, ``url``,
+    and MCP-server tools — its built-in file-read tool isn't gated at all,
+    confirmed empirically (a headless ``-p`` prompt asking it to read a
+    file succeeded with no ``--allow-*`` flags). A critique never needs to
+    write or run shell commands, so there's nothing to allow: unlike agy
+    (whose headless mode auto-denies even reads, see
+    ``meta-agy-headless-permission-skip``), Copilot needs no allow-rule
+    workaround here.
+    """
+    return run_backend_command(["copilot", "-p", prompt, "--silent"])
+
+
+BACKEND_RUNNERS = {"agy": run_agy, "opencode": run_opencode, "copilot": run_copilot}
 BACKEND_LABELS = {
     "agy": "agy (Gemini 3.1 Pro, High)",
     "opencode": "opencode (adversary agent, deepinfra/Qwen/Qwen3.7-Max)",
+    "copilot": "GitHub Copilot CLI",
 }
 
 
