@@ -125,12 +125,25 @@ curl, offline apt, missing sudo) is skipped and listed in a loud end-of-run
 summary with the reason; exit code is 1 if anything was skipped.
 
 Every file mutation (symlink created, file backed up, file copied) is recorded
-in `~/.local/state/dotfiles/last-run.tsv`. If you ran with the wrong profile:
+in `~/.local/state/dotfiles/history.tsv`, appended to on every run rather than
+overwritten — so `--rollback` reverses **every** run recorded there, not just
+the most recent one. If you've run `install.sh` several times (wrong profile,
+experimenting, whatever) and want back to a clean slate:
 
 ```sh
-./install.sh --rollback                          # reverses the last run's file mutations
+./install.sh --rollback                          # reverses every recorded run's file mutations
 ./install.sh --profile=work --harness=claude      # then re-run correctly
 ```
+
+A full rollback deletes the history file once everything's undone, so the
+next run starts fresh rather than carrying forward already-reversed entries.
+
+Rollback also skips-and-reports rather than aborting when something doesn't
+match what it expected — e.g. a symlink it created now points somewhere else
+(something else has since claimed that path) or a backup file is missing
+(already restored, or removed outside `install.sh`). Those get logged as
+`SKIPPED` lines and a summary count at the end, same as the main install
+flow; everything else still gets rolled back.
 
 Packages are never uninstalled by rollback — they're identical across
 profiles, so a wrong-profile run's real footprint is entirely file-level.

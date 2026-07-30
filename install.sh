@@ -7,7 +7,7 @@ DOTFILES="$(cd "$(dirname "$0")" && pwd)"
 OS="$(uname -s)"
 
 STATE_DIR="$HOME/.local/state/dotfiles"
-MANIFEST="$STATE_DIR/last-run.tsv"
+MANIFEST="$STATE_DIR/history.tsv"
 PROFILE_MARKER="$STATE_DIR/profile"
 
 is_mac()   { [[ "$OS" == "Darwin" ]] }
@@ -23,8 +23,8 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=per
               state its intent explicitly. Purely additive: omitting a harness
               you previously selected does NOT uninstall or clean it up,
               it just skips re-provisioning it this run. Removal is a
-              --rollback concern (the most recent run's manifest only) or
-              manual cleanup.
+              --rollback concern (reverses every run recorded in the
+              history file, not just the most recent one) or manual cleanup.
   --profile   personal (default) or work. Controls machine-level concerns
               ONLY: excludes watchcommit, excludes personal API-key setup,
               and seeds tightened settings/permission files where a
@@ -32,8 +32,11 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=per
               opencode.work.jsonc). Never restricts which harness(es) you
               can choose — --profile=work --harness=claude is honored as
               stated.
-  --rollback  reverse the previous run's file mutations (symlinks, copies,
-              backups) using the manifest, then exit. Packages are reported
+  --rollback  reverse every file mutation (symlinks, copies, backups) ever
+              recorded across all past runs, using the history file, then
+              exit. Not limited to the most recent run — running install.sh
+              several times over weeks and then rolling back undoes all of
+              it in one shot, oldest run included. Packages are reported
               but never uninstalled. Must be used alone (no --harness,
               --profile, or --force) — except --dry-run, see below.
   --force     override the work-profile guard on a machine previously
@@ -130,18 +133,32 @@ note_skip() {  # note_skip <step> <reason>
 # Run manifest (drives --rollback)
 # ============================================================================
 
+# history.tsv is append-only across every run, never truncated — this is
+# what makes --rollback a full-history undo instead of last-run-only: the
+# do_rollback loop below already walks the whole file in reverse, so once
+# old runs stop getting erased at the top of each new run, they're
+# automatically included in the next rollback too. A full rollback deletes
+# the file at the end, which is correct: at that point every recorded
+# mutation really has been undone, so the next run starts a genuinely fresh
+# history rather than one padded with already-reversed entries.
 manifest_init() {
   if (( DRY_RUN )); then
-    echo "  [dry-run] would initialize run manifest at $MANIFEST"
+    echo "  [dry-run] would record a new run in $MANIFEST"
     return
   fi
   mkdir -p "$STATE_DIR"
-  printf 'run\t%s\t%s\n' "$(date -Iseconds)" "$PROFILE" > "$MANIFEST"
+  printf 'run\t%s\t%s\n' "$(date -Iseconds)" "$PROFILE" >> "$MANIFEST"
 }
 
 record() {  # record <action> <path> [extra]  (paths never contain tabs)
   (( DRY_RUN )) && return
   printf '%s\t%s\t%s\n' "$1" "$2" "${3:-}" >> "$MANIFEST"
+}
+
+typeset -a ROLLBACK_SKIPPED
+rollback_skip() {  # rollback_skip <message>  — mirrors note_skip, own tally
+  ROLLBACK_SKIPPED+=("$1")
+  echo "  !! SKIPPED: $1"
 }
 
 do_rollback() {
@@ -151,20 +168,36 @@ do_rollback() {
   fi
   local -a lines
   lines=("${(@f)$(<"$MANIFEST")}")
+  local run_count=0 line
+  for line in "${lines[@]}"; do
+    [[ "$line" == run$'\t'* ]] && (( run_count++ ))
+  done
   if (( DRY_RUN )); then
-    echo "==> Would roll back run recorded at $MANIFEST"
+    echo "==> Would roll back $run_count recorded run(s) from $MANIFEST"
   else
-    echo "==> Rolling back run recorded at $MANIFEST"
+    echo "==> Rolling back $run_count recorded run(s) from $MANIFEST"
   fi
+  # Tracks which backup paths this pass has already restored, so an older,
+  # duplicate file-backed-up entry for the same path (recorded across an
+  # earlier backup/rollback/reinstall cycle) is recognized as already
+  # handled rather than misreported as a missing backup.
+  typeset -A RESTORED
   local i action a b
   for (( i = ${#lines}; i >= 1; i-- )); do
     IFS=$'\t' read -r action a b <<< "${lines[i]}"
     case "$action" in
       symlink-created)
-        if (( DRY_RUN )); then
-          [[ -L "$a" ]] && echo "  [dry-run] would remove symlink $a"
-        else
-          [[ -L "$a" ]] && rm "$a" && echo "  removed symlink $a"
+        # $b is the symlink's original target (recorded by symlink()); older
+        # shim-created entries predate that field and leave it empty, so
+        # they fall back to unconditionally removing whatever's there.
+        if [[ -L "$a" ]]; then
+          if [[ -n "$b" && "$(readlink "$a")" != "$b" ]]; then
+            rollback_skip "symlink $a now points to $(readlink "$a"), not $b — something else has claimed this path, leaving it alone"
+          elif (( DRY_RUN )); then
+            echo "  [dry-run] would remove symlink $a"
+          else
+            rm "$a" && echo "  removed symlink $a"
+          fi
         fi ;;
       file-copied)
         if (( DRY_RUN )); then
@@ -173,10 +206,14 @@ do_rollback() {
           [[ -f "$a" ]] && rm "$a" && echo "  removed $a"
         fi ;;
       file-backed-up)
-        if (( DRY_RUN )); then
-          [[ -e "$b" ]] && echo "  [dry-run] would restore $a from $b"
-        else
-          [[ -e "$b" ]] && mv "$b" "$a" && echo "  restored $a from $b"
+        if [[ -e "$b" ]]; then
+          if (( DRY_RUN )); then
+            echo "  [dry-run] would restore $a from $b"
+          else
+            mv "$b" "$a" && echo "  restored $a from $b" && RESTORED[$b]=1
+          fi
+        elif [[ -z "${RESTORED[$b]:-}" ]]; then
+          rollback_skip "backup $b for $a not found — already restored, or removed outside install.sh"
         fi ;;
       package-installed)
         echo "  package left installed (profile-independent): $a" ;;
@@ -190,7 +227,10 @@ do_rollback() {
     rm "$MANIFEST"
     echo "Rollback complete. Re-run ./install.sh with the intended profile."
   fi
-  exit 0
+  if (( ${#ROLLBACK_SKIPPED} )); then
+    echo "⚠ ${#ROLLBACK_SKIPPED} rollback step(s) did not apply cleanly (see SKIPPED lines above)"
+  fi
+  exit $(( ${#ROLLBACK_SKIPPED} > 0 ))
 }
 
 (( ROLLBACK )) && do_rollback
@@ -522,7 +562,7 @@ symlink() {
     fi
   fi
   if ln -sf "$src" "$dst"; then
-    (( was_link )) || record symlink-created "$dst"
+    (( was_link )) || record symlink-created "$dst" "$src"
     echo "  linked $dst"
   else
     note_skip "symlink $dst" "ln failed"

@@ -10,7 +10,7 @@ set -uo pipefail
 
 DOTFILES="$HOME/dotfiles"
 STATE_DIR="$HOME/.local/state/dotfiles"
-MANIFEST="$STATE_DIR/last-run.tsv"
+MANIFEST="$STATE_DIR/history.tsv"
 MARKER="$STATE_DIR/profile"
 
 cd "$DOTFILES"
@@ -30,6 +30,7 @@ check() {  # check <description> <command...>
 }
 
 manifest_has() { grep -qF "$1" "$MANIFEST"; }
+manifest_run_count() { [[ "$(grep -c $'^run\t' "$MANIFEST" 2>/dev/null)" -eq "$1" ]]; }
 
 echo "=== 1. Fresh personal install (--harness=claude) ==="
 ./install.sh --harness=claude >/tmp/install.out 2>&1
@@ -60,20 +61,19 @@ check "opencode NOT wired (not in --harness)" bash -c '[[ ! -e ~/.config/opencod
 
 echo ""
 echo "=== 1b. Re-run is idempotent — no re-download of the Nerd Font ==="
-# manifest_init() truncates $MANIFEST on every install.sh run, and symlinks
-# that already exist don't get re-recorded (the was_link gate in symlink()).
-# An extra run here would otherwise silently erase run 1's symlink-created /
-# file-copied records that section 2's rollback depends on below — back up
-# and restore the manifest so this idempotency check stays a no-op for
-# everything after it.
-cp "$MANIFEST" /tmp/manifest.bak
+# history.tsv is append-only (manifest_init appends a new run marker rather
+# than truncating), and symlinks that already exist don't get re-recorded
+# (the was_link gate in symlink()) — so a second run here just adds another
+# run marker on top of run 1's records instead of erasing them. No
+# backup/restore of the manifest needed around this rerun.
 font_mtime_before="$(stat -c %Y ~/.local/share/fonts/JetBrainsMonoNerdFont/.nerd-fonts-version)"
 ./install.sh --harness=claude >/tmp/install-rerun.out 2>&1
 cat /tmp/install-rerun.out
 font_mtime_after="$(stat -c %Y ~/.local/share/fonts/JetBrainsMonoNerdFont/.nerd-fonts-version)"
 check "version marker untouched by re-run (no re-download)" bash -c \
   "[[ '$font_mtime_before' -eq '$font_mtime_after' ]]"
-cp /tmp/manifest.bak "$MANIFEST"
+check "history.tsv now holds 2 run markers (run 1 + this rerun, nothing erased)" \
+  manifest_run_count 2
 
 echo ""
 echo "=== 2. Rollback undoes the personal install ==="
@@ -247,6 +247,60 @@ check "work opencode.jsonc has no kill" bash -c '! grep -q "\"kill\*\"" ~/.confi
 check "work opencode.jsonc has no nohup" bash -c '! grep -q "nohup" ~/.config/opencode/opencode.jsonc'
 check "work opencode.jsonc still has no xargs/awk either" \
   bash -c '! grep -qE "xargs|\"awk " ~/.config/opencode/opencode.jsonc'
+
+echo ""
+echo "=== 11. Full-history rollback: undoes every past run, not just the most recent ==="
+# Clean slate: previous scenarios leave the opencode work-profile run in
+# place with no marker cleanup.
+./install.sh --rollback >/tmp/rb-pre11.out 2>&1
+rm -f "$MARKER"
+
+./install.sh --harness=claude >/tmp/multi-run-a.out 2>&1
+cat /tmp/multi-run-a.out
+check "run A: Claude Code wired" bash -c '[[ -L ~/.claude/CLAUDE.md ]]'
+
+./install.sh --harness=opencode >/tmp/multi-run-b.out 2>&1
+cat /tmp/multi-run-b.out
+check "run B: opencode wired" bash -c '[[ -f ~/.config/opencode/opencode.jsonc ]]'
+check "history.tsv recorded both runs (2 run markers, not overwritten by run B)" \
+  manifest_run_count 2
+check "history.tsv still holds run A's claude symlink record after run B" \
+  manifest_has "symlink-created	$HOME/.claude/CLAUDE.md"
+
+./install.sh --rollback >/tmp/rollback-multi.out 2>&1
+cat /tmp/rollback-multi.out
+check "single rollback removes run A's files too (Claude), not just run B's" \
+  bash -c '[[ ! -e ~/.claude/CLAUDE.md ]]'
+check "single rollback removes run B's files (opencode)" \
+  bash -c '[[ ! -e ~/.config/opencode/opencode.jsonc ]]'
+check "history.tsv cleared after a full rollback" bash -c '[[ ! -f "'"$MANIFEST"'" ]]'
+
+echo ""
+echo "=== 12. Rollback skips and reports instead of aborting on the unexpected ==="
+echo "sentinel-content" > ~/.vimrc
+./install.sh --harness=claude >/tmp/pre12.out 2>&1
+cat /tmp/pre12.out
+
+# Something else claims a path install.sh symlinked — rollback must not
+# blindly delete a symlink that no longer points where it left it.
+rm ~/.claude/CLAUDE.md
+ln -s /etc/hostname ~/.claude/CLAUDE.md
+
+# The backup install.sh made for the pre-existing ~/.vimrc gets removed out
+# from under rollback (manual cleanup, disk pressure, whatever) — rollback
+# must report this, not silently no-op or abort.
+rm -f ~/.vimrc.bak
+
+./install.sh --rollback >/tmp/rollback12.out 2>&1
+rollback12_code=$?
+cat /tmp/rollback12.out
+check "rollback exits 1 when steps are skipped" bash -c "[[ $rollback12_code -eq 1 ]]"
+check "reclaimed symlink is left alone, not deleted" \
+  bash -c '[[ "$(readlink ~/.claude/CLAUDE.md)" == /etc/hostname ]]'
+check "reclaimed-symlink skip is reported" grep -q "something else has claimed this path" /tmp/rollback12.out
+check "missing-backup skip is reported" grep -q "not found — already restored, or removed outside install.sh" /tmp/rollback12.out
+check "skip count summary printed" grep -q "rollback step(s) did not apply cleanly" /tmp/rollback12.out
+rm -f ~/.claude/CLAUDE.md ~/.vimrc
 
 echo ""
 echo "════════ Scenario summary: $PASS passed, $FAIL failed ════════"

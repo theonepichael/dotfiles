@@ -6,6 +6,11 @@ implementation so the scope is explicit and reviewable on its own, separate
 from the `--rollback` code today (`install.sh` lines ~130–196, documented in
 `README.md` under "Failures, skips, and rollback").
 
+**Status: implemented.** The "Baseline" section below describes the
+pre-implementation behavior for context; see requirements #1–#4 for what
+changed and `README.md`'s "Failures, skips, and rollback" section for the
+current user-facing behavior.
+
 ## Baseline: what `--rollback` does today
 
 - Single manifest at `~/.local/state/dotfiles/last-run.tsv`, truncated and
