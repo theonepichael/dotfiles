@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+# NOT YET PORTED to the Python installer: this suite still asserts against
+# the bash-era TSV manifest ($MANIFEST below, history.tsv) and its tab-
+# separated record format, both of which install.py replaced with
+# history.jsonl. Its `check "..."` lines remain the behavioral spec — the
+# exact messages and exit codes they grep for are all preserved by
+# install.py, and test/test_install.py covers them in the fast tier — but
+# running this file as-is will fail on the manifest assertions until the
+# manifest_has/manifest_run_count helpers are rewritten for JSON Lines.
+#
 # Scenario suite for install.sh, meant to run inside test/run.sh's container.
 # Exercises the full lifecycle: fresh install, rollback, backup-and-restore
 # of a pre-existing dotfile, work profile + guard, --force override,

@@ -1,0 +1,309 @@
+# links.toml — the dotfile symlink table read by install.py.
+#
+# Every entry is one `~`-rooted destination symlinked at a repo-relative
+# source. Edit this file (not install.py) to add, move, or retire a
+# mapping; install.py only owns the mechanics.
+#
+# Per-entry fields:
+#   src              (required) repo-relative path to link from.
+#   dest             (required) destination path; a leading `~/` is expanded
+#                    against the invoking user's home at load time.
+#   harness          (optional) only linked when this harness is named in
+#                    --harness: claude, copilot, opencode, or agy. Absent =
+#                    linked regardless of harness selection.
+#   platform         (optional) "mac" or "linux". Absent = both.
+#   wsl              (optional) "exclude" to skip the entry under WSL,
+#                    "only" to restrict it to WSL. Absent = neither matters.
+#                    Used by the VS Code entries, whose real destination
+#                    under WSL lives on the Windows side and is derived at
+#                    run time from the `code` CLI on PATH (install.py).
+#   profile_exclude  (optional) list of profiles the entry is skipped on,
+#                    e.g. ["work"] for watchcommit, which auto-pushes to a
+#                    personal remote and has no place on work hardware.
+#
+# Order is preserved: entries are processed top to bottom, so the install
+# log (and the rollback that replays it in reverse) reads in this order.
+#
+# Not here, because they need more than a static mapping — see install.py:
+#   * ~/.claude/settings.json and ~/.config/opencode/opencode.jsonc are
+#     copied once with drift reporting, never symlinked (both tools rewrite
+#     them in place, which would silently detach a symlink), and pick a
+#     profile-specific seed.
+#   * The WSL VS Code destination (Windows-side AppData), derived at run
+#     time as described above.
+
+# ── common (both platforms, every harness) ───────────────────────────────
+
+[[link]]
+src = "vim/.vimrc"
+dest = "~/.vimrc"
+
+[[link]]
+src = "nvim"
+dest = "~/.config/nvim"
+
+[[link]]
+src = "zsh/.zshrc"
+dest = "~/.zshrc"
+
+[[link]]
+src = "zsh/.common_shell_aliases"
+dest = "~/.common_shell_aliases"
+
+[[link]]
+src = "shell/.poshtheme.omp.json"
+dest = "~/.poshtheme.omp.json"
+
+[[link]]
+src = "tmux/.tmux.conf"
+dest = "~/.tmux.conf"
+
+# ── Claude Code wiring ───────────────────────────────────────────────────
+
+[[link]]
+src = "claude/CLAUDE.md"
+dest = "~/.claude/CLAUDE.md"
+harness = "claude"
+
+[[link]]
+src = "claude/commands/dashboard.md"
+dest = "~/.claude/commands/dashboard.md"
+harness = "claude"
+
+[[link]]
+src = "claude/commands/grill-me.md"
+dest = "~/.claude/commands/grill-me.md"
+harness = "claude"
+
+[[link]]
+src = "claude/commands/make-skill.md"
+dest = "~/.claude/commands/make-skill.md"
+harness = "claude"
+
+[[link]]
+src = "claude/commands/standup.md"
+dest = "~/.claude/commands/standup.md"
+harness = "claude"
+
+[[link]]
+src = "claude/commands/second-opinion.md"
+dest = "~/.claude/commands/second-opinion.md"
+harness = "claude"
+
+[[link]]
+src = "claude/hooks/gsd-statusline.js"
+dest = "~/.claude/hooks/gsd-statusline.js"
+harness = "claude"
+
+# ── shared scripts ───────────────────────────────────────────────────────
+# Needed by Claude Code's hooks AND Copilot's AND opencode's hooks/skills
+# (opencode's own dashboard.md/grill-me.md commands call these same paths),
+# so these stay linked regardless of which harness(es) are selected.
+
+[[link]]
+src = "claude/scripts/dev_status.py"
+dest = "~/.claude/scripts/dev_status.py"
+
+[[link]]
+src = "claude/scripts/gen_claude_completion.py"
+dest = "~/.claude/scripts/gen_claude_completion.py"
+
+[[link]]
+src = "claude/scripts/grill.py"
+dest = "~/.claude/scripts/grill.py"
+
+[[link]]
+src = "claude/scripts/second_opinion.py"
+dest = "~/.claude/scripts/second_opinion.py"
+
+[[link]]
+src = "claude/scripts/standup.py"
+dest = "~/.claude/scripts/standup.py"
+
+[[link]]
+src = "claude/scripts/standup_adapters.py"
+dest = "~/.claude/scripts/standup_adapters.py"
+
+[[link]]
+src = "claude/scripts/dotfiles_sync_check.py"
+dest = "~/.claude/scripts/dotfiles_sync_check.py"
+
+# ── GitHub Copilot CLI wiring ────────────────────────────────────────────
+# claude/CLAUDE.md is deliberately the same file on both sides — the
+# backlog/pending-items workflow prose is tool-agnostic, so there is no
+# separate Copilot instructions file to maintain.
+
+[[link]]
+src = "claude/CLAUDE.md"
+dest = "~/.copilot/copilot-instructions.md"
+harness = "copilot"
+
+[[link]]
+src = "copilot/hooks/session-start.json"
+dest = "~/.copilot/hooks/session-start.json"
+harness = "copilot"
+
+[[link]]
+src = "copilot/skills/dashboard/SKILL.md"
+dest = "~/.copilot/skills/dashboard/SKILL.md"
+harness = "copilot"
+
+[[link]]
+src = "copilot/skills/standup/SKILL.md"
+dest = "~/.copilot/skills/standup/SKILL.md"
+harness = "copilot"
+
+[[link]]
+src = "copilot/skills/second-opinion/SKILL.md"
+dest = "~/.copilot/skills/second-opinion/SKILL.md"
+harness = "copilot"
+
+[[link]]
+src = "copilot/skills/grill-me/SKILL.md"
+dest = "~/.copilot/skills/grill-me/SKILL.md"
+harness = "copilot"
+
+[[link]]
+src = "copilot/skills/make-skill/SKILL.md"
+dest = "~/.copilot/skills/make-skill/SKILL.md"
+harness = "copilot"
+
+[[link]]
+src = "copilot/aliases.zsh"
+dest = "~/.copilot_aliases"
+harness = "copilot"
+
+# ── opencode ─────────────────────────────────────────────────────────────
+# AGENTS.md is intentionally unmanaged: opencode already reads
+# ~/.claude/CLAUDE.md directly as a legacy fallback when no AGENTS.md
+# exists (opencode/CLAUDE_CODE_PARITY.md §1), so a second copy of the same
+# content under another path buys nothing.
+
+[[link]]
+src = "opencode/tui.json"
+dest = "~/.config/opencode/tui.json"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/dashboard.md"
+dest = "~/.config/opencode/commands/dashboard.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/grill-me.md"
+dest = "~/.config/opencode/commands/grill-me.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/make-skill.md"
+dest = "~/.config/opencode/commands/make-skill.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/second-opinion.md"
+dest = "~/.config/opencode/commands/second-opinion.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/standup.md"
+dest = "~/.config/opencode/commands/standup.md"
+harness = "opencode"
+
+# ── agy (Google Antigravity CLI, Gemini-backed) ──────────────────────────
+# agy specifically looks for ~/.gemini/GEMINI.md (no CLAUDE.md fallback
+# like opencode's), so it needs a real link of its own. Skills live under
+# the current post-migration global path ~/.gemini/antigravity-cli/skills/,
+# NOT the legacy bare ~/.gemini/skills/ — see agy/CLAUDE_CODE_PARITY.md.
+
+[[link]]
+src = "claude/CLAUDE.md"
+dest = "~/.gemini/GEMINI.md"
+harness = "agy"
+
+[[link]]
+src = "agy/skills/dashboard/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/dashboard/SKILL.md"
+harness = "agy"
+
+[[link]]
+src = "agy/skills/standup/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/standup/SKILL.md"
+harness = "agy"
+
+[[link]]
+src = "agy/skills/second-opinion/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/second-opinion/SKILL.md"
+harness = "agy"
+
+[[link]]
+src = "agy/skills/grill-me/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/grill-me/SKILL.md"
+harness = "agy"
+
+[[link]]
+src = "agy/skills/make-skill/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/make-skill/SKILL.md"
+harness = "agy"
+
+# ── watchcommit (personal machines only) ─────────────────────────────────
+# It auto-pushes to a personal remote under your personal Claude account
+# login, which has no place on work hardware.
+
+[[link]]
+src = "scripts/watchcommit.py"
+dest = "~/.local/bin/watchcommit"
+profile_exclude = ["work"]
+
+[[link]]
+src = "systemd/watchcommit.service"
+dest = "~/.config/systemd/user/watchcommit.service"
+platform = "linux"
+profile_exclude = ["work"]
+
+[[link]]
+src = "launchd/com.user.watchcommit.plist"
+dest = "~/Library/LaunchAgents/com.user.watchcommit.plist"
+platform = "mac"
+profile_exclude = ["work"]
+
+# ── macOS-only configs ───────────────────────────────────────────────────
+# .zprofile carries the Homebrew shellenv; on Linux, secrets and NVM are
+# sourced from .zshrc instead.
+
+[[link]]
+src = "zsh/.zprofile"
+dest = "~/.zprofile"
+platform = "mac"
+
+[[link]]
+src = "karabiner/karabiner.json"
+dest = "~/.config/karabiner/karabiner.json"
+platform = "mac"
+
+# ── VS Code ──────────────────────────────────────────────────────────────
+# Not mac-only: VS Code runs on Linux and WSL too, just at a different
+# config path per OS. The WSL destination is Windows-side and derived at
+# run time, so those two entries are excluded here and handled in
+# install.py.
+
+[[link]]
+src = "vscode/settings.json"
+dest = "~/Library/Application Support/Code/User/settings.json"
+platform = "mac"
+
+[[link]]
+src = "vscode/keybindings.json"
+dest = "~/Library/Application Support/Code/User/keybindings.json"
+platform = "mac"
+
+[[link]]
+src = "vscode/settings.json"
+dest = "~/.config/Code/User/settings.json"
+platform = "linux"
+wsl = "exclude"
+
+[[link]]
+src = "vscode/keybindings.json"
+dest = "~/.config/Code/User/keybindings.json"
+platform = "linux"
+wsl = "exclude"
