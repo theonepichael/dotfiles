@@ -7,22 +7,16 @@ unfinished session keeps its open questions, so it can resume in a later
 conversation. The plan document itself is authored by the model as a separate
 markdown artifact, informed by these decision points; the session stores only a
 pointer to it (plan_path). `render` prints session status, not the plan.
-
-Requires Python 3.12+.
 """
 
 import argparse
-import fcntl
 import json
 import os
 import re
 import sys
 import tempfile
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
-from typing import NoReturn, TypedDict, cast
 
 DATA_DIR = Path.home() / ".claude" / "data" / "grill"
 SCHEMA_VERSION = 1
@@ -35,95 +29,30 @@ ID_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 ID_MIN, ID_MAX = 2, 48
 
 
-# ── data model ───────────────────────────────────────────────────────────────
-
-
-class Verdict(TypedDict):
-    """A recorded verification result for one decision."""
-
-    result: str
-    evidence: str
-    date: str
-
-
-class Decision(TypedDict):
-    """One decision point within a grill session.
-
-    ``decision`` and ``source`` are ``None`` while the point is still open
-    (see :func:`is_open`). ``verdict`` is ``None`` until :func:`cmd_verdict`
-    records one, and is reset to ``None`` whenever :func:`cmd_revise`
-    changes the underlying text.
-    """
-
-    id: str
-    question: str
-    reasoning: str
-    decision: str | None
-    source: str | None
-    verdict: Verdict | None
-
-
-class Session(TypedDict):
-    """A grill session as stored at ``DATA_DIR/<slug>.json``."""
-
-    schema_version: int
-    slug: str
-    topic: str
-    created: str
-    updated: str
-    plan_path: str | None
-    decisions: list[Decision]
-
-
-type DecisionList = list[Decision]
-
-
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
 def today() -> str:
-    """Return today's date as an ISO-8601 string (``YYYY-MM-DD``)."""
     return date.today().isoformat()
 
 
 def now() -> str:
-    """Return the current local time as a full ISO-8601 timestamp.
-
-    A full timestamp (not just a date) so same-day sessions never tie in
-    :func:`_resolve_slug`'s latest-when-omitted rule. Date-only values in
-    old files still sort correctly against these (prefix ordering), so no
-    migration is needed.
-    """
+    # Full timestamp so same-day sessions never tie in resolve_session's
+    # latest-when-omitted rule. Date-only values in old files sort correctly
+    # against these (prefix ordering), so no migration is needed.
     return datetime.now().isoformat()
 
 
-def die(context: str, msg: str) -> NoReturn:
-    """Print an error to stderr and exit the process with status 1.
-
-    Args:
-        context: Command name to prefix onto the message.
-        msg: The error message.
-    """
+def die(context: str, msg: str) -> None:
     print(f"[{context}] {msg}", file=sys.stderr)
     sys.exit(1)
 
 
 def slugify(text: str) -> str:
-    """Lowercase ``text`` and collapse runs of non-alphanumerics to single hyphens."""
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
 def validate_decision_id(decision_id: str, context: str) -> None:
-    """Validate a decision id's format and length.
-
-    Args:
-        decision_id: The candidate id.
-        context: Command name to prefix onto any error message.
-
-    Raises:
-        SystemExit: If ``decision_id`` isn't lowercase kebab-case or is
-            outside ``[ID_MIN, ID_MAX]`` characters.
-    """
     if not ID_RE.match(decision_id):
         die(context, f"invalid decision id '{decision_id}' — lowercase kebab-case")
     if not (ID_MIN <= len(decision_id) <= ID_MAX):
@@ -135,71 +64,23 @@ def validate_decision_id(decision_id: str, context: str) -> None:
 
 
 def parse_json_arg(raw: str, context: str) -> dict[str, object]:
-    """Parse a CLI argument as a JSON object.
-
-    Args:
-        raw: The raw argument text.
-        context: Command name to prefix onto any error message.
-
-    Returns:
-        The decoded JSON object.
-
-    Raises:
-        SystemExit: If ``raw`` isn't valid JSON, or decodes to something
-            other than a JSON object. Exits with status 1 after printing
-            to stderr.
-    """
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as e:
         die(context, f"invalid JSON: {e}")
     if not isinstance(parsed, dict):
         die(context, "expected a JSON object")
-    return cast(dict[str, object], parsed)
-
-
-def _text(patch: dict[str, object], key: str, default: str = "") -> str:
-    """Extract a string field from a JSON patch.
-
-    Treats a missing key and an explicit JSON ``null`` identically, both
-    collapsing to ``default``. Without this, ``str(None)`` would silently
-    turn an explicit ``null`` into the four-character string ``"None"``,
-    which then passes any truthiness check meant to catch a missing
-    required field (and, rendered back out, reads as a real value).
-
-    Args:
-        patch: The decoded JSON patch.
-        key: The field to extract.
-        default: Value to use when the field is missing or ``null``.
-    """
-    value = patch.get(key)
-    if value is None:
-        return default
-    return str(value)
+    return parsed
 
 
 # ── I/O ───────────────────────────────────────────────────────────────────────
 
 
 def session_path(slug: str) -> Path:
-    """Return the on-disk path for the session identified by ``slug``."""
     return DATA_DIR / f"{slug}.json"
 
 
-def load_session(slug: str) -> Session:
-    """Load one session by slug.
-
-    Args:
-        slug: The session's slug.
-
-    Returns:
-        The decoded session.
-
-    Raises:
-        SystemExit: If the file is missing, contains invalid JSON, or has
-            an unrecognized schema version. Exits with status 1 after
-            printing a diagnostic to stderr.
-    """
+def load_session(slug: str) -> dict[str, object]:
     path = session_path(slug)
     try:
         data = json.loads(path.read_text())
@@ -216,18 +97,17 @@ def load_session(slug: str) -> Session:
             file=sys.stderr,
         )
         sys.exit(1)
-    return cast(Session, data)
+    return data
 
 
-def save_session(session: Session) -> None:
-    """Atomically persist ``session`` to its slug-derived path."""
+def save_session(session: dict[str, object]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(session, indent=2)
     fd, tmp_path = tempfile.mkstemp(dir=DATA_DIR, prefix=".session_tmp_")
     try:
         with os.fdopen(fd, "w") as f:
             f.write(payload)
-        os.replace(tmp_path, session_path(session["slug"]))
+        os.replace(tmp_path, session_path(str(session["slug"])))
     except Exception:
         try:
             os.unlink(tmp_path)
@@ -237,125 +117,52 @@ def save_session(session: Session) -> None:
 
 
 def all_session_slugs() -> list[str]:
-    """Return every session slug on disk, sorted, or ``[]`` if none exist."""
     if not DATA_DIR.exists():
         return []
     return sorted(p.stem for p in DATA_DIR.glob("*.json"))
 
 
-@contextmanager
-def _flock(path: Path) -> Iterator[None]:
-    """Hold an exclusive advisory lock on ``path`` for the block's duration."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
-
-
-@contextmanager
-def session_lock(slug: str) -> Iterator[None]:
-    """Hold an exclusive lock over one session's read-modify-write cycle.
-
-    Serializes concurrent mutators of the same session file — e.g. two
-    agents in different terminals racing a ``decide`` and a ``verdict``
-    against the same slug — so a read-modify-write cycle can't interleave
-    and silently lose one side's write. Every mutating subcommand
-    (``ask``/``decide``/``revise``/``rm``/``verdict``/``plan``) resolves
-    its target slug, acquires this lock, then reloads the session fresh
-    before mutating — never operating on a copy read before the lock was
-    held.
-    """
-    with _flock(DATA_DIR / f".{slug}.lock"):
-        yield
-
-
-@contextmanager
-def _new_session_lock() -> Iterator[None]:
-    """Hold an exclusive lock over `cmd_new`'s free-slug scan and create.
-
-    Without this, two concurrent ``new`` calls that both compute the same
-    free slug would race: the second `save_session` would silently
-    overwrite the first session file instead of picking a different slug.
-    """
-    with _flock(DATA_DIR / "._new_session.lock"):
-        yield
-
-
-def _resolve_slug(arg: str | None, context: str) -> str:
-    """Resolve ``--session`` to a slug: exact match, unique substring, or latest.
-
-    Args:
-        arg: The ``--session`` value (exact slug or substring), or ``None``
-            to resolve to the most recently updated session.
-        context: Command name to prefix onto any error message.
-
-    Returns:
-        The resolved slug.
-
-    Raises:
-        SystemExit: If no sessions exist, ``arg`` matches none, or ``arg``
-            matches more than one slug ambiguously.
-    """
+def resolve_session(arg: str | None, context: str) -> dict[str, object]:
+    """Resolve --session (exact slug, unique substring, or latest when omitted)."""
     slugs = all_session_slugs()
     if not slugs:
         die(context, "no grill sessions exist — create one with 'new'")
 
     if arg is None:
         sessions = [load_session(s) for s in slugs]
-        latest = max(sessions, key=lambda s: (s["updated"], s["slug"]))
-        return latest["slug"]
+        return max(sessions, key=lambda s: (str(s.get("updated", "")), str(s["slug"])))
 
     if arg in slugs:
-        return arg
+        return load_session(arg)
 
     matches = [s for s in slugs if arg in s]
     if len(matches) == 1:
-        return matches[0]
+        return load_session(matches[0])
     if not matches:
         die(context, f"no session matches '{arg}' — have: {', '.join(slugs)}")
     die(context, f"'{arg}' is ambiguous: {', '.join(matches)}")
+    raise AssertionError("unreachable")
 
 
-def resolve_session(arg: str | None, context: str) -> Session:
-    """Resolve ``--session`` (see :func:`_resolve_slug`) and load it."""
-    return load_session(_resolve_slug(arg, context))
-
-
-def find_decision(session: Session, decision_id: str, context: str) -> Decision:
-    """Find a decision by id within a session.
-
-    Args:
-        session: The session to search.
-        decision_id: The decision's id.
-        context: Command name to prefix onto any error message.
-
-    Returns:
-        The matching decision.
-
-    Raises:
-        SystemExit: If no decision with that id exists in the session.
-    """
-    for decision in session["decisions"]:
+def find_decision(
+    session: dict[str, object], decision_id: str, context: str
+) -> dict[str, object]:
+    for decision in session["decisions"]:  # type: ignore[union-attr]
         if decision["id"] == decision_id:
             return decision
     die(context, f"no decision '{decision_id}' in session {session['slug']}")
+    raise AssertionError("unreachable")
 
 
-def is_open(decision: Decision) -> bool:
-    """Return whether ``decision`` has not yet been decided."""
+def is_open(decision: dict[str, object]) -> bool:
     return decision.get("decision") is None
 
 
-def confirm(context: str, session: Session, detail: str) -> None:
-    """Echo a mutating command's outcome to stderr."""
+def confirm(context: str, session: dict[str, object], detail: str) -> None:
     print(f"[{context}] {session['slug']}: {detail}", file=sys.stderr)
 
 
-def touch(session: Session) -> None:
-    """Stamp ``session['updated']`` with the current timestamp, in place."""
+def touch(session: dict[str, object]) -> None:
     session["updated"] = now()
 
 
@@ -363,17 +170,11 @@ def touch(session: Session) -> None:
 
 
 def _cell(text: str) -> str:
-    """Escape ``text`` for safe embedding in a Markdown table cell."""
     return text.replace("|", "\\|").replace("\n", " ")
 
 
-def render_markdown(session: Session) -> str:
-    """Render a session's status as a Markdown document.
-
-    Includes a summary line, any open questions, a decision table, and
-    verification evidence for decisions that have a recorded verdict.
-    """
-    decisions = session["decisions"]
+def render_markdown(session: dict[str, object]) -> str:
+    decisions: list[dict[str, object]] = session["decisions"]  # type: ignore
     open_qs = [d for d in decisions if is_open(d)]
     decided = [d for d in decisions if not is_open(d)]
     verdicts = [d for d in decided if d.get("verdict")]
@@ -382,7 +183,7 @@ def render_markdown(session: Session) -> str:
     lines = [
         f"# Grill status: {session['topic']}",
         "",
-        f"_{session['created'][:10]} · updated {session['updated'][:10]} · "
+        f"_{str(session['created'])[:10]} · updated {str(session['updated'])[:10]} · "
         f"{len(decided)}/{len(decisions)} decided · {len(verdicts)} verified_",
         "",
         f"_plan: {plan_path}_" if plan_path else "_plan: not written yet_",
@@ -402,18 +203,17 @@ def render_markdown(session: Session) -> str:
             "|----------|-----------------|--------|----------|",
         ]
         for d in decided:
-            verdict = d.get("verdict")
-            result = verdict["result"] if verdict else ""
+            verdict = d.get("verdict") or {}
+            result = str(verdict.get("result", "")) if verdict else ""
             lines.append(
-                f"| {_cell(d['id'])} | {_cell(str(d['decision']))} "
+                f"| {_cell(str(d['id']))} | {_cell(str(d['decision']))} "
                 f"| {d['source']} | {result} |"
             )
 
     if verdicts:
         lines += ["", "## Verification evidence", ""]
         for d in verdicts:
-            v = d["verdict"]
-            assert v is not None  # filtered into `verdicts` above
+            v: dict[str, object] = d["verdict"]  # type: ignore[assignment]
             lines.append(
                 f"- **{d['id']}** — {v['result']} ({v['date']}): {v['evidence']}"
             )
@@ -425,253 +225,209 @@ def render_markdown(session: Session) -> str:
 
 
 def cmd_new(args: argparse.Namespace) -> None:
-    """Handle ``new``: create a session and print its slug on stdout."""
     patch = parse_json_arg(args.json, "new")
-    topic = _text(patch, "topic").strip()
+    topic = str(patch.get("topic", "")).strip()
     if not topic:
         die("new", "'topic' is required")
 
     base = (
-        _text(patch, "slug").strip() or f"{today()}-{slugify(topic)[:32].rstrip('-')}"
+        str(patch.get("slug", "")).strip()
+        or f"{today()}-{slugify(topic)[:32].rstrip('-')}"
     )
     if not ID_RE.match(base):
         die("new", f"invalid slug '{base}' — lowercase kebab-case")
 
-    with _new_session_lock():
-        slug = base
-        existing = set(all_session_slugs())
-        for n in range(2, 100):
-            if slug not in existing:
-                break
-            slug = f"{base}-{n}"
-        else:
-            die("new", f"could not find a free slug for '{base}'")
+    slug = base
+    existing = set(all_session_slugs())
+    for n in range(2, 100):
+        if slug not in existing:
+            break
+        slug = f"{base}-{n}"
+    else:
+        die("new", f"could not find a free slug for '{base}'")
 
-        session: Session = {
-            "schema_version": SCHEMA_VERSION,
-            "slug": slug,
-            "topic": topic,
-            "created": now(),
-            "updated": now(),
-            "plan_path": None,
-            "decisions": [],
-        }
-        save_session(session)
+    session: dict[str, object] = {
+        "schema_version": SCHEMA_VERSION,
+        "slug": slug,
+        "topic": topic,
+        "created": now(),
+        "updated": now(),
+        "plan_path": None,
+        "decisions": [],
+    }
+    save_session(session)
     confirm("new", session, topic)
     print(slug)
 
 
 def cmd_ask(args: argparse.Namespace) -> None:
-    """Handle ``ask``: register an open decision point."""
-    slug = _resolve_slug(args.session, "ask")
+    session = resolve_session(args.session, "ask")
     patch = parse_json_arg(args.json, "ask")
 
-    decision_id = _text(patch, "id").strip()
+    decision_id = str(patch.get("id", "")).strip()
     if not decision_id:
         die("ask", "'id' is required")
     validate_decision_id(decision_id, "ask")
 
-    question = _text(patch, "question").strip()
+    question = str(patch.get("question", "")).strip()
     if not question:
         die("ask", "'question' is required")
 
-    reasoning = _text(patch, "reasoning").strip()
+    decisions: list[dict[str, object]] = session["decisions"]  # type: ignore
+    if any(d["id"] == decision_id for d in decisions):
+        die("ask", f"duplicate decision id: {decision_id}")
 
-    with session_lock(slug):
-        session = load_session(slug)
-        decisions = session["decisions"]
-        if any(d["id"] == decision_id for d in decisions):
-            die("ask", f"duplicate decision id: {decision_id}")
-
-        decisions.append(
-            {
-                "id": decision_id,
-                "question": question,
-                "reasoning": reasoning,
-                "decision": None,
-                "source": None,
-                "verdict": None,
-            }
-        )
-        touch(session)
-        save_session(session)
+    decisions.append(
+        {
+            "id": decision_id,
+            "question": question,
+            "reasoning": str(patch.get("reasoning", "")).strip(),
+            "decision": None,
+            "source": None,
+            "verdict": None,
+        }
+    )
+    touch(session)
+    save_session(session)
     confirm("ask", session, f"? {decision_id} — {question[:60]}")
 
 
 def cmd_decide(args: argparse.Namespace) -> None:
-    """Handle ``decide``: resolve an open decision point, or add+decide in one shot."""
-    slug = _resolve_slug(args.session, "decide")
+    session = resolve_session(args.session, "decide")
     patch = parse_json_arg(args.json, "decide")
 
-    decision_id = _text(patch, "id").strip()
+    decision_id = str(patch.get("id", "")).strip()
     if not decision_id:
         die("decide", "'id' is required")
     validate_decision_id(decision_id, "decide")
 
-    question = _text(patch, "question").strip()
-    decision_text = _text(patch, "decision").strip()
+    question = str(patch.get("question", "")).strip()
+    decision_text = str(patch.get("decision", "")).strip()
     if not decision_text:
         die("decide", "'decision' is required")
 
-    source = _text(patch, "source", "user")
+    source = str(patch.get("source", "user"))
     if source not in VALID_SOURCES:
         die(
             "decide",
             f"invalid source '{source}' — one of: {', '.join(sorted(VALID_SOURCES))}",
         )
 
-    reasoning_given = "reasoning" in patch
-    reasoning = _text(patch, "reasoning").strip()
+    decisions: list[dict[str, object]] = session["decisions"]  # type: ignore
+    existing = next((d for d in decisions if d["id"] == decision_id), None)
 
-    with session_lock(slug):
-        session = load_session(slug)
-        decisions = session["decisions"]
-        existing = next((d for d in decisions if d["id"] == decision_id), None)
-
-        if existing is not None:
-            if not is_open(existing):
-                die("decide", f"'{decision_id}' is already decided — use revise")
-            existing["decision"] = decision_text
-            existing["source"] = source
-            if question:
-                existing["question"] = question
-            if reasoning_given:
-                existing["reasoning"] = reasoning
-        else:
-            if not question:
-                die(
-                    "decide",
-                    "'question' is required for a decision point not registered via ask",
-                )
-            decisions.append(
-                {
-                    "id": decision_id,
-                    "question": question,
-                    "reasoning": reasoning,
-                    "decision": decision_text,
-                    "source": source,
-                    "verdict": None,
-                }
+    if existing is not None:
+        if not is_open(existing):
+            die("decide", f"'{decision_id}' is already decided — use revise")
+        existing["decision"] = decision_text
+        existing["source"] = source
+        if question:
+            existing["question"] = question
+        if "reasoning" in patch:
+            existing["reasoning"] = str(patch["reasoning"]).strip()
+    else:
+        if not question:
+            die(
+                "decide",
+                "'question' is required for a decision point not registered via ask",
             )
+        decisions.append(
+            {
+                "id": decision_id,
+                "question": question,
+                "reasoning": str(patch.get("reasoning", "")).strip(),
+                "decision": decision_text,
+                "source": source,
+                "verdict": None,
+            }
+        )
 
-        touch(session)
-        save_session(session)
+    touch(session)
+    save_session(session)
     confirm("decide", session, f"{decision_id} ({source}) — {decision_text[:60]}")
 
 
 def cmd_revise(args: argparse.Namespace) -> None:
-    """Handle ``revise``: amend a decision's text (resets its verdict).
-
-    Rejects blanking out ``question``/``decision`` via revise (whether by
-    explicit ``null`` or an empty string) — that would silently walk an
-    already-decided item back toward "open" without going through
-    :func:`cmd_decide`'s own validation, and without :func:`is_open`
-    (which only checks for ``None``) ever flagging it.
-    """
-    slug = _resolve_slug(args.session, "revise")
+    session = resolve_session(args.session, "revise")
     patch = parse_json_arg(args.patch, "revise")
 
     bad = set(patch) - REVISABLE_FIELDS
     if bad:
         die("revise", f"cannot revise field(s): {', '.join(sorted(bad))}")
+    if "source" in patch and patch["source"] not in VALID_SOURCES:
+        die("revise", f"invalid source '{patch['source']}'")
 
-    normalized: dict[str, str] = {}
-    for field in ("question", "decision", "reasoning"):
-        if field in patch:
-            text = _text(patch, field)
-            if field in ("question", "decision") and not text.strip():
-                die("revise", f"'{field}' cannot be blank")
-            normalized[field] = text
-    if "source" in patch:
-        source = _text(patch, "source")
-        if source not in VALID_SOURCES:
-            die("revise", f"invalid source '{source}'")
-        normalized["source"] = source
-
-    with session_lock(slug):
-        session = load_session(slug)
-        decision = find_decision(session, args.decision_id, "revise")
-        if is_open(decision) and ({"decision", "source"} & set(normalized)):
-            die(
-                "revise", f"'{args.decision_id}' is still open — resolve it with decide"
-            )
-        cast(dict[str, object], decision).update(normalized)
-        note = ""
-        if decision.get("verdict"):
-            decision["verdict"] = None
-            note = " (verdict reset — re-verify)"
-        touch(session)
-        save_session(session)
+    decision = find_decision(session, args.decision_id, "revise")
+    if is_open(decision) and ({"decision", "source"} & set(patch)):
+        die("revise", f"'{args.decision_id}' is still open — resolve it with decide")
+    decision.update(patch)
+    note = ""
+    if decision.get("verdict"):
+        decision["verdict"] = None
+        note = " (verdict reset — re-verify)"
+    touch(session)
+    save_session(session)
     confirm("revise", session, f"{args.decision_id} updated{note}")
 
 
 def cmd_rm(args: argparse.Namespace) -> None:
-    """Handle ``rm``: remove a decision point from a session."""
-    slug = _resolve_slug(args.session, "rm")
-    with session_lock(slug):
-        session = load_session(slug)
-        decision = find_decision(session, args.decision_id, "rm")
-        session["decisions"].remove(decision)
-        state = "open" if is_open(decision) else "decided"
-        touch(session)
-        save_session(session)
+    session = resolve_session(args.session, "rm")
+    decision = find_decision(session, args.decision_id, "rm")
+    decisions: list[dict[str, object]] = session["decisions"]  # type: ignore
+    decisions.remove(decision)
+    state = "open" if is_open(decision) else "decided"
+    touch(session)
+    save_session(session)
     confirm("rm", session, f"removed {args.decision_id} ({state})")
 
 
 def cmd_verdict(args: argparse.Namespace) -> None:
-    """Handle ``verdict``: record a verification result for a decided item."""
-    slug = _resolve_slug(args.session, "verdict")
+    session = resolve_session(args.session, "verdict")
     patch = parse_json_arg(args.json, "verdict")
 
-    result = _text(patch, "result")
+    result = str(patch.get("result", ""))
     if result not in VALID_RESULTS:
         die(
             "verdict",
             f"invalid result '{result}' — one of: {', '.join(sorted(VALID_RESULTS))}",
         )
 
-    evidence = _text(patch, "evidence").strip()
+    evidence = str(patch.get("evidence", "")).strip()
     if result in EVIDENCE_REQUIRED and not evidence:
         die(
             "verdict",
             f"{result} requires 'evidence' — what experiment was run, what happened",
         )
 
-    with session_lock(slug):
-        session = load_session(slug)
-        decision = find_decision(session, args.decision_id, "verdict")
-        if is_open(decision):
-            die(
-                "verdict",
-                f"'{args.decision_id}' is still open — decide it before verifying",
-            )
-        decision["verdict"] = {"result": result, "evidence": evidence, "date": today()}
-        touch(session)
-        save_session(session)
+    decision = find_decision(session, args.decision_id, "verdict")
+    if is_open(decision):
+        die(
+            "verdict",
+            f"'{args.decision_id}' is still open — decide it before verifying",
+        )
+    decision["verdict"] = {"result": result, "evidence": evidence, "date": today()}
+    touch(session)
+    save_session(session)
     confirm("verdict", session, f"{args.decision_id}: {result}")
 
 
 def cmd_plan(args: argparse.Namespace) -> None:
-    """Handle ``plan``: record the path of the model-authored plan artifact."""
-    slug = _resolve_slug(args.session, "plan")
+    session = resolve_session(args.session, "plan")
     path = Path(args.path).expanduser()
     if not path.exists():
         die(
             "plan",
             f"plan artifact not found at {path} — write it first, then record it",
         )
-    with session_lock(slug):
-        session = load_session(slug)
-        session["plan_path"] = str(path)
-        touch(session)
-        save_session(session)
+    session["plan_path"] = str(path)
+    touch(session)
+    save_session(session)
     confirm("plan", session, f"plan artifact recorded: {path}")
 
 
 def cmd_next(args: argparse.Namespace) -> None:
-    """Handle ``next``: print the first open decision point, if any."""
     session = resolve_session(args.session, "next")
-    for d in session["decisions"]:
+    for d in session["decisions"]:  # type: ignore[union-attr]
         if is_open(d):
             print(f"{d['id']}: {d['question']}")
             if d.get("reasoning"):
@@ -681,27 +437,24 @@ def cmd_next(args: argparse.Namespace) -> None:
 
 
 def cmd_render(args: argparse.Namespace) -> None:
-    """Handle ``render``: print session status as Markdown."""
     session = resolve_session(args.session, "render")
     print(render_markdown(session), end="")
 
 
 def cmd_list(args: argparse.Namespace) -> None:
-    """Handle ``list``: print one summary line per session, tab-separated."""
     for slug in all_session_slugs():
         session = load_session(slug)
-        decisions = session["decisions"]
+        decisions: list[dict[str, object]] = session["decisions"]  # type: ignore
         decided = [d for d in decisions if not is_open(d)]
         verified = sum(1 for d in decided if d.get("verdict"))
         print(
-            f"{slug}\t{session.get('updated', '')[:10]}\t"
+            f"{slug}\t{str(session.get('updated', ''))[:10]}\t"
             f"{len(decided)}/{len(decisions)} decided\t{verified} verified\t"
             f"{session.get('topic', '')}"
         )
 
 
 def cmd_show(args: argparse.Namespace) -> None:
-    """Handle ``show``: print a session (or one decision within it) as JSON."""
     session = resolve_session(args.session, "show")
     if args.decision_id:
         print(json.dumps(find_decision(session, args.decision_id, "show"), indent=2))
@@ -713,7 +466,6 @@ def cmd_show(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    """Parse argv and dispatch to the matching subcommand handler."""
     parser = argparse.ArgumentParser(
         description="grill-me session state CLI (all mutations go through here)",
     )
@@ -783,7 +535,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
+    dispatch = {
         "new": cmd_new,
         "ask": cmd_ask,
         "decide": cmd_decide,

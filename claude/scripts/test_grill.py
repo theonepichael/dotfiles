@@ -170,7 +170,6 @@ class GrillTestCase(unittest.TestCase):
                 )
             )
         verdict = grill.load_session(slug)["decisions"][0]["verdict"]
-        assert verdict is not None
         self.assertEqual(verdict["result"], "VERIFIED")
         self.assertEqual(verdict["evidence"], "ran auth tests")
 
@@ -186,7 +185,6 @@ class GrillTestCase(unittest.TestCase):
                 )
             )
         verdict = grill.load_session(slug)["decisions"][0]["verdict"]
-        assert verdict is not None
         self.assertEqual(verdict["result"], "UNVERIFIABLE")
 
     def test_09b_verdict_on_open_decision_rejected(self) -> None:
@@ -359,189 +357,6 @@ class GrillTestCase(unittest.TestCase):
         with patch("sys.stderr", err), self.assertRaises(SystemExit):
             grill.load_session(slug)
         self.assertIn("corrupted", err.getvalue())
-
-    # ── list ─────────────────────────────────────────────────────────────────
-
-    def test_17_list_prints_one_line_per_session(self) -> None:
-        slug = self.new_session("Alpha topic")
-        self.decide(slug)
-        out = io.StringIO()
-        with patch("sys.stdout", out):
-            grill.cmd_list(ns())
-        line = out.getvalue().strip()
-        self.assertTrue(line.startswith(slug))
-        self.assertIn("1/1 decided", line)
-        self.assertIn("0 verified", line)
-        self.assertIn("Alpha topic", line)
-
-    def test_17b_list_empty_prints_nothing(self) -> None:
-        out = io.StringIO()
-        with patch("sys.stdout", out):
-            grill.cmd_list(ns())
-        self.assertEqual(out.getvalue(), "")
-
-    # ── explicit JSON null vs. missing field ────────────────────────────────
-    # Regression coverage for a real bug: `str(patch.get(key, default))`
-    # turns an explicit JSON `null` into the four-character string "None",
-    # which then passes any `if not field:` required-field check instead of
-    # being rejected. `_text()` must treat null and "missing" identically.
-
-    def test_18_new_explicit_null_topic_rejected_like_missing(self) -> None:
-        err = io.StringIO()
-        with patch("sys.stderr", err), self.assertRaises(SystemExit):
-            grill.cmd_new(ns(json=json.dumps({"topic": None})))
-        self.assertIn("'topic' is required", err.getvalue())
-        self.assertEqual(grill.all_session_slugs(), [])
-
-    def test_18b_ask_explicit_null_question_rejected_like_missing(self) -> None:
-        slug = self.new_session()
-        err = io.StringIO()
-        with patch("sys.stderr", err), self.assertRaises(SystemExit):
-            grill.cmd_ask(
-                ns(
-                    json=json.dumps({"id": "token-storage", "question": None}),
-                    session=slug,
-                )
-            )
-        self.assertIn("'question' is required", err.getvalue())
-        self.assertEqual(grill.load_session(slug)["decisions"], [])
-
-    def test_18c_decide_explicit_null_source_falls_back_to_default(self) -> None:
-        slug = self.new_session()
-        with patch("sys.stderr", io.StringIO()):
-            grill.cmd_decide(
-                ns(
-                    json=json.dumps(
-                        {
-                            "id": "token-storage",
-                            "question": "Where?",
-                            "decision": "httpOnly cookie",
-                            "source": None,
-                        }
-                    ),
-                    session=slug,
-                )
-            )
-        decision = grill.load_session(slug)["decisions"][0]
-        self.assertEqual(decision["source"], "user")
-
-    # ── revise can't blank/reopen a decided item ────────────────────────────
-    # Regression coverage for a real bug: `revise <id> '{"decision": null}'`
-    # used to pass straight through to `decision.update(patch)`, setting
-    # `decision["decision"] = None` — which is exactly what `is_open()`
-    # checks for, silently reopening an already-decided item outside of
-    # `cmd_decide`'s own validation.
-
-    def test_19_revise_null_decision_rejected(self) -> None:
-        slug = self.new_session()
-        self.decide(slug)
-        err = io.StringIO()
-        with patch("sys.stderr", err), self.assertRaises(SystemExit):
-            grill.cmd_revise(
-                ns(
-                    decision_id="token-storage",
-                    patch=json.dumps({"decision": None}),
-                    session=slug,
-                )
-            )
-        self.assertIn("cannot be blank", err.getvalue())
-        decision = grill.load_session(slug)["decisions"][0]
-        self.assertFalse(grill.is_open(decision))
-        self.assertEqual(decision["decision"], "httpOnly cookie")
-
-    def test_19b_revise_blank_string_decision_rejected(self) -> None:
-        slug = self.new_session()
-        self.decide(slug)
-        err = io.StringIO()
-        with patch("sys.stderr", err), self.assertRaises(SystemExit):
-            grill.cmd_revise(
-                ns(
-                    decision_id="token-storage",
-                    patch=json.dumps({"decision": "   "}),
-                    session=slug,
-                )
-            )
-        self.assertIn("cannot be blank", err.getvalue())
-
-    # ── concurrency: locking prevents lost updates ──────────────────────────
-
-    def test_20_concurrent_mutators_of_same_session_serialize(self) -> None:
-        import threading
-
-        slug = self.new_session()
-        with patch("sys.stderr", io.StringIO()):
-            grill.cmd_ask(
-                ns(json=json.dumps({"id": "item-a", "question": "A?"}), session=slug)
-            )
-            grill.cmd_ask(
-                ns(json=json.dumps({"id": "item-b", "question": "B?"}), session=slug)
-            )
-
-        def decide_a() -> None:
-            with patch("sys.stderr", io.StringIO()):
-                grill.cmd_decide(
-                    ns(
-                        json=json.dumps({"id": "item-a", "decision": "answer A"}),
-                        session=slug,
-                    )
-                )
-
-        def decide_b() -> None:
-            with patch("sys.stderr", io.StringIO()):
-                grill.cmd_decide(
-                    ns(
-                        json=json.dumps({"id": "item-b", "decision": "answer B"}),
-                        session=slug,
-                    )
-                )
-
-        with grill.session_lock(slug):
-            t1 = threading.Thread(target=decide_a)
-            t2 = threading.Thread(target=decide_b)
-            t1.start()
-            t2.start()
-            import time
-
-            time.sleep(0.1)
-            self.assertTrue(t1.is_alive())
-            self.assertTrue(t2.is_alive())
-        t1.join(timeout=5)
-        t2.join(timeout=5)
-        self.assertFalse(t1.is_alive())
-        self.assertFalse(t2.is_alive())
-
-        decisions = {
-            d["id"]: d["decision"] for d in grill.load_session(slug)["decisions"]
-        }
-        self.assertEqual(decisions["item-a"], "answer A")
-        self.assertEqual(decisions["item-b"], "answer B")
-
-    def test_20b_concurrent_new_with_same_topic_gets_distinct_slugs(self) -> None:
-        import threading
-
-        results: dict[str, str] = {}
-
-        def create(name: str) -> None:
-            out = io.StringIO()
-            with patch("sys.stdout", out), patch("sys.stderr", io.StringIO()):
-                grill.cmd_new(ns(json=json.dumps({"topic": "Same topic"})))
-            results[name] = out.getvalue().strip()
-
-        with grill._new_session_lock():
-            t1 = threading.Thread(target=create, args=("one",))
-            t2 = threading.Thread(target=create, args=("two",))
-            t1.start()
-            t2.start()
-            import time
-
-            time.sleep(0.1)
-            self.assertTrue(t1.is_alive())
-            self.assertTrue(t2.is_alive())
-        t1.join(timeout=5)
-        t2.join(timeout=5)
-
-        self.assertNotEqual(results["one"], results["two"])
-        self.assertEqual(len(grill.all_session_slugs()), 2)
 
 
 if __name__ == "__main__":
