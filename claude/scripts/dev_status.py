@@ -576,8 +576,9 @@ def _render_order(items: list[BacklogItem]) -> RenderOrder:
         A 4-tuple of ``(in_progress, ready, blocked, done)``, where
         ``done`` is the subset of done items completed within the last
         :data:`DONE_RECENCY_HOURS` (keyed on ``completed_at``, falling back
-        to ``updated``), sorted most-recently-touched first. The dashboard
-        omits the DONE section entirely when this is empty.
+        to ``updated``), sorted most-recently-completed first using that
+        same key. The dashboard omits the DONE section entirely when this
+        is empty.
     """
     index = build_index(items)
 
@@ -598,16 +599,13 @@ def _render_order(items: list[BacklogItem]) -> RenderOrder:
         key=lambda i: (len(effective_blockers(i, index)), i.get("updated", "")),
     )
     blocked = sorted(blocked, key=_priority_rank)  # stable
-    done_all = sorted(
-        [i for i in items if i.get("status") == "done"],
-        key=lambda i: i.get("updated", ""),
-        reverse=True,
-    )
-    done = [
+    done_in_window = [
         i
-        for i in done_all
-        if (_age_hours(_done_stamp(i)) or float("inf")) < DONE_RECENCY_HOURS
+        for i in items
+        if i.get("status") == "done"
+        and (_age_hours(_done_stamp(i)) or float("inf")) < DONE_RECENCY_HOURS
     ]
+    done = sorted(done_in_window, key=_done_stamp, reverse=True)
 
     return in_progress, ready, blocked, done
 
