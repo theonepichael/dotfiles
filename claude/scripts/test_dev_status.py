@@ -323,6 +323,28 @@ class BacklogTestCase(unittest.TestCase):
         tmp_files = list(self.data_dir.glob(".items_tmp_*"))
         self.assertEqual(tmp_files, [])
 
+    def test_14b_fsync_called_before_replace(self):
+        """Ensure the implementation fsyncs the temp file (and directory) before/after replace.
+
+        Patching os.replace to raise lets the write path run far enough to
+        exercise the fsync calls while avoiding a real rename. The test
+        asserts that os.fsync was invoked at least once during save_items.
+        """
+        items = [make_item("my-item")]
+        self.write_items(items)
+
+        # Patch os.fsync so we can assert it was called; patch os.replace to
+        # raise so the path cleans up the temp file as in test_14.
+        with patch("os.fsync") as fsync_mock:
+            with patch("os.replace", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    dev_status.save_items(items)
+
+        # os.fsync should have been called for the temp file (and possibly
+        # for the directory). We don't assert exact call args because FDs
+        # differ across platforms; presence of any call is sufficient.
+        self.assertTrue(fsync_mock.called)
+
     # ── 15: corrupted JSON fails loudly ──────────────────────────────────────
 
     def test_15_corrupted_json_fails_loudly(self):
@@ -1803,7 +1825,6 @@ class BacklogTestCase(unittest.TestCase):
         pending_on_disk = dev_status.load_pending()
         self.assertEqual(pending_on_disk[0]["blocking"], [])
 
-
     def test_start_clears_completed_at(self):
         """Starting a previously-done item must clear its completed_at stamp."""
         from datetime import date
@@ -1823,6 +1844,7 @@ class BacklogTestCase(unittest.TestCase):
         stored = self.read_items()[0]
         self.assertEqual(stored["status"], "in-progress")
         self.assertNotIn("completed_at", stored)
+
 
 # ── arg helper ────────────────────────────────────────────────────────────────
 

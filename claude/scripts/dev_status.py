@@ -360,6 +360,9 @@ def _atomic_write_json(path: Path, payload: str, prefix: str) -> None:
     file on failure so a crash mid-write never leaves debris behind or
     corrupts the destination.
 
+    Ensures the temp file is fsynced before rename and the containing
+    directory is fsynced after the rename so the replace is durable.
+
     Args:
         path: Destination file path.
         payload: Already-serialized JSON text to write.
@@ -368,9 +371,23 @@ def _atomic_write_json(path: Path, payload: str, prefix: str) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=DATA_DIR, prefix=prefix)
     try:
+        # Write, flush, and fsync the temp file before renaming it into place.
         with os.fdopen(fd, "w") as f:
             f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+
+        # Atomically replace the destination with the temp file.
         os.replace(tmp_path, path)
+
+        # Ensure the directory entry for the new file is durably written.
+        dir_fd = None
+        try:
+            dir_fd = os.open(str(DATA_DIR), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            os.fsync(dir_fd)
+        finally:
+            if dir_fd is not None:
+                os.close(dir_fd)
     except Exception:
         try:
             os.unlink(tmp_path)
