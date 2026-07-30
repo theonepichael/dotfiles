@@ -5,8 +5,9 @@ allowed-tools: shell
 ---
 
 All backend I/O goes through `python3 ~/.claude/scripts/second_opinion.py` —
-never shell out to `agy`/`opencode` directly. It is single-round: one call, one
-critique. The multi-round loop and plan revision are your job, not the script's.
+never shell out to `agy`/`opencode`/`copilot` directly. It is single-round: one
+call, one critique. The multi-round loop and plan revision are your job, not
+the script's.
 
 ```
 second_opinion.py detect                        # which backends are present (JSON)
@@ -104,9 +105,9 @@ creating the item (offer first) or updating an existing one.
 
 ## No backend available
 
-`second_opinion.py review` exits nonzero with a clear message when neither
-`agy` nor `opencode` is on `PATH`, or when the available backend(s) fail
-(e.g. the `adversary` agent errors out — check with
+`second_opinion.py review` exits nonzero with a clear message when none of
+`agy`, `opencode`, or `copilot` is on `PATH`, or when the available
+backend(s) fail (e.g. the `adversary` agent errors out — check with
 `opencode run --agent adversary --auto --format json <text> 2>&1` if that
 happens). Relay that message and stop — don't retry or fall back to
 critiquing the plan yourself.
