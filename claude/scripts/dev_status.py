@@ -508,7 +508,7 @@ def _backup_before_bulk_delete(path: Path) -> None:
     """
     if not path.exists():
         return
-    stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
     backup_path = path.with_name(f"{path.stem}.bak-{stamp}{path.suffix}")
     backup_path.write_bytes(path.read_bytes())
 
@@ -1204,7 +1204,7 @@ def cmd_list(args: argparse.Namespace) -> None:
         items = load_items()
         if args.status:
             items = [i for i in items if i.get("status") == args.status]
-        print(f"# rev={load_rev()}")
+        print(f"# rev={load_rev()}", file=sys.stderr)
         for item in items:
             print(f"{item['id']}\t{item.get('status', '')}\t{item.get('summary', '')}")
 
@@ -1566,7 +1566,7 @@ def cmd_rename(args: argparse.Namespace) -> None:
     because ``-`` is a non-word char, so ``\\bfoo-bar\\b`` matches the
     ``foo-bar`` prefix of the unrelated sibling slug ``foo-bar-baz``.
     """
-    old_slug = args.old_slug
+    old_slug_arg = args.old_slug
     new_slug = args.new_slug
 
     err = validate_slug(new_slug, "rename")
@@ -1577,16 +1577,20 @@ def cmd_rename(args: argparse.Namespace) -> None:
     with backlog_lock():
         items = load_items()
         pending_items = load_pending()
+        current_rev = load_rev()
+        enforce_rev_guard(
+            "rename", old_slug_arg, args.if_rev, current_rev, items, pending_items
+        )
+
+        kind, old_slug = resolve_id(old_slug_arg, items, pending_items)
+        require_kind("rename", old_slug_arg, kind, "backlog")
+
         index = build_index(items)
         pending_index = {p["id"]: p for p in pending_items}
 
-        if old_slug not in index:
-            print(f"[rename] not found: {old_slug}", file=sys.stderr)
-            sys.exit(1)
-        # Cross-pool collision check: new_slug must not exist in either pool,
-        # and old_slug must not exist as a pending id (rename operates on
-        # backlog items only; renaming a slug in use by a pending item would
-        # create a cross-pool collision).
+        # Cross-pool collision check: new_slug must not exist in either pool
+        # (old_slug is already guaranteed to be a backlog item, not a
+        # pending one, by require_kind above).
         if new_slug in index:
             print(f"[rename] collision: '{new_slug}' already exists", file=sys.stderr)
             sys.exit(1)
@@ -2027,8 +2031,16 @@ def main() -> None:
     )
 
     p = sub.add_parser("rename", help="rename slug (rewrites all references)")
-    p.add_argument("old_slug")
+    p.add_argument("old_slug", metavar="<slug|N>")
     p.add_argument("new_slug")
+    p.add_argument(
+        "--if-rev",
+        type=int,
+        default=None,
+        metavar="<N>",
+        help="required when <old_slug> is numeric; get the current value "
+        "from render/list/show immediately before this call",
+    )
 
     p = sub.add_parser("remove", help="permanently remove one item by slug or number")
     p.add_argument("id", metavar="<slug|N>")
