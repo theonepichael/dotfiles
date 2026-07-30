@@ -35,20 +35,6 @@ fix genuinely only covers the specific instance (time pressure, unclear root
 cause, etc.), say so explicitly and note what a systemic fix would look
 like, rather than letting the instance-only fix pass as if it were complete.
 
-### "Pull the latest" means check intent, not just sync state
-
-When the user asks to pull/sync, or asks whether work from elsewhere (another
-machine, another session) has landed, don't stop at reporting git's sync
-status ("up to date," "nothing to pull"). That answers the mechanical
-question, not the one being asked — whether their expected work actually
-made it in. Before answering, check recent `git log`/PR history for
-anything matching what they said they expect, and lead with what's
-actually there by name (e.g. "yes, already merged as PR #8, includes X").
-Only widen into searching unrelated branches/PRs if the expected work
-genuinely isn't in the obvious places (the current branch's recent log,
-merged PRs) — don't skip straight to broad forensic search when a targeted
-check on the log already in front of you would answer it.
-
 ### Verification means running it
 
 Don't describe something as "verified," "confirmed working," or "should be
