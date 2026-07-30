@@ -1804,6 +1804,26 @@ class BacklogTestCase(unittest.TestCase):
         self.assertEqual(pending_on_disk[0]["blocking"], [])
 
 
+    def test_start_clears_completed_at(self):
+        """Starting a previously-done item must clear its completed_at stamp."""
+        from datetime import date
+
+        old = (date.today() - timedelta(days=2)).isoformat()
+        items = [
+            make_item(
+                "reopen-me",
+                status="done",
+                updated=(date.today()).isoformat(),
+            )
+        ]
+        items[0]["completed_at"] = old
+        self.write_items(items)
+        # Start should clear completed_at and set status
+        dev_status.cmd_start(_args(id="reopen-me"))
+        stored = self.read_items()[0]
+        self.assertEqual(stored["status"], "in-progress")
+        self.assertNotIn("completed_at", stored)
+
 # ── arg helper ────────────────────────────────────────────────────────────────
 
 
