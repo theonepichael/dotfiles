@@ -142,6 +142,8 @@ alias rb=true  # fat-finger guard: 'rb' on RHEL triggers unwanted behavior
 
 # Git
 alias gs="git status"
+alias gp="git pull"
+alias gpu="git push"
 # Navigation
 alias ws="cd $HOME/Workspace"
 alias cl="clear"
