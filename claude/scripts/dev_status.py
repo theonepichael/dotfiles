@@ -1316,8 +1316,13 @@ def cmd_add(args: argparse.Namespace) -> None:
             item["priority"] = cast(str, patch["priority"])
 
         items.append(item)
-        save_items(items)
+        # Bump the revision before writing data: a crash between this and
+        # the write below only burns a rev number (harmless — the guard
+        # just sees a gap), rather than leaving changed data under a stale
+        # rev, which would let a genuinely-stale numeric --if-rev call
+        # silently pass the guard.
         new_rev = bump_rev()
+        save_items(items)
         render(items, pending_items, rev=new_rev)
     _blocker_check_reminder(items, slug, cmd="add")
 
@@ -1338,11 +1343,13 @@ def confirm_resolution(
 class _MutationResult:
     """Working set threaded through a :func:`_backlog_mutation` block.
 
-    ``item``, ``items``, ``pending_items``, and ``slug`` are populated
-    before the caller's block runs. ``new_rev`` is only set once the block
-    completes and the revision has been bumped, but by then the same object
-    is still in the caller's hands (the ``with`` statement never rebinds
-    it), so accessing it after the block exits is safe.
+    ``item``, ``items``, ``pending_items``, ``slug``, and ``new_rev`` are
+    all populated before the caller's block runs — ``new_rev`` is bumped
+    *before* yielding, ahead of any write, so a crash between the bump and
+    the eventual write(s) never leaves changed data under a stale rev (see
+    :func:`_backlog_mutation`'s docstring). It's still named ``new_rev``
+    rather than folded into the constructor call above for API stability —
+    existing callers read it post-``with`` via ``m.new_rev``.
 
     ``pending_items`` is exposed so mutators can render with the in-memory
     pending set instead of re-reading it unlocked post-lock (mixed-snapshot
@@ -1366,21 +1373,37 @@ def _backlog_mutation(
     refuses if it isn't a backlog item. Yields a :class:`_MutationResult`
     for the caller to mutate in place (or, for ``remove``, to reassign
     ``items`` to a filtered list). After the caller's block completes,
-    saves ``items`` and bumps the rev while still holding the lock, then
-    renders — matching the save-then-bump-then-optionally-announce-then-
-    render order every extracted command used before this helper existed.
-    ``announce=True`` calls :func:`confirm_resolution` (still inside the
-    lock) for the update/start/done shape; ``block``/``unblock`` stay
-    silent and ``remove`` announces its own message inside the caller's
-    block, before this cleanup runs, using the pre-removal item.
+    saves ``items`` while still holding the lock, then renders — matching
+    the bump-then-write-then-optionally-announce-then-render order every
+    extracted command used before this helper existed. ``announce=True``
+    calls :func:`confirm_resolution` (still inside the lock) for the
+    update/start/done shape; ``block``/``unblock`` stay silent and
+    ``remove`` announces its own message inside the caller's block, before
+    this cleanup runs, using the pre-removal item.
 
-    The render call lives here — after ``bump_rev()`` — rather than in each
+    The rev is bumped *before* yielding — ahead of every write, including
+    ones a caller's block makes itself (e.g. ``remove``'s extra
+    ``save_pending`` call) — not after the caller's block completes. A
+    crash between the bump and any of those writes only burns a rev number
+    (harmless: the guard just sees a numbering gap), rather than the
+    reverse order's hazard, where a crash between a write and the bump
+    left changed data sitting under a stale rev — silently letting a
+    genuinely-stale numeric ``--if-rev`` call pass the guard, since the rev
+    it was checked against hadn't advanced to reflect the change. One
+    accepted side effect: a caller's block that refuses mid-way (e.g.
+    ``block``'s cycle-detection check) now also burns a rev number even
+    though nothing was written — harmless for the same reason, and
+    preferable to threading a "did we already bump" flag through every
+    caller just to preserve a no-op call leaving rev untouched, which
+    nothing downstream relies on.
+
+    The render call lives here — after the write(s) — rather than in each
     caller's block body: a caller-side ``render(m.items, rev=m.new_rev)``
     would run *before* this cleanup (a ``with`` block's body always
-    finishes before the code after ``yield``), so ``m.new_rev`` would
-    still be its ``None`` default and ``render`` would silently fall back
-    to loading the pre-bump rev from disk — printing a stale item-map one
-    revision behind the mutation that was just committed.
+    finishes before the code after ``yield``), so it would render against
+    ``result.items`` before the caller's own in-block writes (like
+    ``remove``'s ``save_pending``) even though ``m.new_rev`` itself is
+    already set by then.
 
     Args:
         cmd: Command name, used in error messages and announcements.
@@ -1410,14 +1433,18 @@ def _backlog_mutation(
             print(f"[{cmd}] not found: {slug}", file=sys.stderr)
             sys.exit(1)
 
+        new_rev = bump_rev()
         result = _MutationResult(
-            item=item, items=items, pending_items=pending_items, slug=slug
+            item=item,
+            items=items,
+            pending_items=pending_items,
+            slug=slug,
+            new_rev=new_rev,
         )
 
         yield result
 
         save_items(result.items)
-        result.new_rev = bump_rev()
         if announce:
             confirm_resolution(cmd, id_arg, result.item)
         render(result.items, result.pending_items, rev=result.new_rev)
@@ -1608,9 +1635,12 @@ def cmd_rename(args: argparse.Namespace) -> None:
                 if isinstance(note, str) and note:
                     rf["note"] = _rewrite_prose(note)
 
+        # Bump before either write (see _backlog_mutation's docstring for
+        # why this order matters): a crash mid-way here burns a rev number
+        # rather than leaving one or both files changed under a stale rev.
+        new_rev = bump_rev()
         save_items(items)
         save_pending(pending_items)
-        new_rev = bump_rev()
         print(f"[rename] {old_slug} → {new_slug}", file=sys.stderr)
         render(items, pending_items, rev=new_rev)
 
@@ -1728,8 +1758,8 @@ def cmd_pending_add(args: argparse.Namespace) -> None:
                 "outcome": None,
             }
         )
-        save_pending(pending_items)
         new_rev = bump_rev()
+        save_pending(pending_items)
         print(f"[pending add] {slug} — {description[:60]}", file=sys.stderr)
         render(backlog_items, pending_items, rev=new_rev)
     _blocker_check_reminder(backlog_items, None, cmd="pending add")
@@ -1801,8 +1831,8 @@ def cmd_pending_update(args: argparse.Namespace) -> None:
             )
         cast(dict[str, object], item).update(patch)
         item["updated"] = today()
-        save_pending(pending_items)
         new_rev = bump_rev()
+        save_pending(pending_items)
         confirm_resolution("pending update", args.id, item, summary_key="description")
         render(items, pending_items, rev=new_rev)
 
@@ -1841,6 +1871,16 @@ def cmd_prune(args: argparse.Namespace) -> None:
     ``blocking`` references to the pruned slugs (same rationale as
     :func:`cmd_remove`), and only bumps the revision if something was
     actually removed.
+
+    Computes both keep-sets and purges inbound refs entirely in memory
+    before any file is touched, then bumps the rev and writes each
+    changed file exactly once — previously ``items``/``pending_items``
+    could each be written twice in one call (once with the raw filtered
+    set, again after ref-purging), and the rev was bumped only after all
+    of that, so a crash anywhere in the sequence could leave any subset of
+    the writes applied under a stale rev. Bumping first means a crash now
+    only ever burns a rev number (see :func:`_backlog_mutation`'s
+    docstring for the same reasoning applied there).
     """
     cutoff_days = 14
 
@@ -1861,9 +1901,6 @@ def cmd_prune(args: argparse.Namespace) -> None:
                     pruned_slugs.add(item["id"])
                     continue
             keep.append(item)
-        if pruned_slugs:
-            _backup_before_bulk_delete(ITEMS_FILE)
-            save_items(keep)
 
         pending_items = load_pending()
         pending_keep: list[PendingItem] = []
@@ -1883,32 +1920,34 @@ def cmd_prune(args: argparse.Namespace) -> None:
                     pending_pruned_slugs.add(pending_item["id"])
                     continue
             pending_keep.append(pending_item)
-        if pending_pruned_slugs:
-            _backup_before_bulk_delete(PENDING_FILE)
-            save_pending(pending_keep)
 
         total_removed = len(pruned_slugs) + len(pending_pruned_slugs)
         if total_removed:
-            # Purge inbound refs from the surviving records, then re-save
-            # whichever file purge may have mutated beyond what was already
-            # written above. `blocked_by` values are always backlog slugs
+            if pruned_slugs:
+                _backup_before_bulk_delete(ITEMS_FILE)
+            if pending_pruned_slugs:
+                _backup_before_bulk_delete(PENDING_FILE)
+
+            # Purge inbound refs from the surviving records before either
+            # write. `blocked_by` values are always backlog slugs
             # (cmd_block rejects non-backlog blockers), so pruning a pending
-            # item alone can never touch `keep` — re-save it only when
+            # item alone can never touch `keep` — write it only when
             # pruned_slugs is non-empty. But pending `blocking` lists
             # reference backlog slugs, so pruning a *backlog* item alone
             # can still leave a stale reference in a surviving pending
-            # item — pending_keep must be re-saved whenever either set is
+            # item — pending_keep must be written whenever either set is
             # non-empty, not just when a pending item itself was pruned
-            # (the original asymmetric check silently dropped this case:
-            # `_purge_inbound_refs` would strip the reference in memory but
-            # the file on disk kept the stale slug since save_pending was
-            # never called for a backlog-only prune).
+            # (an earlier version's asymmetric check silently dropped this
+            # case: `_purge_inbound_refs` would strip the reference in
+            # memory but the file on disk kept the stale slug since
+            # save_pending was never called for a backlog-only prune).
             _purge_inbound_refs(pruned_slugs | pending_pruned_slugs, keep, pending_keep)
+
+            new_rev = bump_rev()
             if pruned_slugs:
                 save_items(keep)
             if pruned_slugs or pending_pruned_slugs:
                 save_pending(pending_keep)
-            new_rev = bump_rev()
             print(
                 f"[prune] removed {len(pruned_slugs)} backlog item(s), "
                 f"{len(pending_pruned_slugs)} pending item(s) — "

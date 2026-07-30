@@ -1845,6 +1845,204 @@ class BacklogTestCase(unittest.TestCase):
         self.assertEqual(stored["status"], "in-progress")
         self.assertNotIn("completed_at", stored)
 
+    # ── meta-devstatus-atomicity-fsync: rev bumped before data writes ──────
+    # A crash between a data write and the rev bump left changed data under
+    # a stale rev, silently letting a genuinely-stale numeric --if-rev call
+    # pass the guard. Fix: bump the rev first everywhere, so a crash mid-way
+    # only burns a rev number (harmless) instead. These tests assert call
+    # order directly (bump before write), which is what actually matters —
+    # final on-disk content was already covered by existing tests and is
+    # unchanged by the reorder.
+
+    def _assert_bump_before(self, write_fn_names, run):
+        """Assert bump_rev() is called before every named save_* function.
+
+        Patches dev_status.bump_rev and each dev_status.<name> in
+        write_fn_names to append to a shared call-order list, then asserts
+        "bump_rev" precedes every write in that list.
+        """
+        order = []
+        real_bump_rev = dev_status.bump_rev
+
+        def fake_bump_rev():
+            order.append("bump_rev")
+            return real_bump_rev()
+
+        patches = [patch.object(dev_status, "bump_rev", fake_bump_rev)]
+        for name in write_fn_names:
+            real_fn = getattr(dev_status, name)
+
+            def make_fake(real_fn=real_fn, name=name):
+                def fake(*args, **kwargs):
+                    order.append(name)
+                    return real_fn(*args, **kwargs)
+
+                return fake
+
+            patches.append(patch.object(dev_status, name, make_fake()))
+
+        with patch("sys.stdout", io.StringIO()), patch("sys.stderr", io.StringIO()):
+            for p in patches:
+                p.start()
+            try:
+                run()
+            finally:
+                for p in patches:
+                    p.stop()
+
+        self.assertIn("bump_rev", order)
+        bump_idx = order.index("bump_rev")
+        for name in write_fn_names:
+            write_indices = [i for i, n in enumerate(order) if n == name]
+            for i in write_indices:
+                self.assertLess(
+                    bump_idx,
+                    i,
+                    f"expected bump_rev before {name}, got order {order}",
+                )
+
+    def test_review_start_bumps_rev_before_save_items(self):
+        self.write_items([make_item("item-a", status="open")])
+        self._assert_bump_before(
+            ["save_items"],
+            lambda: dev_status.cmd_start(_args(id="item-a")),
+        )
+
+    def test_review_remove_bumps_rev_before_its_writes(self):
+        """The motivating case: cmd_remove's extra save_pending happens
+        inside _backlog_mutation's caller block, before the helper's own
+        post-yield save_items — both must follow the rev bump."""
+        self.write_items([make_item("item-a", status="open")])
+        self.write_pending(
+            [
+                {
+                    "id": "pend-x",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "waiting",
+                    "kind": "email",
+                    "blocking": [],
+                    "related_files": [],
+                    "next_steps": [],
+                    "outcome": None,
+                }
+            ]
+        )
+        self._assert_bump_before(
+            ["save_items", "save_pending"],
+            lambda: dev_status.cmd_remove(_args(id="item-a")),
+        )
+
+    def test_review_add_bumps_rev_before_save_items(self):
+        self._assert_bump_before(
+            ["save_items"],
+            lambda: dev_status.cmd_add(
+                _args(json='{"id": "new-item", "summary": "x"}')
+            ),
+        )
+
+    def test_review_rename_bumps_rev_before_its_writes(self):
+        self.write_items([make_item("old-name")])
+        self._assert_bump_before(
+            ["save_items", "save_pending"],
+            lambda: dev_status.cmd_rename(
+                _args(old_slug="old-name", new_slug="new-name")
+            ),
+        )
+
+    def test_review_pending_add_bumps_rev_before_save_pending(self):
+        self._assert_bump_before(
+            ["save_pending"],
+            lambda: dev_status.cmd_pending_add(
+                _args(json='{"id": "pend-new", "description": "d", "kind": "email"}')
+            ),
+        )
+
+    def test_review_pending_update_bumps_rev_before_save_pending(self):
+        self.write_pending(
+            [
+                {
+                    "id": "pend-x",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "waiting",
+                    "kind": "email",
+                    "blocking": [],
+                    "related_files": [],
+                    "next_steps": [],
+                    "outcome": None,
+                }
+            ]
+        )
+        self._assert_bump_before(
+            ["save_pending"],
+            lambda: dev_status.cmd_pending_update(
+                _args(id="pend-x", patch='{"context": "updated"}')
+            ),
+        )
+
+    def test_review_prune_bumps_rev_before_its_writes(self):
+        old = (date.today() - timedelta(days=30)).isoformat()
+        self.write_items(
+            [make_item("old-done", status="done", updated=old, created=old)]
+        )
+        with patch.object(dev_status, "_backup_before_bulk_delete", lambda _p: None):
+            self._assert_bump_before(
+                ["save_items"],
+                lambda: dev_status.cmd_prune(_args(force=True)),
+            )
+
+    def test_review_prune_writes_each_file_at_most_once(self):
+        """Previously items/pending could each be saved twice in one prune
+        call (once with the raw filtered set, again after ref-purging).
+        Now each file is written at most once per call."""
+        old = (date.today() - timedelta(days=30)).isoformat()
+        self.write_items(
+            [
+                make_item("old-done", status="done", updated=old, created=old),
+                make_item("dep", blocked_by=["old-done"]),
+            ]
+        )
+        self.write_pending(
+            [
+                {
+                    "id": "pend-x",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "waiting on old-done",
+                    "kind": "email",
+                    "blocking": ["old-done"],
+                    "related_files": [],
+                    "next_steps": [],
+                    "outcome": None,
+                }
+            ]
+        )
+        with patch.object(dev_status, "_backup_before_bulk_delete", lambda _p: None):
+            with patch(
+                "dev_status.save_items", wraps=dev_status.save_items
+            ) as save_items_mock:
+                with patch(
+                    "dev_status.save_pending", wraps=dev_status.save_pending
+                ) as save_pending_mock:
+                    with (
+                        patch("sys.stdout", io.StringIO()),
+                        patch("sys.stderr", io.StringIO()),
+                    ):
+                        dev_status.cmd_prune(_args(force=True))
+        self.assertEqual(save_items_mock.call_count, 1)
+        self.assertEqual(save_pending_mock.call_count, 1)
+        # And the ref-purge is still correctly persisted, not just fewer
+        # writes for their own sake.
+        remaining = self.read_items()
+        self.assertEqual([i["id"] for i in remaining], ["dep"])
+        self.assertEqual(remaining[0]["blocked_by"], [])
+        pending_on_disk = dev_status.load_pending()
+        self.assertEqual(pending_on_disk[0]["blocking"], [])
+
 
 # ── arg helper ────────────────────────────────────────────────────────────────
 
