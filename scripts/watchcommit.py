@@ -310,7 +310,7 @@ def push(repo: Path, success_message: str) -> None:
 def commit_and_push(repo: Path, message: str) -> None:
     git(repo, "add", "-A")
 
-    result = git(repo, "commit", "-m", message)
+    result = git(repo, "commit", "-m", message, "-m", "Committed-by: watchcommit")
     if result.returncode != 0:
         print(f"[watchcommit] commit failed: {result.stderr.strip()}", file=sys.stderr)
         return
