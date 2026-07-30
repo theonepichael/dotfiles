@@ -1492,6 +1492,11 @@ def cmd_update(args: argparse.Namespace) -> None:
 def cmd_start(args: argparse.Namespace) -> None:
     """Handle ``start``: mark a backlog item in-progress."""
     with _backlog_mutation("start", args.id, args.if_rev, announce=True) as m:
+        # Use the shared transition helper so completed_at is cleared when
+        # moving an item off "done", mirroring cmd_done's behavior.
+        _apply_status_transition(
+            cast(dict[str, object], m.item), "in-progress", "completed_at", "done"
+        )
         m.item["status"] = "in-progress"
         m.item["updated"] = today()
 
