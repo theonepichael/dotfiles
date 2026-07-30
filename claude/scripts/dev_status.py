@@ -21,7 +21,7 @@ import tempfile
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import NotRequired, TextIO, TypedDict, cast
 
@@ -255,6 +255,12 @@ def _age_hours(stamp_str: str) -> float | None:
     window meaningful on today's date-only stamps and correct if the stamp
     format ever gains a time component.
 
+    Timezone-aware stamps (e.g. ``2026-07-29T10:00:00+00:00``) are
+    compared against a timezone-aware "now"; naive stamps against naive
+    ``datetime.now()``. Mixing the two raises ``TypeError`` outside the
+    try/except, which would crash :func:`render` end-to-end — a future
+    upgrade to tz-aware ``completed_at`` stamps would trip this.
+
     Args:
         stamp_str: An ISO-8601 date or datetime string, or any invalid/empty
             value.
@@ -267,7 +273,8 @@ def _age_hours(stamp_str: str) -> float | None:
         dt = datetime.fromisoformat(stamp_str)
     except (TypeError, ValueError):
         return None
-    delta = datetime.now() - dt
+    now = datetime.now(timezone.utc) if dt.tzinfo is not None else datetime.now()
+    delta = now - dt
     return delta.total_seconds() / 3600.0
 
 
@@ -330,7 +337,7 @@ def load_items() -> list[BacklogItem]:
         return []
     try:
         data = json.loads(ITEMS_FILE.read_text())
-    except json.JSONDecodeError as e:
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
         print(
             f"backlog file corrupted at {ITEMS_FILE}; restore from backup. ({e})",
             file=sys.stderr,
@@ -393,7 +400,7 @@ def load_pending() -> list[PendingItem]:
         return []
     try:
         data = json.loads(PENDING_FILE.read_text())
-    except json.JSONDecodeError as e:
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
         print(
             f"pending-items file corrupted at {PENDING_FILE}; restore from backup. ({e})",
             file=sys.stderr,
@@ -437,14 +444,25 @@ def load_rev() -> int:
 
     Returns:
         The stored revision, or ``0`` if :data:`META_FILE` is missing or
-        unreadable (lazy auto-init, no migration needed).
+        unreadable (lazy auto-init, no migration needed). A structurally
+        valid non-dict JSON value (e.g. ``[]``) or a non-int ``rev`` field
+        also falls back to ``0`` — the previous narrow ``JSONDecodeError``
+        catch alone would let a non-dict traceback with
+        ``AttributeError`` on the ``.get`` and a non-int rev silently brick
+        every numeric ``--if-rev`` mutation.
     """
     if not META_FILE.exists():
         return 0
     try:
-        return cast(int, json.loads(META_FILE.read_text()).get("rev", 0))
-    except json.JSONDecodeError:
+        data = json.loads(META_FILE.read_text())
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
         return 0
+    if not isinstance(data, dict):
+        return 0
+    rev = data.get("rev", 0)
+    if not isinstance(rev, int) or isinstance(rev, bool):
+        return 0
+    return rev
 
 
 def bump_rev() -> int:
@@ -489,15 +507,30 @@ def build_index(items: list[BacklogItem]) -> BacklogIndex:
 def effective_blockers(item: BacklogItem, index: BacklogIndex) -> list[str]:
     """Return ``item``'s ``blocked_by`` slugs whose referent isn't done.
 
-    A blocker slug that no longer resolves in ``index`` (e.g. the blocking
-    item was removed) still counts as unresolved — it's returned as-is.
+    A blocker slug that no longer resolves in ``index`` still counts as
+    unresolved — it's returned as-is. This missing-slug fallback only
+    fires for legacy or hand-edited data now that :func:`cmd_remove`/
+    :func:`cmd_prune` purge inbound ``blocked_by`` references on delete.
+
+    A stored ``blocked_by`` that isn't a list (legacy corruption — a
+    string value would previously be iterated character-by-character) is
+    coerced to ``[]`` with a stderr warning so :func:`render` doesn't
+    walk a string one character at a time and emit a slot per character.
 
     Args:
         item: The item to check.
         index: Slug → item lookup, as built by :func:`build_index`.
     """
+    bb = item.get("blocked_by", [])
+    if not isinstance(bb, list):
+        print(
+            f"[effective_blockers] {item.get('id', '?')}.blocked_by is "
+            f"{type(bb).__name__}, not list — coercing to []",
+            file=sys.stderr,
+        )
+        return []
     result = []
-    for s in item.get("blocked_by", []):
+    for s in bb:
         dep = index.get(s)
         if dep is None or dep.get("status") != "done":
             result.append(s)
@@ -529,6 +562,37 @@ def detect_cycle(start: str, new_dep: str, index: BacklogIndex) -> bool:
         if dep:
             stack.extend(dep.get("blocked_by", []))
     return False
+
+
+def _purge_inbound_refs(
+    removed_slugs: set[str],
+    items: list[BacklogItem],
+    pending_items: list[PendingItem],
+) -> None:
+    """Strip every reference to ``removed_slugs`` from surviving records.
+
+    Purges ``removed_slugs`` from backlog items' ``blocked_by`` lists and
+    pending items' ``blocking`` lists. Without this, a deleted blocker
+    would remain in its dependents' ``blocked_by`` and
+    :func:`effective_blockers` would treat the missing slug as unresolved,
+    retroactively flipping dependents from READY into BLOCKED.
+
+    Mutates the passed records in place.
+    """
+    if not removed_slugs:
+        return
+    for item in items:
+        if item.get("id") in removed_slugs:
+            continue
+        bb = item.get("blocked_by") or []
+        if any(s in removed_slugs for s in bb):
+            item["blocked_by"] = [s for s in bb if s not in removed_slugs]
+    for p in pending_items:
+        if p.get("id") in removed_slugs:
+            continue
+        blocking = p.get("blocking") or []
+        if any(s in removed_slugs for s in blocking):
+            p["blocking"] = [s for s in blocking if s not in removed_slugs]
 
 
 # ── render order ──────────────────────────────────────────────────────────────
@@ -579,6 +643,17 @@ def _render_order(items: list[BacklogItem]) -> RenderOrder:
         to ``updated``), sorted most-recently-completed first using that
         same key. The dashboard omits the DONE section entirely when this
         is empty.
+
+    Note:
+        DONE-section membership is a function of ``datetime.now()`` vs
+        :data:`DONE_RECENCY_HOURS`, so the numeric positions of DONE rows
+        can shift with the passage of time alone, without a rev bump —
+        defeating a downstream numeric ``--if-rev`` guard whose snapshot
+        was taken before the wall-clock edge crossed. Accepted as a known
+        low-severity limitation: DONE items are rarely the target of a
+        numeric mutation, and the rev guard still catches concurrent
+        *writes*. A systemic snapshot-or-stored-state fix would close this;
+        see backlog ``meta-devstatus-atomicity-fsync``.
     """
     index = build_index(items)
 
@@ -599,11 +674,15 @@ def _render_order(items: list[BacklogItem]) -> RenderOrder:
         key=lambda i: (len(effective_blockers(i, index)), i.get("updated", "")),
     )
     blocked = sorted(blocked, key=_priority_rank)  # stable
+    # Explicit `is None` check (not `or float("inf")`): an age of exactly
+    # `0.0` (a stamp dated this very second) is falsy and would otherwise
+    # be excluded from the window. None (invalid stamp) still excludes.
     done_in_window = [
         i
         for i in items
         if i.get("status") == "done"
-        and (_age_hours(_done_stamp(i)) or float("inf")) < DONE_RECENCY_HOURS
+        and _age_hours(_done_stamp(i)) is not None
+        and cast(float, _age_hours(_done_stamp(i))) < DONE_RECENCY_HOURS
     ]
     done = sorted(done_in_window, key=_done_stamp, reverse=True)
 
@@ -676,19 +755,29 @@ def resolve_id(
 
     Returns:
         ``(kind, slug)`` where ``kind`` is ``"backlog"`` or ``"pending"``.
-        For a non-numeric ``arg``, ``kind`` is inferred by pending-id
-        membership; the caller still validates existence in whichever pool
-        it expects.
+        For a non-numeric ``arg``, ``kind`` is inferred by checking which
+        pool the slug belongs to.
 
     Raises:
         SystemExit: If ``arg`` is numeric but out of range for the current
-            render order. Exits with status 1 after printing to stderr.
+            render order, or if a non-numeric ``arg`` matches no item in
+            either pool. Exits with status 1 after printing to stderr.
     """
     try:
         n = int(arg)
     except ValueError:
         pending_ids = {p["id"] for p in pending_items}
-        return ("pending" if arg in pending_ids else "backlog"), arg
+        if arg in pending_ids:
+            return "pending", arg
+        backlog_ids = {i["id"] for i in items}
+        if arg in backlog_ids:
+            return "backlog", arg
+        # Unknown slug — surface not-found here, before require_kind gets
+        # a chance to mis-resolve it as "wrong kind" (the previous
+        # `("backlog", arg)` default made `pending update typo-slug ...`
+        # claim the slug was "a backlog item" when no such item existed).
+        print(f"[resolve] not found: {arg}", file=sys.stderr)
+        sys.exit(1)
 
     ordered = _unified_order(items, pending_items)
     if not (1 <= n <= len(ordered)):
@@ -1018,9 +1107,22 @@ def _list_field(patch: dict[str, object], key: str) -> list[object]:
     only applies when the key is absent), and the next ``for dep in
     blocked_by`` crashes with ``TypeError: 'NoneType' object is not
     iterable``.
+
+    A non-null, non-list value (e.g. a string) is rejected with a
+    :class:`SystemExit`. Previously it was passed through via ``cast`` and
+    the next iteration walked the string one character at a time, corrupting
+    stored state silently on update.
     """
     value = patch.get(key)
-    return [] if value is None else cast(list[object], value)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        print(
+            f"field '{key}' must be a list, got {type(value).__name__}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return cast(list[object], value)
 
 
 def _dict_field(patch: dict[str, object], key: str) -> dict[str, object]:
@@ -1064,36 +1166,53 @@ def _reject_null_fields(
 
 
 def cmd_render(args: argparse.Namespace) -> None:
-    """Handle ``render``: print the dashboard with no other side effects."""
-    render()
+    """Handle ``render``: print the dashboard with no other side effects.
+
+    Reads items + pending + rev atomically under :func:`backlog_lock` so the
+    printed (items, rev) pair is self-consistent — a writer committing between
+    the item read and the rev read would otherwise pair a stale item-map with a
+    fresh rev, defeating a downstream numeric ``--if-rev`` guard.
+    """
+    with backlog_lock():
+        render()
 
 
 def cmd_list(args: argparse.Namespace) -> None:
-    """Handle ``list``: print flat, tab-separated backlog items."""
-    items = load_items()
-    if args.status:
-        items = [i for i in items if i.get("status") == args.status]
-    print(f"# rev={load_rev()}")
-    for item in items:
-        print(f"{item['id']}\t{item.get('status', '')}\t{item.get('summary', '')}")
+    """Handle ``list``: print flat, tab-separated backlog items.
+
+    Reads items + rev under :func:`backlog_lock` (same rationale as
+    :func:`cmd_render`).
+    """
+    with backlog_lock():
+        items = load_items()
+        if args.status:
+            items = [i for i in items if i.get("status") == args.status]
+        print(f"# rev={load_rev()}")
+        for item in items:
+            print(f"{item['id']}\t{item.get('status', '')}\t{item.get('summary', '')}")
 
 
 def cmd_show(args: argparse.Namespace) -> None:
-    """Handle ``show``: print the full JSON record for one item."""
-    items = load_items()
-    pending_items = load_pending()
-    kind, slug = resolve_id(args.id, items, pending_items)
-    index: dict[str, object] = (
-        cast(dict[str, object], {p["id"]: p for p in pending_items})
-        if kind == "pending"
-        else cast(dict[str, object], build_index(items))
-    )
-    item = index.get(slug)
-    if item is None:
-        print(f"[show] not found: {slug}", file=sys.stderr)
-        sys.exit(1)
-    print(f"# rev={load_rev()}", file=sys.stderr)
-    print(json.dumps(item, indent=2))
+    """Handle ``show``: print the full JSON record for one item.
+
+    Reads items + pending + rev under :func:`backlog_lock` (same rationale
+    as :func:`cmd_render`).
+    """
+    with backlog_lock():
+        items = load_items()
+        pending_items = load_pending()
+        kind, slug = resolve_id(args.id, items, pending_items)
+        index: dict[str, object] = (
+            cast(dict[str, object], {p["id"]: p for p in pending_items})
+            if kind == "pending"
+            else cast(dict[str, object], build_index(items))
+        )
+        item = index.get(slug)
+        if item is None:
+            print(f"[show] not found: {slug}", file=sys.stderr)
+            sys.exit(1)
+        print(f"# rev={load_rev()}", file=sys.stderr)
+        print(json.dumps(item, indent=2))
 
 
 def cmd_add(args: argparse.Namespace) -> None:
@@ -1137,10 +1256,21 @@ def cmd_add(args: argparse.Namespace) -> None:
 
     with backlog_lock():
         items = load_items()
+        pending_items = load_pending()
         index = build_index(items)
 
         if slug in index:
             print(f"[add] duplicate slug: {slug}", file=sys.stderr)
+            sys.exit(1)
+        # Cross-pool uniqueness: a pending item with the same id would
+        # otherwise make resolve_id treat the backlog record as pending,
+        # permanently orphaning it (it gets no number in the item-map at all).
+        if any(p["id"] == slug for p in pending_items):
+            print(
+                f"[add] slug '{slug}' already exists as a pending item — "
+                "remove or rename the pending item first",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
         blocked_by = cast(list[str], _list_field(patch, "blocked_by"))
@@ -1171,7 +1301,7 @@ def cmd_add(args: argparse.Namespace) -> None:
         items.append(item)
         save_items(items)
         new_rev = bump_rev()
-    render(items, rev=new_rev)
+        render(items, pending_items, rev=new_rev)
     _blocker_check_reminder(items, slug, cmd="add")
 
 
@@ -1191,15 +1321,20 @@ def confirm_resolution(
 class _MutationResult:
     """Working set threaded through a :func:`_backlog_mutation` block.
 
-    ``item``, ``items``, and ``slug`` are populated before the caller's
-    block runs. ``new_rev`` is only set once the block completes and the
-    revision has been bumped, but by then the same object is still in the
-    caller's hands (the ``with`` statement never rebinds it), so accessing
-    it after the block exits is safe.
+    ``item``, ``items``, ``pending_items``, and ``slug`` are populated
+    before the caller's block runs. ``new_rev`` is only set once the block
+    completes and the revision has been bumped, but by then the same object
+    is still in the caller's hands (the ``with`` statement never rebinds
+    it), so accessing it after the block exits is safe.
+
+    ``pending_items`` is exposed so mutators can render with the in-memory
+    pending set instead of re-reading it unlocked post-lock (mixed-snapshot
+    fix — the render call now belongs inside the lock).
     """
 
     item: BacklogItem
     items: list[BacklogItem]
+    pending_items: list[PendingItem]
     slug: str
     new_rev: int | None = None
 
@@ -1250,7 +1385,9 @@ def _backlog_mutation(
             print(f"[{cmd}] not found: {slug}", file=sys.stderr)
             sys.exit(1)
 
-        result = _MutationResult(item=item, items=items, slug=slug)
+        result = _MutationResult(
+            item=item, items=items, pending_items=pending_items, slug=slug
+        )
 
         yield result
 
@@ -1303,10 +1440,29 @@ def cmd_update(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
+    # `blocked_by` is rejected on `update` outright, even though it's listed in
+    # BACKLOG_MUTABLE_FIELDS — the raw `dict.update(patch)` merge bypasses every
+    # guard `block`/`unblock` enforces (existence, self-block, cycle detection),
+    # and CLAUDE.md already routes blocked_by edits through `block`/`unblock`.
+    # Refusing here removes the bypass path by construction instead of trying
+    # to mirror block's validation into update and keep both code paths in
+    # sync. `unblock` cannot be done via update either (removing a slug from
+    # `blocked_by` via raw replacement would skip its "is the slug actually
+    # present" check), so the same error redirects both directions.
+    if "blocked_by" in patch:
+        print(
+            "[update] cannot modify 'blocked_by' directly — use "
+            "'block <id> <blocker>' to add or 'unblock <id> <blocker>' to "
+            "remove. update's raw merge bypasses block/unblock's existence, "
+            "self-block, and cycle checks.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     _reject_null_fields(
         "update",
         patch,
-        ("summary", "category", "blocked_by", "related_files", "context", "next_steps"),
+        ("summary", "category", "related_files", "context", "next_steps"),
     )
 
     with _backlog_mutation("update", args.id, args.if_rev, announce=True) as m:
@@ -1322,7 +1478,7 @@ def cmd_update(args: argparse.Namespace) -> None:
             del patch["priority"]
         cast(dict[str, object], m.item).update(patch)
         m.item["updated"] = today()
-    render(m.items, rev=m.new_rev)
+        render(m.items, m.pending_items, rev=m.new_rev)
 
 
 def cmd_start(args: argparse.Namespace) -> None:
@@ -1330,7 +1486,7 @@ def cmd_start(args: argparse.Namespace) -> None:
     with _backlog_mutation("start", args.id, args.if_rev, announce=True) as m:
         m.item["status"] = "in-progress"
         m.item["updated"] = today()
-    render(m.items, rev=m.new_rev)
+        render(m.items, m.pending_items, rev=m.new_rev)
 
 
 def cmd_done(args: argparse.Namespace) -> None:
@@ -1341,11 +1497,20 @@ def cmd_done(args: argparse.Namespace) -> None:
         )
         m.item["status"] = "done"
         m.item["updated"] = today()
-    render(m.items, rev=m.new_rev)
+        render(m.items, m.pending_items, rev=m.new_rev)
 
 
 def cmd_rename(args: argparse.Namespace) -> None:
-    """Handle ``rename``: rename a slug and rewrite every reference to it."""
+    """Handle ``rename``: rename a slug and rewrite every reference to it.
+
+    Rewrites references across both backlog and pending items: backlog
+    ``blocked_by`` lists and prose fields (``summary``/``context``/
+    ``next_steps``), pending ``blocking`` lists and ``related_files[].note``
+    prose. Prose substitution uses a boundary anchored on the slug alphabet
+    ``[a-z0-9-]`` (negative lookbehind/lookahead) — ``\\b`` would over-match
+    because ``-`` is a non-word char, so ``\\bfoo-bar\\b`` matches the
+    ``foo-bar`` prefix of the unrelated sibling slug ``foo-bar-baz``.
+    """
     old_slug = args.old_slug
     new_slug = args.new_slug
 
@@ -1356,16 +1521,35 @@ def cmd_rename(args: argparse.Namespace) -> None:
 
     with backlog_lock():
         items = load_items()
+        pending_items = load_pending()
         index = build_index(items)
+        pending_index = {p["id"]: p for p in pending_items}
 
         if old_slug not in index:
             print(f"[rename] not found: {old_slug}", file=sys.stderr)
             sys.exit(1)
+        # Cross-pool collision check: new_slug must not exist in either pool,
+        # and old_slug must not exist as a pending id (rename operates on
+        # backlog items only; renaming a slug in use by a pending item would
+        # create a cross-pool collision).
         if new_slug in index:
             print(f"[rename] collision: '{new_slug}' already exists", file=sys.stderr)
             sys.exit(1)
+        if new_slug in pending_index:
+            print(
+                f"[rename] collision: '{new_slug}' already exists as a pending item",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
-        word_re = re.compile(r"\b" + re.escape(old_slug) + r"\b")
+        # Boundary anchored on the slug alphabet (not \w) so `foo-bar` does
+        # not match the prefix of `foo-bar-baz`.
+        word_re = re.compile(r"(?<![a-z0-9-])" + re.escape(old_slug) + r"(?![a-z0-9-])")
+
+        def _rewrite_prose(text: str) -> str:
+            if old_slug in text:
+                return word_re.sub(new_slug, text)
+            return text
 
         for item in items:
             if item["id"] == old_slug:
@@ -1375,13 +1559,32 @@ def cmd_rename(args: argparse.Namespace) -> None:
             ]
             fields = cast(dict[str, str], item)
             for field in ("summary", "context", "next_steps"):
-                if old_slug in fields.get(field, ""):
-                    fields[field] = word_re.sub(new_slug, fields[field])
+                fields[field] = _rewrite_prose(fields.get(field, ""))
+            for rf in item.get("related_files", []):
+                note = rf.get("note", "") if isinstance(rf, dict) else ""
+                if isinstance(note, str) and note:
+                    rf["note"] = _rewrite_prose(note)
+
+        for p in pending_items:
+            p["blocking"] = [
+                new_slug if s == old_slug else s for s in p.get("blocking", [])
+            ]
+            fields = cast(dict[str, str], p)
+            for field in ("description", "context"):
+                fields[field] = _rewrite_prose(fields.get(field, ""))
+            for step_idx, step in enumerate(p.get("next_steps", [])):
+                if isinstance(step, str):
+                    p["next_steps"][step_idx] = _rewrite_prose(step)
+            for rf in p.get("related_files", []):
+                note = rf.get("note", "") if isinstance(rf, dict) else ""
+                if isinstance(note, str) and note:
+                    rf["note"] = _rewrite_prose(note)
 
         save_items(items)
+        save_pending(pending_items)
         new_rev = bump_rev()
-    print(f"[rename] {old_slug} → {new_slug}", file=sys.stderr)
-    render(items, rev=new_rev)
+        print(f"[rename] {old_slug} → {new_slug}", file=sys.stderr)
+        render(items, pending_items, rev=new_rev)
 
 
 def cmd_block(args: argparse.Namespace) -> None:
@@ -1407,7 +1610,7 @@ def cmd_block(args: argparse.Namespace) -> None:
 
         m.item.setdefault("blocked_by", []).append(blocker)
         m.item["updated"] = today()
-    render(m.items, rev=m.new_rev)
+        render(m.items, m.pending_items, rev=m.new_rev)
 
 
 def cmd_unblock(args: argparse.Namespace) -> None:
@@ -1420,7 +1623,7 @@ def cmd_unblock(args: argparse.Namespace) -> None:
 
         m.item["blocked_by"] = [s for s in m.item["blocked_by"] if s != blocker]
         m.item["updated"] = today()
-    render(m.items, rev=m.new_rev)
+        render(m.items, m.pending_items, rev=m.new_rev)
 
 
 def cmd_pending_add(args: argparse.Namespace) -> None:
@@ -1463,6 +1666,18 @@ def cmd_pending_add(args: argparse.Namespace) -> None:
 
         backlog_items = load_items()
         index = build_index(backlog_items)
+        # Cross-pool uniqueness: a backlog item with the same id would
+        # otherwise make resolve_id treat the pending record as backlog
+        # (resolve_id looks at the pending pool first for non-numeric args),
+        # permanently orphaning the pending item.
+        if slug in index:
+            print(
+                f"[pending add] slug '{slug}' already exists as a backlog item — "
+                "remove or rename the backlog item first",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
         blocking = cast(list[str], _list_field(patch, "blocking"))
         for dep in blocking:
             if dep not in index:
@@ -1489,8 +1704,8 @@ def cmd_pending_add(args: argparse.Namespace) -> None:
         )
         save_pending(pending_items)
         new_rev = bump_rev()
-    print(f"[pending add] {slug} — {description[:60]}", file=sys.stderr)
-    render(pending_items=pending_items, rev=new_rev)
+        print(f"[pending add] {slug} — {description[:60]}", file=sys.stderr)
+        render(backlog_items, pending_items, rev=new_rev)
     _blocker_check_reminder(backlog_items, None, cmd="pending add")
 
 
@@ -1538,6 +1753,19 @@ def cmd_pending_update(args: argparse.Namespace) -> None:
         if item is None:
             print(f"[pending update] not found: {slug}", file=sys.stderr)
             sys.exit(1)
+        # Validate `blocking` slugs against the backlog index, mirroring
+        # `pending add`'s validation — without this, a typo'd slug slips in
+        # here and CLAUDE.md routes post-add blocker edits through this path.
+        if "blocking" in patch:
+            backlog_index = build_index(items)
+            blocking_patch = cast(list[str], _list_field(patch, "blocking"))
+            for dep in blocking_patch:
+                if dep not in backlog_index:
+                    print(
+                        f"[pending update] blocking references unknown slug: {dep}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
         if "status" in patch:
             _apply_status_transition(
                 cast(dict[str, object], item),
@@ -1550,7 +1778,7 @@ def cmd_pending_update(args: argparse.Namespace) -> None:
         save_pending(pending_items)
         new_rev = bump_rev()
         confirm_resolution("pending update", args.id, item, summary_key="description")
-    render(pending_items=pending_items, rev=new_rev)
+        render(items, pending_items, rev=new_rev)
 
 
 def cmd_pending_list(args: argparse.Namespace) -> None:
@@ -1560,26 +1788,36 @@ def cmd_pending_list(args: argparse.Namespace) -> None:
 
 
 def cmd_remove(args: argparse.Namespace) -> None:
-    """Handle ``remove``: permanently delete one backlog item."""
+    """Handle ``remove``: permanently delete one backlog item.
+
+    Purges the removed slug from every surviving item's ``blocked_by``
+    list and every pending item's ``blocking`` list, so deleting a
+    completed blocker doesn't retroactively flip its dependents from READY
+    into BLOCKED via :func:`effective_blockers`'s missing-slug-is-unresolved
+    fallback.
+    """
     with _backlog_mutation("remove", args.id, args.if_rev) as m:
         m.items = [i for i in m.items if i["id"] != m.slug]
-    confirm_resolution("remove", args.id, m.item)
-    render(m.items, rev=m.new_rev)
+        _purge_inbound_refs({m.slug}, m.items, m.pending_items)
+        confirm_resolution("remove", args.id, m.item)
+        render(m.items, m.pending_items, rev=m.new_rev)
 
 
 def cmd_prune(args: argparse.Namespace) -> None:
     """Handle ``prune``: permanently remove done/resolved items older than 14 days.
 
     Backs up each data file before any deletion occurs (see
-    :func:`_backup_before_bulk_delete`), and only bumps the revision if
-    something was actually removed.
+    :func:`_backup_before_bulk_delete`), purges inbound ``blocked_by``/
+    ``blocking`` references to the pruned slugs (same rationale as
+    :func:`cmd_remove`), and only bumps the revision if something was
+    actually removed.
     """
     cutoff_days = 14
 
     with backlog_lock():
         items = load_items()
         keep: list[BacklogItem] = []
-        pruned = 0
+        pruned_slugs: set[str] = set()
         for item in items:
             if item.get("status") == "done":
                 age = _age_days(item.get("completed_at") or item.get("updated", ""))
@@ -1590,16 +1828,16 @@ def cmd_prune(args: argparse.Namespace) -> None:
                         file=sys.stderr,
                     )
                 elif age >= cutoff_days:
-                    pruned += 1
+                    pruned_slugs.add(item["id"])
                     continue
             keep.append(item)
-        if pruned:
+        if pruned_slugs:
             _backup_before_bulk_delete(ITEMS_FILE)
             save_items(keep)
 
         pending_items = load_pending()
         pending_keep: list[PendingItem] = []
-        pending_pruned = 0
+        pending_pruned_slugs: set[str] = set()
         for pending_item in pending_items:
             if pending_item.get("status") == "resolved":
                 age = _age_days(
@@ -1612,20 +1850,41 @@ def cmd_prune(args: argparse.Namespace) -> None:
                         file=sys.stderr,
                     )
                 elif age >= cutoff_days:
-                    pending_pruned += 1
+                    pending_pruned_slugs.add(pending_item["id"])
                     continue
             pending_keep.append(pending_item)
-        if pending_pruned:
+        if pending_pruned_slugs:
             _backup_before_bulk_delete(PENDING_FILE)
             save_pending(pending_keep)
 
-        total = pruned + pending_pruned
-        if total:
-            bump_rev()
+        total_removed = len(pruned_slugs) + len(pending_pruned_slugs)
+        if total_removed:
+            # Purge inbound refs from the surviving records. Need to re-save
+            # if purge mutated a file we wouldn't otherwise have written.
+            _purge_inbound_refs(pruned_slugs | pending_pruned_slugs, keep, pending_keep)
+            # save_items was already called above only when pruned_slugs; if
+            # purge mutated `keep` we must re-save. Same for pending. The
+            # simplest invariant: re-save whichever file purge may have
+            # touched when its removal set was non-empty.
+            if pruned_slugs or pending_pruned_slugs:
+                # If only pending was pruned, keep (backlog) may still have
+                # been mutated by purge if a pruned pending slug was in any
+                # backlog item's blocked_by — but pending slugs are not valid
+                # blockers (cmd_block rejects non-backlog slugs), so purge
+                # only touches `keep` when pruned_slugs is non-empty.
+                if pruned_slugs:
+                    save_items(keep)
+                if pending_pruned_slugs:
+                    save_pending(pending_keep)
+            new_rev = bump_rev()
             print(
-                f"[prune] removed {pruned} backlog item(s), "
-                f"{pending_pruned} pending item(s) — backup written to {DATA_DIR}"
+                f"[prune] removed {len(pruned_slugs)} backlog item(s), "
+                f"{len(pending_pruned_slugs)} pending item(s) — "
+                f"backup written to {DATA_DIR}"
             )
+            # Match every other mutator: render prints the dashboard and the
+            # item-map line so a caller's rev stays fresh.
+            render(keep, pending_keep, rev=new_rev)
         else:
             print("[prune] nothing to prune")
 
