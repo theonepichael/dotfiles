@@ -249,6 +249,52 @@ class BacklogTestCase(unittest.TestCase):
                 dev_status.cmd_rename(args)
         self.assertIn("not found", err.getvalue())
 
+    # ── 10b: rename accepts numeric id, guarded like other mutators ─────────
+
+    def test_10b_rename_numeric_id_without_if_rev_refused(self):
+        self.write_items([make_item("old-name")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_rename(
+                    _args(old_slug="1", new_slug="new-name", if_rev=None)
+                )
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("requires --if-rev", err.getvalue())
+        self.assertEqual(self.read_rev(), 0)
+        self.assertIn("old-name", {i["id"] for i in self.read_items()})
+
+    def test_10c_rename_numeric_id_stale_if_rev_refused(self):
+        self.write_items([make_item("old-name"), make_item("other-item")])
+        dev_status.cmd_done(_args(id="other-item"))  # bumps rev to 1
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_rename(
+                    _args(old_slug="1", new_slug="new-name", if_rev=0)
+                )
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("stale rev", err.getvalue())
+        self.assertIn("old-name", {i["id"] for i in self.read_items()})
+
+    def test_10d_rename_numeric_id_matching_if_rev_succeeds(self):
+        self.write_items([make_item("old-name")])
+        cur_rev = self.read_rev()
+        dev_status.cmd_rename(_args(old_slug="1", new_slug="new-name", if_rev=cur_rev))
+        ids = {i["id"] for i in self.read_items()}
+        self.assertIn("new-name", ids)
+        self.assertNotIn("old-name", ids)
+        self.assertEqual(self.read_rev(), cur_rev + 1)
+
+    def test_10e_rename_slug_id_never_requires_if_rev(self):
+        self.write_items([make_item("old-name")])
+        dev_status.cmd_rename(
+            _args(old_slug="old-name", new_slug="new-name", if_rev=None)
+        )
+        ids = {i["id"] for i in self.read_items()}
+        self.assertIn("new-name", ids)
+        self.assertNotIn("old-name", ids)
+
     # ── 11: block adds dep; cycle rejected ───────────────────────────────────
 
     def test_11a_block_adds_dep(self):
@@ -620,6 +666,16 @@ class BacklogTestCase(unittest.TestCase):
                     dev_status.main()
         self.assertEqual(cm.exception.code, 2)
         self.assertIn("bogus", err.getvalue())
+
+    def test_20o_list_rev_goes_to_stderr_not_stdout(self):
+        # cmd_show and render both print "# rev=N" to stderr; cmd_list was
+        # the odd one out, printing it to stdout instead.
+        self.write_items([make_item("my-item")])
+        out, err = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            dev_status.cmd_list(_args())
+        self.assertNotIn("rev=", out.getvalue())
+        self.assertIn("rev=0", err.getvalue())
 
     # ── 21: numeric id without --if-rev refused, no write ─────────────────
 
@@ -1487,6 +1543,16 @@ class BacklogTestCase(unittest.TestCase):
         remaining = self.read_items()
         self.assertEqual([i["id"] for i in remaining], ["dep"])
         self.assertEqual(remaining[0]["blocked_by"], [])
+
+    def test_backup_stamp_has_millisecond_resolution(self):
+        # Two backups taken within the same wall-clock second must not
+        # collide on filename — second-resolution stamps overwrite the
+        # first backup silently when a prune runs twice quickly.
+        self.write_items([make_item("a")])
+        dev_status._backup_before_bulk_delete(self.items_file)
+        dev_status._backup_before_bulk_delete(self.items_file)
+        backups = list(self.data_dir.glob("items.bak-*.json"))
+        self.assertEqual(len(backups), 2)
 
     # ── #5: rename rewrites pending blocking list + related_files[].note
 
