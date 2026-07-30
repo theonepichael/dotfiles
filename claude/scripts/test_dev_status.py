@@ -436,6 +436,31 @@ class BacklogTestCase(unittest.TestCase):
         _, _, _, done = dev_status._render_order(items)
         self.assertEqual([i["id"] for i in done], ["legacy"])
 
+    def test_18e_done_section_orders_by_completed_at_not_updated(self):
+        # Regression test: an item finished earlier but edited afterward
+        # (bumping `updated`) must not outrank an item that finished more
+        # recently. Both fall inside the recency window; only completion
+        # order should decide DONE ordering.
+        items = [
+            make_item(
+                "finished-earlier-edited-later",
+                status="done",
+                updated=date.today().isoformat(),
+            ),
+            make_item(
+                "finished-later-not-edited",
+                status="done",
+                updated=(date.today() - timedelta(days=1)).isoformat(),
+            ),
+        ]
+        items[0]["completed_at"] = (date.today() - timedelta(days=1)).isoformat()
+        items[1]["completed_at"] = date.today().isoformat()
+        _, _, _, done = dev_status._render_order(items)
+        self.assertEqual(
+            [i["id"] for i in done],
+            ["finished-later-not-edited", "finished-earlier-edited-later"],
+        )
+
     # ── 19: color gated on isatty ─────────────────────────────────────────────
 
     def test_19_no_color_codes_when_not_a_tty(self):
