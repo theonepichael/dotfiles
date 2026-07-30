@@ -7,6 +7,10 @@
     ],
     "deny": [
       "Bash(python3 ~/.claude/scripts/dev_status.py prune:*)"
+    ],
+    "ask": [
+      "Bash(git commit)",
+      "Bash(git commit *)"
     ]
   },
   "hooks": {
