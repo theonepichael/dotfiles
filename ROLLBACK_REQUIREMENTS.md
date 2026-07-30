@@ -41,29 +41,21 @@ run 2), the replay needs to collapse to the correct final undo (restore the
 *original* pre-dotfiles file, not an intermediate state) rather than
 naively replaying every historical entry.
 
-### 2. Packages: actually uninstall them
+### 2. Packages: leave them installed (unchanged from today)
 
-Rollback must run the real removal command for everything `install.sh`
-installed, not just report it:
-
-- macOS: `brew uninstall` for formulae, `brew uninstall --cask` for casks.
-- Linux: `apt-get remove` / `dnf remove` per package, matching whichever
-  branch installed it.
-- `uv tool uninstall ruff`, and removal of the `uv`/`oh-my-posh` installers'
-  own binaries where they were installed by this script.
-- `npm uninstall -g @anthropic-ai/claude-code` / `@github/copilot`.
-- The pinned JetBrains Nerd Font directory.
-
-This is a change from today's explicit design choice ("packages are
-profile-independent, so leave them"). Flagging the risk directly: package
-managers can refuse or cascade-remove when something else on the machine
-now depends on a package `install.sh` installed. Rollback's failure handling
-(see #4) is what keeps that from turning into a hard stop.
+Rollback does **not** uninstall packages — this matches the existing
+design and was reconsidered after clarifying the actual motivating use
+case (undo a bad local config change, then cleanly redo setup via a fresh
+`install.sh` run). Uninstalling/reinstalling packages does nothing for that
+goal and adds real risk: package managers can refuse or cascade-remove
+when something else on the machine has since come to depend on a package
+`install.sh` installed. `--rollback` continues to only report packages
+("package left installed"), same as today.
 
 ### 3. Out of scope: system-level side effects
 
-Explicitly **not** part of this rollback feature — stays file/package-level
-only:
+Explicitly **not** part of this rollback feature — stays file-level only
+(packages, as covered in #2, are also left untouched):
 
 - watchcommit services: systemd `--user` unit (enable/start,
   `loginctl enable-linger`) and the macOS launchd agent are not
@@ -81,9 +73,9 @@ this one.
 Consistent with `install.sh`'s existing philosophy (see the file's own
 opening comment and the `note_skip`/`SKIPPED` pattern): rollback must never
 abort partway through. Every step that can't be reversed as expected (file
-already gone, symlink retargeted since, package removal refused/cascades,
-uninstall command fails) gets logged via the same skip-and-report mechanism
-and rollback continues with everything else. End with a loud summary of
+already gone, symlink retargeted since, backup destination missing) gets
+logged via the same skip-and-report mechanism and rollback continues with
+everything else. End with a loud summary of
 what didn't reverse cleanly, non-zero exit if anything was skipped — same
 contract the rest of the script already has.
 
@@ -91,22 +83,19 @@ contract the rest of the script already has.
 
 - Running `install.sh --rollback` after N historical runs (spanning
   multiple `--harness`/`--profile` combinations over time) removes every
-  symlink, restores every backed-up file, deletes every copied file, and
-  uninstalls every package this script ever installed, across all N runs —
-  not just the latest.
+  symlink, restores every backed-up file, and deletes every copied file
+  this script ever created, across all N runs — not just the latest.
+  Packages are left installed and merely reported, as today.
 - No watchcommit service state, macOS keyboard remap, or Rectangle prefs
   are touched by rollback.
 - A rollback that hits an unreversible step anywhere logs it and keeps
   going; it never stops with earlier steps reversed and later ones
   untouched because of one failure in the middle.
-- `--dry-run --rollback` continues to preview the full plan (now including
-  package uninstalls) without changing anything, per existing behavior.
+- `--dry-run --rollback` continues to preview the full plan without
+  changing anything, per existing behavior.
 
 ## Not yet decided (flag for implementation-time follow-up)
 
-- Whether multi-run replay needs a confirmation prompt before removing
-  packages, given the cascade-removal risk noted in #2 — not asked about
-  yet, worth a explicit decision before landing the change.
 - Exact on-disk format for the append-only/multi-run manifest (single
   growing file with `run` delimiters vs. one file per run under a
   timestamped directory).
