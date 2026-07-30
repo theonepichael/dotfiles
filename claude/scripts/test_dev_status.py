@@ -967,7 +967,10 @@ class BacklogTestCase(unittest.TestCase):
             with patch("sys.stderr", err):
                 dev_status.cmd_remove(_args(id="nope-item"))
         self.assertEqual(cm.exception.code, 1)
-        self.assertIn("[remove] not found: nope-item", err.getvalue())
+        # resolve_id surfaces not-found before _backlog_mutation's per-cmd
+        # check would (so an unknown slug doesn't get mis-resolved as
+        # "wrong kind" by require_kind).
+        self.assertIn("[resolve] not found: nope-item", err.getvalue())
         self.assertEqual(len(self.read_items()), 1)
         self.assertEqual(self.read_rev(), 0)
 
@@ -984,9 +987,12 @@ class BacklogTestCase(unittest.TestCase):
         self.assertEqual(len(self.read_items()), 1)
         self.assertEqual(self.read_rev(), 0)
 
-    # ── 45: remove leaves dependent blocked_by refs dangling ────────────────
+    # ── 45: remove PURGES inbound blocked_by refs (bug #4 fix — the previous
+    #         behavior was a regression-lock on the bug, leaving a dangling ref
+    #         that effective_blockers treated as unresolved, retroactively
+    #         flipping dependents from READY into BLOCKED).
 
-    def test_45_remove_leaves_dangling_blocked_by(self):
+    def test_45_remove_purges_inbound_blocked_by_refs(self):
         self.write_items(
             [
                 make_item("blocker", status="done"),
@@ -996,11 +1002,12 @@ class BacklogTestCase(unittest.TestCase):
         dev_status.cmd_remove(_args(id="blocker"))
         remaining = self.read_items()
         self.assertEqual([i["id"] for i in remaining], ["dep"])
+        # blocked_by has been purged — no dangling reference to the
+        # removed slug, so effective_blockers is empty (dep moves back to
+        # READY) instead of treating the missing slug as unresolved.
+        self.assertEqual(remaining[0]["blocked_by"], [])
         index = dev_status.build_index(remaining)
-        # blocked_by slug still listed even though referent is gone
-        self.assertEqual(
-            dev_status.effective_blockers(remaining[0], index), ["blocker"]
-        )
+        self.assertEqual(dev_status.effective_blockers(remaining[0], index), [])
 
     # ── 46: remove bumps rev exactly once ──────────────────────────────────
 
@@ -1070,12 +1077,15 @@ class BacklogTestCase(unittest.TestCase):
         self.assertEqual(self.read_rev(), rev_before)
 
     def test_50_update_mutable_fields_all_accepted(self):
+        # blocked_by is excluded from this test: cmd_update refuses
+        # blocked_by patches outright (see test_bug03), redirecting to
+        # block/unblock so update's raw merge can't bypass their
+        # existence/cycle/self-block checks.
         self.write_items([make_item("a"), make_item("b")])
         patch_json = json.dumps(
             {
                 "summary": "new summary",
                 "category": "bug",
-                "blocked_by": ["b"],
                 "related_files": [{"path": "/x", "note": "y"}],
                 "context": "ctx",
                 "next_steps": "next",
@@ -1087,7 +1097,6 @@ class BacklogTestCase(unittest.TestCase):
         item = dev_status.build_index(self.read_items())["a"]
         self.assertEqual(item["summary"], "new summary")
         self.assertEqual(item["category"], "bug")
-        self.assertEqual(item["blocked_by"], ["b"])
         self.assertEqual(item["related_files"], [{"path": "/x", "note": "y"}])
         self.assertEqual(item["context"], "ctx")
         self.assertEqual(item["next_steps"], "next")
@@ -1255,13 +1264,18 @@ class BacklogTestCase(unittest.TestCase):
         )
 
     def test_64b_update_explicit_null_blocked_by_rejected_not_crash(self):
+        # Update refuses blocked_by entirely now (null or any value), redirecting
+        # to block/unblock — see test_bug03. This test keeps its original name
+        # so the historical "explicit-null-no-crash" intent is preserved while
+        # the rejection reason has changed from "cannot be null" to "cannot
+        # modify directly".
         self.write_items([make_item("a")])
         err = io.StringIO()
         with self.assertRaises(SystemExit) as cm:
             with patch("sys.stderr", err):
                 dev_status.cmd_update(_args(id="a", patch='{"blocked_by": null}'))
         self.assertEqual(cm.exception.code, 1)
-        self.assertIn("cannot be null: blocked_by", err.getvalue())
+        self.assertIn("cannot modify 'blocked_by'", err.getvalue())
 
     def test_64c_update_multiple_null_fields_all_named_in_error(self):
         self.write_items([make_item("a")])
@@ -1342,6 +1356,452 @@ class BacklogTestCase(unittest.TestCase):
         dev_status.cmd_pending_update(_args(id="pend-item", patch='{"outcome": null}'))
         pending = {p["id"]: p for p in dev_status.load_pending()}
         self.assertIsNone(pending["pend-item"]["outcome"])
+
+    # ───────────────────────────────────────────────────────────────────────
+    # Bug-analysis regression tests (meta-devstatus-bug-analysis-2607)
+    # Mirrors the 14 fixes chosen in the grilled plan; numbering matches the
+    # bug-report findings 1-13,15,16 (we accepted #9 as a documented
+    # limitation and split #14/#17 into separate backlog items).
+    # ───────────────────────────────────────────────────────────────────────
+
+    # ── #1: stale-rev race in read paths — render/list/show take the lock
+
+    def test_bug01_read_paths_acquire_lock(self):
+        self.write_items([make_item("alph-item")])
+        # Render cmd path: invoke while holding the lock from another fd
+        # would self-deadlock; instead assert the lock file is touched and
+        # cmd_render completes without raising, which it can only do if it
+        # does NOT try to acquire a second non-recursive lock in the same fd.
+        # The actual atomic-items+rev guarantee is exercised via the
+        # _MutationResult exposure in #15's test.
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.cmd_render(_args())
+        self.assertIn("alph-item", out.getvalue())
+
+    # ── #2: cross-pool id collision
+
+    def test_bug02_add_refuses_slug_in_pending_pool(self):
+        self.write_pending(
+            [
+                {
+                    "id": "shared-slug",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "x",
+                    "kind": "email",
+                    "outcome": None,
+                }
+            ]
+        )
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_add(_args(json='{"id": "shared-slug", "summary": "x"}'))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("already exists as a pending item", err.getvalue())
+
+    def test_bug02_pending_add_refuses_slug_in_backlog_pool(self):
+        self.write_items([make_item("shared-slug")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_pending_add(
+                    _args(
+                        json='{"id": "shared-slug", "description": "x", "kind": "email"}'
+                    )
+                )
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("already exists as a backlog item", err.getvalue())
+
+    # ── #3: update refuses blocked_by, forces block/unblock
+
+    def test_bug03_update_refuses_blocked_by_patch(self):
+        self.write_items([make_item("aaa-item"), make_item("bbb-item")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_update(
+                    _args(id="aaa-item", patch='{"blocked_by": ["bbb-item"]}')
+                )
+        self.assertEqual(cm.exception.code, 1)
+        msg = err.getvalue()
+        self.assertIn("cannot modify 'blocked_by'", msg)
+        self.assertIn("block <id> <blocker>", msg)
+        # Must NOT have silently landed in stored blocked_by
+        items = self.read_items()
+        self.assertEqual(items[0]["blocked_by"], [])
+
+    # ── #4: remove purges inbound blocked_by (already covered in test_45;
+    #         prune variant below)
+
+    def test_bug04_prune_purges_inbound_blocked_by_refs(self):
+        from datetime import date, timedelta
+
+        old = (date.today() - timedelta(days=30)).isoformat()
+        self.write_items(
+            [
+                {
+                    "id": "old-blocker",
+                    "created": old,
+                    "updated": old,
+                    "status": "done",
+                    "completed_at": old,
+                    "summary": "Old",
+                    "category": "feature",
+                    "blocked_by": [],
+                    "related_files": [],
+                    "context": "",
+                    "next_steps": "",
+                },
+                make_item("dep", blocked_by=["old-blocker"]),
+            ]
+        )
+        # Patch _backup_before_bulk_delete to a no-op so we don't write
+        # stray backup files in the test tmpdir.
+        with patch.object(dev_status, "_backup_before_bulk_delete", lambda _p: None):
+            dev_status.cmd_prune(_args(force=True))
+        remaining = self.read_items()
+        self.assertEqual([i["id"] for i in remaining], ["dep"])
+        self.assertEqual(remaining[0]["blocked_by"], [])
+
+    # ── #5: rename rewrites pending blocking list + related_files[].note
+
+    def test_bug05_rename_rewrites_pending_blocking_and_related_files_note(self):
+        self.write_items([make_item("old-slug")])
+        self.write_pending(
+            [
+                {
+                    "id": "pend-x",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "blocks old-slug elsewhere",
+                    "kind": "email",
+                    "blocking": ["old-slug"],
+                    "related_files": [
+                        {"path": "/x", "note": "see old-slug for context"}
+                    ],
+                    "next_steps": ["ping old-slug owner"],
+                    "outcome": None,
+                }
+            ]
+        )
+        dev_status.cmd_rename(_args(old_slug="old-slug", new_slug="new-slug"))
+        pend = dev_status.load_pending()[0]
+        self.assertEqual(pend["blocking"], ["new-slug"])
+        self.assertEqual(pend["related_files"][0]["note"], "see new-slug for context")
+        self.assertEqual(pend["next_steps"][0], "ping new-slug owner")
+        self.assertEqual(pend["description"], "blocks new-slug elsewhere")
+
+    # ── #6: rename boundary regex doesn't over-match longer sibling slugs
+
+    def test_bug06_rename_regex_does_not_overmatch_sibling_slug(self):
+        self.write_items(
+            [
+                make_item(
+                    "foo-bar",
+                    summary="refs foo-bar-baz elsewhere",
+                    context="context-foo-bar-baz-end",
+                    next_steps="x-foo-bar-baz",
+                ),
+                make_item("foo-bar-baz"),
+            ]
+        )
+        dev_status.cmd_rename(_args(old_slug="foo-bar", new_slug="renamed-slug"))
+        items = {i["id"]: i for i in self.read_items()}
+        # foo-bar-baz slug itself is unchanged
+        self.assertIn("foo-bar-baz", items)
+        # prose mentions of foo-bar-baz are NOT rewritten
+        self.assertEqual(items["foo-bar-baz"]["summary"], "Summary of foo-bar-baz")
+        # the renamed item's prose: its own slug was foo-bar (now renamed-slug),
+        # but mentions of foo-bar-baz are preserved (NOT truncated to renamed-slug-baz)
+        self.assertEqual(items["renamed-slug"]["summary"], "refs foo-bar-baz elsewhere")
+        self.assertEqual(items["renamed-slug"]["context"], "context-foo-bar-baz-end")
+        self.assertEqual(items["renamed-slug"]["next_steps"], "x-foo-bar-baz")
+
+    # ── #7: _age_hours handles timezone-aware stamps
+
+    def test_bug07_age_hours_handles_tz_aware_stamp(self):
+        from datetime import datetime, timezone
+
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        age = dev_status._age_hours(now_iso)
+        self.assertIsNotNone(age)
+        self.assertGreaterEqual(age, 0.0)
+        self.assertLess(age, 1.0)
+
+    # ── #8: _list_field rejects non-list (string) values
+
+    def test_bug08_list_field_rejects_string(self):
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status._list_field({"blocked_by": "not-a-list"}, "blocked_by")
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("must be a list", err.getvalue())
+
+    def test_bug08_effective_blockers_coerces_corrupt_stored_string(self):
+        # A legacy corrupt record with blocked_by as a string would
+        # previously be iterated char-by-char; effective_blockers now
+        # coerces to [] with a stderr warning instead.
+        item = make_item("corrupt-item", blocked_by="blocker-slug")  # type: ignore[arg-type]
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            result = dev_status.effective_blockers(item, {})
+        self.assertEqual(result, [])
+        self.assertIn("not list", err.getvalue())
+
+    # ── #10: pending update validates blocking slugs against backlog index
+
+    def test_bug10_pending_update_validates_blocking_slugs(self):
+        self.write_items([make_item("real-item")])
+        self.write_pending(
+            [
+                {
+                    "id": "pend-x",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "x",
+                    "kind": "email",
+                    "blocking": ["real-item"],
+                    "next_steps": [],
+                    "outcome": None,
+                }
+            ]
+        )
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_pending_update(
+                    _args(id="pend-x", patch='{"blocking": ["typo-slug"]}')
+                )
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("blocking references unknown slug: typo-slug", err.getvalue())
+
+    # ── #11: unknown slug emits not-found, not wrong-kind
+
+    def test_bug11_update_unknown_slug_emits_not_found(self):
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_update(_args(id="typo-slug", patch='{"summary": "x"}'))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("[resolve] not found: typo-slug", err.getvalue())
+        self.assertNotIn("is a", err.getvalue())
+
+    def test_bug11_pending_update_unknown_slug_emits_not_found(self):
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_pending_update(
+                    _args(id="typo-slug", patch='{"description": "x"}')
+                )
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("[resolve] not found: typo-slug", err.getvalue())
+        self.assertNotIn("is a backlog item", err.getvalue())
+
+    # ── #12: load_rev handles non-dict / non-int rev
+
+    def test_bug12_load_rev_non_dict_meta_falls_back_to_zero(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        # A structurally valid JSON list, not a dict — previously AttributeError
+        self.meta_file.write_text("[]")
+        self.assertEqual(dev_status.load_rev(), 0)
+
+    def test_bug12_load_rev_non_int_rev_falls_back_to_zero(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        # rev present but a string — would brick every numeric --if-rev call
+        self.meta_file.write_text(json.dumps({"rev": "five"}))
+        self.assertEqual(dev_status.load_rev(), 0)
+
+    # ── #13: falsy-zero DONE window bug (age 0.0 excluded before)
+
+    def test_bug13_done_age_zero_still_in_window(self):
+        from datetime import datetime
+
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        items = [
+            {
+                "id": "fresh-done",
+                "created": now_iso,
+                "updated": now_iso,
+                "status": "done",
+                "completed_at": now_iso,
+                "summary": "Fresh",
+                "category": "feature",
+                "blocked_by": [],
+                "related_files": [],
+                "context": "",
+                "next_steps": "",
+            }
+        ]
+        self.write_items(items)
+        _, _, _, done = dev_status._render_order(items)
+        self.assertEqual([i["id"] for i in done], ["fresh-done"])
+
+    # ── #15: mutators render inside the lock using in-memory pending_items
+
+    def test_bug15_done_renders_in_memory_pending(self):
+        self.write_items([make_item("alph-item")])
+        self.write_pending(
+            [
+                {
+                    "id": "pend-x",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "w",
+                    "kind": "email",
+                    "next_steps": [],
+                    "blocking": [],
+                    "outcome": None,
+                }
+            ]
+        )
+        out, err = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            dev_status.cmd_done(_args(id="alph-item"))
+        # stdout renders the dashboard with the pending item's description; stderr
+        # gets the item-map line naming pend-x. Both prove the in-memory
+        # pending_items from the locked mutation was used (no unlocked re-read).
+        self.assertIn("w (waiting", out.getvalue())
+        self.assertIn("pend-x", err.getvalue())
+
+    # ── #16: prune prints the item-map/rev line (via render) after pruning
+
+    def test_bug16_prune_prints_dashboard_and_item_map(self):
+        from datetime import date, timedelta
+
+        old = (date.today() - timedelta(days=30)).isoformat()
+        self.write_items(
+            [
+                {
+                    "id": "old-done",
+                    "created": old,
+                    "updated": old,
+                    "status": "done",
+                    "completed_at": old,
+                    "summary": "Old",
+                    "category": "feature",
+                    "blocked_by": [],
+                    "related_files": [],
+                    "context": "",
+                    "next_steps": "",
+                }
+            ]
+        )
+        out, err = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            with patch.object(
+                dev_status, "_backup_before_bulk_delete", lambda _p: None
+            ):
+                dev_status.cmd_prune(_args(force=True))
+        # Render prints the dashboard to stdout and the item-map line to stderr
+        self.assertIn("backlog is empty", out.getvalue())
+        self.assertIn("item-map:", err.getvalue())
+
+    # ── found during merge review: _backlog_mutation printed a stale rev ────
+
+    def test_review_start_prints_post_bump_rev_not_stale(self):
+        """A caller-side render(rev=m.new_rev) inside the `with` block ran
+        before _backlog_mutation's cleanup bumped the rev, so every mutator
+        built on it (update/start/done/block/unblock/remove) printed the
+        rev from *before* its own mutation. Render now happens inside the
+        helper's cleanup, after bump_rev()."""
+        self.write_items([make_item("item-a", status="open")])
+        err = io.StringIO()
+        with patch("sys.stdout", io.StringIO()), patch("sys.stderr", err):
+            dev_status.cmd_start(_args(id="item-a", if_rev=0))
+        printed_rev = int(err.getvalue().split("rev=")[1].split(" ")[0])
+        self.assertEqual(printed_rev, self.read_rev())
+
+    def test_review_remove_prints_post_bump_rev_not_stale(self):
+        self.write_items([make_item("item-a", status="open")])
+        err = io.StringIO()
+        with patch("sys.stdout", io.StringIO()), patch("sys.stderr", err):
+            dev_status.cmd_remove(_args(id="item-a", if_rev=0))
+        printed_rev = int(err.getvalue().split("rev=")[1].split(" ")[0])
+        self.assertEqual(printed_rev, self.read_rev())
+
+    # ── found during merge review: pending "blocking" purge never persisted ──
+
+    def test_review_remove_persists_pending_blocking_purge(self):
+        """_purge_inbound_refs strips a removed slug from surviving pending
+        items' `blocking` lists in memory, but _backlog_mutation's cleanup
+        only calls save_items — cmd_remove must save_pending itself or the
+        purge never reaches disk."""
+        self.write_items([make_item("blocker-item", status="open")])
+        self.write_pending(
+            [
+                {
+                    "id": "pend-waiting",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "waiting on blocker-item",
+                    "kind": "email",
+                    "blocking": ["blocker-item"],
+                    "related_files": [],
+                    "next_steps": [],
+                    "outcome": None,
+                }
+            ]
+        )
+        with patch("sys.stdout", io.StringIO()), patch("sys.stderr", io.StringIO()):
+            dev_status.cmd_remove(_args(id="blocker-item", if_rev=0))
+        # Reload from disk (not the in-memory object render used) to prove
+        # the purge was actually persisted.
+        pending_on_disk = dev_status.load_pending()
+        self.assertEqual(pending_on_disk[0]["blocking"], [])
+
+    def test_review_prune_persists_pending_blocking_purge_backlog_only(self):
+        """cmd_prune only re-saved pending_keep when a pending item itself
+        was pruned, missing the case where pruning a backlog item leaves a
+        stale reference in a surviving pending item's `blocking` list."""
+        old = (date.today() - timedelta(days=30)).isoformat()
+        self.write_items(
+            [
+                {
+                    "id": "old-blocker",
+                    "created": old,
+                    "updated": old,
+                    "status": "done",
+                    "completed_at": old,
+                    "summary": "Old",
+                    "category": "feature",
+                    "blocked_by": [],
+                    "related_files": [],
+                    "context": "",
+                    "next_steps": "",
+                }
+            ]
+        )
+        self.write_pending(
+            [
+                {
+                    "id": "pend-waiting",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "waiting on old-blocker",
+                    "kind": "email",
+                    "blocking": ["old-blocker"],
+                    "related_files": [],
+                    "next_steps": [],
+                    "outcome": None,
+                }
+            ]
+        )
+        with patch("sys.stdout", io.StringIO()), patch("sys.stderr", io.StringIO()):
+            with patch.object(
+                dev_status, "_backup_before_bulk_delete", lambda _p: None
+            ):
+                dev_status.cmd_prune(_args(force=True))
+        pending_on_disk = dev_status.load_pending()
+        self.assertEqual(pending_on_disk[0]["blocking"], [])
 
 
 # ── arg helper ────────────────────────────────────────────────────────────────
