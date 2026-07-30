@@ -43,6 +43,25 @@ check, a type check, or a read-through is not verification. If time or
 context doesn't allow actually running something, say so plainly ("I edited
 this but haven't run it yet") instead of implying it was checked.
 
+### Baseline tests before starting code work
+
+Before making nontrivial code changes in a repo that already has a test
+suite — starting a backlog item or otherwise — run the suite (or the most
+relevant targeted subset, if the full suite is large or slow) first, before
+touching anything. This establishes a pass/fail baseline so any failure
+discovered later can be checked against it instead of assumed to be a
+regression from the current work. Skip this for changes that aren't
+code (a one-line doc edit, a pure backlog/prose update).
+
+If the baseline itself has failures unrelated to the work at hand:
+- **Truly trivial** (a one-liner, no investigation or design decision
+  needed — a typo, a stale hardcoded expected value): fold the fix into
+  the current work and mention it was done.
+- **Anything else** (requires digging into *why* it's failing, or any real
+  design choice): don't fix it inline — that's scope creep. Offer a
+  separate backlog item for it instead, per the Backlog section's
+  proactive-capture protocol below, and leave it alone.
+
 ### Backlog
 
 When the user says "add this as a backlog item" or a variation of it, run:
