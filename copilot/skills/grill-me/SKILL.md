@@ -67,6 +67,7 @@ Then check `grill.py list` for an existing session matching the topic. If one ma
 2. Record it: `grill.py plan <path>`.
 3. Show the user the plan and the `grill.py render` output (decision table, any open questions, verification state).
 4. Check that render's Source column: if any decided item is `defaulted` or `assumed`, nobody confirmed it and nothing tested it — offer, in plain text, to run `--verify` against them right now before calling the session done. Proceed into `--verify` mode only if the user says yes; otherwise the session ends here as-is.
+5. Once verification (if any) is settled, always offer clear-and-go, in plain text — ask whether to clear context and start executing the plan now. On yes, run `grill.py mark-pending-execution` (defaults to this session), then tell the user: "Marked — start a fresh session whenever you're ready, and I'll pick the plan back up automatically." The SessionStart hook's `grill.py pending-plan --consume` call surfaces the marked plan at the start of whatever session comes next — read its output when a session opens with a "Grill plan ready to execute" notice, and act on the printed instructions (resume if the user says go/continue, otherwise leave the cleared flag alone). On no, nothing else happens, no state change.
 
 ---
 

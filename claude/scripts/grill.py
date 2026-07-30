@@ -72,6 +72,7 @@ class Session(TypedDict):
     created: str
     updated: str
     plan_path: str | None
+    pending_execution: bool
     decisions: list[Decision]
 
 
@@ -454,6 +455,7 @@ def cmd_new(args: argparse.Namespace) -> None:
             "created": now(),
             "updated": now(),
             "plan_path": None,
+            "pending_execution": False,
             "decisions": [],
         }
         save_session(session)
@@ -668,6 +670,55 @@ def cmd_plan(args: argparse.Namespace) -> None:
     confirm("plan", session, f"plan artifact recorded: {path}")
 
 
+def cmd_mark_pending_execution(args: argparse.Namespace) -> None:
+    """Handle ``mark-pending-execution``: flag a session's plan as clear-and-go ready."""
+    slug = _resolve_slug(args.session, "mark-pending-execution")
+    with session_lock(slug):
+        session = load_session(slug)
+        session["pending_execution"] = True
+        touch(session)
+        save_session(session)
+    confirm("mark-pending-execution", session, "pending_execution set")
+
+
+def cmd_pending_plan(args: argparse.Namespace) -> None:
+    """Handle ``pending-plan``: print (and optionally consume) the most recent
+    pending-execution plan.
+
+    Called from the SessionStart hook with ``--consume`` so a plan flagged via
+    ``mark-pending-execution`` in a prior conversation surfaces automatically at
+    the next session's start. Silent (no output) when nothing is pending, which
+    is the common case — this must stay side-effect-free noise on every other
+    session start.
+    """
+    pending = [
+        session
+        for slug in all_session_slugs()
+        if (session := load_session(slug)).get("pending_execution")
+    ]
+    if not pending:
+        return
+
+    pending.sort(key=lambda s: str(s.get("updated", "")), reverse=True)
+    slug = pending[0]["slug"]
+    plan_path = pending[0].get("plan_path")
+
+    if args.consume:
+        with session_lock(slug):
+            session = load_session(slug)
+            if session.get("pending_execution"):
+                session["pending_execution"] = False
+                touch(session)
+                save_session(session)
+
+    print(f"\U0001f4cb Grill plan ready to execute: {slug}")
+    if plan_path:
+        print(f"   Plan: {plan_path}")
+    print("   (If the user says go/continue, read the plan file and start")
+    print("    implementing it directly. If skip/no, take no further action —")
+    print("    this flag is already cleared.)")
+
+
 def cmd_next(args: argparse.Namespace) -> None:
     """Handle ``next``: print the first open decision point, if any."""
     session = resolve_session(args.session, "next")
@@ -719,7 +770,10 @@ def main() -> None:
     )
     sub = parser.add_subparsers(
         dest="cmd",
-        metavar="{new,ask,decide,revise,rm,verdict,plan,next,render,list,show}",
+        metavar=(
+            "{new,ask,decide,revise,rm,verdict,plan,mark-pending-execution,"
+            "pending-plan,next,render,list,show}"
+        ),
     )
 
     def add_session_flag(p: argparse.ArgumentParser) -> None:
@@ -769,6 +823,22 @@ def main() -> None:
     p.add_argument("path")
     add_session_flag(p)
 
+    p = sub.add_parser(
+        "mark-pending-execution",
+        help="flag a session's plan as ready for clear-and-go resume",
+    )
+    add_session_flag(p)
+
+    p = sub.add_parser(
+        "pending-plan",
+        help="print (and optionally consume) the most recent pending-execution plan",
+    )
+    p.add_argument(
+        "--consume",
+        action="store_true",
+        help="clear pending_execution on the printed session (one-shot)",
+    )
+
     p = sub.add_parser("next", help="print the first open decision point")
     add_session_flag(p)
 
@@ -791,6 +861,8 @@ def main() -> None:
         "rm": cmd_rm,
         "verdict": cmd_verdict,
         "plan": cmd_plan,
+        "mark-pending-execution": cmd_mark_pending_execution,
+        "pending-plan": cmd_pending_plan,
         "next": cmd_next,
         "render": cmd_render,
         "list": cmd_list,
