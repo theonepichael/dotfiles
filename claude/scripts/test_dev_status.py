@@ -283,7 +283,7 @@ class BacklogTestCase(unittest.TestCase):
         eff = dev_status.effective_blockers(items[1], index)
         self.assertEqual(eff, [])  # done blocker excluded
 
-        in_progress, ready, blocked, done, done_total = dev_status._render_order(items)
+        in_progress, ready, blocked, done = dev_status._render_order(items)
         self.assertIn(items[1], ready)
         self.assertEqual(blocked, [])
 
@@ -387,24 +387,54 @@ class BacklogTestCase(unittest.TestCase):
         self.assertNotIn("⚠️", fresh_line)
         self.assertIn("⚠️", stale_line)
 
-    # ── 18: DONE header reports truncation ─────────────────────────────────
+    # ── 18: DONE section is a recency window, not a fixed top-5 ────────────
 
-    def test_18_done_header_shows_hidden_count_when_truncated(self):
+    def test_18_done_section_keeps_only_recency_window_items(self):
+        recent = (date.today() - timedelta(days=1)).isoformat()
+        stale = (date.today() - timedelta(days=10)).isoformat()
         items = [
-            make_item(f"done-item-{i}", status="done", updated="2026-01-01")
-            for i in range(7)
+            make_item("recent", status="done", updated=recent),
+            make_item("stale", status="done", updated=stale),
         ]
-        out = io.StringIO()
-        dev_status.render(items, out=out, err=io.StringIO())
-        self.assertIn("DONE (showing 5 of 7)", out.getvalue())
-
-    def test_18b_done_header_plain_when_not_truncated(self):
-        items = [make_item("only-done-item", status="done")]
         out = io.StringIO()
         dev_status.render(items, out=out, err=io.StringIO())
         text = out.getvalue()
         self.assertIn("DONE", text)
+        self.assertIn("recent", text)
+        self.assertNotIn("stale", text)
+        # No "(showing N of M)" denominator anymore.
         self.assertNotIn("showing", text)
+
+    def test_18b_done_section_omitted_when_window_empty(self):
+        stale = (date.today() - timedelta(days=10)).isoformat()
+        items = [make_item("stale", status="done", updated=stale)]
+        out = io.StringIO()
+        dev_status.render(items, out=out, err=io.StringIO())
+        self.assertNotIn("DONE", out.getvalue())
+
+    def test_18c_done_recency_keys_on_completed_at(self):
+        # `completed_at` stamps the actual completion; `updated` getting
+        # bumped later (e.g. an edit to a done item) must NOT resurface a
+        # stale completion into the window. Regression test for the exact
+        # bug class `completed_at`-first lookup prevents.
+        old_completion = (date.today() - timedelta(days=10)).isoformat()
+        items = [
+            make_item(
+                "edited-old",
+                status="done",
+                updated=date.today().isoformat(),
+            ),
+        ]
+        items[0]["completed_at"] = old_completion
+        _, _, _, done = dev_status._render_order(items)
+        self.assertEqual([i["id"] for i in done], [])
+
+    def test_18d_done_recency_falls_back_to_updated_without_completed_at(self):
+        # Legacy done items without `completed_at` fall back to `updated`.
+        recent = (date.today() - timedelta(days=1)).isoformat()
+        items = [make_item("legacy", status="done", updated=recent)]
+        _, _, _, done = dev_status._render_order(items)
+        self.assertEqual([i["id"] for i in done], ["legacy"])
 
     # ── 19: color gated on isatty ─────────────────────────────────────────────
 
@@ -505,6 +535,44 @@ class BacklogTestCase(unittest.TestCase):
             dev_status.cmd_list(_args())
         dev_status.cmd_show(_args(id="my-item"))
         self.assertEqual(self.read_rev(), 0)
+
+    def test_20m_list_status_filter(self):
+        self.write_items(
+            [
+                make_item("a-open", status="open"),
+                make_item("b-done", status="done"),
+                make_item("c-progress", status="in-progress"),
+                make_item("d-done", status="done"),
+            ]
+        )
+        for value in sorted(dev_status.VALID_STATUSES):
+            out, err = io.StringIO(), io.StringIO()
+            with patch("sys.stdout", out), patch("sys.stderr", err):
+                dev_status.cmd_list(_args(status=value))
+            lines = [
+                ln
+                for ln in out.getvalue().splitlines()
+                if ln and not ln.startswith("#")
+            ]
+            ids = {ln.split("\t")[0] for ln in lines}
+            statuses = {ln.split("\t")[1] for ln in lines}
+            self.assertEqual(statuses, {value}, f"status={value}")
+            if value == "done":
+                self.assertEqual(ids, {"b-done", "d-done"})
+            elif value == "open":
+                self.assertEqual(ids, {"a-open"})
+            elif value == "in-progress":
+                self.assertEqual(ids, {"c-progress"})
+
+    def test_20n_list_status_invalid_rejected(self):
+        # argparse rejects unknown --status values with exit code 2.
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            with self.assertRaises(SystemExit) as cm:
+                with patch("sys.argv", ["dev_status", "list", "--status", "bogus"]):
+                    dev_status.main()
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("bogus", err.getvalue())
 
     # ── 21: numeric id without --if-rev refused, no write ─────────────────
 
@@ -655,7 +723,7 @@ class BacklogTestCase(unittest.TestCase):
             ]
         )
         dev_status.cmd_update(_args(id="b", patch='{"priority": "high"}'))
-        _, ready, _, _, _ = dev_status._render_order(self.read_items())
+        _, ready, _, _ = dev_status._render_order(self.read_items())
         self.assertEqual([i["id"] for i in ready], ["b", "a", "c"])
 
     def test_31_update_priority_low_sinks_to_bottom_of_ready(self):
@@ -667,7 +735,7 @@ class BacklogTestCase(unittest.TestCase):
             ]
         )
         dev_status.cmd_update(_args(id="a", patch='{"priority": "low"}'))
-        _, ready, _, _, _ = dev_status._render_order(self.read_items())
+        _, ready, _, _ = dev_status._render_order(self.read_items())
         self.assertEqual([i["id"] for i in ready], ["b", "c", "a"])
 
     def test_32_priority_does_not_move_item_after_update_other_field(self):
@@ -679,11 +747,11 @@ class BacklogTestCase(unittest.TestCase):
             ]
         )
         # B starts at top due to high priority.
-        _, ready_before, _, _, _ = dev_status._render_order(self.read_items())
+        _, ready_before, _, _ = dev_status._render_order(self.read_items())
         self.assertEqual([i["id"] for i in ready_before], ["b", "a", "c"])
         # Updating B's context bumps `updated` but must not change READY order.
         dev_status.cmd_update(_args(id="b", patch='{"context": "x"}'))
-        _, ready_after, _, _, _ = dev_status._render_order(self.read_items())
+        _, ready_after, _, _ = dev_status._render_order(self.read_items())
         self.assertEqual([i["id"] for i in ready_after], ["b", "a", "c"])
 
     def test_33_blocked_priority_secondary_within_blocker_count(self):
@@ -716,13 +784,13 @@ class BacklogTestCase(unittest.TestCase):
                 ),
             ]
         )
-        _, _, blocked, _, _ = dev_status._render_order(self.read_items())
+        _, _, blocked, _ = dev_status._render_order(self.read_items())
         self.assertEqual([i["id"] for i in blocked], ["b", "a", "c"])
 
     def test_34_done_ignores_priority(self):
         old = (date.today() - timedelta(days=10)).isoformat()
-        newer = (date.today() - timedelta(days=2)).isoformat()
-        newest = (date.today() - timedelta(days=1)).isoformat()
+        newer = (date.today() - timedelta(days=1)).isoformat()
+        newest = date.today().isoformat()
         self.write_items(
             [
                 make_item("old", status="done", updated=old, priority="high"),
@@ -730,9 +798,11 @@ class BacklogTestCase(unittest.TestCase):
                 make_item("newest", status="done", updated=newest),
             ]
         )
-        _, _, _, done, _ = dev_status._render_order(self.read_items())
-        # Pure updated-desc; the high-priority "old" must NOT float.
-        self.assertEqual([i["id"] for i in done], ["newest", "newer", "old"])
+        _, _, _, done = dev_status._render_order(self.read_items())
+        # Only the two in-window items appear, in updated-desc order; the
+        # high-priority "old" is dropped by the recency window (and would
+        # not float even if included — done is pure updated-desc).
+        self.assertEqual([i["id"] for i in done], ["newest", "newer"])
 
     def test_35_render_priority_badge_for_high_and_low(self):
         self.write_items(
@@ -768,7 +838,7 @@ class BacklogTestCase(unittest.TestCase):
             make_item("ok"),
         ]
         # _render_order must not raise; unknown collapses to normal's rank.
-        _, ready, _, _, _ = dev_status._render_order(items)
+        _, ready, _, _ = dev_status._render_order(items)
         self.assertEqual([i["id"] for i in ready], ["weird", "ok"])
         # _priority_rank treats both as rank 1 (normal).
         self.assertEqual(
@@ -1256,6 +1326,7 @@ class _args:
     """Minimal argparse.Namespace stand-in."""
 
     if_rev = None  # default; argparse always sets --if-rev (default None)
+    status = None  # default; argparse sets --status (default None) for `list`
 
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
