@@ -34,6 +34,15 @@ LOCK_FILE = DATA_DIR / ".backlog.lock"
 VALID_STATUSES = {"open", "in-progress", "done"}
 VALID_PRIORITIES = {"high", "normal", "low"}
 
+# Recency window (in hours) for the dashboard's DONE section: only items
+# completed within this many hours appear. Keyed on `completed_at`, falling
+# back to `updated` when `completed_at` is absent (legacy items). An hours
+# helper (vs. the days granularity of `_age_days`) keeps the window honest
+# and survives a future upgrade to full timestamps — `datetime.fromisoformat`
+# accepts both date-only and full ISO strings, where `date.fromisoformat`
+# would raise on the latter.
+DONE_RECENCY_HOURS = 48
+
 # Sort rank for priority (absence == normal). Lower sorts first.
 _PRIORITY_RANK = {"high": 0, "normal": 1, "low": 2}
 
@@ -154,7 +163,7 @@ class PendingItem(TypedDict):
 
 type BacklogIndex = dict[str, BacklogItem]
 type RenderOrder = tuple[
-    list[BacklogItem], list[BacklogItem], list[BacklogItem], list[BacklogItem], int
+    list[BacklogItem], list[BacklogItem], list[BacklogItem], list[BacklogItem]
 ]
 
 
@@ -225,6 +234,41 @@ def _age_days(updated_str: str) -> int | None:
     except (TypeError, ValueError):
         return None
     return (date.today() - d).days
+
+
+def _done_stamp(item: BacklogItem) -> str:
+    """Return the completion timestamp to key the DONE recency window on.
+
+    Prefers ``completed_at`` (stamped only on actual completion, so it's
+    immune to later edits bumping ``updated``); falls back to ``updated``
+    only for legacy done items that lack ``completed_at``.
+    """
+    return cast(str, item.get("completed_at") or item.get("updated", ""))
+
+
+def _age_hours(stamp_str: str) -> float | None:
+    """Return whole hours elapsed since an ISO date or datetime string.
+
+    Unlike :func:`_age_days`, this parses with :func:`datetime.fromisoformat`
+    so it accepts full ISO timestamps (with a time component) as well as
+    bare dates (taken as midnight). This keeps the DONE-section recency
+    window meaningful on today's date-only stamps and correct if the stamp
+    format ever gains a time component.
+
+    Args:
+        stamp_str: An ISO-8601 date or datetime string, or any invalid/empty
+            value.
+
+    Returns:
+        Whole hours elapsed since ``stamp_str``, or ``None`` if it isn't a
+        valid ISO date/datetime.
+    """
+    try:
+        dt = datetime.fromisoformat(stamp_str)
+    except (TypeError, ValueError):
+        return None
+    delta = datetime.now() - dt
+    return delta.total_seconds() / 3600.0
 
 
 def _use_color(out: TextIO) -> bool:
@@ -529,9 +573,11 @@ def _render_order(items: list[BacklogItem]) -> RenderOrder:
     """Bucket and sort backlog items into dashboard render order.
 
     Returns:
-        A 5-tuple of ``(in_progress, ready, blocked, done, done_total)``,
-        where ``done`` is truncated to the 5 most recently updated items
-        and ``done_total`` is the untruncated count.
+        A 4-tuple of ``(in_progress, ready, blocked, done)``, where
+        ``done`` is the subset of done items completed within the last
+        :data:`DONE_RECENCY_HOURS` (keyed on ``completed_at``, falling back
+        to ``updated``), sorted most-recently-touched first. The dashboard
+        omits the DONE section entirely when this is empty.
     """
     index = build_index(items)
 
@@ -557,10 +603,13 @@ def _render_order(items: list[BacklogItem]) -> RenderOrder:
         key=lambda i: i.get("updated", ""),
         reverse=True,
     )
-    done_total = len(done_all)
-    done = done_all[:5]
+    done = [
+        i
+        for i in done_all
+        if (_age_hours(_done_stamp(i)) or float("inf")) < DONE_RECENCY_HOURS
+    ]
 
-    return in_progress, ready, blocked, done, done_total
+    return in_progress, ready, blocked, done
 
 
 def _blocker_check_reminder(
@@ -586,7 +635,7 @@ def _blocker_check_reminder(
     """
     if err is None:
         err = sys.stderr
-    in_progress, ready, _, _, _ = _render_order(items)
+    in_progress, ready, _, _ = _render_order(items)
     candidates = [i for i in in_progress + ready if i["id"] != exclude_slug]
     if not candidates:
         return
@@ -613,7 +662,7 @@ def _unified_order(
 ) -> list[BacklogItem | PendingItem]:
     """Return the full cross-section render order: pending first, then backlog."""
     pending_ordered = _pending_render_order(pending_items)
-    in_progress, ready, blocked, done, _ = _render_order(items)
+    in_progress, ready, blocked, done = _render_order(items)
     return [*pending_ordered, *in_progress, *ready, *blocked, *done]
 
 
@@ -788,7 +837,7 @@ def render(
         rev = load_rev()
 
     index = build_index(items)
-    in_progress, ready, blocked, done, done_total = _render_order(items)
+    in_progress, ready, blocked, done = _render_order(items)
     pending_ordered = _pending_render_order(pending_items)
     ordered: list[BacklogItem | PendingItem] = [
         *pending_ordered,
@@ -907,12 +956,7 @@ def render(
         show_priority=True,
         color_code="blocked",
     )
-    done_title = (
-        f"DONE (showing {len(done)} of {done_total})"
-        if done_total > len(done)
-        else "DONE"
-    )
-    add_section(done_title, done, color_code="done")
+    add_section("DONE", done, color_code="done")
 
     for i, section_lines in enumerate(sections):
         if i > 0:
@@ -1029,6 +1073,8 @@ def cmd_render(args: argparse.Namespace) -> None:
 def cmd_list(args: argparse.Namespace) -> None:
     """Handle ``list``: print flat, tab-separated backlog items."""
     items = load_items()
+    if args.status:
+        items = [i for i in items if i.get("status") == args.status]
     print(f"# rev={load_rev()}")
     for item in items:
         print(f"{item['id']}\t{item.get('status', '')}\t{item.get('summary', '')}")
@@ -1601,7 +1647,13 @@ def main() -> None:
     )
 
     sub.add_parser("render", help="render dashboard (pure — no side effects)")
-    sub.add_parser("list", help="flat tab-separated output")
+    p = sub.add_parser("list", help="flat tab-separated output")
+    p.add_argument(
+        "--status",
+        choices=sorted(VALID_STATUSES),
+        default=None,
+        help="only show items with this status",
+    )
 
     p = sub.add_parser("show", help="print full JSON for an item")
     p.add_argument("id", metavar="<slug|N>")
