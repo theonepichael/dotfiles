@@ -2,6 +2,26 @@
 
 Cross-platform setup for macOS and Linux/WSL. Clone and run `install.sh` to go from zero to working.
 
+> **⚠ Upgrading an existing machine? Roll back with the OLD installer first.**
+> The installer was rewritten from zsh to Python, and the run history moved
+> from `~/.local/state/dotfiles/history.tsv` (TSV) to `history.jsonl` (JSON
+> Lines). `install.py` deliberately ships **no** reader for the old format,
+> so **before pulling this change**, run the old script once on every
+> machine that has ever been provisioned:
+>
+> ```sh
+> cd ~/dotfiles && git pull --dry-run   # confirm you haven't pulled yet
+> ./install.sh --rollback               # flushes the bash-era history.tsv
+> git pull                              # now take the Python installer
+> ./install.sh --harness=...            # re-provision as usual
+> ```
+>
+> Skip this and any `history.tsv` left on disk becomes dead weight: nothing
+> reads it, and the mutations it recorded are no longer rollback-able except
+> by hand (the old logic survives only in git history). Nothing is
+> *damaged* by skipping it — symlinks and copies keep working — you just
+> lose the undo for everything recorded before the switch.
+
 ## Quick start
 
 ```sh
@@ -12,6 +32,18 @@ chmod +x install.sh
 ./install.sh --profile=work --harness=copilot         # work machine, Copilot only
 ./install.sh --harness=claude,opencode                # both harnesses, personal
 ```
+
+`./install.sh` is a ~20-line POSIX bootstrap: it finds a Python 3.12+ on
+PATH and hands off to **`install.py`**, which is the actual installer. Run
+`python3 install.py --harness=...` directly if you prefer; the flags and
+behavior are identical. If no Python 3.12+ is found the bootstrap fails
+loudly rather than falling back to an older interpreter.
+
+The dotfile→destination table lives in **`links.toml`** at the repo root,
+not in the installer — add, move, or retire a mapping by editing that file
+(each entry can be gated on `harness`, `platform`, `wsl`, and
+`profile_exclude`; the file's header documents the schema). Only the two
+copy-once seed files and the WSL-side VS Code path need real code.
 
 `--harness` is required on every run — there's no default. Pick any
 combination of `claude`, `copilot`, `opencode` (comma-separated); `--profile`
@@ -52,8 +84,9 @@ exists and HEAD has since moved ahead of it.
 — comma-separated, at least one of `claude`, `copilot`, `opencode`. No
 default; every run states its intent explicitly. Selecting fewer harnesses
 on a later run doesn't uninstall the ones left out — this script is purely
-additive, same as everything else it does. Use `--rollback` (the most
-recent run only) or manual cleanup to actually remove something.
+additive, same as everything else it does. Use `--rollback` (which reverses
+every recorded run, not just the most recent) or manual cleanup to actually
+remove something.
 
 - **`claude`** — installs Claude Code (`npm i -g @anthropic-ai/claude-code`)
   and its `~/.claude/*` wiring (`CLAUDE.md`, `commands/*.md`,
@@ -120,17 +153,36 @@ restricts which harness(es) you can choose (`--profile=work
 
 ## Failures, skips, and rollback
 
-`install.sh` never aborts on a failed step. Anything that can't run (blocked
+The installer never aborts on a failed step. Anything that can't run (blocked
 curl, offline apt, missing sudo) is skipped and listed in a loud end-of-run
-summary with the reason; exit code is 1 if anything was skipped.
+summary with the reason; exit code is 1 if anything was skipped. Output is
+colorized when stdout is a terminal — green for what was done, yellow for
+skips and drift, red for hard errors — and plain when piped, when
+`NO_COLOR` is set, or under `TERM=dumb`.
 
 Every file mutation (symlink created, file backed up, file copied) is recorded
-in `~/.local/state/dotfiles/last-run.tsv`. If you ran with the wrong profile:
+in `~/.local/state/dotfiles/history.jsonl` (JSON Lines, one object per
+mutation), appended to on every run rather than overwritten — so `--rollback`
+reverses **every** run recorded there, not just the most recent one. See the
+migration note at the top of this file if you have a pre-Python
+`history.tsv` on the machine: it is not read by `install.py`. If you've run
+the installer several times (wrong profile, experimenting, whatever) and want
+back to a clean slate:
 
 ```sh
-./install.sh --rollback                          # reverses the last run's file mutations
+./install.sh --rollback                          # reverses every recorded run's file mutations
 ./install.sh --profile=work --harness=claude      # then re-run correctly
 ```
+
+A full rollback deletes the history file once everything's undone, so the
+next run starts fresh rather than carrying forward already-reversed entries.
+
+Rollback also skips-and-reports rather than aborting when something doesn't
+match what it expected — e.g. a symlink it created now points somewhere else
+(something else has since claimed that path) or a backup file is missing
+(already restored, or removed outside `install.sh`). Those get logged as
+`SKIPPED` lines and a summary count at the end, same as the main install
+flow; everything else still gets rolled back.
 
 Packages are never uninstalled by rollback — they're identical across
 profiles, so a wrong-profile run's real footprint is entirely file-level.
@@ -156,9 +208,14 @@ profiles, so a wrong-profile run's real footprint is entirely file-level.
 | `launchd/com.user.watchcommit.plist` | `~/Library/LaunchAgents/com.user.watchcommit.plist` (macOS only) |
 | `systemd/watchcommit.service` | `~/.config/systemd/user/watchcommit.service` (Linux/WSL only) |
 
-Everything is symlinked — edits in `~/dotfiles` take effect immediately.
+Everything is symlinked — edits in `~/dotfiles` take effect immediately. The
+full, authoritative table is `links.toml`; the rows above are the
+highlights. The two exceptions are the copy-once seeds
+(`claude/settings.json`, `opencode/opencode.jsonc` and their `.work`
+variants), which are copied rather than symlinked because both tools
+rewrite them in place.
 
-## install.sh does
+## The installer does
 
 ### Both platforms
 1. Installs packages: tmux, zoxide, eza, bat, ripgrep, lsd, ncdu, tldr, oh-my-posh, neovim, fd, uv, ruff
@@ -169,7 +226,8 @@ Everything is symlinked — edits in `~/dotfiles` take effect immediately.
    `npm i -g @github/copilot`; `opencode`: assumed already installed, this
    script only wires its config) and their `~/.claude`/`~/.copilot`/
    `~/.config/opencode` wiring — see "Harness selection" above
-4. Symlinks all common dotfiles (backs up any existing non-symlink files to `*.bak`)
+4. Symlinks every applicable `links.toml` entry (backs up any existing
+   non-symlink files to `*.bak`)
 5. Seeds `~/.claude/settings.json` (copy-once — if it already exists, drift from
    the repo seed is reported in the summary, never overwritten) — only when
    `claude` is selected
@@ -200,12 +258,12 @@ Everything is symlinked — edits in `~/dotfiles` take effect immediately.
 
 ### Nerd Font versioning
 The JetBrainsMono Nerd Font is pinned to a specific release
-(`NERD_FONT_VERSION` near the top of the Linux branch in `install.sh`) rather
+(`NERD_FONT_VERSION` near the top of `install.py`) rather
 than always fetching latest — every machine ends up with byte-identical font
 files, and reinstalls are reproducible. A version-marker file
 (`~/.local/share/fonts/JetBrainsMonoNerdFont/.nerd-fonts-version`) makes
 re-runs skip the download/extract instead of redoing it every time. To
-upgrade: bump `NERD_FONT_VERSION` in `install.sh` and re-run — the marker
+upgrade: bump `NERD_FONT_VERSION` in `install.py` and re-run — the marker
 mismatch triggers a fresh download.
 
 ## Keyboard setup (Karabiner-Elements)
@@ -275,12 +333,12 @@ session, no separate config needed.
   install for an auth error if commits aren't showing up.
 - **Linux/WSL**: the systemd unit needs `systemd=true` under `[boot]` in
   `/etc/wsl.conf` (`wsl --shutdown` from Windows to apply) — without it,
-  `install.sh` skips the service and you're back to running `watchcommit`
+  the installer skips the service and you're back to running `watchcommit`
   manually in a terminal.
 
 ## Notes
 
-- **Intel Mac**: `install.sh` and `.zprofile` both detect `/usr/local/bin/brew` automatically
+- **Intel Mac**: `install.py` and `.zprofile` both detect `/usr/local/bin/brew` automatically
 - **Linux/WSL**: `.zprofile` is not symlinked; secrets and NVM are sourced from `.zshrc` instead
 - **NVM**: installed via the official script, not Homebrew. Restart your shell after install
 - **vim plugins**: run `:PlugInstall` inside vim after first launch
@@ -289,9 +347,17 @@ session, no separate config needed.
   per-machine by design and never packaged — a new machine starts fresh
 - **Tests**: live in `claude/scripts/` and run from the repo
   (`cd claude/scripts && pytest`); they are not deployed to `~/.claude`
-- **install.sh tests**: `test/` runs the full install.sh lifecycle (fresh
-  install, rollback, backup-and-restore, work profile + guard, --force,
-  argument errors) inside throwaway Docker containers — one Ubuntu (apt
-  branch), one Fedora (dnf branch) — so it never touches the real machine.
-  Requires Docker; run with `./test/run.sh` after any change to
-  `install.sh`
+- **installer tests**, two tiers:
+  - *fast* — `test/test_install.py` (pytest) covers argument validation,
+    the symlink engine, the history/rollback engine, and the copy-once +
+    drift logic against a throwaway `HOME` with every subprocess stubbed.
+    Run it with `uv run --with pytest pytest test/test_install.py`; takes
+    under a second and touches nothing real.
+  - *lifecycle* — `test/run.sh` runs `test/scenarios.sh` (fresh install,
+    rollback, backup-and-restore, work profile + guard, `--force`,
+    argument errors) inside throwaway Docker containers, one Ubuntu (apt
+    branch) and one Fedora (dnf branch), so real package managers get
+    exercised without touching the real machine. Requires Docker.
+    **Note**: `scenarios.sh` still drives the pre-Python installer's TSV
+    manifest path and has not been ported to `history.jsonl` yet — run the
+    fast tier for now
