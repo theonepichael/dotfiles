@@ -140,6 +140,14 @@ def parse_error(argv, capsys):
         (["--work"], "unknown argument: --work"),
         (["--copilot"], "unknown argument: --copilot"),
         (["--profile=nope", "--harness=claude"], "invalid --profile: nope"),
+        (
+            ["--profile=work", "--harness=opencode"],
+            "--harness=opencode is not allowed with --profile=work",
+        ),
+        (
+            ["--profile=work", "--harness=copilot,opencode"],
+            "--harness=opencode is not allowed with --profile=work",
+        ),
         (["--rollback", "--harness=claude"], "must be used alone"),
         (["--rollback", "--profile=work"], "must be used alone"),
         (["--rollback", "--force"], "must be used alone"),
@@ -381,7 +389,11 @@ def test_settings_seed_skipped_when_claude_not_selected(home):
     assert not (home / ".claude" / "settings.json").exists()
 
 
-def test_opencode_seed_profile_variants(home):
+def test_opencode_seed_has_no_work_variant(home):
+    """opencode is excluded from --profile=work at parse_args (see the CLI
+    validation test) — this documents that seed_opencode_config itself has
+    no separate work variant to accidentally seed either, even if a
+    work-profile opencode Context were ever constructed directly."""
     personal = make_ctx(home, harnesses=("opencode",))
     name, drift = install.seed_opencode_config(personal)
     dest = home / ".config" / "opencode" / "opencode.jsonc"
@@ -392,7 +404,7 @@ def test_opencode_seed_profile_variants(home):
     other_home.mkdir()
     work = make_ctx(other_home, harnesses=("opencode",), profile="work")
     name, _ = install.seed_opencode_config(work)
-    assert name == "opencode.work.jsonc"
+    assert name == "opencode.jsonc"
 
 
 def test_opencode_bypass_check_fires_specifically(home):

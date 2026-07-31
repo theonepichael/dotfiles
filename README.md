@@ -119,15 +119,13 @@ remove something.
     configured under Copilot, per the work profile's
     no-personal-data-on-work-hardware rule.
 - **`opencode`** — wires `~/.config/opencode/tui.json`, the `dashboard`/
-  `grill-me` commands, and `opencode.jsonc` (the bash permission allowlist).
-  `opencode.jsonc` is profile-specific, same copy-once-and-report-drift
-  pattern as Claude's `settings.json`: personal keeps a broader allowlist
-  (`curl`, `npx`, `node -e`, `rm -f`, `kill`, `nohup` all pre-approved);
-  `--profile=work` seeds a tightened `opencode.work.jsonc` without those.
-  Two patterns — `xargs`, `awk` — are removed from *both* variants
-  regardless of profile, since they're allowlist bypasses (each can invoke
-  an arbitrary other command as its own argument), not individually-risky
-  commands a profile could reasonably allow.
+  `grill-me` commands, and `opencode.jsonc` (the bash permission allowlist,
+  copy-once-and-report-drift same as Claude's `settings.json`): `curl`,
+  `npx`, `node -e`, `rm -f`, `kill`, `nohup` are all pre-approved. `xargs`
+  and `awk` are removed regardless, since they're allowlist bypasses (each
+  can invoke an arbitrary other command as its own argument), not
+  individually-risky commands worth pre-approving. `opencode` is never
+  installed on a work machine at all — see "Work profile" below.
 
 The shared `~/.claude/scripts/*.py` (dev_status, grill, second_opinion,
 standup, etc.) are symlinked regardless of which harness(es) are selected —
@@ -135,17 +133,18 @@ all three harnesses' skills/hooks call these same paths.
 
 ## Work profile
 
-`--profile=work` controls machine-level concerns only — it never
-restricts which harness(es) you can choose (`--profile=work
---harness=claude` is honored exactly as stated):
+`--profile=work` controls machine-level concerns — with one exception
+(opencode) it doesn't restrict which harness(es) you can choose
+(`--profile=work --harness=claude` is honored exactly as stated):
 
 - **watchcommit is excluded entirely** — no binary, no agent. It auto-pushes
   to a personal remote under your personal Claude account login; that stays
   off work hardware. Commit manually there.
+- **opencode is excluded entirely, full stop** — `--profile=work
+  --harness=opencode` is rejected outright at argument-parsing time, not
+  just tightened. No `opencode.jsonc`, no commands, no `tui.json`.
 - Claude settings are seeded from `claude/settings.work.json` — same hooks and
   statusline, but no `skipDangerousModePermissionPrompt` and no model pin.
-- opencode's permission allowlist is seeded from `opencode/opencode.work.jsonc`
-  (see "Harness selection" above) when `opencode` is selected.
 - `~/.secrets` is still sourced if present, for work-issued tokens only.
 - A profile marker is written (`~/.local/state/dotfiles/profile`); later runs
   with `--profile=personal` (the default) on that machine refuse unless
@@ -203,7 +202,7 @@ profiles, so a wrong-profile run's real footprint is entirely file-level.
 | `vscode/keybindings.json` | same per-OS destination as `settings.json`, `keybindings.json` |
 | `claude/CLAUDE.md` | `~/.claude/CLAUDE.md` and, with `--harness=copilot`, also `~/.copilot/copilot-instructions.md` |
 | `copilot/aliases.zsh` | `~/.copilot_aliases` (only with `--harness=copilot`) |
-| `opencode/opencode.jsonc` or `opencode.work.jsonc` | `~/.config/opencode/opencode.jsonc` (only with `--harness=opencode`; picked by `--profile`) |
+| `opencode/opencode.jsonc` | `~/.config/opencode/opencode.jsonc` (only with `--harness=opencode`; never on `--profile=work`) |
 | `scripts/watchcommit.py` | `~/.local/bin/watchcommit` |
 | `launchd/com.user.watchcommit.plist` | `~/Library/LaunchAgents/com.user.watchcommit.plist` (macOS only) |
 | `systemd/watchcommit.service` | `~/.config/systemd/user/watchcommit.service` (Linux/WSL only) |

@@ -231,7 +231,7 @@ check "Copilot files left in place after a narrower re-run (additive-only, no su
 ./install.sh --rollback >/tmp/rb-h3.out 2>&1
 
 echo ""
-echo "=== 10. opencode.jsonc: profile-specific permission seeding ==="
+echo "=== 10. opencode.jsonc: personal-only permission seeding ==="
 ./install.sh --harness=opencode >/tmp/oc-personal.out 2>&1
 cat /tmp/oc-personal.out
 check "opencode.jsonc seeded from personal file" diff -q ~/.config/opencode/opencode.jsonc "$DOTFILES/opencode/opencode.jsonc"
@@ -239,19 +239,26 @@ check "personal opencode.jsonc has no xargs (allowlist bypass removed everywhere
   bash -c '! grep -q "xargs" ~/.config/opencode/opencode.jsonc'
 check "personal opencode.jsonc has no awk (allowlist bypass removed everywhere)" \
   bash -c '! grep -q "\"awk \*\"" ~/.config/opencode/opencode.jsonc'
-check "personal opencode.jsonc still keeps curl (personal convenience, tightened only on work)" \
+check "personal opencode.jsonc keeps curl (personal convenience)" \
   bash -c 'grep -q "curl \*" ~/.config/opencode/opencode.jsonc'
 ./install.sh --rollback >/tmp/rb-oc1.out 2>&1
 
 rm -f "$MARKER"
+echo ""
+echo "=== 10b. opencode is rejected outright on --profile=work, not tightened ==="
 ./install.sh --profile=work --harness=opencode >/tmp/oc-work.out 2>&1
+ocwork_code=$?
 cat /tmp/oc-work.out
-check "opencode.jsonc seeded from WORK file" diff -q ~/.config/opencode/opencode.jsonc "$DOTFILES/opencode/opencode.work.jsonc"
-check "work opencode.jsonc has no curl (tightened tier-3 removed on work)" \
-  bash -c '! grep -q "curl \*" ~/.config/opencode/opencode.jsonc'
-check "work opencode.jsonc has no npx" bash -c '! grep -q "npx \*" ~/.config/opencode/opencode.jsonc'
-check "work opencode.jsonc has no node -e" bash -c '! grep -q "node -e" ~/.config/opencode/opencode.jsonc'
-check "work opencode.jsonc has no rm -f" bash -c '! grep -q "rm -f" ~/.config/opencode/opencode.jsonc'
+check "--profile=work --harness=opencode exits 2" bash -c "[[ $ocwork_code -eq 2 ]]"
+check "rejection names the flag combination" \
+  grep -q "harness=opencode is not allowed with --profile=work" /tmp/oc-work.out
+check "no opencode.jsonc written on a rejected work+opencode run" \
+  bash -c '! [[ -e ~/.config/opencode/opencode.jsonc ]]'
+
+./install.sh --profile=work --harness=copilot,opencode >/tmp/oc-work2.out 2>&1
+ocwork2_code=$?
+check "--profile=work --harness=copilot,opencode is rejected the same way (opencode anywhere in the list is enough)" \
+  bash -c "[[ $ocwork2_code -eq 2 ]]"
 check "work opencode.jsonc has no kill" bash -c '! grep -q "\"kill\*\"" ~/.config/opencode/opencode.jsonc'
 check "work opencode.jsonc has no nohup" bash -c '! grep -q "nohup" ~/.config/opencode/opencode.jsonc'
 check "work opencode.jsonc still has no xargs/awk either" \

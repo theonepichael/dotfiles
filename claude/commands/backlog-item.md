@@ -56,12 +56,16 @@ conversation:
 - **Cheaper Claude session.** Now run grill-me's `mark-pending-execution`
   and tell the user to resume with `/backlog-item <slug|N>` after `/clear`
   — step 1 finds the recorded plan and resumes at step 8.
-- **opencode/GLM-5.3 (this user's default cheap executor).** From the
-  worktree, hand off non-interactively: `opencode run "Implement <plan
+- **opencode/GLM-5.3 — personal projects only, never at work; this user
+  does not use opencode in a work context under any circumstances.** From
+  the worktree, hand off non-interactively: `opencode run "Implement <plan
   path> exactly as written — TDD, run the full suite, then STOP without
   committing and report the diff."`. GLM never gets the commit gate. Once
   it reports back, tell the user to point Claude at the worktree to
   review — that resumes at step 9.
+
+For a work-related item, only the first two options are on the table —
+don't offer the opencode/GLM route at all.
 
 ## 8. Red, green
 TDD in the worktree: a failing test that proves the gap the plan names,

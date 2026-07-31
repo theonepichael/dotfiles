@@ -111,13 +111,13 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=per
               it just skips re-provisioning it this run. Removal is a
               --rollback concern (reverses every run recorded in the
               history file, not just the most recent one) or manual cleanup.
-  --profile   personal (default) or work. Controls machine-level concerns
-              ONLY: excludes watchcommit, excludes personal API-key setup,
-              and seeds tightened settings/permission files where a
-              profile-specific variant exists (settings.work.json,
-              opencode.work.jsonc). Never restricts which harness(es) you
-              can choose — --profile=work --harness=claude is honored as
-              stated.
+  --profile   personal (default) or work. Controls machine-level concerns:
+              excludes watchcommit, excludes personal API-key setup, seeds
+              tightened settings where a profile-specific variant exists
+              (settings.work.json), and excludes opencode entirely — it is
+              never installed on a work machine, regardless of --harness.
+              Otherwise never restricts which harness(es) you can choose —
+              --profile=work --harness=claude is honored as stated.
   --rollback  reverse every file mutation (symlinks, copies, backups) ever
               recorded across all past runs, using the history file, then
               exit. Not limited to the most recent run — running install.sh
@@ -138,7 +138,6 @@ Examples:
   ./install.sh --harness=claude
   ./install.sh --profile=work --harness=copilot
   ./install.sh --harness=claude,opencode
-  ./install.sh --profile=work --harness=copilot,opencode
   ./install.sh --harness=claude,agy
   ./install.sh --dry-run --harness=claude
   ./install.sh --dry-run --rollback
@@ -508,6 +507,11 @@ def parse_args(argv: Sequence[str]) -> Options:
                 f"unknown harness: {harness} "
                 "(must be claude, copilot, opencode, and/or agy)"
             )
+
+    # opencode never belongs on a work machine, full stop — not "tightened
+    # settings," excluded entirely, the same way watchcommit is.
+    if args.profile == "work" and "opencode" in harnesses:
+        _fail("--harness=opencode is not allowed with --profile=work")
 
     # --rollback is an undo-only action. Rejecting --profile/--force
     # alongside it (not just --harness) keeps them from being silently
@@ -1303,9 +1307,9 @@ def seed_claude_settings(ctx: Context) -> tuple[str, str]:
 def seed_opencode_config(ctx: Context) -> tuple[str, str]:
     """Seed ~/.config/opencode/opencode.jsonc, if opencode was selected.
 
-    The work variant additionally drops a handful of individually-risky (but
-    not allowlist-bypassing) commands that the personal variant keeps for
-    convenience.
+    opencode is never installed on a work machine at all — parse_args
+    rejects --profile=work combined with --harness=opencode outright — so
+    there is only one variant of this seed file.
 
     Returns:
         ``(seed filename, drift description)``; both empty when the harness
@@ -1313,7 +1317,7 @@ def seed_opencode_config(ctx: Context) -> tuple[str, str]:
     """
     if not ctx.has_harness("opencode"):
         return "", ""
-    name = "opencode.work.jsonc" if ctx.opts.profile == "work" else "opencode.jsonc"
+    name = "opencode.jsonc"
     seed = ctx.dotfiles / "opencode" / name
     dest = ctx.home / ".config" / "opencode" / "opencode.jsonc"
     return name, seed_file(
