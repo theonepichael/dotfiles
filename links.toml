@@ -90,6 +90,14 @@ src = "claude/commands/second-opinion.md"
 dest = "~/.claude/commands/second-opinion.md"
 harness = "claude"
 
+# backlog-item orchestrates grill-me/second-opinion via Claude Code's Skill
+# tool, which opencode/copilot/agy don't have — Claude-only until one of
+# them grows an equivalent.
+[[link]]
+src = "claude/commands/backlog-item.md"
+dest = "~/.claude/commands/backlog-item.md"
+harness = "claude"
+
 [[link]]
 src = "claude/hooks/gsd-statusline.js"
 dest = "~/.claude/hooks/gsd-statusline.js"

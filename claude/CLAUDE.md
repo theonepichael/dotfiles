@@ -300,6 +300,21 @@ used for backlog capture.
   conflict with whatever else is active in the repo — scope changes to just
   the files the current task actually needs.
 
+## Shell Command Safety
+
+- Never put text that may contain an apostrophe (backlog titles/summaries,
+  commit bodies, freeform notes) inside a single-quoted shell string — an
+  apostrophe there terminates the quote early and breaks the command. Write
+  the text to a heredoc or a temp file instead, and pass that to the
+  command (`--body-file`, `< file`, or reading it back into the JSON payload
+  before calling `dev_status.py`).
+- Never pipe a long-running or destructive command (`install.sh --rollback`,
+  a migration, anything that mutates real state) through `head`/`less`/`tail`
+  to skim the output. A downstream reader closing early can SIGPIPE the
+  writer mid-run and abort it partway through mutating state — this has
+  already happened and cost live symlinks. Redirect to a file and read the
+  file instead.
+
 ## Scripts
 
 - Always use `#!/usr/bin/env <lang>` shebangs (e.g. `#!/usr/bin/env python3`, `#!/usr/bin/env zsh`)
