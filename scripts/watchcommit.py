@@ -31,13 +31,21 @@ agent name list. `WATCHCOMMIT_IGNORE_AGENTS=1` suppresses the agent check
 entirely (pause file + implicit `.git/index.lock` still apply) — use this
 when a forever-resident agent (Cursor always-on LSP) would otherwise block
 all fire-and-forget checkpoints.
+
+Activity visibility: every background pull that moves HEAD, auto-commit, and
+push is recorded (timestamp + resulting SHA) in the last-activity state file,
+so a session or `wc-status` can tell daemon-driven git state changes from
+manual ones instead of only seeing a clean/up-to-date working tree. Read by
+`wc-status` and the Claude Code SessionStart hook (watchcommit_activity.py).
 """
 
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
 
@@ -50,6 +58,7 @@ STATE_DIR = (
 )
 PAUSE_FILE = STATE_DIR / "paused"
 AGENTS_STATE_FILE = STATE_DIR / "agents-active"
+ACTIVITY_STATE_FILE = STATE_DIR / "last-activity.json"
 
 # Active-agent detection (opt-out). Linux /proc primary; non-Linux = silent
 # no-op (manual wc-pause still works there). No psutil in v1.
@@ -214,6 +223,20 @@ def _write_agent_state(agents: list[AgentProc]) -> None:
     AGENTS_STATE_FILE.write_text(payload)
 
 
+def _record_activity(kind: str, **fields: str) -> None:
+    """Merge a timestamped event under `kind` into the activity state file,
+    read by wc-status and the SessionStart hook so a session can tell
+    daemon-driven git state changes (pulls, auto-commits, pushes) from
+    manual ones instead of only seeing a clean/up-to-date working tree."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        data = json.loads(ACTIVITY_STATE_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    data[kind] = {"timestamp": datetime.now(timezone.utc).isoformat(), **fields}
+    ACTIVITY_STATE_FILE.write_text(json.dumps(data, indent=2) + "\n")
+
+
 def _clear_agent_state() -> None:
     """Remove the state file when no agent is holding. Unlink (not truncate)
     so wc-status distinguishes 'skipping-tick' from 'no recent skip' by file
@@ -295,7 +318,7 @@ def rebase_onto_remote(repo: Path) -> bool:
     return True
 
 
-def push(repo: Path, success_message: str) -> None:
+def push(repo: Path, success_message: str, trigger: str) -> None:
     """Rebase onto the remote, then push. Safe to call whenever there are
     local commits not yet on the remote, regardless of what put them there."""
     if not rebase_onto_remote(repo):
@@ -303,8 +326,10 @@ def push(repo: Path, success_message: str) -> None:
     result = git(repo, "push")
     if result.returncode != 0:
         print(f"[watchcommit] push failed: {result.stderr.strip()}", file=sys.stderr)
-    else:
-        print(f"[watchcommit] {success_message}")
+        return
+    print(f"[watchcommit] {success_message}")
+    sha = git(repo, "rev-parse", "HEAD").stdout.strip()
+    _record_activity("last_push", sha=sha, trigger=trigger)
 
 
 def commit_and_push(repo: Path, message: str) -> None:
@@ -315,7 +340,28 @@ def commit_and_push(repo: Path, message: str) -> None:
         print(f"[watchcommit] commit failed: {result.stderr.strip()}", file=sys.stderr)
         return
 
-    push(repo, message)
+    sha = git(repo, "rev-parse", "HEAD").stdout.strip()
+    _record_activity("last_commit", sha=sha, message=message)
+
+    push(repo, message, trigger="commit")
+
+
+def pull_ff_only(repo: Path) -> None:
+    """Fast-forward pull, safe to call whenever there's nothing local to
+    protect — can only fast-forward or no-op, never conflict. Records the
+    move in activity state only when HEAD actually changed, so a no-op poll
+    tick doesn't spam last_pull with an identical from/to sha."""
+    before_sha = git(repo, "rev-parse", "HEAD").stdout.strip()
+    result = git(repo, "pull", "--ff-only")
+    if result.returncode != 0:
+        print(
+            f"[watchcommit] background sync failed: {result.stderr.strip()}",
+            file=sys.stderr,
+        )
+        return
+    after_sha = git(repo, "rev-parse", "HEAD").stdout.strip()
+    if after_sha != before_sha:
+        _record_activity("last_pull", from_sha=before_sha, to_sha=after_sha)
 
 
 def main() -> None:
@@ -365,19 +411,13 @@ def main() -> None:
                     # since has_changes() is False here and the old loop did
                     # nothing at all in that state.
                     _clear_agent_state()
-                    push(repo, "pushed previously-stuck commit(s)")
+                    push(repo, "pushed previously-stuck commit(s)", trigger="retry")
                 else:
                     # Nothing local to protect, so a plain fast-forward pull is
-                    # always safe here — can only fast-forward or no-op, never
-                    # conflict. Keeps the working copy current even on machines
-                    # that only ever read this repo.
+                    # always safe here. Keeps the working copy current even on
+                    # machines that only ever read this repo.
                     _clear_agent_state()
-                    result = git(repo, "pull", "--ff-only")
-                    if result.returncode != 0:
-                        print(
-                            f"[watchcommit] background sync failed: {result.stderr.strip()}",
-                            file=sys.stderr,
-                        )
+                    pull_ff_only(repo)
         except KeyboardInterrupt:
             print("\n[watchcommit] stopped")
             sys.exit(0)

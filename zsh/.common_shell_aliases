@@ -111,8 +111,11 @@ kill_process_by_port() {
 # (commit --amend, rebase, etc.) can block the daemon without SIGSTOP-ing it.
 # wc-status reports pause state AND any holding agent PIDs the daemon skipped
 # a tick for (read from the agents-active state file the daemon clears on a
-# clean tick). State dir follows XDG_STATE_HOME (defaults to ~/.local/state),
-# kept consistent with the daemon's STATE_DIR / PAUSE_FILE / AGENTS_STATE_FILE.
+# clean tick), plus the daemon's last known background pull/commit/push
+# (last-activity.json, so daemon-driven git state changes are never mistaken
+# for manual ones). State dir follows XDG_STATE_HOME (defaults to
+# ~/.local/state), kept consistent with the daemon's STATE_DIR / PAUSE_FILE /
+# AGENTS_STATE_FILE / ACTIVITY_STATE_FILE.
 wc-pause()  { mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/watchcommit" && touch "${XDG_STATE_HOME:-$HOME/.local/state}/watchcommit/paused" && echo "watchcommit paused"; }
 wc-resume() { rm -f "${XDG_STATE_HOME:-$HOME/.local/state}/watchcommit/paused" && echo "watchcommit resumed"; }
 wc-status() {
@@ -124,6 +127,9 @@ wc-status() {
         cat "${state}/agents-active"
     else
         echo "watchcommit running"
+    fi
+    if [ -f "${state}/last-activity.json" ]; then
+        python3 ~/.claude/scripts/watchcommit_activity.py
     fi
 }
 

@@ -6,6 +6,7 @@ whole job is orchestrating git, so a scenario test against real repos catches
 what a mocked unit test would miss (e.g. actual rebase/conflict behavior).
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -37,6 +38,17 @@ class WatchcommitRebaseTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="wc-test-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+        # push()/commit_and_push() write activity state — keep it inside the
+        # temp dir so tests never touch the real machine's
+        # ~/.local/state/watchcommit/last-activity.json.
+        state_dir = self.tmp / "state"
+        self.enterContext(patch.object(watchcommit, "STATE_DIR", state_dir))
+        self.enterContext(
+            patch.object(
+                watchcommit, "ACTIVITY_STATE_FILE", state_dir / "last-activity.json"
+            )
+        )
 
         remote = self.tmp / "remote.git"
         remote.mkdir()
@@ -91,7 +103,7 @@ class WatchcommitRebaseTestCase(unittest.TestCase):
         self.assertTrue(watchcommit.has_unpushed_commits(self.repo_b))
         self.assertFalse(watchcommit.has_changes(self.repo_b))
 
-        watchcommit.push(self.repo_b, "retried stuck commit")
+        watchcommit.push(self.repo_b, "retried stuck commit", trigger="retry")
         self.assertEqual(self.ahead_behind(self.repo_b), "0\t0")
 
     def test_real_conflict_aborts_without_data_loss(self) -> None:
@@ -124,6 +136,95 @@ class WatchcommitRebaseTestCase(unittest.TestCase):
             "B's conflicting commit must not force-land on remote",
         )
         self.assertIn("shared edit from A", remote_log)
+
+
+class WatchcommitActivityStateTestCase(unittest.TestCase):
+    """Covers the last-activity.json bookkeeping added so a session (or
+    wc-status) can tell daemon-driven git state changes from manual ones."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="wc-activity-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+        state_dir = self.tmp / "state"
+        self.activity_file = state_dir / "last-activity.json"
+        self.enterContext(patch.object(watchcommit, "STATE_DIR", state_dir))
+        self.enterContext(
+            patch.object(watchcommit, "ACTIVITY_STATE_FILE", self.activity_file)
+        )
+
+        remote = self.tmp / "remote.git"
+        remote.mkdir()
+        sh(remote, "git", "init", "-q", "--bare", "-b", "main")
+
+        seed = self.tmp / "seed"
+        init_repo(seed)
+        (seed / "seed.txt").write_text("seed\n")
+        sh(seed, "git", "add", "-A")
+        sh(seed, "git", "commit", "-q", "-m", "seed")
+        sh(seed, "git", "remote", "add", "origin", str(remote))
+        sh(seed, "git", "push", "-q", "-u", "origin", "main")
+
+        self.repo = self.tmp / "local"
+        sh(self.tmp, "git", "clone", "-q", str(remote), str(self.repo))
+        sh(self.repo, "git", "config", "user.email", "test@test.com")
+        sh(self.repo, "git", "config", "user.name", "test")
+
+        self.other = self.tmp / "other"
+        sh(self.tmp, "git", "clone", "-q", str(remote), str(self.other))
+        sh(self.other, "git", "config", "user.email", "other@test.com")
+        sh(self.other, "git", "config", "user.name", "other")
+
+    def _activity(self) -> dict:
+        return json.loads(self.activity_file.read_text())
+
+    def test_commit_and_push_records_commit_and_push(self) -> None:
+        (self.repo / "new.txt").write_text("hi\n")
+        watchcommit.commit_and_push(self.repo, "chore: add new.txt")
+
+        head_sha = sh(self.repo, "git", "rev-parse", "HEAD").stdout.strip()
+        data = self._activity()
+        self.assertEqual(data["last_commit"]["sha"], head_sha)
+        self.assertEqual(data["last_commit"]["message"], "chore: add new.txt")
+        self.assertEqual(data["last_push"]["sha"], head_sha)
+        self.assertEqual(data["last_push"]["trigger"], "commit")
+
+    def test_retried_push_records_retry_trigger(self) -> None:
+        (self.repo / "new.txt").write_text("hi\n")
+        sh(self.repo, "git", "add", "-A")
+        sh(self.repo, "git", "commit", "-q", "-m", "chore: add new.txt")
+        # simulate a prior tick that committed but failed to push: no
+        # activity state should exist yet, since we bypassed push() above.
+        self.assertFalse(self.activity_file.exists())
+
+        watchcommit.push(self.repo, "pushed previously-stuck commit(s)", trigger="retry")
+
+        head_sha = sh(self.repo, "git", "rev-parse", "HEAD").stdout.strip()
+        data = self._activity()
+        self.assertEqual(data["last_push"]["sha"], head_sha)
+        self.assertEqual(data["last_push"]["trigger"], "retry")
+
+    def test_pull_ff_only_records_when_head_moves(self) -> None:
+        (self.other / "from-other.txt").write_text("hi\n")
+        sh(self.other, "git", "add", "-A")
+        sh(self.other, "git", "commit", "-q", "-m", "commit from another machine")
+        sh(self.other, "git", "push", "-q")
+
+        before_sha = sh(self.repo, "git", "rev-parse", "HEAD").stdout.strip()
+        watchcommit.pull_ff_only(self.repo)
+        after_sha = sh(self.repo, "git", "rev-parse", "HEAD").stdout.strip()
+
+        self.assertNotEqual(before_sha, after_sha)
+        data = self._activity()
+        self.assertEqual(data["last_pull"]["from_sha"], before_sha)
+        self.assertEqual(data["last_pull"]["to_sha"], after_sha)
+
+    def test_pull_ff_only_noop_does_not_record(self) -> None:
+        watchcommit.pull_ff_only(self.repo)
+        self.assertFalse(
+            self.activity_file.exists(),
+            "a no-op pull (nothing new on remote) must not write activity state",
+        )
 
 
 class AgentDetectionTestCase(unittest.TestCase):
