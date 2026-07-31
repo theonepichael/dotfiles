@@ -76,16 +76,16 @@ Show the full diff. Stop — AskUserQuestion for explicit commit approval. No
 exceptions for being mid-pipeline, and no exception for code an external
 executor wrote (CLAUDE.md).
 
-## 11. Gate: merge, Gate: push
-On approval, commit (conventional format). Ask again, separately, before
-merging to main. Ask again, separately, before pushing. Three distinct
-approvals, never bundled.
+## 11. Gate: commit-then-land
+On approval, commit (conventional format) — this gate is never bundled with
+what follows. Personal project (this repo, a personal side project — never
+a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
+bundled question (CLAUDE.md's Git section) — "merge to main, push, and
+clean up the worktree?" — then merge locally, push, `git worktree remove`,
+`git branch -d` on that single approval. Work-related or ambiguous: ask
+separately for merge and for push — never bundle.
 
-## 12. Prune
-After a successful merge: `git worktree remove`, then `git branch -d` the
-merged branch.
-
-## 13. Close
+## 12. Close
 `dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
 `done` on an in-review item. Display the full dashboard stdout these print;
 don't just narrate a one-line confirmation.

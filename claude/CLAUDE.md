@@ -299,6 +299,20 @@ used for backlog capture.
   operations (a full reformat, a rename-everywhere refactor) that could
   conflict with whatever else is active in the repo — scope changes to just
   the files the current task actually needs.
+- Committing itself always needs its own explicit confirmation — never
+  commit, in any repo or worktree, without asking first and getting a yes,
+  no exceptions for being mid-pipeline or in auto-mode.
+- For the user's own personal projects only (this dotfiles repo, personal
+  side projects under their own accounts — never a day-job/work repo, a
+  `work-`-prefixed backlog item, a work-profile machine, or anything
+  ambiguous): once a commit is in and the work is tested/verified, the
+  follow-on sequence — merge to main locally, push to the remote, clean up
+  (remove the worktree, delete the merged branch) — is what the user almost
+  always wants next, so offer it as one bundled question ("merge to main,
+  push, and clean up the worktree?") instead of asking separately at each
+  step. For anything work-related, or when it's unclear which category a
+  repo falls into, default to the safer path: keep merge and push as
+  separate, individually-confirmed asks — never bundle.
 
 ## Shell Command Safety
 
