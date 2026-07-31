@@ -1,6 +1,6 @@
 ---
 name: backlog-item
-description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, grill-me plan, second-opinion critique, TDD implement, verify, commit/merge/push gates, prune, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end."
+description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, grill-me plan, second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, prune, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end."
 argument-hint: [slug|N]
 ---
 
@@ -13,8 +13,10 @@ record — never start from the dashboard's one-line summary (CLAUDE.md).
 Empty context/next_steps/related_files: stop and ask the user to fill them
 in; don't fabricate a plan from the title. Numeric id: note the rendered rev
 for `--if-rev` on the next mutating call. related_files already names a
-grill plan (`~/.claude/data/grill/<slug>-plan.md`)? That's a resume after a
-plan/execute handoff (step 5) — skip straight to step 6 with that plan.
+grill plan (`~/.claude/data/grill/<slug>-plan.md`)? Planning and critique
+(steps 5–6) are already done — skip to step 8. Worktree already has
+implemented, uncommitted changes (e.g. handed back from an external
+executor)? Skip straight to step 9.
 
 ## 2. Start
 If not already in-progress: `dev_status.py start <slug|N>` (`--if-rev <N>`
@@ -34,42 +36,56 @@ starting code work").
 ## 5. Plan
 Delegate to the `grill-me` skill (Skill tool) with the item's context/
 next_steps as topic. Let it own its full protocol — Q&A, --verify,
-executor-readiness, clear-and-go — don't hand-roll `grill.py` calls here.
-Once it records a plan path, add that path to the item's related_files if
-missing (CLAUDE.md's "Plans and deliverables get a path on record") — this
-is what a resumed invocation checks in step 1. Take the executor-readiness
-offer seriously and lean toward accepting clear-and-go over continuing
-in-session: this user's established pattern is a strong-model plan handed
-to a cheaper model for execution. If clear-and-go is taken, tell the user to
-resume with `/backlog-item <slug|N>` after `/clear` — step 1 will find the
-recorded plan and pick up at step 6.
+executor-readiness — don't hand-roll `grill.py` calls here. Once it records
+a plan path, add that path to the item's related_files if missing
+(CLAUDE.md's "Plans and deliverables get a path on record"). Take the
+executor-readiness offer seriously: this user's default is a hardened plan
+handed to a cheaper executor, not continuing in-session. Decline grill-me's
+own clear-and-go offer here — step 7 below owns the handoff decision, since
+this user's real executors include targets grill-me's clear-and-go doesn't
+reach.
 
 ## 6. Critique
 Offer the `second-opinion` skill against the resulting plan file.
-Recommended: yes.
+Recommended: yes — critique the plan before committing to an executor.
 
-## 7. Red, green
+## 7. Handoff
+Decide who implements the plan — ask if it isn't already obvious from the
+conversation:
+- **Same session, now.** Trivial/small item → go to step 8 immediately.
+- **Cheaper Claude session.** Now run grill-me's `mark-pending-execution`
+  and tell the user to resume with `/backlog-item <slug|N>` after `/clear`
+  — step 1 finds the recorded plan and resumes at step 8.
+- **opencode/GLM-5.3 (this user's default cheap executor).** From the
+  worktree, hand off non-interactively: `opencode run "Implement <plan
+  path> exactly as written — TDD, run the full suite, then STOP without
+  committing and report the diff."`. GLM never gets the commit gate. Once
+  it reports back, tell the user to point Claude at the worktree to
+  review — that resumes at step 9.
+
+## 8. Red, green
 TDD in the worktree: a failing test that proves the gap the plan names,
 then the minimal implementation.
 
-## 8. Verify
+## 9. Verify
 Run the full suite (and lint, if present) in the worktree and show the
 output — "should work" is not verification (CLAUDE.md).
 
-## 9. Gate: commit
+## 10. Gate: commit
 Show the full diff. Stop — AskUserQuestion for explicit commit approval. No
-exceptions for being mid-pipeline (CLAUDE.md).
+exceptions for being mid-pipeline, and no exception for code an external
+executor wrote (CLAUDE.md).
 
-## 10. Gate: merge, Gate: push
+## 11. Gate: merge, Gate: push
 On approval, commit (conventional format). Ask again, separately, before
 merging to main. Ask again, separately, before pushing. Three distinct
 approvals, never bundled.
 
-## 11. Prune
+## 12. Prune
 After a successful merge: `git worktree remove`, then `git branch -d` the
 merged branch.
 
-## 12. Close
+## 13. Close
 `dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
 `done` on an in-review item. Display the full dashboard stdout these print;
 don't just narrate a one-line confirmation.
