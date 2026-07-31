@@ -229,6 +229,7 @@ def test_platform_and_profile_gates(home, links):
     linux_personal = make_ctx(home, system="Linux")
     dests = {s.dest for s in links if install.link_applies(s, linux_personal)}
     assert "~/.config/systemd/user/watchcommit.service" in dests
+    assert "~/.claude/scripts/watchcommit_activity.py" in dests
     assert "~/.zprofile" not in dests
     assert "~/.config/Code/User/settings.json" in dests
 
@@ -236,6 +237,7 @@ def test_platform_and_profile_gates(home, links):
     work_dests = {s.dest for s in links if install.link_applies(s, linux_work)}
     assert "~/.local/bin/watchcommit" not in work_dests
     assert "~/.config/systemd/user/watchcommit.service" not in work_dests
+    assert "~/.claude/scripts/watchcommit_activity.py" not in work_dests
 
     mac = make_ctx(home, system="Darwin")
     mac_dests = {s.dest for s in links if install.link_applies(s, mac)}

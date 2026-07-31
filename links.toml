@@ -128,10 +128,6 @@ dest = "~/.claude/scripts/standup_adapters.py"
 src = "claude/scripts/dotfiles_sync_check.py"
 dest = "~/.claude/scripts/dotfiles_sync_check.py"
 
-[[link]]
-src = "claude/scripts/watchcommit_activity.py"
-dest = "~/.claude/scripts/watchcommit_activity.py"
-
 # ── GitHub Copilot CLI wiring ────────────────────────────────────────────
 # claude/CLAUDE.md is deliberately the same file on both sides — the
 # backlog/pending-items workflow prose is tool-agnostic, so there is no
@@ -268,6 +264,11 @@ profile_exclude = ["work"]
 src = "launchd/com.user.watchcommit.plist"
 dest = "~/Library/LaunchAgents/com.user.watchcommit.plist"
 platform = "mac"
+profile_exclude = ["work"]
+
+[[link]]
+src = "claude/scripts/watchcommit_activity.py"
+dest = "~/.claude/scripts/watchcommit_activity.py"
 profile_exclude = ["work"]
 
 # ── macOS-only configs ───────────────────────────────────────────────────
