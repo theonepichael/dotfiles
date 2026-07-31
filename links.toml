@@ -307,3 +307,5 @@ src = "vscode/keybindings.json"
 dest = "~/.config/Code/User/keybindings.json"
 platform = "linux"
 wsl = "exclude"
+
+# Did the watchcommit hook fire?
