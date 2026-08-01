@@ -114,3 +114,6 @@ export PATH="$HOME/.local/bin:$PATH"
 
 # opencode
 export PATH="$HOME/.opencode/bin:$PATH"
+
+# Enable richer colors
+export COLORTERM=truecolor
