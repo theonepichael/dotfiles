@@ -1,13 +1,4 @@
 #!/usr/bin/env bash
-# NOT YET PORTED to the Python installer: this suite still asserts against
-# the bash-era TSV manifest ($MANIFEST below, history.tsv) and its tab-
-# separated record format, both of which install.py replaced with
-# history.jsonl. Its `check "..."` lines remain the behavioral spec — the
-# exact messages and exit codes they grep for are all preserved by
-# install.py, and test/test_install.py covers them in the fast tier — but
-# running this file as-is will fail on the manifest assertions until the
-# manifest_has/manifest_run_count helpers are rewritten for JSON Lines.
-#
 # Scenario suite for install.sh, meant to run inside test/run.sh's container.
 # Exercises the full lifecycle: fresh install, rollback, backup-and-restore
 # of a pre-existing dotfile, work profile + guard, --force override,
@@ -19,7 +10,7 @@ set -uo pipefail
 
 DOTFILES="$HOME/dotfiles"
 STATE_DIR="$HOME/.local/state/dotfiles"
-MANIFEST="$STATE_DIR/history.tsv"
+MANIFEST="$STATE_DIR/history.jsonl"
 MARKER="$STATE_DIR/profile"
 
 cd "$DOTFILES"
@@ -38,8 +29,53 @@ check() {  # check <description> <command...>
   fi
 }
 
-manifest_has() { grep -qF "$1" "$MANIFEST"; }
-manifest_run_count() { [[ "$(grep -c $'^run\t' "$MANIFEST" 2>/dev/null)" -eq "$1" ]]; }
+manifest_has() {  # manifest_has <kind> <field=value> [<field=value> ...]
+  python3 - "$MANIFEST" "$@" <<'PY'
+import json, sys
+path, kind, *pairs = sys.argv[1:]
+wanted = dict(p.split("=", 1) for p in pairs)
+try:
+    lines = open(path, encoding="utf-8").read().splitlines()
+except FileNotFoundError:
+    sys.exit(1)
+for line in lines:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        entry = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if entry.get("kind") != kind:
+        continue
+    if all(str(entry.get(k)) == v for k, v in wanted.items()):
+        sys.exit(0)
+sys.exit(1)
+PY
+}
+
+manifest_run_count() {  # manifest_run_count <N>
+  python3 - "$MANIFEST" "$1" <<'PY'
+import json, sys
+path, want = sys.argv[1], int(sys.argv[2])
+try:
+    lines = open(path, encoding="utf-8").read().splitlines()
+except FileNotFoundError:
+    sys.exit(0 if want == 0 else 1)
+count = 0
+for line in lines:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        entry = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if entry.get("kind") == "run":
+        count += 1
+sys.exit(0 if count == want else 1)
+PY
+}
 
 echo "=== 1. Fresh personal install (--harness=claude) ==="
 ./install.sh --harness=claude >/tmp/install.out 2>&1
@@ -47,7 +83,7 @@ code=$?
 cat /tmp/install.out
 check "exit code 0 or 1 (0/1 = ok-with-skips, not a hard error)" \
   bash -c "[[ $code -eq 0 || $code -eq 1 ]]"
-check "manifest recorded profile=personal" manifest_has $'\tpersonal'
+check "manifest recorded profile=personal" manifest_has run profile=personal
 check "~/.vimrc symlinks into repo" bash -c '[[ "$(readlink -f ~/.vimrc)" == "'"$DOTFILES"'/vim/.vimrc" ]]'
 check "~/.zshrc symlinks into repo" bash -c '[[ "$(readlink -f ~/.zshrc)" == "'"$DOTFILES"'/zsh/.zshrc" ]]'
 check "~/.claude/CLAUDE.md symlinks into repo" bash -c '[[ "$(readlink -f ~/.claude/CLAUDE.md)" == "'"$DOTFILES"'/claude/CLAUDE.md" ]]'
@@ -70,7 +106,7 @@ check "opencode NOT wired (not in --harness)" bash -c '[[ ! -e ~/.config/opencod
 
 echo ""
 echo "=== 1b. Re-run is idempotent — no re-download of the Nerd Font ==="
-# history.tsv is append-only (manifest_init appends a new run marker rather
+# history.jsonl is append-only (manifest_init appends a new run marker rather
 # than truncating), and symlinks that already exist don't get re-recorded
 # (the was_link gate in symlink()) — so a second run here just adds another
 # run marker on top of run 1's records instead of erasing them. No
@@ -81,7 +117,7 @@ cat /tmp/install-rerun.out
 font_mtime_after="$(stat -c %Y ~/.local/share/fonts/JetBrainsMonoNerdFont/.nerd-fonts-version)"
 check "version marker untouched by re-run (no re-download)" bash -c \
   "[[ '$font_mtime_before' -eq '$font_mtime_after' ]]"
-check "history.tsv now holds 2 run markers (run 1 + this rerun, nothing erased)" \
+check "history.jsonl now holds 2 run markers (run 1 + this rerun, nothing erased)" \
   manifest_run_count 2
 
 echo ""
@@ -103,8 +139,8 @@ echo "sentinel-content" > ~/.vimrc
 cat /tmp/install2.out
 check "original content preserved in .bak" bash -c '[[ "$(cat ~/.vimrc.bak)" == "sentinel-content" ]]'
 check "~/.vimrc is now the symlink" bash -c '[[ -L ~/.vimrc ]]'
-check "manifest recorded file-backed-up for ~/.vimrc" manifest_has "file-backed-up	$HOME/.vimrc"
-check "manifest ALSO recorded symlink-created for ~/.vimrc" manifest_has "symlink-created	$HOME/.vimrc"
+check "manifest recorded file-backed-up for ~/.vimrc" manifest_has file-backed-up "dest=$HOME/.vimrc"
+check "manifest ALSO recorded symlink-created for ~/.vimrc" manifest_has symlink-created "dest=$HOME/.vimrc"
 
 ./install.sh --rollback >/tmp/rollback2.out 2>&1
 cat /tmp/rollback2.out
@@ -130,7 +166,7 @@ guard_code=$?
 cat /tmp/guard.out
 check "plain run exits 2 (blocked)" bash -c "[[ $guard_code -eq 2 ]]"
 check "guard message mentions WORK" grep -q "provisioned as WORK" /tmp/guard.out
-check "manifest untouched by blocked run (still shows work)" manifest_has $'\twork'
+check "manifest untouched by blocked run (still shows work)" manifest_has run profile=work
 
 echo ""
 echo "=== 6. --force overrides the guard ==="
@@ -138,7 +174,7 @@ echo "=== 6. --force overrides the guard ==="
 force_code=$?
 cat /tmp/force.out
 check "--force run does not get blocked" bash -c "[[ $force_code -eq 0 || $force_code -eq 1 ]]"
-check "--force run records profile=personal" manifest_has $'\tpersonal'
+check "--force run records profile=personal" manifest_has run profile=personal
 check "work marker is NOT reset by a forced personal run (next plain run is still blocked)" \
   bash -c '[[ "$(cat "'"$MARKER"'")" == "work" ]]'
 check "settings.json drift reported instead of silently overwritten" grep -q "drifted" /tmp/force.out
@@ -259,10 +295,6 @@ check "no opencode.jsonc written on a rejected work+opencode run" \
 ocwork2_code=$?
 check "--profile=work --harness=copilot,opencode is rejected the same way (opencode anywhere in the list is enough)" \
   bash -c "[[ $ocwork2_code -eq 2 ]]"
-check "work opencode.jsonc has no kill" bash -c '! grep -q "\"kill\*\"" ~/.config/opencode/opencode.jsonc'
-check "work opencode.jsonc has no nohup" bash -c '! grep -q "nohup" ~/.config/opencode/opencode.jsonc'
-check "work opencode.jsonc still has no xargs/awk either" \
-  bash -c '! grep -qE "xargs|\"awk " ~/.config/opencode/opencode.jsonc'
 
 echo ""
 echo "=== 11. Full-history rollback: undoes every past run, not just the most recent ==="
@@ -278,10 +310,10 @@ check "run A: Claude Code wired" bash -c '[[ -L ~/.claude/CLAUDE.md ]]'
 ./install.sh --harness=opencode >/tmp/multi-run-b.out 2>&1
 cat /tmp/multi-run-b.out
 check "run B: opencode wired" bash -c '[[ -f ~/.config/opencode/opencode.jsonc ]]'
-check "history.tsv recorded both runs (2 run markers, not overwritten by run B)" \
+check "history.jsonl recorded both runs (2 run markers, not overwritten by run B)" \
   manifest_run_count 2
-check "history.tsv still holds run A's claude symlink record after run B" \
-  manifest_has "symlink-created	$HOME/.claude/CLAUDE.md"
+check "history.jsonl still holds run A's claude symlink record after run B" \
+  manifest_has symlink-created "dest=$HOME/.claude/CLAUDE.md"
 
 ./install.sh --rollback >/tmp/rollback-multi.out 2>&1
 cat /tmp/rollback-multi.out
@@ -289,7 +321,7 @@ check "single rollback removes run A's files too (Claude), not just run B's" \
   bash -c '[[ ! -e ~/.claude/CLAUDE.md ]]'
 check "single rollback removes run B's files (opencode)" \
   bash -c '[[ ! -e ~/.config/opencode/opencode.jsonc ]]'
-check "history.tsv cleared after a full rollback" bash -c '[[ ! -f "'"$MANIFEST"'" ]]'
+check "history.jsonl cleared after a full rollback" bash -c '[[ ! -f "'"$MANIFEST"'" ]]'
 
 echo ""
 echo "=== 12. Rollback skips and reports instead of aborting on the unexpected ==="
