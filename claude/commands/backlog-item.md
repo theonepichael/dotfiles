@@ -56,9 +56,12 @@ conversation:
 - **Cheaper Claude session.** Now run grill-me's `mark-pending-execution`
   and tell the user to resume with `/backlog-item <slug|N>` after `/clear`
   — step 1 finds the recorded plan and resumes at step 8.
-- **opencode/GLM-5.3 — personal projects only, never at work; this user
-  does not use opencode in a work context under any circumstances.** From
-  the worktree, hand off non-interactively: `opencode run "Implement <plan
+- **opencode/GLM-5.2 — personal projects only, never at work; this user
+  does not use opencode in a work context under any circumstances.**
+  Confirm the model actually exists in opencode's catalog (`opencode
+  models`) before invoking — don't assume the version number is right,
+  dictation has flubbed it before. From the worktree, hand off
+  non-interactively: `opencode run -m opencode-go/glm-5.2 "Implement <plan
   path> exactly as written — TDD, run the full suite, then STOP without
   committing and report the diff."`. GLM never gets the commit gate. Once
   it reports back, tell the user to point Claude at the worktree to
