@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env sh
 # Bootstrap only. The installer itself is install.py, next to this file —
 # this script exists so the familiar `./install.sh --harness=...` muscle
 # memory keeps working, and so a machine with too old a Python fails with a
