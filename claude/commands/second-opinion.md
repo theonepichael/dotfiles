@@ -70,9 +70,18 @@ critiques side by side — not delegated to the reviewer model or to
 deterministic code. A repeated suggestion you already rejected (and noted as
 rejected) does not count as new.
 
-Strip any "Rejected feedback" notes from the plan before showing or saving
-the final version — they're working scratch for the reviewer, not part of
-the plan itself.
+Round-by-round narration inline in the plan while the loop is running —
+"Rejected feedback" notes, "changed in round N" framing, per-round
+"critique point X" cross-references — is legitimate working scratch: the
+reviewer is called statelessly each round, so without some record it will
+just repeat what you already addressed. But before the plan is shown as
+final or saved to disk (converged or capped), do one cleanup pass: strip all
+of it out. Rewrite each affected step to state the final decision plainly,
+as if it had been correct from the start, and drop any trailing per-round
+changelog section. The round-by-round story belongs in the chat summary
+below, not duplicated into the artifact that downstream tooling
+(`dev_status.py` `related_files`, a future executor session, `grill.py
+plan_path`) will read as *the* plan.
 
 ## On convergence
 
