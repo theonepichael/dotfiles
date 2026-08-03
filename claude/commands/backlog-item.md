@@ -53,9 +53,13 @@ Recommended: yes — critique the plan before committing to an executor.
 Decide who implements the plan — ask if it isn't already obvious from the
 conversation:
 - **Same session, now.** Trivial/small item → go to step 8 immediately.
-- **Cheaper Claude session.** Now run grill-me's `mark-pending-execution`
-  and tell the user to resume with `/backlog-item <slug|N>` after `/clear`
-  — step 1 finds the recorded plan and resumes at step 8.
+- **Cheaper Claude session.** Now run `grill.py mark-pending-execution
+  --backlog-slug <slug>` (the plan's session, with this item's slug — not
+  its own resolved-topic slug) and tell the user to resume with
+  `/backlog-item <slug|N>` after `/clear`. The SessionStart hook's
+  `pending-plan --consume` then prints that same `/backlog-item <slug>`
+  line itself, pointing the fresh session at step 1's resume path instead
+  of the plan file directly.
 - **opencode/GLM-5.2 — personal projects only, never at work; this user
   does not use opencode in a work context under any circumstances.**
   Confirm the model actually exists in opencode's catalog (`opencode

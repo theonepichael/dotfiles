@@ -852,6 +852,11 @@ def main() -> None:
         "mark-pending-execution",
         help="flag a session's plan as ready for clear-and-go resume",
     )
+    p.add_argument(
+        "--backlog-slug",
+        default=None,
+        help="dev_status.py item this plan belongs to, if any",
+    )
     add_session_flag(p)
 
     p = sub.add_parser(

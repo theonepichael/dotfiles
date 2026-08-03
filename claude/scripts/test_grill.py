@@ -17,6 +17,7 @@ import grill
 
 def ns(**kwargs: object) -> argparse.Namespace:
     kwargs.setdefault("session", None)
+    kwargs.setdefault("backlog_slug", None)
     return argparse.Namespace(**kwargs)
 
 
@@ -599,6 +600,45 @@ class GrillTestCase(unittest.TestCase):
             grill.cmd_pending_plan(ns(consume=False))
         self.assertIn(second, out.getvalue())
         self.assertNotIn(first, out.getvalue())
+
+    def test_21f_mark_pending_execution_records_backlog_slug(self) -> None:
+        slug = self.new_session()
+        with patch("sys.stderr", io.StringIO()):
+            grill.cmd_mark_pending_execution(
+                ns(session=slug, backlog_slug="iron-lb-example")
+            )
+        self.assertEqual(
+            grill.load_session(slug)["backlog_slug"], "iron-lb-example"
+        )
+
+    def test_21g_mark_pending_execution_rejects_invalid_backlog_slug(self) -> None:
+        slug = self.new_session()
+        with patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+            grill.cmd_mark_pending_execution(
+                ns(session=slug, backlog_slug="Not Kebab Case")
+            )
+
+    def test_21h_pending_plan_prints_backlog_item_resume_line(self) -> None:
+        slug = self.new_session()
+        with patch("sys.stderr", io.StringIO()):
+            grill.cmd_mark_pending_execution(
+                ns(session=slug, backlog_slug="iron-lb-example")
+            )
+
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            grill.cmd_pending_plan(ns(consume=False))
+        self.assertIn("/backlog-item iron-lb-example", out.getvalue())
+
+    def test_21i_pending_plan_omits_backlog_item_line_when_absent(self) -> None:
+        slug = self.new_session()
+        with patch("sys.stderr", io.StringIO()):
+            grill.cmd_mark_pending_execution(ns(session=slug))
+
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            grill.cmd_pending_plan(ns(consume=False))
+        self.assertNotIn("/backlog-item", out.getvalue())
 
 
 if __name__ == "__main__":
