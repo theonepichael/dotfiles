@@ -140,7 +140,7 @@ wc-status() {
 # Shell config
 alias vi="nvim"
 alias ez="vi ~/.zshrc"
-alias eb="vi ~/.bashrc"
+alias eb="vi ~/.common_shell_aliases"
 alias ev="vi ~/.vimrc"
 alias br="source ~/.bashrc && source ~/.zshrc"
 alias rz="source ~/.zshrc"
