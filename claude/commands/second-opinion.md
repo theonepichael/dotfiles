@@ -75,21 +75,27 @@ Round-by-round narration inline in the plan while the loop is running —
 "critique point X" cross-references — is legitimate working scratch: the
 reviewer is called statelessly each round, so without some record it will
 just repeat what you already addressed. But before the plan is shown as
-final or saved to disk (converged or capped), do one cleanup pass: strip all
-of it out. Rewrite each affected step to state the final decision plainly,
-as if it had been correct from the start, and drop any trailing per-round
-changelog section. The round-by-round story belongs in the chat summary
-below, not duplicated into the artifact that downstream tooling
-(`dev_status.py` `related_files`, a future executor session, `grill.py
-plan_path`) will read as *the* plan.
+final or saved to disk (converged or capped), do one cleanup pass: move all
+of it out of the plan into a separate critique-notes file, written to
+`<current_plan without its extension>-critique-notes.md` (e.g.
+`~/.claude/data/grill/<topic-slug>-plan-critique-notes.md`) — a
+round-by-round record of what was raised each round, what changed in
+response, and the rejected-feedback rationale. Then rewrite each affected
+step in the plan itself to state the final decision plainly, as if it had
+been correct from the start, and drop any trailing per-round changelog
+section. Downstream tooling (`dev_status.py` `related_files`, a future
+executor session, `grill.py plan_path`) reads the plan file as *the* plan —
+the critique history is a companion artifact, not inline noise in it.
 
 ## On convergence
 
-Show the final revised plan and the summary. If the input came from an
-existing file (e.g. a `grill.py` `plan_path`), confirm before overwriting it
-— apply CLAUDE.md's convention for asking the user to choose: `Yes,
-overwrite (recommended)` / `No, leave as-is`. Never silently rewrite a
-file.
+Show the final revised plan and the summary, and save both files: the
+cleaned-up plan and the critique-notes file described above. If the plan
+came from an existing file (e.g. a `grill.py` `plan_path`), confirm before
+overwriting it — apply CLAUDE.md's convention for asking the user to
+choose: `Yes, overwrite (recommended)` / `No, leave as-is`. Never silently
+rewrite a file. The critique-notes file is new each run, so it doesn't need
+the same overwrite confirmation.
 
 ## On cap-out without convergence
 
@@ -108,9 +114,10 @@ mid-disagreement.
 ## Recording it in the backlog
 
 Once the final plan is settled (converged or capped out), apply CLAUDE.md's
-"Plans and deliverables get a path on record" backlog policy: the plan's
-file path ends up in a tracking item's `related_files`, whether that means
-creating the item (offer first) or updating an existing one.
+"Plans and deliverables get a path on record" backlog policy: both the
+plan's file path and the critique-notes file path end up in a tracking
+item's `related_files`, whether that means creating the item (offer first)
+or updating an existing one.
 
 ## No backend available
 
