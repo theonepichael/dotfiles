@@ -73,6 +73,7 @@ class Session(TypedDict):
     updated: str
     plan_path: str | None
     pending_execution: bool
+    backlog_slug: str | None
     decisions: list[Decision]
 
 
@@ -456,6 +457,7 @@ def cmd_new(args: argparse.Namespace) -> None:
             "updated": now(),
             "plan_path": None,
             "pending_execution": False,
+            "backlog_slug": None,
             "decisions": [],
         }
         save_session(session)
@@ -671,11 +673,26 @@ def cmd_plan(args: argparse.Namespace) -> None:
 
 
 def cmd_mark_pending_execution(args: argparse.Namespace) -> None:
-    """Handle ``mark-pending-execution``: flag a session's plan as clear-and-go ready."""
+    """Handle ``mark-pending-execution``: flag a session's plan as clear-and-go ready.
+
+    ``--backlog-slug`` records which ``dev_status.py`` item this plan belongs
+    to, when known — e.g. `/backlog-item`'s handoff step, which already has
+    the item's slug in scope. `pending-plan` uses it to point the resumed
+    session at `/backlog-item <slug>` instead of the plan file directly, so
+    the item's own state/gates aren't bypassed.
+    """
+    backlog_slug = getattr(args, "backlog_slug", None)
+    if backlog_slug is not None and not ID_RE.match(backlog_slug):
+        die(
+            "mark-pending-execution",
+            f"invalid backlog slug '{backlog_slug}' — lowercase kebab-case",
+        )
     slug = _resolve_slug(args.session, "mark-pending-execution")
     with session_lock(slug):
         session = load_session(slug)
         session["pending_execution"] = True
+        if backlog_slug is not None:
+            session["backlog_slug"] = backlog_slug
         touch(session)
         save_session(session)
     confirm("mark-pending-execution", session, "pending_execution set")
@@ -702,6 +719,7 @@ def cmd_pending_plan(args: argparse.Namespace) -> None:
     pending.sort(key=lambda s: str(s.get("updated", "")), reverse=True)
     slug = pending[0]["slug"]
     plan_path = pending[0].get("plan_path")
+    backlog_slug = pending[0].get("backlog_slug")
 
     if args.consume:
         with session_lock(slug):
@@ -714,9 +732,16 @@ def cmd_pending_plan(args: argparse.Namespace) -> None:
     print(f"\U0001f4cb Grill plan ready to execute: {slug}")
     if plan_path:
         print(f"   Plan: {plan_path}")
-    print("   (If the user says go/continue, read the plan file and start")
-    print("    implementing it directly. If skip/no, take no further action —")
-    print("    this flag is already cleared.)")
+    if backlog_slug:
+        print(f"   Resume via: /backlog-item {backlog_slug}")
+        print("   (If the user says go/continue, run that command — it resumes")
+        print("    through the backlog item's own state and gates instead of")
+        print("    implementing the plan file directly. If skip/no, take no")
+        print("    further action — this flag is already cleared.)")
+    else:
+        print("   (If the user says go/continue, read the plan file and start")
+        print("    implementing it directly. If skip/no, take no further action —")
+        print("    this flag is already cleared.)")
 
 
 def cmd_next(args: argparse.Namespace) -> None:
