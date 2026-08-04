@@ -3,7 +3,6 @@
 
 import io
 import json
-import os
 import shutil
 import sys
 import tempfile
@@ -48,7 +47,9 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
 
     # ── setup helpers ──────────────────────────────────────────────────
 
-    def write_settings_seed(self, body: dict[str, object], *, name: str = "settings.json") -> None:
+    def write_settings_seed(
+        self, body: dict[str, object], *, name: str = "settings.json"
+    ) -> None:
         (self.claude_dir / name).write_text(json.dumps(body, indent=2) + "\n")
 
     def write_live_settings(self, body: dict[str, object]) -> None:
@@ -57,7 +58,9 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         (live_dir / "settings.json").write_text(json.dumps(body, indent=2) + "\n")
 
     def write_opencode_seed(self, body: dict[str, object]) -> None:
-        (self.opencode_dir / "opencode.jsonc").write_text(json.dumps(body, indent=2) + "\n")
+        (self.opencode_dir / "opencode.jsonc").write_text(
+            json.dumps(body, indent=2) + "\n"
+        )
 
     def write_live_opencode(self, body: dict[str, object]) -> None:
         oc_dir = self.home / ".config" / "opencode"
@@ -100,10 +103,12 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         self.assertEqual(result, [])
 
     def test_critical_key_drift_detects_present_in_live_missing_in_seed(self) -> None:
+        # Seed lacks `permissions`; live has it. Only `permissions` should
+        # drift — `hooks` is absent on both sides, so None == None, no drift.
         seed = {"theme": "light"}
         live = {"permissions": {"allow": ["Bash(x)"]}, "theme": "light"}
         result = ssdc.critical_key_drift(seed, live, ssdc.SETTINGS_CRITICAL_KEYS)
-        self.assertEqual(sorted(result), ["hooks", "permissions"])
+        self.assertEqual(sorted(result), ["permissions"])
 
     def test_critical_key_drift_detects_present_in_seed_missing_in_live(self) -> None:
         seed = {"permissions": {"allow": []}, "hooks": {}}
@@ -111,7 +116,9 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         result = ssdc.critical_key_drift(seed, live, ssdc.SETTINGS_CRITICAL_KEYS)
         self.assertEqual(result, ["hooks", "permissions"])
 
-    def test_critical_key_drift_handles_missing_critical_key_when_both_absent(self) -> None:
+    def test_critical_key_drift_handles_missing_critical_key_when_both_absent(
+        self,
+    ) -> None:
         # critical key 'hooks' is in neither seed nor live -> no drift on it
         seed = {"theme": "light"}
         live = {"theme": "dark"}
@@ -130,9 +137,7 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         self.assertEqual(ssdc.resolve_profile(), "work")
 
     def test_settings_seed_path_personal(self) -> None:
-        self.assertEqual(
-            ssdc.settings_seed_path(), self.claude_dir / "settings.json"
-        )
+        self.assertEqual(ssdc.settings_seed_path(), self.claude_dir / "settings.json")
 
     def test_settings_seed_path_work(self) -> None:
         self.mark_work()
@@ -240,9 +245,7 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         self.write_live_settings(live)
         self.run_fix()
 
-        repaired = json.loads(
-            (self.home / ".claude" / "settings.json").read_text()
-        )
+        repaired = json.loads((self.home / ".claude" / "settings.json").read_text())
         # Critical key overwritten from seed
         self.assertEqual(repaired["permissions"], {"allow": []})
         # Cosmetic keys preserved
@@ -283,12 +286,12 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         )
         self.run_fix()
 
-        repaired = json.loads(
-            (self.home / ".claude" / "settings.json").read_text()
-        )
+        repaired = json.loads((self.home / ".claude" / "settings.json").read_text())
         self.assertNotIn("hooks", repaired)
 
-    def test_fix_opencode_security_bypass_repaired_by_permission_overwrite(self) -> None:
+    def test_fix_opencode_security_bypass_repaired_by_permission_overwrite(
+        self,
+    ) -> None:
         self.write_settings_seed({"permissions": {"allow": []}})
         seed_oc = {"permission": {"bash": {"git status*": "allow"}}}
         self.write_opencode_seed(seed_oc)
@@ -302,9 +305,7 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         repaired = json.loads(
             (self.home / ".config" / "opencode" / "opencode.jsonc").read_text()
         )
-        self.assertEqual(
-            repaired["permission"], {"bash": {"git status*": "allow"}}
-        )
+        self.assertEqual(repaired["permission"], {"bash": {"git status*": "allow"}})
         self.assertNotIn("xargs *", repaired["permission"]["bash"])
         # No SECURITY warning on stderr/stdout after the repair
         self.assertNotIn("SECURITY", out)

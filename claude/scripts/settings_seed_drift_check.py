@@ -75,7 +75,7 @@ if str(REPO) not in sys.path:
 
 # Module-level imports of install.py's pure drift helpers. These are pure
 # functions (no install side effects); see install.py's main() guard.
-import install  # noqa: E402
+import install
 
 HOME = Path.home()
 DOTFILES = REPO
@@ -187,9 +187,7 @@ def cmd_check() -> int:
     return 0
 
 
-def _fix_file(
-    live: Path, seed: Path, critical: frozenset[str]
-) -> None:
+def _fix_file(live: Path, seed: Path, critical: frozenset[str]) -> None:
     """Overwrite only the critical keys in `live` from `seed`, in place.
 
     Backs up the prior live file to <live>.bak.YYYYmmdd-HHMMSS first. Never
@@ -221,12 +219,10 @@ def _fix_file(
         print(f"settings_seed_drift_check: {live.name} — no critical drift to fix.")
         return
 
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
     backup = live.with_suffix(live.suffix + f".bak.{stamp}")
     shutil.copy2(live, backup)
-    live.write_text(
-        json.dumps(live_data, indent=2) + "\n", encoding="utf-8"
-    )
+    live.write_text(json.dumps(live_data, indent=2) + "\n", encoding="utf-8")
     print(
         f"settings_seed_drift_check: repaired {live} (critical keys: "
         f"{', '.join(changed_keys)}) — backup at {backup}"
