@@ -13,6 +13,7 @@ instead, since real `agy`/`opencode` binaries aren't available in CI.
 import argparse
 import io
 import json
+import os
 import subprocess
 import sys
 import time
@@ -274,12 +275,67 @@ class RunBackendCommandTests(unittest.TestCase):
         )
 
     def test_36_run_copilot_builds_expected_argv(self) -> None:
-        with patch.object(
-            second_opinion, "run_backend_command", return_value="critique"
-        ) as mock_run:
-            result = second_opinion.run_copilot("my prompt")
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SECOND_OPINION_COPILOT_MODEL", None)
+            with patch.object(
+                second_opinion, "run_backend_command", return_value="critique"
+            ) as mock_run:
+                result = second_opinion.run_copilot("my prompt")
         self.assertEqual(result, "critique")
         mock_run.assert_called_once_with(["copilot", "-p", "my prompt", "--silent"])
+
+    def test_49_run_copilot_appends_model_flag_when_env_var_set(self) -> None:
+        with patch.dict(
+            os.environ, {"SECOND_OPINION_COPILOT_MODEL": "claude-sonnet-4.6"}
+        ):
+            with patch.object(
+                second_opinion, "run_backend_command", return_value="critique"
+            ) as mock_run:
+                result = second_opinion.run_copilot("my prompt")
+        self.assertEqual(result, "critique")
+        mock_run.assert_called_once_with(
+            ["copilot", "-p", "my prompt", "--silent", "--model", "claude-sonnet-4.6"]
+        )
+
+    def test_50_run_copilot_ignores_empty_string_env_var(self) -> None:
+        with patch.dict(os.environ, {"SECOND_OPINION_COPILOT_MODEL": ""}):
+            with patch.object(
+                second_opinion, "run_backend_command", return_value="critique"
+            ) as mock_run:
+                second_opinion.run_copilot("my prompt")
+        mock_run.assert_called_once_with(["copilot", "-p", "my prompt", "--silent"])
+
+
+class BackendLabelTests(unittest.TestCase):
+    def test_51_non_copilot_labels_unaffected_by_env_var(self) -> None:
+        with patch.dict(
+            os.environ, {"SECOND_OPINION_COPILOT_MODEL": "claude-sonnet-4.6"}
+        ):
+            self.assertEqual(
+                second_opinion.backend_label("agy"),
+                second_opinion.BACKEND_LABELS["agy"],
+            )
+            self.assertEqual(
+                second_opinion.backend_label("opencode"),
+                second_opinion.BACKEND_LABELS["opencode"],
+            )
+
+    def test_52_copilot_label_unchanged_when_env_var_unset(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SECOND_OPINION_COPILOT_MODEL", None)
+            self.assertEqual(
+                second_opinion.backend_label("copilot"),
+                second_opinion.BACKEND_LABELS["copilot"],
+            )
+
+    def test_53_copilot_label_includes_model_when_env_var_set(self) -> None:
+        with patch.dict(
+            os.environ, {"SECOND_OPINION_COPILOT_MODEL": "claude-sonnet-4.6"}
+        ):
+            self.assertEqual(
+                second_opinion.backend_label("copilot"),
+                f"{second_opinion.BACKEND_LABELS['copilot']} (claude-sonnet-4.6)",
+            )
 
 
 class RunOpencodeTests(unittest.TestCase):
