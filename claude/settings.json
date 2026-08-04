@@ -31,6 +31,10 @@
           },
           {
             "type": "command",
+            "command": "python3 ~/.claude/scripts/settings_seed_drift_check.py 2>/dev/null"
+          },
+          {
+            "type": "command",
             "command": "git rev-parse --is-inside-work-tree >/dev/null 2>&1 && { echo; echo 'recent commits:'; git log -n 5 --oneline; } 2>/dev/null"
           },
           {

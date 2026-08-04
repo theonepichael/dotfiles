@@ -135,6 +135,10 @@ dest = "~/.claude/scripts/standup_adapters.py"
 src = "claude/scripts/dotfiles_sync_check.py"
 dest = "~/.claude/scripts/dotfiles_sync_check.py"
 
+[[link]]
+src = "claude/scripts/settings_seed_drift_check.py"
+dest = "~/.claude/scripts/settings_seed_drift_check.py"
+
 # ── GitHub Copilot CLI wiring ────────────────────────────────────────────
 # claude/CLAUDE.md is deliberately the same file on both sides — the
 # backlog/pending-items workflow prose is tool-agnostic, so there is no
