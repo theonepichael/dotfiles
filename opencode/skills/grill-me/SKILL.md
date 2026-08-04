@@ -1,0 +1,151 @@
+---
+name: grill-me
+description: Interview the user relentlessly about a plan or design until reaching shared understanding, resolving each branch of the decision tree. Use when user wants to stress-test a plan, get grilled on their design, or mentions "grill me".
+---
+
+All session state lives in JSON under `~/.claude/data/grill/`, mutated only through
+`python3 ~/.claude/scripts/grill.py` — never write or edit session files by hand.
+The plan document is a separate markdown artifact **you author yourself**, informed
+by the recorded decision points.
+
+```
+grill.py new '{"topic": "..."}'                          # start session, prints slug
+grill.py ask '{"id", "question", ["reasoning"]}'         # register an open decision point
+grill.py decide '{"id", "decision", ["question"], ["source"]}'  # resolve one
+grill.py revise <id> '{"decision": "..."}'               # amend (resets its verdict)
+grill.py verdict <id> '{"result", "evidence"}'           # record verification result
+grill.py plan <path>                                     # record plan artifact location
+grill.py next / render / show / list                     # resume point / status / raw JSON
+```
+
+All commands default to the most recent session; pass `--session <slug>` otherwise.
+Mutations echo what they did on stderr — check it matches your intent.
+
+**Pin the session.** The moment you have a slug — from `new`'s stdout, or from
+`list`/`next` when resuming — pass `--session <slug>` on every subsequent
+`ask`/`decide`/`revise`/`verdict` call for the rest of the conversation. Never rely
+on the default-most-recent resolution past that first call: a concurrent grill
+session elsewhere (another terminal, another agent — e.g. Claude Code running in
+parallel) can become "most recent" between calls and silently redirect a bare
+call at the wrong session's decisions. This has actually happened — a `decide`
+meant for one session landed on a different one that happened to be more
+recently touched.
+
+## Default mode
+
+If the invoking context names a topic (e.g. another command or skill delegated
+to you with a specific subject), grill that topic. Otherwise grill the plan
+under discussion when the conversation makes it obvious; if neither applies,
+ask the user what to grill before proceeding. Explicit `--verify` and `--auto`
+requests each run their own section below instead of this Q&A loop.
+
+**Pre-step: orient before asking.**
+Check what codebase context is already in scope from prior exploration. Do a targeted read/grep only for files directly relevant to the topic that haven't been read yet. Don't re-crawl what's already known. Never ask a question the codebase already answers.
+
+Then check `grill.py list` for an existing session matching the topic. If one matches, resume it — `grill.py next` picks up at the first open question; tell the user you're resuming. Only `grill.py new` when nothing matches or the user says "start over".
+
+**Q&A loop:**
+
+1. Identify the top-level decisions and unknowns. Register each one immediately with `ask` (id + question) so nothing is lost if the session is cut short. Order by dependency — resolve blockers before dependent decisions. New decision points surfaced by later answers get `ask`ed as they appear.
+
+2. Ask one question at a time. When the plausible answers are enumerable (2–4 real options), use the `question` tool with your recommendation as the first option, labeled "(Recommended)". When the question is genuinely open-ended, ask in plain text:
+   - State the question directly.
+   - Give your recommended answer with brief reasoning.
+   - Wait for the user's response.
+
+3. When the user answers:
+   - If the answer is consistent and resolves the question, record it — `decide` with source `user` — and move to the next.
+   - If the answer is vague, push back and ask them to be specific.
+   - If the answer introduces inconsistencies or new risks, name them and keep drilling.
+   - If the user defers ("whatever you think", "you decide"), record your recommendation via `decide` with source `defaulted`.
+   - If you can settle the question yourself by running actual code (a scoped script, existing tests, a REPL check) rather than asking, do that first and record it — `decide` with source `tested`, noting what you ran and observed in the reasoning field. This is distinct from `user` (the person didn't state it) and from `--verify` mode (which re-checks decisions after the fact) — it's confirming a decision inline, during the Q&A loop itself.
+
+4. A branch is resolved when the answer generates no new questions. Keep drilling until every open question is decided. Two distinct early exits — the user's words pick which:
+   - **Pause** ("let's stop here", "I need to step away", "we'll come back to this", or a forced interruption cutting the session short) — stop without deciding anything. Open questions stay open for a later resume; no plan is written. Offer a backlog item with session slug in `context`, `next_steps` pointing at `grill.py next`.
+   - **Wrap up** ("wrap it up", "just finish it", "that's enough") — `decide` each remaining open question with your best-guess answer and source `assumed`, then conclude normally.
+
+**End of session** (fully decided or wrapped up — not on pause):
+
+1. Author the plan as a markdown document — a real plan someone could execute, not a decision log. The recorded decision points (`grill.py show`) inform it. Plans always live centrally at `~/.claude/data/grill/<slug>-plan.md` — never in project repos; this is personal tooling, not team-facing docs.
+2. Record it: `grill.py plan <path>`.
+3. Show the user the plan and the `grill.py render` output (decision table, any open questions, verification state).
+4. Check that render's Source column: if any decided item is `defaulted` or `assumed`, nobody confirmed it and nothing tested it — offer to run `--verify` against them right now, via the `question` tool — "N decision(s) were assumed/defaulted and unconfirmed — want me to run --verify on them before we call this done?" Proceed into `--verify` mode only on a yes; otherwise the session ends here as-is.
+5. Once verification (if any) is settled, always offer clear-and-go, via the `question` tool — "Clear context and start executing this plan now?" with options `Yes, clear and go (recommended)` / `No, leave it for later`:
+   - **Yes** — run `grill.py mark-pending-execution` (defaults to this session), then tell the user in plain text: "Marked — start a fresh session whenever you're ready and ask me to pick the plan back up." opencode has no SessionStart hook to auto-surface the marked plan (Claude Code and Copilot do; opencode's hooks→plugin port is still deferred), so resume is manual: when a session opens with the user asking to resume/execute the marked plan, run `grill.py pending-plan --consume` and act on the printed instructions (resume if the user says go/continue, otherwise leave the cleared flag alone).
+   - **No** — nothing else happens, no state change.
+
+---
+
+## `--verify` mode
+
+Run this after a default-mode session. It does not ask new questions — it tests each decision against reality.
+
+1. Load state with `grill.py render` (most recent session by default, `--session` otherwise). Do not ask the user to re-state decisions. Decisions still open must be decided in a default-mode pass first.
+
+2. For each decided row — `defaulted` and `assumed` first, since no human confirmed those — design and run a non-destructive experiment to test whether the decision holds: run relevant tests, write and execute a scoped throwaway script, invoke existing CLI/dev tools. Observe actual behavior. (Bash beyond grill.py isn't pre-approved here; permission prompts for experiments are expected.) `tested` rows are lowest priority — they already carry inline run-time evidence — but are still fair game for a spot re-check.
+
+3. Record each result with `grill.py verdict <id> '{"result": ..., "evidence": ...}'`:
+   - **VERIFIED** — experiment confirms the decision holds. Evidence: what was run, what was observed.
+   - **DISPUTED** — experiment contradicts it. Evidence: exactly what was found and why it conflicts.
+   - **UNVERIFIABLE** — no experiment can test this yet (e.g. code doesn't exist). State why.
+
+4. For any DISPUTED decision: re-grill the user, record the new answer with `grill.py revise <id>` (this resets the verdict), then re-run the experiment and record a fresh verdict. Repeat until nothing is DISPUTED.
+
+5. If any decisions changed, update the plan artifact to match, then show the final `grill.py render`.
+
+---
+
+## `--auto` mode
+
+For grilling a topic (or a batch of backlog items) with no live user Q&A — the
+user has explicitly asked for autonomous resolution, e.g. "grill the rest of the
+backlog on your own." Every decision in this mode is unconfirmed by a human, so
+it trades interactivity for adversarial rigor instead of just guessing.
+
+1. Same pre-step and `ask`-registration as default mode — identify and register
+   every decision point up front.
+
+2. For each open question, instead of asking the user: form your own leading
+   answer, then critique it adversarially before recording it. Two paths exist
+   — prefer the native one, since you're already running inside opencode:
+
+   - **Primary — Task tool, native, no subprocess**: spawn the `adversary`
+     agent directly (configured in `opencode.jsonc` under `agent.adversary`,
+     currently `deepinfra/Qwen/Qwen3.7-Max`) with a prompt that argues against
+     your answer. This is genuine cross-model critique, not the same model
+     second-guessing itself, because `adversary` is deliberately configured
+     with a model different from the primary session's default — a subagent
+     spawned *without* a configured model would inherit the primary's model
+     and be a weaker, same-model critique, which is why this always targets
+     `adversary` by name rather than the generic `general` subagent.
+   - **Alternative — `second_opinion.py review`**: use this instead (or in
+     addition, for a third opinion) when you specifically want `agy`'s Gemini
+     backend rather than `adversary`'s DeepInfra model, or if `adversary` is
+     erroring. Don't route through `second_opinion.py`'s own `opencode`
+     backend from inside opencode itself — that backend exists for Claude
+     Code and Copilot, which have no other way to reach `adversary`; from
+     opencode it would just shell out to `opencode run --agent adversary` as
+     a subprocess of itself, redoing what the Task tool already does natively
+     and more cheaply. Force `--backend agy` if you go this route.
+
+   "Adversarial" here means exactly what `second_opinion.py`'s own
+   `CRITIQUE_PROMPT` asks for regardless of which path you use — find
+   problems rather than summarize or agree, name what's underspecified or
+   assumed without justification, disagree explicitly where warranted, and
+   propose a simpler approach if one exists; a critique that just restates or
+   praises your answer isn't adversarial and doesn't count as a round.
+   Revise your answer if the critique lands a real objection, and repeat
+   until a round surfaces nothing new or you hit a round cap (3 is a
+   reasonable default). Record the surviving answer with `decide` and source
+   `assumed` — summarize the critique exchange (what was challenged, what
+   survived, what changed, and which path produced it) in `reasoning`, since
+   that's the only record of how the decision was actually stress-tested.
+
+3. Batch topics (a backlog list) run this per-item, each as its own session.
+
+4. End-of-session is otherwise identical to default mode's — author the plan,
+   record it, show it — except step 4's `--verify` offer is not optional here:
+   every decision in an `--auto` session is `assumed` by construction, so always
+   run `--verify` immediately afterward rather than asking first, and say so
+   plainly in the plan's header (topic, "resolved via adversarial critique — no
+   live user Q&A", and that verify then ran against it).

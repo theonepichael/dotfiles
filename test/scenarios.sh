@@ -277,6 +277,15 @@ check "personal opencode.jsonc has no awk (allowlist bypass removed everywhere)"
   bash -c '! grep -q "\"awk \*\"" ~/.config/opencode/opencode.jsonc'
 check "personal opencode.jsonc keeps curl (personal convenience)" \
   bash -c 'grep -q "curl \*" ~/.config/opencode/opencode.jsonc'
+# backlog-item port wiring. Explicit checks matter here: install.sh exits 0
+# OR 1 (ok-with-skips) on success, so a typo'd src in links.toml would
+# otherwise surface only as a silent SKIPPED line, not a failed scenario.
+check "opencode backlog-item command symlinked" bash -c \
+  '[[ "$(readlink -f ~/.config/opencode/commands/backlog-item.md)" == "'"$DOTFILES"'/opencode/command/backlog-item.md" ]]'
+check "opencode grill-me skill symlinked (backlog-item delegates via skill tool)" bash -c \
+  '[[ "$(readlink -f ~/.config/opencode/skills/grill-me/SKILL.md)" == "'"$DOTFILES"'/opencode/skills/grill-me/SKILL.md" ]]'
+check "opencode second-opinion skill symlinked (backlog-item delegates via skill tool)" bash -c \
+  '[[ "$(readlink -f ~/.config/opencode/skills/second-opinion/SKILL.md)" == "'"$DOTFILES"'/opencode/skills/second-opinion/SKILL.md" ]]'
 ./install.sh --rollback >/tmp/rb-oc1.out 2>&1
 
 rm -f "$MARKER"

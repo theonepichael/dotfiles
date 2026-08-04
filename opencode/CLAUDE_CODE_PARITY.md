@@ -29,11 +29,11 @@ directories in this repo, and get symlinked into `~/.config/opencode/` by
 
 ---
 
-## 2. Slash commands — DONE (all 5 repo-tracked as of 2026-07-28)
+## 2. Slash commands — DONE (6 repo-tracked as of 2026-08-03)
 
-**Status (2026-07-28): all 5 commands are tracked in the repo.** All 5
-(`dashboard`, `grill-me`, `make-skill`, `second-opinion`, `standup`) live at
-`opencode/command/<name>.md` and are symlinked into
+**Status (2026-08-03): all 6 commands are tracked in the repo.** All 6
+(`dashboard`, `grill-me`, `make-skill`, `second-opinion`, `standup`,
+`backlog-item`) live at `opencode/command/<name>.md` and are symlinked into
 `~/.config/opencode/commands/<name>.md` by install.sh — so `git pull` +
 `install.sh --harness=opencode` reproduces the full command set on a fresh
 machine. This closes the drift class the earlier version of this section
@@ -42,6 +42,10 @@ repo, with the other 3 (`make-skill`, `second-opinion`, `standup`) sitting as
 untracked manual copies in `~/.config/opencode/commands/` that a fresh
 `install.sh` run would silently drop. The 3 missing files have now been
 pulled into the repo and wired into install.sh alongside the existing two.
+`backlog-item` was ported from Claude Code on 2026-08-03; because it
+delegates planning/critique to `grill-me`/`second-opinion` at runtime, the
+port also introduced this repo's first two opencode **skills** (see the
+Commands-vs-skills subsection below).
 
 ### Format (informed by the official Commands doc, `opencode.ai/docs/commands/`)
 
@@ -99,17 +103,27 @@ opencode exposes two distinct extension surfaces that the official docs keep
 separate (see `opencode.ai/docs/commands/` vs `opencode.ai/docs/skills/`):
 
 - **Commands** (used by this repo): user-typed `/x` invocation, file body IS
-  the prompt template. The 5 commands in this repo are deliberately
+  the prompt template. The 6 commands in this repo are deliberately
   user-typed — `/dashboard`, `/grill-me`, `/standup`, `/second-opinion`,
-  `/make-skill` — because the user explicitly initiates each one in a
-  session the same way they would in Claude Code.
-- **Skills** (not used by this repo today): model-invoked via the **native
-  `skill` tool** — agents see the available-skills list (name + description
-  in a `<available_skills>` block) and load a skill with
-  `skill({ name: "..." })` when relevant. Auto-discovered from
-  `~/.config/opencode/skills/<name>/SKILL.md`, `.opencode/skills/<name>/`,
-  and **also from the Claude-Code-compat paths** `~/.claude/skills/<name>/`
-  and `~/.agents/skills/<name>/` (per
+  `/make-skill`, `/backlog-item` — because the user explicitly initiates
+  each one in a session the same way they would in Claude Code.
+- **Skills** (used by this repo as of 2026-08-03, for `backlog-item`'s
+  delegation): model-invoked via the **native `skill` tool** — agents see
+  the available-skills list (name + description in a `<available_skills>`
+  block) and load a skill with `skill({ name: "..." })` when relevant.
+  opencode's `skill` tool only loads `SKILL.md` files — commands are
+  invisible to it — so `backlog-item`'s runtime delegation to
+  grill-me/second-opinion (which Claude Code does through its own Skill
+  tool) needs real skills here. This repo tracks two,
+  `opencode/skills/grill-me/SKILL.md` and
+  `opencode/skills/second-opinion/SKILL.md`, symlinked into
+  `~/.config/opencode/skills/<name>/SKILL.md` by install.sh. They are
+  model-invoked copies of the same two protocols the user-typed `/grill-me`
+  and `/second-opinion` commands carry — deliberate full duplication, one
+  copy per layer, each adapted to how its layer is invoked. Skills are
+  auto-discovered from `~/.config/opencode/skills/<name>/SKILL.md`,
+  `.opencode/skills/<name>/`, and **also from the Claude-Code-compat
+  paths** `~/.claude/skills/<name>/` and `~/.agents/skills/<name>/` (per
   `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=1` env-toggle in §1). Frontmatter:
   `name` (required, lowercase-with-hyphens, 1-64 chars, must match the
   directory name), `description` (required, 1-1024 chars), plus optional
@@ -123,7 +137,8 @@ separate (see `opencode.ai/docs/commands/` vs `opencode.ai/docs/skills/`):
   immediately discoverable, no enabling config needed), but a skill just
   dropped there won't reproduce across machines without repo+symlink
   wiring analogous to commands — the same drift class this section was
-  written to close.
+  written to close, and the reason the two `backlog-item` skills are
+  repo-tracked + wired rather than dropped in place.
 
 ### History of the staged pull-into-repo (kept for reference)
 
@@ -140,10 +155,16 @@ separate (see `opencode.ai/docs/commands/` vs `opencode.ai/docs/skills/`):
   whenever, or leave it.
 - **2026-07-25**: `grill-me.md` similarly pulled into the repo at
   `opencode/command/grill-me.md` + wired into install.sh.
-- **2026-07-28 (this commit)**: the remaining 3 — `make-skill.md`,
+- **2026-07-28**: the remaining 3 — `make-skill.md`,
   `second-opinion.md`, `standup.md` — pulled into the repo at
-  `opencode/command/<name>.md` and wired into install.sh. **All 5 commands
-  are now repo-tracked.**.
+  `opencode/command/<name>.md` and wired into install.sh. All 5 commands
+  are now repo-tracked.
+- **2026-08-03 (this commit)**: `backlog-item.md` ported from Claude Code
+  at `opencode/command/backlog-item.md` and wired into install.sh (6th
+  command). Its runtime delegation to grill-me/second-opinion goes through
+  opencode's native `skill` tool, so this also adds the repo's first two
+  opencode skills — `opencode/skills/{grill-me,second-opinion}/SKILL.md` —
+  likewise wired into install.sh. All 6 commands are now repo-tracked.
 
 ---
 
@@ -308,8 +329,8 @@ conflicting keys), same pattern as Claude Code's `~/.claude/settings.json` +
    opencode/tui.json, wired through install.sh** (see §4)
 3. ~~Remap the leader key off `ctrl+x`~~ — **decided: no, keep default**
    (no tmux collision, user wants the shortcuts as-is)
-4. ~~Scope of command porting~~ — **decided/done: all 5 commands already
-   ported (see §2)**
+4. ~~Scope of command porting~~ — **decided/done: all 6 commands already
+   ported, incl. backlog-item (see §2)**
 5. ~~Whether to pursue the hooks→plugin port at all right now, or leave
    opencode without dashboard/backlog integration for the time being.~~
    **Decided (2026-07-24): defer the port** (real TypeScript lift, not

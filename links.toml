@@ -91,8 +91,9 @@ dest = "~/.claude/commands/second-opinion.md"
 harness = "claude"
 
 # backlog-item orchestrates grill-me/second-opinion via Claude Code's Skill
-# tool, which opencode/copilot/agy don't have — Claude-only until one of
-# them grows an equivalent.
+# tool. opencode got its own port (opencode/command/backlog-item.md + the
+# grill-me/second-opinion skills below, via its native skill tool);
+# copilot/agy remain unported until they grow an equivalent.
 [[link]]
 src = "claude/commands/backlog-item.md"
 dest = "~/.claude/commands/backlog-item.md"
@@ -215,6 +216,25 @@ harness = "opencode"
 [[link]]
 src = "opencode/command/standup.md"
 dest = "~/.config/opencode/commands/standup.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/backlog-item.md"
+dest = "~/.config/opencode/commands/backlog-item.md"
+harness = "opencode"
+
+# backlog-item delegates planning/critique through opencode's native skill
+# tool, which only loads SKILL.md files — commands are invisible to it.
+# These are the model-invoked copies of the two protocols; the user-typed
+# /grill-me and /second-opinion commands above stay for muscle memory.
+[[link]]
+src = "opencode/skills/grill-me/SKILL.md"
+dest = "~/.config/opencode/skills/grill-me/SKILL.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/skills/second-opinion/SKILL.md"
+dest = "~/.config/opencode/skills/second-opinion/SKILL.md"
 harness = "opencode"
 
 # ── agy (Google Antigravity CLI, Gemini-backed) ──────────────────────────
