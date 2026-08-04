@@ -186,6 +186,22 @@ flow; everything else still gets rolled back.
 Packages are never uninstalled by rollback — they're identical across
 profiles, so a wrong-profile run's real footprint is entirely file-level.
 
+For a true blank-slate undo — not the pre-dotfiles originals restored, but
+none of it, dotfiles or prior config, left behind at all — add `--wipe`:
+
+```sh
+./install.sh --rollback --wipe        # full rollback to a blank slate: originals discarded, nvim/watchcommit state swept
+```
+
+`--wipe` deletes `.bak` backups instead of restoring them, and additionally
+sweeps state the installer creates but never records in the manifest: nvim's
+runtime directories (`~/.local/share/nvim`, `~/.local/state/nvim`,
+`~/.cache/nvim`) and, on Linux, the watchcommit systemd `--user` service
+(disabled and stopped). Packages are still never touched. The macOS
+watchcommit launchd agent, Rectangle preferences, and the Caps Lock→Escape
+remap are deliberately out of scope — none of them have a clean
+filesystem-delete equivalent.
+
 ## What's included
 
 | File | Destination |

@@ -102,7 +102,7 @@ CAPS_LOCK_TO_ESCAPE = [
 ]
 
 USAGE = """\
-usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=personal|work] [--rollback] [--force] [--dry-run]
+usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run]
 
   --harness   required unless --rollback. Comma-separated, at least one of:
               claude, copilot, opencode, agy. No default — every run must
@@ -124,7 +124,19 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=per
               several times over weeks and then rolling back undoes all of
               it in one shot, oldest run included. Packages are reported
               but never uninstalled. Must be used alone (no --harness,
-              --profile, or --force) — except --dry-run, see below.
+              --profile, or --force) — except --dry-run and --wipe, see
+              below.
+  --wipe      modifier for --rollback: instead of restoring the original
+              pre-dotfiles files from their .bak backups, deletes the
+              backups outright, so nothing dotfiles-related is left behind.
+              Also sweeps untracked state the installer creates but never
+              records in its history — nvim runtime dirs
+              (~/.local/share/nvim, ~/.local/state/nvim, ~/.cache/nvim) and,
+              on Linux, the watchcommit systemd --user service (disabled
+              and stopped). Packages are still never touched. Excludes the
+              macOS watchcommit launchd agent, Rectangle preferences, and
+              the Caps Lock→Escape remap — no clean filesystem-delete
+              equivalent for those. Requires --rollback.
   --force     override the work-profile guard on a machine previously
               provisioned with --profile=work
   --dry-run   print what every step would do without doing it: no packages
@@ -141,6 +153,7 @@ Examples:
   ./install.sh --harness=claude,agy
   ./install.sh --dry-run --harness=claude
   ./install.sh --dry-run --rollback
+  ./install.sh --rollback --wipe        # full rollback to a blank slate
 
 Exits 0 if every step ran, 1 if any step was skipped (see summary)."""
 
@@ -354,6 +367,7 @@ class Options:
     rollback: bool = False
     force: bool = False
     dry_run: bool = False
+    wipe: bool = False
 
 
 @dataclass
@@ -470,6 +484,7 @@ def parse_args(argv: Sequence[str]) -> Options:
     # both, not silently drop the first on the second flag.
     parser.add_argument("--harness", action="append", default=[])
     parser.add_argument("--rollback", action="store_true")
+    parser.add_argument("--wipe", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", dest="dry_run", action="store_true")
     parser.add_argument("-h", "--help", dest="help", action="store_true")
@@ -520,6 +535,9 @@ def parse_args(argv: Sequence[str]) -> Options:
     if args.rollback and (harness_set or args.profile != "personal" or args.force):
         _fail("--rollback must be used alone, with no other flags")
 
+    if args.wipe and not args.rollback:
+        _fail("--wipe can only be used with --rollback")
+
     if not args.rollback and not harness_set:
         _fail(
             "no --harness specified — pass at least one of: "
@@ -540,6 +558,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         rollback=args.rollback,
         force=args.force,
         dry_run=args.dry_run,
+        wipe=args.wipe,
     )
 
 
@@ -792,9 +811,7 @@ def _install_nerd_font(ctx: Context) -> None:
             ).ok
         if downloaded and extracted:
             marker.write_text(f"{NERD_FONT_VERSION}\n")
-            ctx.manifest.record_package(
-                f"JetBrainsMono Nerd Font v{NERD_FONT_VERSION}"
-            )
+            ctx.manifest.record_package(f"JetBrainsMono Nerd Font v{NERD_FONT_VERSION}")
             run_command(["fc-cache", "-f", str(font_dir)], capture=True)
             print(PALETTE.ok(f"  installed to {font_dir}"))
         else:
@@ -1175,7 +1192,9 @@ def json_key_drift(seed: dict[str, object], live: dict[str, object]) -> list[str
     return sorted(k for k in set(seed) | set(live) if seed.get(k) != live.get(k))
 
 
-def opencode_bypass_drift(seed: dict[str, object], live: dict[str, object]) -> list[str]:
+def opencode_bypass_drift(
+    seed: dict[str, object], live: dict[str, object]
+) -> list[str]:
     """Return allowlist-bypass bash patterns present live but not in the seed.
 
     ``xargs`` and ``awk`` each invoke an arbitrary other command as their
@@ -1336,9 +1355,10 @@ def enable_watchcommit_service(ctx: Context) -> None:
     """Enable and start watchcommit's systemd --user unit (Linux, non-work)."""
     if not ctx.is_linux or ctx.opts.profile == "work":
         return
-    if not have("systemctl") or not run_command(
-        ["systemctl", "--user", "show-environment"], capture=True
-    ).ok:
+    if (
+        not have("systemctl")
+        or not run_command(["systemctl", "--user", "show-environment"], capture=True).ok
+    ):
         ctx.reporter.skip(
             "watchcommit service",
             "systemd --user unavailable (enable systemd in /etc/wsl.conf?)",
@@ -1352,7 +1372,9 @@ def enable_watchcommit_service(ctx: Context) -> None:
         return
     _header("==> Enabling watchcommit systemd user service...")
     run_command(["systemctl", "--user", "daemon-reload"])
-    if run_command(["systemctl", "--user", "enable", "--now", "watchcommit.service"]).ok:
+    if run_command(
+        ["systemctl", "--user", "enable", "--now", "watchcommit.service"]
+    ).ok:
         # Without lingering, the service dies when the last WSL/SSH session
         # closes — enable-linger keeps the user manager (and this unit) up.
         if not run_command(
@@ -1363,9 +1385,7 @@ def enable_watchcommit_service(ctx: Context) -> None:
                 "service won't survive full logout"
             )
     else:
-        ctx.reporter.skip(
-            "watchcommit service", "systemctl --user enable --now failed"
-        )
+        ctx.reporter.skip("watchcommit service", "systemctl --user enable --now failed")
 
 
 def _current_user() -> str:
@@ -1491,9 +1511,7 @@ def bootstrap_neovim(ctx: Context) -> None:
     result = run_command(["nvim", "--version"], capture=True)
     version = parse_nvim_version(result.stdout) if result.ok else None
     if version is None:
-        ctx.reporter.skip(
-            "Neovim plugin bootstrap", "could not determine nvim version"
-        )
+        ctx.reporter.skip("Neovim plugin bootstrap", "could not determine nvim version")
         return
 
     major, minor = version
@@ -1557,11 +1575,31 @@ def do_rollback(ctx: Context) -> int:
     file, not an intermediate one). Nothing here aborts: anything that
     doesn't match what was recorded is reported and the walk continues.
 
+    Under ``--wipe``, backups are deleted instead of restored, and untracked
+    state the installer creates but never records in the manifest (nvim
+    runtime dirs, the Linux watchcommit service) is swept too — even when
+    no manifest exists at all, e.g. a second ``--wipe`` run after the first
+    already consumed it.
+
     Returns:
         Exit status — 1 if any step was skipped, else 0.
     """
+    skips = Reporter()
+    swept = False
+
+    if ctx.opts.wipe:
+        swept = _wipe_watchcommit(ctx, skips) or swept
+        swept = _wipe_nvim_dirs(ctx, skips) or swept
+
     manifest = ctx.manifest
     if not manifest.path.is_file():
+        if swept:
+            print(
+                PALETTE.header(
+                    "Wipe swept untracked state — no recorded history to reverse."
+                )
+            )
+            return _report_skips_and_exit(skips)
         print(
             PALETTE.error(f"no manifest at {manifest.path} — nothing to roll back"),
             file=sys.stderr,
@@ -1571,13 +1609,19 @@ def do_rollback(ctx: Context) -> int:
     entries = manifest.entries()
     run_count = sum(1 for entry in entries if entry.get("kind") == "run")
     verb = "Would roll back" if ctx.opts.dry_run else "Rolling back"
-    _header(f"==> {verb} {run_count} recorded run(s) from {manifest.path}")
+    header_msg = f"==> {verb} {run_count} recorded run(s) from {manifest.path}"
+    if ctx.opts.wipe:
+        header_msg += (
+            " — wipe mode: original configs discarded, not restored; "
+            "untracked nvim/watchcommit state swept"
+        )
+    _header(header_msg)
 
-    skips = Reporter()
-    # Which backup paths this pass has already restored. An older duplicate
-    # file-backed-up entry for the same path (recorded across an earlier
-    # backup/rollback/reinstall cycle) is then recognized as already handled
-    # rather than misreported as a missing backup.
+    # Which backup paths this pass has already restored (or, under --wipe,
+    # deleted). An older duplicate file-backed-up entry for the same path
+    # (recorded across an earlier backup/rollback/reinstall cycle) is then
+    # recognized as already handled rather than misreported as a missing
+    # backup.
     restored: set[Path] = set()
 
     for entry in reversed(entries):
@@ -1600,18 +1644,38 @@ def do_rollback(ctx: Context) -> int:
                 )
 
     if ctx.opts.dry_run:
+        if ctx.opts.wipe:
+            remaining = (
+                [p for p in ctx.state_dir.iterdir() if p != manifest.path]
+                if ctx.state_dir.is_dir()
+                else []
+            )
+            if not remaining:
+                _preview(f"would remove empty state directory {ctx.state_dir}")
         print(
             "Dry run complete — nothing was changed. "
             "Re-run without --dry-run to roll back for real."
         )
     else:
         manifest.path.unlink(missing_ok=True)
-        print(
-            PALETTE.header(
-                "Rollback complete. Re-run ./install.sh with the intended profile."
-            )
+        if (
+            ctx.opts.wipe
+            and ctx.state_dir.is_dir()
+            and not any(ctx.state_dir.iterdir())
+        ):
+            ctx.state_dir.rmdir()
+        msg = (
+            "Rollback complete — configuration wiped to a blank slate."
+            if ctx.opts.wipe
+            else "Rollback complete. Re-run ./install.sh with the intended profile."
         )
+        print(PALETTE.header(msg))
 
+    return _report_skips_and_exit(skips)
+
+
+def _report_skips_and_exit(skips: Reporter) -> int:
+    """Print the rollback skip tally, if any, and return the matching exit code."""
     if skips.skipped:
         print(
             PALETTE.warn(
@@ -1623,9 +1687,80 @@ def do_rollback(ctx: Context) -> int:
     return 0
 
 
-def _rollback_symlink(
-    ctx: Context, entry: dict[str, object], skips: Reporter
-) -> None:
+def _wipe_watchcommit(ctx: Context, skips: Reporter) -> bool:
+    """Disable+stop the Linux watchcommit systemd --user unit, under --wipe.
+
+    Gated on live filesystem state, not manifest entries — simpler than
+    scanning history, and it's what makes this work even when no manifest
+    exists at all.
+
+    Returns:
+        Whether the unit symlink existed at the start — that's what
+        "swept something" means here, true regardless of whether the probe
+        or the disable call then succeed.
+    """
+    if not (ctx.opts.wipe and ctx.is_linux):
+        return False
+    unit_path = ctx.home / ".config" / "systemd" / "user" / "watchcommit.service"
+    if not unit_path.is_symlink():
+        return False
+
+    if (
+        not have("systemctl")
+        or not run_command(["systemctl", "--user", "show-environment"], capture=True).ok
+    ):
+        skips.note(
+            f"{unit_path} exists but systemd --user is unavailable — "
+            "could not disable the watchcommit service"
+        )
+        return True
+
+    if ctx.opts.dry_run:
+        _preview("would disable+stop the watchcommit systemd user service (wipe)")
+        return True
+
+    if run_command(
+        ["systemctl", "--user", "disable", "--now", "watchcommit.service"]
+    ).ok:
+        print("  disabled+stopped watchcommit systemd user service")
+    else:
+        skips.note("could not disable+stop the watchcommit systemd user service")
+    return True
+
+
+def _wipe_nvim_dirs(ctx: Context, skips: Reporter) -> bool:
+    """Sweep neovim's untracked runtime directories, under --wipe.
+
+    Returns:
+        Whether any of the three currently exist — "swept something" is
+        based on pre-sweep state, not on whether removal (or its preview)
+        then succeeds.
+    """
+    if not ctx.opts.wipe:
+        return False
+    dirs = (
+        ctx.home / ".local" / "share" / "nvim",
+        ctx.home / ".local" / "state" / "nvim",
+        ctx.home / ".cache" / "nvim",
+    )
+    found = False
+    for path in dirs:
+        if not path.exists():
+            continue
+        found = True
+        if ctx.opts.dry_run:
+            _preview(f"would remove {path} (wipe)")
+            continue
+        try:
+            shutil.rmtree(path)
+        except OSError as exc:
+            skips.note(f"could not remove {path}: {exc}")
+            continue
+        print(f"  removed {path}")
+    return found
+
+
+def _rollback_symlink(ctx: Context, entry: dict[str, object], skips: Reporter) -> None:
     """Undo one ``symlink-created`` entry, unless something else claimed the path."""
     dest = Path(str(entry.get("dest", "")))
     recorded_src = str(entry.get("src", ""))
@@ -1664,12 +1799,30 @@ def _rollback_copy(ctx: Context, entry: dict[str, object]) -> None:
 def _rollback_backup(
     ctx: Context, entry: dict[str, object], skips: Reporter, restored: set[Path]
 ) -> None:
-    """Restore one ``file-backed-up`` entry from its ``.bak`` path."""
+    """Restore one ``file-backed-up`` entry from its ``.bak`` path.
+
+    Under --wipe, the backup is deleted instead of restored — the original
+    pre-dotfiles file is discarded, not brought back.
+    """
     dest = Path(str(entry.get("dest", "")))
     backup = Path(str(entry.get("backup", "")))
     if backup.exists():
         if ctx.opts.dry_run:
-            _preview(f"would restore {dest} from {backup}")
+            if ctx.opts.wipe:
+                _preview(
+                    f"would delete backup {backup} (wipe — {dest} will not be restored)"
+                )
+            else:
+                _preview(f"would restore {dest} from {backup}")
+            return
+        if ctx.opts.wipe:
+            try:
+                backup.unlink()
+            except OSError as exc:
+                skips.note(f"could not delete backup {backup}: {exc}")
+                return
+            print(f"  deleted backup {backup} — original {dest} not restored (wipe)")
+            restored.add(backup)
             return
         try:
             shutil.move(str(backup), str(dest))
@@ -1680,10 +1833,12 @@ def _rollback_backup(
         restored.add(backup)
         return
     if backup not in restored:
-        skips.note(
-            f"backup {backup} for {dest} not found — "
-            "already restored, or removed outside install.sh"
+        wording = (
+            "already wiped, or removed outside install.sh"
+            if ctx.opts.wipe
+            else "already restored, or removed outside install.sh"
         )
+        skips.note(f"backup {backup} for {dest} not found — {wording}")
 
 
 # ── summary ───────────────────────────────────────────────────────────────────
@@ -1801,8 +1956,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if work_guard_blocks(ctx):
         print(
             PALETTE.error(
-                f"This machine is provisioned as WORK "
-                f"(marker: {ctx.profile_marker})."
+                f"This machine is provisioned as WORK (marker: {ctx.profile_marker})."
             ),
             file=sys.stderr,
         )
@@ -1817,7 +1971,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         specs = load_links(ctx.dotfiles / "links.toml")
     except ValueError as exc:
-        print(PALETTE.error(f"could not read the symlink table: {exc}"), file=sys.stderr)
+        print(
+            PALETTE.error(f"could not read the symlink table: {exc}"), file=sys.stderr
+        )
         return 2
 
     return run_install(ctx, specs)

@@ -21,7 +21,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-import install
+import install  # noqa: E402 — must follow sys.path.insert above
 
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -57,13 +57,18 @@ def make_ctx(
     profile="personal",
     dry_run=False,
     force=False,
+    wipe=False,
     system="Linux",
     is_wsl=False,
     dotfiles=REPO_ROOT,
 ):
     """Build a Context pointed at a throwaway home and the real repo."""
     opts = install.Options(
-        harnesses=tuple(harnesses), profile=profile, dry_run=dry_run, force=force
+        harnesses=tuple(harnesses),
+        profile=profile,
+        dry_run=dry_run,
+        force=force,
+        wipe=wipe,
     )
     state_dir = home / ".local" / "state" / "dotfiles"
     return install.Context(
@@ -151,6 +156,10 @@ def parse_error(argv, capsys):
         (["--rollback", "--harness=claude"], "must be used alone"),
         (["--rollback", "--profile=work"], "must be used alone"),
         (["--rollback", "--force"], "must be used alone"),
+        # No --harness alongside --wipe, deliberately: exercises the
+        # parse_args ordering fix (the --wipe-without-rollback check must
+        # fire before the missing-harness check, not after).
+        (["--wipe"], "--wipe can only be used with --rollback"),
     ],
 )
 def test_argument_errors_exit_2(argv, expected, capsys):
@@ -191,6 +200,16 @@ def test_duplicate_harness_is_collapsed():
 def test_rollback_allows_only_dry_run():
     opts = install.parse_args(["--rollback", "--dry-run"])
     assert opts.rollback and opts.dry_run and opts.harnesses == ()
+
+
+def test_rollback_wipe_parses():
+    opts = install.parse_args(["--rollback", "--wipe"])
+    assert opts.rollback and opts.wipe and not opts.dry_run
+
+
+def test_rollback_wipe_dry_run_parses():
+    opts = install.parse_args(["--rollback", "--wipe", "--dry-run"])
+    assert opts.rollback and opts.wipe and opts.dry_run
 
 
 def test_defaults():
@@ -489,7 +508,9 @@ def test_rollback_restores_backed_up_file(home, links, offline_install):
     assert not (home / ".vimrc.bak").exists()
 
 
-def test_rollback_leaves_a_reclaimed_symlink_alone(home, links, offline_install, capsys):
+def test_rollback_leaves_a_reclaimed_symlink_alone(
+    home, links, offline_install, capsys
+):
     install.run_install(make_ctx(home, harnesses=("claude",)), links)
 
     claimed = home / ".claude" / "CLAUDE.md"
@@ -567,6 +588,303 @@ def test_rollback_without_history_exits_1(home, capsys):
     assert "nothing to roll back" in capsys.readouterr().err
 
 
+# ── --rollback --wipe ────────────────────────────────────────────────────────
+
+
+def _disable_systemctl(monkeypatch):
+    """Make the watchcommit-wipe gate see systemd --user as unavailable.
+
+    Only safe for tests with no unit symlink on disk at all (the no-manifest
+    cases below, which never call ``run_install``): ``_wipe_watchcommit``
+    checks ``unit_path.is_symlink()`` before ever calling ``have()``, so
+    with no symlink this never fires and never touches ``run_command``.
+    Tests that *do* run a real install first (``links.toml`` records a real
+    watchcommit.service symlink for personal+linux, and ``offline_install``
+    only stubs the install-time ``enable_watchcommit_service`` call, not the
+    symlink itself) must use ``_watchcommit_available`` instead — forcing
+    systemd "unavailable" against a real unit symlink is a genuine anomaly
+    (SKIPPED, exit 1) by design, not a quiet no-op, so it would wrongly
+    fail unrelated assertions about backup deletion or nvim-dir sweeping.
+    """
+    monkeypatch.setattr(install, "have", lambda exe: exe != "systemctl")
+
+
+def _watchcommit_available(monkeypatch, *, probe_ok=True, disable_ok=True):
+    """Stub systemd as available and record the calls _wipe_watchcommit makes."""
+    calls: list[list[str]] = []
+
+    def _stub(cmd, *, shell=False, capture=False):
+        argv = list(cmd)
+        calls.append(argv)
+        if argv == ["systemctl", "--user", "show-environment"]:
+            return install.CommandResult(probe_ok)
+        if argv == ["systemctl", "--user", "disable", "--now", "watchcommit.service"]:
+            return install.CommandResult(disable_ok)
+        raise AssertionError(f"unexpected command: {argv!r}")
+
+    monkeypatch.setattr(install, "have", lambda exe: exe == "systemctl")
+    monkeypatch.setattr(install, "run_command", _stub)
+    return calls
+
+
+def test_wipe_deletes_backup_instead_of_restoring(
+    home, links, offline_install, monkeypatch
+):
+    (home / ".vimrc").write_text("sentinel-content\n")
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+    assert (home / ".vimrc").is_symlink()
+
+    _watchcommit_available(monkeypatch)
+    assert install.do_rollback(make_ctx(home, wipe=True)) == 0
+
+    assert not (home / ".vimrc").exists()
+    assert not (home / ".vimrc.bak").exists()
+
+
+def test_wipe_dry_run_does_not_delete_backup(home, links, offline_install, monkeypatch):
+    (home / ".vimrc").write_text("sentinel-content\n")
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+
+    _watchcommit_available(monkeypatch)
+    assert install.do_rollback(make_ctx(home, wipe=True, dry_run=True)) == 0
+
+    assert (home / ".vimrc").is_symlink()
+    assert (home / ".vimrc.bak").is_file()
+
+
+def test_wipe_missing_backup_reports_wipe_wording(
+    home, links, offline_install, capsys, monkeypatch
+):
+    (home / ".vimrc").write_text("sentinel-content\n")
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+    (home / ".vimrc.bak").unlink()
+
+    _watchcommit_available(monkeypatch)
+    code = install.do_rollback(make_ctx(home, wipe=True))
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert "not found — already wiped, or removed outside install.sh" in out
+    assert "already restored" not in out
+
+
+def test_wipe_sweeps_nvim_dirs(home, links, offline_install, monkeypatch):
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+    nvim_dirs = [
+        home / ".local" / "share" / "nvim",
+        home / ".local" / "state" / "nvim",
+        home / ".cache" / "nvim",
+    ]
+    for path in nvim_dirs:
+        path.mkdir(parents=True)
+        (path / "sentinel").write_text("x\n")
+
+    _watchcommit_available(monkeypatch)
+    assert install.do_rollback(make_ctx(home, wipe=True)) == 0
+
+    for path in nvim_dirs:
+        assert not path.exists()
+
+
+def test_rollback_without_wipe_leaves_nvim_dirs_alone(home, links, offline_install):
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+    nvim_dir = home / ".local" / "share" / "nvim"
+    nvim_dir.mkdir(parents=True)
+    (nvim_dir / "sentinel").write_text("x\n")
+
+    assert install.do_rollback(make_ctx(home)) == 0
+
+    assert nvim_dir.is_dir()
+
+
+def test_wipe_dry_run_leaves_nvim_dirs_alone(home, links, offline_install, monkeypatch):
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+    nvim_dir = home / ".local" / "share" / "nvim"
+    nvim_dir.mkdir(parents=True)
+    (nvim_dir / "sentinel").write_text("x\n")
+
+    _watchcommit_available(monkeypatch)
+    assert install.do_rollback(make_ctx(home, wipe=True, dry_run=True)) == 0
+
+    assert nvim_dir.is_dir()
+    assert (nvim_dir / "sentinel").is_file()
+
+
+def test_wipe_disables_watchcommit_service(home, links, offline_install, monkeypatch):
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+    unit = home / ".config" / "systemd" / "user" / "watchcommit.service"
+    assert unit.is_symlink()
+
+    calls = _watchcommit_available(monkeypatch)
+
+    assert install.do_rollback(make_ctx(home, wipe=True)) == 0
+    assert ["systemctl", "--user", "disable", "--now", "watchcommit.service"] in calls
+
+
+def test_wipe_dry_run_previews_watchcommit_disable(
+    home, links, offline_install, monkeypatch, capsys
+):
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+
+    calls = _watchcommit_available(monkeypatch)
+
+    assert install.do_rollback(make_ctx(home, wipe=True, dry_run=True)) == 0
+    out = capsys.readouterr().out
+
+    assert "would disable+stop the watchcommit systemd user service" in out
+    assert [
+        "systemctl",
+        "--user",
+        "disable",
+        "--now",
+        "watchcommit.service",
+    ] not in calls
+
+
+def test_plain_rollback_does_not_touch_watchcommit(
+    home, links, offline_install, monkeypatch
+):
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+
+    calls = _watchcommit_available(monkeypatch)
+
+    assert install.do_rollback(make_ctx(home)) == 0
+    assert calls == []
+
+
+def test_wipe_watchcommit_noop_when_never_installed(
+    home, links, offline_install, monkeypatch
+):
+    install.run_install(make_ctx(home, harnesses=("claude",), profile="work"), links)
+    unit = home / ".config" / "systemd" / "user" / "watchcommit.service"
+    assert not unit.exists()
+
+    calls = _watchcommit_available(monkeypatch)
+
+    assert install.do_rollback(make_ctx(home, wipe=True, profile="work")) == 0
+    assert calls == []
+
+
+def test_wipe_watchcommit_anomaly_when_systemd_unavailable(
+    home, links, offline_install, monkeypatch, capsys
+):
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+    unit = home / ".config" / "systemd" / "user" / "watchcommit.service"
+    assert unit.is_symlink()
+
+    _watchcommit_available(monkeypatch, probe_ok=False)
+
+    code = install.do_rollback(make_ctx(home, wipe=True))
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert "SKIPPED" in out
+
+
+def test_wipe_watchcommit_anomaly_counts_as_swept_with_no_manifest(
+    home, monkeypatch, capsys
+):
+    """A probe failure is a real anomaly, not a silent no-op, even with
+    nothing else to roll back — it must still push the exit code to 1
+    instead of falling through to the plain "nothing to roll back" error."""
+    unit = home / ".config" / "systemd" / "user" / "watchcommit.service"
+    unit.parent.mkdir(parents=True)
+    fake_src = home / ".fake-unit-source"
+    fake_src.write_text("x\n")
+    unit.symlink_to(fake_src)
+
+    _watchcommit_available(monkeypatch, probe_ok=False)
+
+    code = install.do_rollback(make_ctx(home, wipe=True))
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert "SKIPPED" in captured.out
+    assert "nothing to roll back" not in captured.out
+    assert "nothing to roll back" not in captured.err
+
+
+def test_wipe_no_manifest_sweeps_nvim_dirs(home, monkeypatch):
+    nvim_dir = home / ".local" / "share" / "nvim"
+    nvim_dir.mkdir(parents=True)
+    (nvim_dir / "sentinel").write_text("x\n")
+
+    _disable_systemctl(monkeypatch)
+    code = install.do_rollback(make_ctx(home, wipe=True))
+
+    assert code == 0
+    assert not nvim_dir.exists()
+
+
+def test_wipe_no_manifest_dry_run_sweeps_preview(home, monkeypatch, capsys):
+    nvim_dir = home / ".local" / "share" / "nvim"
+    nvim_dir.mkdir(parents=True)
+    (nvim_dir / "sentinel").write_text("x\n")
+
+    _disable_systemctl(monkeypatch)
+    code = install.do_rollback(make_ctx(home, wipe=True, dry_run=True))
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert nvim_dir.is_dir()
+    assert "would remove" in out
+    assert "nothing to roll back" not in out
+
+
+def test_wipe_no_manifest_and_nothing_to_sweep_still_errors(home, monkeypatch, capsys):
+    _disable_systemctl(monkeypatch)
+    code = install.do_rollback(make_ctx(home, wipe=True))
+    err = capsys.readouterr().err
+
+    assert code == 1
+    assert "nothing to roll back" in err
+
+
+def test_wipe_no_manifest_dry_run_and_nothing_to_sweep_still_errors(
+    home, monkeypatch, capsys
+):
+    _disable_systemctl(monkeypatch)
+    code = install.do_rollback(make_ctx(home, wipe=True, dry_run=True))
+    err = capsys.readouterr().err
+
+    assert code == 1
+    assert "nothing to roll back" in err
+
+
+def test_wipe_removes_empty_state_dir(home, links, offline_install, monkeypatch):
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+    state_dir = home / ".local" / "state" / "dotfiles"
+    assert state_dir.is_dir()
+
+    _watchcommit_available(monkeypatch)
+    assert install.do_rollback(make_ctx(home, wipe=True)) == 0
+
+    assert not state_dir.exists()
+
+
+def test_wipe_dry_run_previews_empty_state_dir_removal(
+    home, links, offline_install, monkeypatch, capsys
+):
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+    state_dir = home / ".local" / "state" / "dotfiles"
+
+    _watchcommit_available(monkeypatch)
+    assert install.do_rollback(make_ctx(home, wipe=True, dry_run=True)) == 0
+    out = capsys.readouterr().out
+
+    assert state_dir.is_dir()
+    assert f"would remove empty state directory {state_dir}" in out
+
+
+def test_plain_rollback_leaves_state_dir_even_if_empty(home, links, offline_install):
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+    state_dir = home / ".local" / "state" / "dotfiles"
+
+    assert install.do_rollback(make_ctx(home)) == 0
+
+    assert state_dir.is_dir()
+
+
 def test_history_survives_a_malformed_line(home):
     ctx = make_ctx(home)
     ctx.manifest.init_run("personal")
@@ -587,9 +905,7 @@ def test_work_run_writes_marker_and_rollback_resets_it(home, links, offline_inst
 
     assert ctx.profile_marker.read_text().strip() == "work"
     assert install.work_guard_blocks(make_ctx(home, profile="personal"))
-    assert not install.work_guard_blocks(
-        make_ctx(home, profile="personal", force=True)
-    )
+    assert not install.work_guard_blocks(make_ctx(home, profile="personal", force=True))
     assert not install.work_guard_blocks(make_ctx(home, profile="work"))
 
     install.do_rollback(make_ctx(home))
@@ -621,9 +937,7 @@ def test_full_run_wires_only_the_selected_harness(home, links, offline_install):
     assert not (home / ".gemini" / "GEMINI.md").exists()
 
 
-def test_full_run_is_additive_across_narrowing_selections(
-    home, links, offline_install
-):
+def test_full_run_is_additive_across_narrowing_selections(home, links, offline_install):
     install.run_install(make_ctx(home, harnesses=("claude", "copilot")), links)
     install.run_install(make_ctx(home, harnesses=("claude",)), links)
 

@@ -194,6 +194,7 @@ check "unknown arg message names the bad flag" grep -q "unknown argument: --bogu
 help_code=$?
 check "--help exits 0" bash -c "[[ $help_code -eq 0 ]]"
 check "--help prints usage" grep -q "^usage:" /tmp/help.out
+check "--help documents --wipe" grep -q -- "--wipe" /tmp/help.out
 
 ./install.sh >/tmp/noharness.out 2>&1
 noharness_code=$?
@@ -229,6 +230,11 @@ check "rollback-must-be-alone message shown" grep -q "must be used alone" /tmp/r
 ./install.sh --rollback --profile=work >/tmp/rollbackprofile.out 2>&1
 rollbackprofile_code=$?
 check "--rollback combined with --profile=work is rejected" bash -c "[[ $rollbackprofile_code -eq 2 ]]"
+
+./install.sh --wipe >/tmp/wipealone.out 2>&1
+wipealone_code=$?
+check "--wipe without --rollback exits 2" bash -c "[[ $wipealone_code -eq 2 ]]"
+check "--wipe-without-rollback message shown" grep -q -- "--wipe can only be used with --rollback" /tmp/wipealone.out
 
 echo ""
 echo "=== 8. Harness opt-in: only the selected harness(es) get wired ==="
@@ -360,6 +366,87 @@ check "reclaimed-symlink skip is reported" grep -q "something else has claimed t
 check "missing-backup skip is reported" grep -q "not found — already restored, or removed outside install.sh" /tmp/rollback12.out
 check "skip count summary printed" grep -q "rollback step(s) did not apply cleanly" /tmp/rollback12.out
 rm -f ~/.claude/CLAUDE.md ~/.vimrc
+
+echo ""
+echo "=== 13. --rollback --wipe: blank-slate rollback ==="
+# This container has no init system, so systemd --user is never reachable
+# here (either systemctl itself is absent, or the probe call fails with no
+# session bus to talk to) — deterministic in a plain `docker run` container,
+# not env flakiness. That means _wipe_watchcommit's "systemd --user is
+# unavailable" anomaly always fires once the watchcommit unit symlink
+# exists, which is exactly the real-world case this branch exists to cover
+# (a machine that provisioned watchcommit and no longer has systemd --user,
+# e.g. a fresh WSL distro without `enable-systemd` in /etc/wsl.conf yet).
+echo "sentinel-content" > ~/.vimrc
+./install.sh --harness=claude >/tmp/pre-wipe.out 2>&1
+cat /tmp/pre-wipe.out
+check "~/.vimrc backed up before the wipe scenario" bash -c '[[ -f ~/.vimrc.bak ]]'
+check "watchcommit unit symlinked before the wipe scenario" bash -c '[[ -L ~/.config/systemd/user/watchcommit.service ]]'
+
+mkdir -p ~/.local/share/nvim ~/.local/state/nvim ~/.cache/nvim
+touch ~/.local/share/nvim/sentinel ~/.local/state/nvim/sentinel ~/.cache/nvim/sentinel
+
+./install.sh --rollback --wipe --dry-run >/tmp/wipe-dry.out 2>&1
+wipedry_code=$?
+cat /tmp/wipe-dry.out
+check "--rollback --wipe --dry-run exits 1 (systemd-unavailable skip is reported even in preview)" \
+  bash -c "[[ $wipedry_code -eq 1 ]]"
+check "dry-run wipe leaves the backup in place" bash -c '[[ -f ~/.vimrc.bak ]]'
+check "dry-run wipe leaves ~/.vimrc symlinked, not deleted" bash -c '[[ -L ~/.vimrc ]]'
+check "dry-run wipe leaves nvim dirs in place" bash -c '[[ -f ~/.local/share/nvim/sentinel ]]'
+check "dry-run wipe previews backup deletion, not restoration" grep -q "would delete backup" /tmp/wipe-dry.out
+check "dry-run wipe previews nvim runtime dir removal" grep -q "would remove.*nvim (wipe)" /tmp/wipe-dry.out
+check "dry-run wipe surfaces the watchcommit systemd-unavailable skip" \
+  grep -q "systemd --user is unavailable" /tmp/wipe-dry.out
+
+./install.sh --rollback --wipe >/tmp/wipe-real.out 2>&1
+wipereal_code=$?
+cat /tmp/wipe-real.out
+check "--rollback --wipe exits 1 (systemd-unavailable skip pushes the tally to 1)" \
+  bash -c "[[ $wipereal_code -eq 1 ]]"
+check "wipe deletes the backup outright" bash -c '[[ ! -e ~/.vimrc.bak ]]'
+check "wipe removes ~/.vimrc entirely (not restored to sentinel content)" bash -c '[[ ! -e ~/.vimrc ]]'
+check "wipe reports deleting the backup, not restoring it" grep -q "deleted backup" /tmp/wipe-real.out
+check "wipe sweeps nvim share dir" bash -c '[[ ! -e ~/.local/share/nvim ]]'
+check "wipe sweeps nvim state dir" bash -c '[[ ! -e ~/.local/state/nvim ]]'
+check "wipe sweeps nvim cache dir" bash -c '[[ ! -e ~/.cache/nvim ]]'
+check "wipe reports the watchcommit systemd-unavailable skip" \
+  grep -q "systemd --user is unavailable" /tmp/wipe-real.out
+check "watchcommit unit symlink still removed by the normal manifest walk despite the skip" \
+  bash -c '[[ ! -e ~/.config/systemd/user/watchcommit.service ]]'
+check "history.jsonl removed after wipe" bash -c '[[ ! -f "'"$MANIFEST"'" ]]'
+check "state dir removed once empty after wipe" bash -c '[[ ! -d "'"$STATE_DIR"'" ]]'
+check "wipe's final message distinguishes it from plain rollback" grep -q "wiped to a blank slate" /tmp/wipe-real.out
+
+echo ""
+echo "=== 13b. --wipe with untracked state but no manifest (already-consumed history) ==="
+# Simulates the case the "no-manifest-wipe-behavior" decision exists for: a
+# second --wipe (or --wipe after an earlier plain --rollback already deleted
+# the manifest) still needs to sweep leftover untracked state instead of
+# hard-failing with "nothing to roll back". The watchcommit unit is already
+# gone at this point (removed above), so this run has nothing anomalous to
+# report and should exit cleanly.
+mkdir -p ~/.local/share/nvim
+touch ~/.local/share/nvim/sentinel
+./install.sh --rollback --wipe >/tmp/wipe-no-manifest.out 2>&1
+wipenomanifest_code=$?
+cat /tmp/wipe-no-manifest.out
+check "wipe with swept state but no manifest exits 0 (nothing recorded to skip)" \
+  bash -c "[[ $wipenomanifest_code -eq 0 ]]"
+check "wipe-no-manifest header explains the swept-but-no-history case" \
+  grep -q "Wipe swept untracked state" /tmp/wipe-no-manifest.out
+check "wipe-no-manifest actually removed the leftover nvim dir" bash -c '[[ ! -e ~/.local/share/nvim ]]'
+check "wipe-no-manifest did NOT print the generic nothing-to-roll-back error" \
+  bash -c '! grep -q "nothing to roll back" /tmp/wipe-no-manifest.out'
+
+echo ""
+echo "=== 13c. A third --wipe run with truly nothing left reports the plain error ==="
+./install.sh --rollback --wipe >/tmp/wipe-truly-empty.out 2>&1
+wipeempty_code=$?
+cat /tmp/wipe-truly-empty.out
+check "wipe with nothing left at all exits 1" bash -c "[[ $wipeempty_code -eq 1 ]]"
+check "wipe with nothing left reports the plain nothing-to-roll-back error" \
+  grep -q "nothing to roll back" /tmp/wipe-truly-empty.out
 
 echo ""
 echo "════════ Scenario summary: $PASS passed, $FAIL failed ════════"
