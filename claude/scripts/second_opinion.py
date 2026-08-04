@@ -19,7 +19,7 @@ from types import FrameType
 from typing import NoReturn
 
 BACKEND_PRIORITY = ["agy", "opencode", "copilot"]
-BACKEND_TIMEOUT_SECONDS = 300
+BACKEND_TIMEOUT_SECONDS = int(os.environ.get("SECOND_OPINION_TIMEOUT_SECONDS", "300"))
 
 _active_process: subprocess.Popen[str] | None = None
 
@@ -295,8 +295,21 @@ def run_copilot(prompt: str) -> str:
     (whose headless mode auto-denies even reads, see
     ``meta-agy-headless-permission-skip``), Copilot needs no allow-rule
     workaround here.
+
+    An explicit model can be forced via the ``SECOND_OPINION_COPILOT_MODEL``
+    env var. Copilot CLI's ``--model`` flag is gated by a per-account
+    "model picker" policy — confirmed empirically that on a policy-disabled
+    account every explicit model is rejected ("... is not available") and
+    only the implicit default routing (no ``--model`` flag at all) works.
+    Leaving this unset preserves that default-routing behavior, which is
+    the only thing guaranteed to work across accounts; set it only on
+    accounts confirmed to allow explicit model selection.
     """
-    return run_backend_command(["copilot", "-p", prompt, "--silent"])
+    cmd = ["copilot", "-p", prompt, "--silent"]
+    model = os.environ.get("SECOND_OPINION_COPILOT_MODEL")
+    if model:
+        cmd += ["--model", model]
+    return run_backend_command(cmd)
 
 
 BACKEND_RUNNERS = {"agy": run_agy, "opencode": run_opencode, "copilot": run_copilot}
@@ -305,6 +318,16 @@ BACKEND_LABELS = {
     "opencode": "opencode (adversary agent, deepinfra/Qwen/Qwen3.7-Max)",
     "copilot": "GitHub Copilot CLI",
 }
+
+
+def backend_label(backend: str) -> str:
+    """Return ``backend``'s display label, appending an overridden copilot model if set."""
+    label = BACKEND_LABELS[backend]
+    if backend == "copilot":
+        model = os.environ.get("SECOND_OPINION_COPILOT_MODEL")
+        if model:
+            return f"{label} ({model})"
+    return label
 
 
 def cmd_detect(args: argparse.Namespace) -> None:
@@ -338,12 +361,12 @@ def cmd_review(args: argparse.Namespace) -> None:
             critique = BACKEND_RUNNERS[backend](prompt)
         except BackendError as exc:
             print(
-                f"[second_opinion] {BACKEND_LABELS[backend]} failed: {exc}",
+                f"[second_opinion] {backend_label(backend)} failed: {exc}",
                 file=sys.stderr,
             )
             failures.append(f"{backend}: {exc}")
             continue
-        print(f"Second opinion via {BACKEND_LABELS[backend]}:")
+        print(f"Second opinion via {backend_label(backend)}:")
         print(critique)
         return
 
