@@ -129,6 +129,9 @@ SETTINGS_COSMETIC_KEYS: frozenset[str] = frozenset(
         "agent",
         "tui",
         "statusLine",
+        "agentPushNotifEnabled",
+        "effortLevel",
+        "enabledPlugins",
     }
 )
 OPENCODE_COSMETIC_KEYS: frozenset[str] = frozenset({"$schema", "agent"})
