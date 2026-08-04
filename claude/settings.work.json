@@ -27,15 +27,14 @@
           {
             "type": "command",
             "command": "python3 ~/.claude/scripts/dotfiles_sync_check.py 2>/dev/null"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/settings_seed_drift_check.py 2>/dev/null"
           }
         ]
       }
     ]
-  },
-  "statusLine": {
-    "type": "command",
-    "command": "node ~/.claude/hooks/gsd-statusline.js",
-    "refreshInterval": 10
   },
   "tui": "fullscreen",
   "voice": {
