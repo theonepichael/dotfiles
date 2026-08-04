@@ -92,8 +92,11 @@ harness = "claude"
 
 # backlog-item orchestrates grill-me/second-opinion via Claude Code's Skill
 # tool. opencode got its own port (opencode/command/backlog-item.md + the
-# grill-me/second-opinion skills below, via its native skill tool);
-# copilot/agy remain unported until they grow an equivalent.
+# grill-me/second-opinion skills below, via its native skill tool). Copilot
+# CLI's skill mechanism (model-invoked activation + /skill-name in prompts)
+# could support a port too; agy's description-match-only activation makes
+# mid-run delegation uncertain. Both ports are tracked in the backlog,
+# unported as of 2026-08-03.
 [[link]]
 src = "claude/commands/backlog-item.md"
 dest = "~/.claude/commands/backlog-item.md"
