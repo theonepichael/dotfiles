@@ -102,11 +102,6 @@ src = "claude/commands/backlog-item.md"
 dest = "~/.claude/commands/backlog-item.md"
 harness = "claude"
 
-[[link]]
-src = "claude/hooks/gsd-statusline.js"
-dest = "~/.claude/hooks/gsd-statusline.js"
-harness = "claude"
-
 # ── shared scripts ───────────────────────────────────────────────────────
 # Needed by Claude Code's hooks AND Copilot's AND opencode's hooks/skills
 # (opencode's own dashboard.md/grill-me.md commands call these same paths),
