@@ -41,10 +41,11 @@ the locally-installed CLI surface, except where noted.
   projects, create a `~/.copilot/skills` or `~/.agents/skills` directory in
   your local home directory." Each skill lives in its own subdirectory
   (lowercase, hyphenated), and the skill file **must** be named `SKILL.md`.
-  `install.sh:567-571` symlinks each of the 5 `SKILL.md` files into this
-  path; `symlink()` (install.sh:510) does `mkdir -p "$(dirname "$dst")"` and
-  so creates the per-skill parent dir automatically — no separate
-  directory-wiring step, no gap in install.sh. `COPILOT_HOME` overrides
+  The `copilot/skills/*` entries in `links.toml` symlink each of the 6
+  `SKILL.md` files into this path; `install.py`'s symlink handling does
+  `mkdir -p "$(dirname "$dst")"` and so creates the per-skill parent dir
+  automatically — no separate directory-wiring step, no gap in the install
+  flow. `COPILOT_HOME` overrides
   `~/.copilot` for both instructions and hooks (not set on this machine).
 
 - **Skill frontmatter**: `name` + `description` (both required), plus an
@@ -53,7 +54,7 @@ the locally-installed CLI surface, except where noted.
   tools the skill can use without per-call confirmation. Per the docs'
   security warning, `shell`/`bash` should only be pre-approved for fully
   trusted skills — this repo's skills use `allowed-tools: shell`, which is
-  appropriate because all 5 are self-authored and reviewed. This is one
+  appropriate because all 6 are self-authored and reviewed. This is one
   field richer than agy (which has no `allowed-tools` equivalent) and
   matches Claude Code's per-skill tool-grant model in spirit, though
   Copilot's value vocabulary is coarser (a tool category like `shell`, not
@@ -115,11 +116,15 @@ the locally-installed CLI surface, except where noted.
 
 ## 2. Skills — ported (`copilot/skills/`)
 
-All 5 (`dashboard`, `grill-me`, `make-skill`, `second-opinion`, `standup`)
-live in the repo at `copilot/skills/<name>/SKILL.md` and are symlinked into
-`~/.copilot/skills/<name>/SKILL.md` by install.sh:567-571. As of 2026-07-28
-all 5 load cleanly — verified via `copilot skill list` (all 5 listed under
-"Personal skills") **and** a live end-to-end invocation probe
+All 6 (`backlog-item`, `dashboard`, `grill-me`, `make-skill`,
+`second-opinion`, `standup`) live in the repo at
+`copilot/skills/<name>/SKILL.md` and are symlinked into
+`~/.copilot/skills/<name>/SKILL.md` by the `copilot/skills/*` entries in
+`links.toml`. `backlog-item` orchestrates `grill-me`/`second-opinion` via
+mid-skill delegation (see the 2026-08-03 finding in section 3 below,
+verified the same day `backlog-item` was added). The other 5 were verified
+2026-07-28 — `copilot skill list` listed all 6 as of 2026-08-03 under
+"Personal skills" **and** a live end-to-end invocation probe
 (`copilot -p "<activate dashboard; run dev_status.py render; show stdout
 verbatim>" --allow-all-tools`), which produced a visible `skill(dashboard)`
 tool-call step in the run log followed by the dashboard verbatim.
@@ -194,6 +199,18 @@ backlog verbatim.
   treatment (plain-text question, recommendation first per CLAUDE.md's
   "Judgment calls — lead with a recommendation") is correct and needs no
   change.
+
+- **Mid-skill delegation works (2026-08-03 finding).** A throwaway
+  `~/.copilot/skills/zz-probe-delegation/SKILL.md` whose body said "now use
+  the dashboard skill" produced `skill(zz-probe-delegation)` →
+  `skill(dashboard)` → the real `dev_status.py render` output, when run via
+  `copilot -p "run the zz-probe-delegation skill" --allow-all-tools`
+  (probe skill deleted after the run). This proves an instruction embedded
+  in one skill's own body can trigger a second skill's activation mid-run —
+  not just user-prompt-triggered activation, which was the only thing
+  previously confirmed above. This is what makes `backlog-item`'s
+  delegation to `grill-me`/`second-opinion` (section 2) viable as a ported
+  skill rather than requiring the user to invoke each step by hand.
 
 ---
 

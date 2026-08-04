@@ -255,6 +255,8 @@ cat /tmp/harness-repeated.out
 check "repeated --harness=claude --harness=copilot selects claude" bash -c '[[ -L ~/.claude/CLAUDE.md ]]'
 check "repeated --harness=claude --harness=copilot ALSO selects copilot (not just the last flag)" \
   bash -c '[[ -e ~/.copilot/copilot-instructions.md ]]'
+check "copilot backlog-item skill symlinked" bash -c \
+  '[[ "$(readlink -f ~/.copilot/skills/backlog-item/SKILL.md)" == "'"$DOTFILES"'/copilot/skills/backlog-item/SKILL.md" ]]'
 
 echo ""
 echo "=== 9. Additive-only: narrowing --harness on a later run doesn't uninstall ==="
