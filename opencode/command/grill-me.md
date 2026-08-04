@@ -105,8 +105,8 @@ it trades interactivity for adversarial rigor instead of just guessing.
    — prefer the native one, since you're already running inside opencode:
 
    - **Primary — Task tool, native, no subprocess**: spawn the `adversary`
-     agent directly (configured in `opencode.jsonc` under `agent.adversary`,
-     currently `deepinfra/Qwen/Qwen3.7-Max`) with a prompt that argues against
+     agent directly (the model configured in `opencode.jsonc` under
+     `agent.adversary`) with a prompt that argues against
      your answer. This is genuine cross-model critique, not the same model
      second-guessing itself, because `adversary` is deliberately configured
      with a model different from the primary session's default — a subagent
@@ -115,7 +115,7 @@ it trades interactivity for adversarial rigor instead of just guessing.
      `adversary` by name rather than the generic `general` subagent.
    - **Alternative — `second_opinion.py review`**: use this instead (or in
      addition, for a third opinion) when you specifically want `agy`'s Gemini
-     backend rather than `adversary`'s DeepInfra model, or if `adversary` is
+     backend rather than `adversary`'s configured model, or if `adversary` is
      erroring. Don't route through `second_opinion.py`'s own `opencode`
      backend from inside opencode itself — that backend exists for Claude
      Code and Copilot, which have no other way to reach `adversary`; from

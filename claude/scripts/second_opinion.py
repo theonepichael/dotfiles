@@ -109,7 +109,6 @@ def _safe_get(obj: object, *keys: str) -> object | None:
 
 def _kill_active_process() -> None:
     """Kill the currently-running backend subprocess's entire process group, if any."""
-    global _active_process
     proc = _active_process
     if proc is None or proc.poll() is not None:
         return
@@ -302,7 +301,7 @@ def run_copilot(prompt: str) -> str:
 BACKEND_RUNNERS = {"agy": run_agy, "opencode": run_opencode, "copilot": run_copilot}
 BACKEND_LABELS = {
     "agy": "agy (Gemini 3.1 Pro, High)",
-    "opencode": "opencode (adversary agent, deepinfra/Qwen/Qwen3.7-Max)",
+    "opencode": "opencode (adversary agent)",
     "copilot": "GitHub Copilot CLI",
 }
 
