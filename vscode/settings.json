@@ -1,7 +1,7 @@
 {
   "[dockercompose]": {
     "editor.autoIndent": "advanced",
-    "editor.defaultFormatter": "redhat.vscode-yaml",
+    "editor.defaultFormatter": null,
     "editor.insertSpaces": true,
     "editor.quickSuggestions": {
       "comments": false,
@@ -22,7 +22,7 @@
     }
   },
   "[github-actions-workflow]": {
-    "editor.defaultFormatter": "redhat.vscode-yaml"
+    "editor.defaultFormatter": null
   },
   "[jsonc]": {
     "editor.defaultFormatter": "vscode.json-language-features"
@@ -33,7 +33,9 @@
     "editor.formatOnSave": true,
     "editor.guides.indentation": true,
     "editor.wordBasedSuggestions": "off",
-    "gitlens.codeLens.symbolScopes": ["!Module"]
+    "gitlens.codeLens.symbolScopes": [
+      "!Module"
+    ]
   },
   "claudeCode.disableLoginPrompt": true,
   "editor.formatOnSave": true,
@@ -71,53 +73,322 @@
   "vim.leader": " ",
   "vim.insertModeKeyBindingsNonRecursive": [
     {
-      "before": ["i", "i"],
-      "commands": ["extension.vim_escape"]
+      "before": [
+        "i",
+        "i"
+      ],
+      "commands": [
+        "extension.vim_escape"
+      ]
     }
   ],
   "vim.normalModeKeyBindingsNonRecursive": [
-    { "before": ["g", "r"], "commands": ["editor.action.goToReferences"] },
-    { "before": ["g", "S"], "commands": ["workbench.action.showAllSymbols"] },
-    { "before": ["g", "s"], "commands": ["workbench.action.findInFiles"] },
-    { "before": ["g", "i"], "commands": ["editor.action.goToImplementation"] },
-    { "before": ["g", "y"], "commands": ["editor.action.goToTypeDefinition"] },
-    { "before": ["<leader>", "y", "a"], "commands": [":%+y"] },
-    { "before": ["[", "f"], "commands": ["workbench.action.gotoSymbol"] },
-    { "before": ["<leader>", "v"], "commands": ["workbench.action.splitEditor"] },
-    { "before": ["<leader>", "x"], "commands": [":x <CR>"] },
-    { "before": ["<leader>", "w"], "commands": ["workbench.action.files.save"] },
-    { "before": ["<leader>", "u"], "commands": ["workbench.action.splitEditorDown"] },
-    { "before": ["<leader>", "h"], "commands": ["workbench.action.focusLeftGroup"] },
-    { "before": ["<leader>", "l"], "commands": ["workbench.action.focusRightGroup"] },
-    { "before": ["<leader>", "j"], "commands": ["workbench.action.focusBelowGroup"] },
-    { "before": ["<leader>", "k"], "commands": ["workbench.action.focusAboveGroup"] },
-    { "after": ["z", "z"], "before": ["<leader>", "m"] },
-    { "before": ["<leader>", "r"], "commands": ["workbench.action.reloadWindow"] },
-    { "after": [":"], "before": [";"] },
-    { "after": ["<C-d>", "z", "z"], "before": ["<C-d>"] },
-    { "after": ["<C-u>", "z", "z"], "before": ["<C-u>"] },
-    { "before": ["<C-l>"], "commands": ["editor.action.clearHighlights"] },
-    { "before": ["<leader>", "z"], "commands": ["workbench.action.toggleMaximizedPanel"] },
-    { "after": ["*", "z", "z"], "before": ["*"] },
-    { "after": ["#", "z", "z"], "before": ["#"] },
-    { "before": ["<leader>", "f"], "commands": ["workbench.action.nextEditor"] },
-    { "before": ["<leader>", "b"], "commands": ["workbench.action.previousEditor"] },
-    { "before": ["z", "c"], "commands": ["editor.fold"] },
-    { "before": ["z", "o"], "commands": ["editor.unfold"] },
-    { "before": ["z", "M"], "commands": ["editor.foldAll"] },
-    { "before": ["z", "R"], "commands": ["editor.unfoldAll"] },
-    { "before": ["z", "a"], "commands": ["editor.toggleFold"] }
+    {
+      "before": [
+        "g",
+        "r"
+      ],
+      "commands": [
+        "editor.action.goToReferences"
+      ]
+    },
+    {
+      "before": [
+        "g",
+        "S"
+      ],
+      "commands": [
+        "workbench.action.showAllSymbols"
+      ]
+    },
+    {
+      "before": [
+        "g",
+        "s"
+      ],
+      "commands": [
+        "workbench.action.findInFiles"
+      ]
+    },
+    {
+      "before": [
+        "g",
+        "i"
+      ],
+      "commands": [
+        "editor.action.goToImplementation"
+      ]
+    },
+    {
+      "before": [
+        "g",
+        "y"
+      ],
+      "commands": [
+        "editor.action.goToTypeDefinition"
+      ]
+    },
+    {
+      "before": [
+        "<leader>",
+        "y",
+        "a"
+      ],
+      "commands": [
+        ":%+y"
+      ]
+    },
+    {
+      "before": [
+        "[",
+        "f"
+      ],
+      "commands": [
+        "workbench.action.gotoSymbol"
+      ]
+    },
+    {
+      "before": [
+        "<leader>",
+        "v"
+      ],
+      "commands": [
+        "workbench.action.splitEditor"
+      ]
+    },
+    {
+      "before": [
+        "<leader>",
+        "x"
+      ],
+      "commands": [
+        ":x <CR>"
+      ]
+    },
+    {
+      "before": [
+        "<leader>",
+        "w"
+      ],
+      "commands": [
+        "workbench.action.files.save"
+      ]
+    },
+    {
+      "before": [
+        "<leader>",
+        "u"
+      ],
+      "commands": [
+        "workbench.action.splitEditorDown"
+      ]
+    },
+    {
+      "before": [
+        "<leader>",
+        "h"
+      ],
+      "commands": [
+        "workbench.action.focusLeftGroup"
+      ]
+    },
+    {
+      "before": [
+        "<leader>",
+        "l"
+      ],
+      "commands": [
+        "workbench.action.focusRightGroup"
+      ]
+    },
+    {
+      "before": [
+        "<leader>",
+        "j"
+      ],
+      "commands": [
+        "workbench.action.focusBelowGroup"
+      ]
+    },
+    {
+      "before": [
+        "<leader>",
+        "k"
+      ],
+      "commands": [
+        "workbench.action.focusAboveGroup"
+      ]
+    },
+    {
+      "after": [
+        "z",
+        "z"
+      ],
+      "before": [
+        "<leader>",
+        "m"
+      ]
+    },
+    {
+      "before": [
+        "<leader>",
+        "r"
+      ],
+      "commands": [
+        "workbench.action.reloadWindow"
+      ]
+    },
+    {
+      "after": [
+        ":"
+      ],
+      "before": [
+        ";"
+      ]
+    },
+    {
+      "after": [
+        "<C-d>",
+        "z",
+        "z"
+      ],
+      "before": [
+        "<C-d>"
+      ]
+    },
+    {
+      "after": [
+        "<C-u>",
+        "z",
+        "z"
+      ],
+      "before": [
+        "<C-u>"
+      ]
+    },
+    {
+      "before": [
+        "<C-l>"
+      ],
+      "commands": [
+        "editor.action.clearHighlights"
+      ]
+    },
+    {
+      "before": [
+        "<leader>",
+        "z"
+      ],
+      "commands": [
+        "workbench.action.toggleMaximizedPanel"
+      ]
+    },
+    {
+      "after": [
+        "*",
+        "z",
+        "z"
+      ],
+      "before": [
+        "*"
+      ]
+    },
+    {
+      "after": [
+        "#",
+        "z",
+        "z"
+      ],
+      "before": [
+        "#"
+      ]
+    },
+    {
+      "before": [
+        "<leader>",
+        "f"
+      ],
+      "commands": [
+        "workbench.action.nextEditor"
+      ]
+    },
+    {
+      "before": [
+        "<leader>",
+        "b"
+      ],
+      "commands": [
+        "workbench.action.previousEditor"
+      ]
+    },
+    {
+      "before": [
+        "z",
+        "c"
+      ],
+      "commands": [
+        "editor.fold"
+      ]
+    },
+    {
+      "before": [
+        "z",
+        "o"
+      ],
+      "commands": [
+        "editor.unfold"
+      ]
+    },
+    {
+      "before": [
+        "z",
+        "M"
+      ],
+      "commands": [
+        "editor.foldAll"
+      ]
+    },
+    {
+      "before": [
+        "z",
+        "R"
+      ],
+      "commands": [
+        "editor.unfoldAll"
+      ]
+    },
+    {
+      "before": [
+        "z",
+        "a"
+      ],
+      "commands": [
+        "editor.toggleFold"
+      ]
+    }
   ],
   "vim.smartRelativeLine": true,
   "vim.useSystemClipboard": true,
   "vim.visualModeKeyBindingsNonRecursive": [
     {
-      "before": ["i", "i"],
-      "commands": ["extension.vim_escape"]
+      "before": [
+        "i",
+        "i"
+      ],
+      "commands": [
+        "extension.vim_escape"
+      ]
     },
     {
-      "after": ["\"", "_", "d", "P"],
-      "before": ["p"]
+      "after": [
+        "\"",
+        "_",
+        "d",
+        "P"
+      ],
+      "before": [
+        "p"
+      ]
     }
   ],
   "window.zoomLevel": 0.1,
@@ -126,5 +397,5 @@
   "workbench.iconTheme": "vscode-icons",
   "workbench.secondarySideBar.showLabels": false,
   "workbench.activityBar.location": "top",
-  "typescript.suggest.paths": true
+  "js/ts.suggest.paths": true,
 }
