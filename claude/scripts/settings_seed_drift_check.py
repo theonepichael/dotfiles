@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """SessionStart hook + CLI: detect (and optionally fix) drift between the
-live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` and
-their seeds in the dotfiles repo.
+live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` /
+(under WSL) the Windows-side VS Code ``settings.json`` and
+``keybindings.json`` and their seeds in the dotfiles repo.
 
 Why this exists
 ---------------
@@ -37,6 +38,15 @@ forcing a human to either silence it (add to cosmetics) or investigate.
                     bypass under ``permission.bash`` is surfaced verbatim
                     as a ``SECURITY:`` line, exactly as install.py prints
                     it.
+    VS Code         no cosmetic split — every setting/keybinding is a
+    settings.json / legitimate user edit, not a security-relevant key.
+    keybindings.json Drift is a plain whole-file text comparison (not a
+                    JSON key diff): these are legal JSONC (comments,
+                    trailing commas), which ``json.loads`` can't always
+                    parse, so text equality is the only signal that can't
+                    misreport a commented file as drift-free. Only checked
+                    under WSL, when a Windows-side ``code`` CLI is found on
+                    PATH (see ``_vscode_wsl_user_dir``).
 
 Why the helpers are vendored in-script, not imported from install.py
 -------------------------------------------------------------------
@@ -56,10 +66,22 @@ Subcommands
             Loud-fails (prints to stdout AND exits nonzero) when a file
             should be parseable but isn't — e.g. opencode.jsonc grew a
             ``//`` comment that ``json.loads`` can't read. Never pretends
-            "no drift" on a parse failure.
+            "no drift" on a parse failure. VS Code drift never loud-fails
+            this way (there's no strict JSON loader for it — see above);
+            its message explicitly calls out that only ``sync-to-seed``
+            applies to it, not ``fix``.
     fix     additively merge drifted keys from the seed into the live
             file, preserving all live-only entries (which are almost
-            certainly live approvals):
+            certainly live approvals). Does NOT cover VS Code — the
+            reported VS Code drift problem only ever runs in the
+            live->seed direction (a Windows Settings-UI edit not making it
+            back into the repo), and shipping the reverse direction here
+            would mean an unenforced clobber risk: a native Windows VS
+            Code window open at fix-time could silently overwrite the fix
+            on its own next save, and detecting a running native Windows
+            process from WSL is out of scope. Push a repo-side VS Code
+            edit to Windows via install.py's existing copy-once
+            ``seed_file`` instead, once the live file is deleted:
 
             * ``permissions.allow``: union — append seed entries not in
               live; never remove live entries.
@@ -100,6 +122,11 @@ Subcommands
               written, only reported — live approvals are often
               profile-specific, so a live-only entry isn't necessarily
               drift to repair.
+            * VS Code's ``settings.json`` / ``keybindings.json``: this is
+              where VS Code drift actually gets repaired (``fix`` doesn't
+              cover it — see above). Whole-file text copy, not a JSON
+              round-trip, so it can't fail on native JSONC and can't
+              silently reformat the user's file.
 
             No active-session guard needed (unlike ``fix``) — this only
             writes the seed file, never the live files Claude Code/
@@ -218,6 +245,31 @@ def opencode_bypass_drift(
     ]
 
 
+def _vscode_wsl_user_dir() -> Path | None:
+    """Locate the Windows-side VS Code user directory from WSL.
+
+    Under WSL, VS Code is normally driven from the Windows GUI via the
+    Remote-WSL extension, so the real user settings.json lives in the
+    Windows user profile, not the WSL filesystem. The profile directory is
+    derived from the Windows-side ``code`` shim's own path (inherited onto
+    PATH via WSL interop) rather than hardcoding a username.
+
+    Returns:
+        The ``.../AppData/Roaming/Code/User`` directory, or None if no
+        Windows-side ``code`` CLI is on PATH.
+    """
+    code_bin = shutil.which("code")
+    if not code_bin:
+        return None
+    parts = Path(code_bin).parts
+    if "AppData" not in parts or not code_bin.startswith("/mnt/"):
+        return None
+    win_user_dir = Path(*parts[: parts.index("AppData")])
+    if "Users" not in parts:
+        return None
+    return win_user_dir / "AppData" / "Roaming" / "Code" / "User"
+
+
 # ── end vendored block ──────────────────────────────────────────────────────
 
 
@@ -309,6 +361,16 @@ def opencode_seed_path(root: Path | None = None) -> Path | None:
     return (root if root is not None else DOTFILES) / "opencode" / "opencode.jsonc"
 
 
+def vscode_seed_path(name: str, root: Path | None = None) -> Path:
+    """Return the seed path for a VS Code file (``settings.json`` or
+    ``keybindings.json``) under ``root``.
+
+    No work/personal split like ``settings_seed_path`` — VS Code settings
+    aren't profile-specific the way Claude Code's are.
+    """
+    return (root if root is not None else DOTFILES) / "vscode" / name
+
+
 # ── drift detection ──────────────────────────────────────────────────────────
 
 
@@ -350,6 +412,47 @@ def opencode_drift(seed: Path, live: Path) -> str:
         )
     drifted = _non_cosmetic_drift(*pair, OPENCODE_COSMETIC_KEYS)
     return ", ".join(drifted)
+
+
+def _try_parse_json(path: Path) -> object | None:
+    """Best-effort JSON parse of ``path``. Returns None on any read or
+    parse failure — never raises. Used only to enrich a drift message,
+    never to decide whether drift exists, so a commented (JSONC) VS Code
+    file doesn't loud-fail the way ``_load_json_strict`` would."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def vscode_drift(seed: Path, live: Path) -> str:
+    """Describe how a live VS Code settings.json/keybindings.json diverged
+    from its seed, or "" if there's nothing to compare or nothing drifted.
+
+    Text equality is the definitive drift signal, not JSON equality — same
+    rationale as install.describe_vscode_drift: VS Code's live files are
+    legal JSONC (comments, trailing commas) that ``json.loads`` can't
+    parse, so a JSON-first check would miss real drift on a merely
+    commented file. ``_try_parse_json`` only runs after text drift is
+    already confirmed, purely to enrich the message. Never raises — there
+    is no loud-fail path for VS Code drift (see module docstring).
+    """
+    if not seed.is_file() or not live.is_file():
+        return ""
+    seed_text = seed.read_text(encoding="utf-8")
+    live_text = live.read_text(encoding="utf-8")
+    if seed_text == live_text:
+        return ""
+
+    seed_data = _try_parse_json(seed)
+    live_data = _try_parse_json(live)
+    if isinstance(seed_data, dict) and isinstance(live_data, dict):
+        return ", ".join(json_key_drift(seed_data, live_data))
+    if isinstance(seed_data, list) and isinstance(live_data, list):
+        if len(seed_data) != len(live_data):
+            return f"{len(live_data)} bindings live vs {len(seed_data)} in seed"
+        return f"binding definitions differ ({len(live_data)} bindings)"
+    return "content differs from the repo copy"
 
 
 def _print_loud(msg: str) -> None:
@@ -396,6 +499,20 @@ def cmd_check() -> int:
         else:
             if oc_drifted:
                 messages.append(oc_drifted)
+
+    vscode_user_dir = _vscode_wsl_user_dir()
+    if vscode_user_dir is not None:
+        for name in ("settings.json", "keybindings.json"):
+            seed = vscode_seed_path(name)
+            live = vscode_user_dir / name
+            drift = vscode_drift(seed, live)
+            if drift:
+                messages.append(
+                    f"{name} (VS Code) drifted from seed ({seed.name}): {drift} — "
+                    "only `sync-to-seed` applies to VS Code drift (not `fix`); run "
+                    "`python3 ~/.claude/scripts/settings_seed_drift_check.py "
+                    "sync-to-seed` to pull the live edit into the repo"
+                )
 
     if messages:
         print("\n".join(messages))
@@ -679,6 +796,29 @@ def _atomic_write(path: Path, data: dict[str, object]) -> None:
         raise
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` verbatim to ``path`` atomically (tmp in the same dir
+    + ``os.replace``), same pattern as ``_atomic_write`` but for a raw
+    string instead of a JSON-serialized dict. Used for VS Code's
+    settings/keybindings files, which must be copied byte-for-byte — a
+    JSON parse-and-reserialize round-trip would break on native JSONC
+    (comments, trailing commas) and silently reformat the user's file even
+    when it didn't break."""
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    fd, tmppath = tempfile.mkstemp(prefix=path.name + ".", dir=parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmppath, path)
+    except BaseException:
+        try:
+            os.unlink(tmppath)
+        except OSError:
+            pass
+        raise
+
+
 def _fix_settings_file(live_path: Path, seed_path: Path) -> int:
     """Additively fix settings.json drift. Return 0 on success or
     no-action, 1 on parse failure."""
@@ -900,6 +1040,40 @@ def _sync_opencode_to_seed(live_path: Path, seed_path: Path) -> int:
     return 0
 
 
+def _sync_vscode_to_seed(live_path: Path, seed_path: Path) -> int:
+    """Mirror a live VS Code settings.json/keybindings.json file back into
+    its seed. Return 0 always — there's no active-session guard needed
+    (this only writes the seed) and no parse-failure path to fail on,
+    since this never parses JSON.
+
+    Whole-file copy, raw text not a JSON round-trip (see
+    ``_atomic_write_text``): VS Code's live files are legal JSONC
+    (comments, trailing commas) that a parse-and-reserialize round-trip
+    would break on, or silently reformat even when it didn't break.
+    """
+    if not live_path.is_file():
+        return 0  # nothing live to sync
+    live_text = live_path.read_text(encoding="utf-8")
+    try:
+        seed_text: str | None = seed_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        seed_text = None
+    if seed_text == live_text:
+        return 0
+
+    backup_msg = ""
+    if seed_path.is_file():
+        stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+        backup = seed_path.with_suffix(seed_path.suffix + f".bak.{stamp}")
+        shutil.copy2(seed_path, backup)
+        backup_msg = f" — backup at {backup}"
+    _atomic_write_text(seed_path, live_text)
+    print(
+        f"settings_seed_drift_check: synced {seed_path} (from {live_path}){backup_msg}"
+    )
+    return 0
+
+
 # ── active-session detection ─────────────────────────────────────────────────
 
 
@@ -1040,6 +1214,13 @@ def cmd_sync_to_seed(dotfiles_root: Path) -> int:
     if oc_seed is not None:
         oc_live = HOME / ".config" / "opencode" / "opencode.jsonc"
         exit_code = _sync_opencode_to_seed(oc_live, oc_seed) or exit_code
+
+    vscode_user_dir = _vscode_wsl_user_dir()
+    if vscode_user_dir is not None:
+        for name in ("settings.json", "keybindings.json"):
+            vscode_live = vscode_user_dir / name
+            vscode_seed = vscode_seed_path(name, dotfiles_root)
+            exit_code = _sync_vscode_to_seed(vscode_live, vscode_seed) or exit_code
 
     return exit_code
 

@@ -38,6 +38,12 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
             # SessionStart refusal gate must not fire from any test that
             # isn't explicitly exercising it.
             patch.object(ssdc, "_sessions_active", lambda: 0),
+            # This machine is itself a live instance of the WSL VS Code
+            # symlink bug (see install.py's _vscode_wsl_user_dir), so the
+            # real function resolves here — default it off so unrelated
+            # tests don't pick up real machine state; vscode-specific
+            # tests override it explicitly.
+            patch.object(ssdc, "_vscode_wsl_user_dir", lambda: None),
         ]
         for p in self._patches:
             p.start()
@@ -86,6 +92,19 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
 
     def mark_work(self) -> None:
         (self.state_dir / "profile").write_text("work\n")
+
+    def vscode_user_dir(self) -> Path:
+        d = self.home / "winappdata"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def write_vscode_seed(self, name: str, text: str) -> None:
+        d = self.dotfiles / "vscode"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / name).write_text(text)
+
+    def write_live_vscode(self, name: str, text: str) -> None:
+        (self.vscode_user_dir() / name).write_text(text)
 
     def run_check(self) -> tuple[str, int]:
         out = io.StringIO()
@@ -702,6 +721,185 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
             mock_cmd.return_value = 0
             ssdc.main(["sync-to-seed", "--dotfiles-root", str(custom_root)])
         mock_cmd.assert_called_once_with(custom_root)
+
+    # ── _try_parse_json ───────────────────────────────────────────────────
+
+    def test_try_parse_json_returns_parsed_value(self) -> None:
+        path = Path(self.tmpdir) / "ok.json"
+        path.write_text('{"a": 1}')
+        self.assertEqual(ssdc._try_parse_json(path), {"a": 1})
+
+    def test_try_parse_json_returns_none_on_missing_file(self) -> None:
+        path = Path(self.tmpdir) / "missing.json"
+        self.assertIsNone(ssdc._try_parse_json(path))
+
+    def test_try_parse_json_returns_none_on_parse_failure_never_raises(self) -> None:
+        path = Path(self.tmpdir) / "bad.json"
+        path.write_text("// a comment\n{not valid json}")
+        self.assertIsNone(ssdc._try_parse_json(path))
+
+    # ── vscode_drift ─────────────────────────────────────────────────────
+
+    def test_vscode_drift_identical_content_is_no_drift(self) -> None:
+        seed = Path(self.tmpdir) / "seed.json"
+        live = Path(self.tmpdir) / "live.json"
+        seed.write_text('{"a": 1}')
+        live.write_text('{"a": 1}')
+        self.assertEqual(ssdc.vscode_drift(seed, live), "")
+
+    def test_vscode_drift_dict_key_diff(self) -> None:
+        seed = Path(self.tmpdir) / "seed.json"
+        live = Path(self.tmpdir) / "live.json"
+        seed.write_text(json.dumps({"a": 1, "b": 2}))
+        live.write_text(json.dumps({"a": 1, "b": 3}))
+        self.assertEqual(ssdc.vscode_drift(seed, live), "b")
+
+    def test_vscode_drift_list_length_diff(self) -> None:
+        seed = Path(self.tmpdir) / "seed.json"
+        live = Path(self.tmpdir) / "live.json"
+        seed.write_text(json.dumps([{"key": "a"}]))
+        live.write_text(json.dumps([{"key": "a"}, {"key": "b"}]))
+        self.assertEqual(ssdc.vscode_drift(seed, live), "2 bindings live vs 1 in seed")
+
+    def test_vscode_drift_list_same_length_content_differs(self) -> None:
+        seed = Path(self.tmpdir) / "seed.json"
+        live = Path(self.tmpdir) / "live.json"
+        seed.write_text(json.dumps([{"key": "a"}]))
+        live.write_text(json.dumps([{"key": "b"}]))
+        self.assertEqual(
+            ssdc.vscode_drift(seed, live), "binding definitions differ (1 bindings)"
+        )
+
+    def test_vscode_drift_jsonc_comment_still_reports_generic_fallback(self) -> None:
+        """A live file with `//` comments fails to parse as JSON, but the
+        raw-text compare must still catch the drift rather than silently
+        returning "" just because the parse step failed."""
+        seed = Path(self.tmpdir) / "seed.json"
+        live = Path(self.tmpdir) / "live.json"
+        seed.write_text(json.dumps({"a": 1}))
+        live.write_text('// a comment\n{"a": 1, "b": 2}')
+        self.assertEqual(
+            ssdc.vscode_drift(seed, live), "content differs from the repo copy"
+        )
+
+    def test_vscode_drift_missing_file_is_nothing_to_compare(self) -> None:
+        seed = Path(self.tmpdir) / "seed.json"
+        live = Path(self.tmpdir) / "live.json"
+        seed.write_text('{"a": 1}')
+        self.assertEqual(ssdc.vscode_drift(seed, live), "")
+
+    # ── vscode_seed_path ─────────────────────────────────────────────────
+
+    def test_vscode_seed_path_no_profile_split(self) -> None:
+        self.assertEqual(
+            ssdc.vscode_seed_path("settings.json"),
+            self.dotfiles / "vscode" / "settings.json",
+        )
+        self.mark_work()
+        self.assertEqual(
+            ssdc.vscode_seed_path("settings.json"),
+            self.dotfiles / "vscode" / "settings.json",
+        )
+
+    def test_vscode_seed_path_accepts_root_override(self) -> None:
+        custom_root = Path(self.tmpdir) / "alt3"
+        self.assertEqual(
+            ssdc.vscode_seed_path("keybindings.json", custom_root),
+            custom_root / "vscode" / "keybindings.json",
+        )
+
+    # ── cmd_check: VS Code block ─────────────────────────────────────────
+
+    def test_check_vscode_silent_when_user_dir_none(self) -> None:
+        self.write_vscode_seed("settings.json", '{"a": 1}')
+        self.write_live_vscode("settings.json", '{"a": 2}')
+        with patch.object(ssdc, "_vscode_wsl_user_dir", lambda: None):
+            out, code = self.run_check()
+        self.assertEqual(out, "")
+        self.assertEqual(code, 0)
+
+    def test_check_vscode_silent_when_no_drift(self) -> None:
+        self.write_vscode_seed("settings.json", '{"a": 1}\n')
+        self.write_live_vscode("settings.json", '{"a": 1}\n')
+        with patch.object(ssdc, "_vscode_wsl_user_dir", lambda: self.vscode_user_dir()):
+            out, code = self.run_check()
+        self.assertEqual(out, "")
+        self.assertEqual(code, 0)
+
+    def test_check_vscode_reports_drift_with_sync_to_seed_wording(self) -> None:
+        """Callout that only sync-to-seed applies (not fix) — without it a
+        user reflexively runs `fix`, gets no feedback, and assumes it
+        silently failed."""
+        self.write_vscode_seed("settings.json", '{"a": 1}')
+        self.write_live_vscode("settings.json", '{"a": 2}')
+        with patch.object(ssdc, "_vscode_wsl_user_dir", lambda: self.vscode_user_dir()):
+            out, code = self.run_check()
+        self.assertIn("settings.json", out)
+        self.assertIn("sync-to-seed", out)
+        self.assertNotRegex(out, r"run `[^`]*\bfix`")
+        self.assertEqual(code, 0)
+
+    # ── cmd_sync_to_seed: VS Code block ──────────────────────────────────
+
+    def test_sync_vscode_writes_seed_from_live_with_backup(self) -> None:
+        self.write_vscode_seed("settings.json", '{"a": 1}\n')
+        self.write_live_vscode("settings.json", '{"a": 2}\n')
+        with patch.object(ssdc, "_vscode_wsl_user_dir", lambda: self.vscode_user_dir()):
+            out, code = self.run_sync()
+        self.assertEqual(code, 0)
+        self.assertIn("synced", out)
+        self.assertEqual(
+            (self.dotfiles / "vscode" / "settings.json").read_text(), '{"a": 2}\n'
+        )
+        backups = list((self.dotfiles / "vscode").glob("settings.json.bak.*"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_text(), '{"a": 1}\n')
+
+    def test_sync_vscode_jsonc_comments_succeed_where_json_parse_would_fail(
+        self,
+    ) -> None:
+        self.write_vscode_seed("settings.json", '{"a": 1}\n')
+        live_text = '// user comment\n{"a": 1, "b": 2}\n'
+        self.write_live_vscode("settings.json", live_text)
+        with patch.object(ssdc, "_vscode_wsl_user_dir", lambda: self.vscode_user_dir()):
+            _out, code = self.run_sync()
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            (self.dotfiles / "vscode" / "settings.json").read_text(), live_text
+        )
+
+    def test_sync_vscode_noop_when_user_dir_none(self) -> None:
+        self.write_vscode_seed("settings.json", '{"a": 1}\n')
+        with patch.object(ssdc, "_vscode_wsl_user_dir", lambda: None):
+            out, code = self.run_sync()
+        self.assertEqual(out, "")
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            (self.dotfiles / "vscode" / "settings.json").read_text(), '{"a": 1}\n'
+        )
+
+    def test_sync_vscode_noop_when_live_missing(self) -> None:
+        self.write_vscode_seed("settings.json", '{"a": 1}\n')
+        with patch.object(ssdc, "_vscode_wsl_user_dir", lambda: self.vscode_user_dir()):
+            out, code = self.run_sync()
+        self.assertEqual(out, "")
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            (self.dotfiles / "vscode" / "settings.json").read_text(), '{"a": 1}\n'
+        )
+
+    def test_sync_vscode_respects_dotfiles_root_override(self) -> None:
+        custom_root = Path(self.tmpdir) / "vscode-alt-root"
+        (custom_root / "vscode").mkdir(parents=True)
+        (custom_root / "vscode" / "settings.json").write_text('{"a": 1}\n')
+        self.write_live_vscode("settings.json", '{"a": 2}\n')
+        with patch.object(ssdc, "_vscode_wsl_user_dir", lambda: self.vscode_user_dir()):
+            _out, code = self.run_sync(root=custom_root)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            (custom_root / "vscode" / "settings.json").read_text(), '{"a": 2}\n'
+        )
+        self.assertFalse((self.dotfiles / "vscode" / "settings.json").exists())
 
 
 if __name__ == "__main__":

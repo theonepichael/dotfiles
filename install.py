@@ -1161,7 +1161,11 @@ def _vscode_wsl_user_dir() -> Path | None:
 
 
 def install_symlinks(ctx: Context, specs: Sequence[LinkSpec]) -> None:
-    """Link every applicable ``links.toml`` entry, plus the WSL VS Code case."""
+    """Link every applicable ``links.toml`` entry.
+
+    The WSL VS Code case isn't handled here even though it's a symlink
+    candidate everywhere else: see ``seed_vscode_settings``.
+    """
     _header("==> Symlinking dotfiles...")
 
     if ctx.opts.profile == "work":
@@ -1171,17 +1175,6 @@ def install_symlinks(ctx: Context, specs: Sequence[LinkSpec]) -> None:
         if not link_applies(spec, ctx):
             continue
         symlink(ctx, ctx.dotfiles / spec.src, expand_dest(spec.dest, ctx.home))
-
-    if ctx.is_wsl:
-        user_dir = _vscode_wsl_user_dir()
-        if user_dir is None:
-            ctx.reporter.skip(
-                "VS Code settings",
-                "WSL detected but no Windows-side 'code' CLI found on PATH",
-            )
-        else:
-            for name in ("settings.json", "keybindings.json"):
-                symlink(ctx, ctx.dotfiles / "vscode" / name, user_dir / name)
 
 
 # ── copy-once seeds and drift detection ───────────────────────────────────────
@@ -1243,6 +1236,101 @@ def describe_opencode_drift(seed: Path, live: Path) -> str:
             "opencode.jsonc (allowlist bypass) — delete the file and re-run to fix"
         )
     return ", ".join(json_key_drift(*pair))
+
+
+def describe_vscode_drift(seed: Path, live: Path) -> str:
+    """Describe how a live VS Code settings/keybindings file diverged from its seed.
+
+    Text equality is the definitive drift signal, not JSON equality: VS
+    Code's live files are legal JSONC (``//`` comments, trailing commas),
+    which ``json.loads`` can't parse, so a JSON-first check would miss real
+    drift whenever the live file merely contains a comment. JSON parsing
+    below only runs after text drift is already confirmed, purely to
+    enrich the message. A missing seed or live file means there's nothing
+    to compare — not a difference to report.
+    """
+    if not seed.is_file() or not live.is_file():
+        return ""
+    seed_text = seed.read_text(encoding="utf-8")
+    live_text = live.read_text(encoding="utf-8")
+    if seed_text == live_text:
+        return ""
+
+    try:
+        seed_data: object = json.loads(seed_text)
+    except json.JSONDecodeError:
+        seed_data = None
+    try:
+        live_data: object = json.loads(live_text)
+    except json.JSONDecodeError:
+        live_data = None
+
+    if isinstance(seed_data, dict) and isinstance(live_data, dict):
+        return ", ".join(json_key_drift(seed_data, live_data))
+    if isinstance(seed_data, list) and isinstance(live_data, list):
+        if len(seed_data) != len(live_data):
+            return f"{len(live_data)} bindings live vs {len(seed_data)} in seed"
+        return f"binding definitions differ ({len(live_data)} bindings)"
+    return "content differs from the repo copy"
+
+
+def _replace_stale_vscode_symlink(ctx: Context, dest: Path) -> None:
+    """Remove a stale WSL-only VS Code symlink so ``seed_file`` copies for real.
+
+    A symlink WSL creates on a DrvFs path uses a private WSL-only reparse
+    tag that native Windows processes — including VS Code itself — can't
+    resolve. ``dest.is_file()`` still reports True for the dead link (it
+    resolves fine from WSL), so without this, ``seed_file``'s "already
+    seeded" check would treat a machine stuck in the broken symlink state
+    as done and never migrate it to a real copy.
+    """
+    if not dest.is_symlink():
+        return
+    if ctx.opts.dry_run:
+        _preview(
+            f"would remove stale WSL symlink at {ctx.display(dest)} and copy instead"
+        )
+        return
+    dest.unlink()
+
+
+def seed_vscode_settings(ctx: Context) -> list[tuple[str, tuple[str, str]]]:
+    """Seed the Windows-side VS Code settings.json and keybindings.json under WSL.
+
+    These can't be symlinked (see ``install_symlinks``'s docstring): a
+    WSL-side symlink onto a DrvFs path is unreadable by native Windows
+    processes, so they're copy-once seeds like Claude Code's settings.json
+    and opencode's opencode.jsonc, just forced by an OS limitation instead
+    of a live-rewrite one.
+
+    Returns:
+        ``[(display path, (seed filename, drift description)), ...]``, one
+        entry per file, or ``[]`` when not applicable (not WSL, or WSL
+        without a Windows-side ``code`` CLI on PATH).
+    """
+    if not ctx.is_wsl:
+        return []
+    user_dir = _vscode_wsl_user_dir()
+    if user_dir is None:
+        ctx.reporter.skip(
+            "VS Code settings",
+            "WSL detected but no Windows-side 'code' CLI found on PATH",
+        )
+        return []
+    results: list[tuple[str, tuple[str, str]]] = []
+    for name in ("settings.json", "keybindings.json"):
+        seed = ctx.dotfiles / "vscode" / name
+        dest = user_dir / name
+        _replace_stale_vscode_symlink(ctx, dest)
+        drift = seed_file(
+            ctx,
+            seed,
+            dest,
+            skip_label=f"{name} seed",
+            drift=describe_vscode_drift,
+        )
+        results.append((ctx.display(dest), (name, drift)))
+    return results
 
 
 def _load_json_pair(
@@ -1845,7 +1933,10 @@ def _rollback_backup(
 
 
 def print_summary(
-    ctx: Context, settings: tuple[str, str], opencode: tuple[str, str]
+    ctx: Context,
+    settings: tuple[str, str],
+    opencode: tuple[str, str],
+    vscode: Sequence[tuple[str, tuple[str, str]]] = (),
 ) -> None:
     """Print the loud end-of-run summary: skips, drift, and next steps."""
     dry = ctx.opts.dry_run
@@ -1865,6 +1956,7 @@ def print_summary(
     for path, (seed_name, drift) in (
         ("~/.claude/settings.json", settings),
         ("~/.config/opencode/opencode.jsonc", opencode),
+        *vscode,
     ):
         if drift:
             print(PALETTE.warn(f"⚠ {path} drifted from {seed_name}: {drift}"))
@@ -1922,6 +2014,7 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
     install_symlinks(ctx, specs)
     opencode_drift = seed_opencode_config(ctx)
     settings_drift = seed_claude_settings(ctx)
+    vscode_drift = seed_vscode_settings(ctx)
 
     if ctx.is_mac:
         import_rectangle_prefs(ctx)
@@ -1933,7 +2026,7 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
     bootstrap_neovim(ctx)
     write_profile_marker(ctx)
 
-    print_summary(ctx, settings_drift, opencode_drift)
+    print_summary(ctx, settings_drift, opencode_drift, vscode_drift)
     return 1 if ctx.reporter.skipped else 0
 
 
