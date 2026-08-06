@@ -1,5 +1,6 @@
 .DS_Store
 *.bak
+*.bak.*
 .secrets
 __pycache__/
 .ruff_cache/

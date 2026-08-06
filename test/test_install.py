@@ -464,6 +464,160 @@ def test_drift_helpers_on_raw_dicts():
     assert install.opencode_bypass_drift({}, {}) == []
 
 
+# ── vscode WSL seeding ───────────────────────────────────────────────────────
+
+
+def test_seed_vscode_settings_noop_off_wsl(home):
+    ctx = make_ctx(home, is_wsl=False)
+    assert install.seed_vscode_settings(ctx) == []
+    assert not ctx.reporter.skipped
+
+
+def test_seed_vscode_settings_skips_without_windows_code_cli(home, monkeypatch):
+    monkeypatch.setattr(install, "_vscode_wsl_user_dir", lambda: None)
+    ctx = make_ctx(home, is_wsl=True)
+    assert install.seed_vscode_settings(ctx) == []
+    assert ctx.reporter.skipped == [
+        "VS Code settings — WSL detected but no Windows-side 'code' CLI found on PATH"
+    ]
+
+
+def test_seed_vscode_settings_fresh_copy_records_manifest(home, monkeypatch):
+    vscode_dir = home / "winappdata"
+    vscode_dir.mkdir()
+    monkeypatch.setattr(install, "_vscode_wsl_user_dir", lambda: vscode_dir)
+    ctx = make_ctx(home, is_wsl=True)
+
+    results = install.seed_vscode_settings(ctx)
+
+    names = {name for _, (name, _) in results}
+    assert names == {"settings.json", "keybindings.json"}
+    for name in ("settings.json", "keybindings.json"):
+        dest = vscode_dir / name
+        assert dest.is_file() and not dest.is_symlink()
+        assert dest.read_text() == (REPO_ROOT / "vscode" / name).read_text()
+    assert {e["dest"] for e in kinds(ctx, "file-copied")} == {
+        str(vscode_dir / "settings.json"),
+        str(vscode_dir / "keybindings.json"),
+    }
+    assert all(drift == "" for _, (_, drift) in results)
+
+
+def test_seed_vscode_settings_migrates_stale_symlink(home, monkeypatch):
+    vscode_dir = home / "winappdata"
+    vscode_dir.mkdir()
+    monkeypatch.setattr(install, "_vscode_wsl_user_dir", lambda: vscode_dir)
+    ctx = make_ctx(home, is_wsl=True)
+
+    old_target = home / "old_settings.json"
+    old_target.write_text('{"old": true}')
+    dest = vscode_dir / "settings.json"
+    dest.symlink_to(old_target)
+    assert dest.is_symlink()
+
+    install.seed_vscode_settings(ctx)
+
+    assert dest.is_file() and not dest.is_symlink()
+    assert dest.read_text() == (REPO_ROOT / "vscode" / "settings.json").read_text()
+
+
+def test_seed_vscode_settings_migration_dry_run_previews_and_changes_nothing(
+    home, monkeypatch, capsys
+):
+    vscode_dir = home / "winappdata"
+    vscode_dir.mkdir()
+    monkeypatch.setattr(install, "_vscode_wsl_user_dir", lambda: vscode_dir)
+    ctx = make_ctx(home, is_wsl=True, dry_run=True)
+
+    old_target = home / "old_settings.json"
+    old_target.write_text('{"old": true}')
+    dest = vscode_dir / "settings.json"
+    dest.symlink_to(old_target)
+    # Keep keybindings.json out of the picture — a plain not-yet-seeded
+    # file there would legitimately hit seed_file's own "would copy"
+    # preview branch, which isn't what this test is about.
+    (vscode_dir / "keybindings.json").write_text(
+        (REPO_ROOT / "vscode" / "keybindings.json").read_text()
+    )
+
+    install.seed_vscode_settings(ctx)
+
+    out = capsys.readouterr().out
+    assert "would remove stale WSL symlink" in out
+    assert "would copy" not in out
+    assert dest.is_symlink()
+    assert dest.resolve() == old_target.resolve()
+
+
+def test_seed_vscode_settings_reports_drift_when_content_differs(home, monkeypatch):
+    vscode_dir = home / "winappdata"
+    vscode_dir.mkdir()
+    monkeypatch.setattr(install, "_vscode_wsl_user_dir", lambda: vscode_dir)
+    ctx = make_ctx(home, is_wsl=True)
+    install.seed_vscode_settings(ctx)
+
+    dest = vscode_dir / "settings.json"
+    live = json.loads(dest.read_text())
+    live["editor.fontSize"] = 999
+    dest.write_text(json.dumps(live))
+
+    results = install.seed_vscode_settings(make_ctx(home, is_wsl=True))
+    drift_by_name = {name: drift for _, (name, drift) in results}
+    assert drift_by_name["settings.json"] != ""
+    assert drift_by_name["keybindings.json"] == ""
+
+
+def test_describe_vscode_drift_identical_content_is_no_drift(tmp_path):
+    seed = tmp_path / "seed.json"
+    live = tmp_path / "live.json"
+    seed.write_text('{"a": 1}')
+    live.write_text('{"a": 1}')
+    assert install.describe_vscode_drift(seed, live) == ""
+
+
+def test_describe_vscode_drift_dict_key_diff(tmp_path):
+    seed = tmp_path / "seed.json"
+    live = tmp_path / "live.json"
+    seed.write_text(json.dumps({"a": 1, "b": 2}))
+    live.write_text(json.dumps({"a": 1, "b": 3}))
+    assert install.describe_vscode_drift(seed, live) == "b"
+
+
+def test_describe_vscode_drift_list_length_diff(tmp_path):
+    seed = tmp_path / "seed.json"
+    live = tmp_path / "live.json"
+    seed.write_text(json.dumps([{"key": "a"}]))
+    live.write_text(json.dumps([{"key": "a"}, {"key": "b"}]))
+    assert install.describe_vscode_drift(seed, live) == "2 bindings live vs 1 in seed"
+
+
+def test_describe_vscode_drift_list_same_length_content_differs(tmp_path):
+    seed = tmp_path / "seed.json"
+    live = tmp_path / "live.json"
+    seed.write_text(json.dumps([{"key": "a"}]))
+    live.write_text(json.dumps([{"key": "b"}]))
+    assert (
+        install.describe_vscode_drift(seed, live)
+        == "binding definitions differ (1 bindings)"
+    )
+
+
+def test_describe_vscode_drift_jsonc_comment_still_reports_generic_fallback(tmp_path):
+    seed = tmp_path / "seed.json"
+    live = tmp_path / "live.json"
+    seed.write_text(json.dumps({"a": 1}))
+    live.write_text('// a comment\n{"a": 1, "b": 2}')
+    drift = install.describe_vscode_drift(seed, live)
+    assert drift == "content differs from the repo copy"
+
+
+def test_describe_vscode_drift_missing_file_is_nothing_to_compare(tmp_path):
+    seed = tmp_path / "seed.json"
+    live = tmp_path / "live.json"
+    seed.write_text('{"a": 1}')
+    assert install.describe_vscode_drift(seed, live) == ""
+
+
 # ── history + rollback ────────────────────────────────────────────────────────
 
 
