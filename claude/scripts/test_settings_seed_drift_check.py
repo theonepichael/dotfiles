@@ -54,6 +54,11 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
     ) -> None:
         (self.claude_dir / name).write_text(json.dumps(body, indent=2) + "\n")
 
+    def write_settings_seed_raw(
+        self, text: str, *, name: str = "settings.json"
+    ) -> None:
+        (self.claude_dir / name).write_text(text)
+
     def write_live_settings(self, body: dict[str, object]) -> None:
         live_dir = self.home / ".claude"
         live_dir.mkdir(parents=True, exist_ok=True)
@@ -96,6 +101,14 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
             code = ssdc.cmd_fix()
         return out.getvalue().strip(), code
 
+    def run_sync(self, root: Path | None = None) -> tuple[str, int]:
+        out = io.StringIO()
+        err = io.StringIO()
+        target_root = root if root is not None else self.dotfiles
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            code = ssdc.cmd_sync_to_seed(target_root)
+        return out.getvalue().strip(), code
+
     def load_live_settings(self) -> dict[str, object]:
         return json.loads((self.home / ".claude" / "settings.json").read_text())
 
@@ -103,6 +116,12 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         return json.loads(
             (self.home / ".config" / "opencode" / "opencode.jsonc").read_text()
         )
+
+    def load_settings_seed(self, name: str = "settings.json") -> dict[str, object]:
+        return json.loads((self.claude_dir / name).read_text())
+
+    def load_opencode_seed(self) -> dict[str, object]:
+        return json.loads((self.opencode_dir / "opencode.jsonc").read_text())
 
     # ── _non_cosmetic_drift unit (denylist, not allowlist) ──────────────
 
@@ -498,6 +517,191 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         out, code = self.run_fix()
         self.assertNotEqual(code, 0)
         self.assertIn("cannot fix", out)
+
+    # ── cmd_sync_to_seed: reverse direction (live -> seed) ──────────────
+
+    def test_sync_hooks_wholesale_mirrored_live_to_seed(self) -> None:
+        self.write_settings_seed({"permissions": {"allow": []}})
+        live_hooks = {
+            "SessionStart": [{"hooks": [{"type": "command", "command": "X"}]}]
+        }
+        self.write_live_settings({"permissions": {"allow": []}, "hooks": live_hooks})
+        out, code = self.run_sync()
+        self.assertEqual(code, 0)
+        seed = self.load_settings_seed()
+        self.assertEqual(seed["hooks"], live_hooks)
+        self.assertIn("mirrored from live", out)
+        backups = list(self.claude_dir.glob("settings.json.bak.*"))
+        self.assertEqual(len(backups), 1)
+
+    def test_sync_hooks_dropped_when_live_has_none(self) -> None:
+        self.write_settings_seed(
+            {"permissions": {"allow": []}, "hooks": {"StaleDrift": []}}
+        )
+        self.write_live_settings({"permissions": {"allow": []}})
+        out, code = self.run_sync()
+        self.assertEqual(code, 0)
+        seed = self.load_settings_seed()
+        self.assertNotIn("hooks", seed)
+        self.assertIn("dropped from seed", out)
+
+    def test_sync_is_no_op_when_hooks_already_match(self) -> None:
+        shared_hooks = {"SessionStart": []}
+        self.write_settings_seed({"permissions": {"allow": []}, "hooks": shared_hooks})
+        self.write_live_settings({"permissions": {"allow": []}, "hooks": shared_hooks})
+        out, code = self.run_sync()
+        self.assertEqual(out, "")
+        self.assertEqual(code, 0)
+        backups = list(self.claude_dir.glob("settings.json.bak.*"))
+        self.assertEqual(len(backups), 0)
+
+    def test_sync_settings_permissions_never_written_only_reported(self) -> None:
+        self.write_settings_seed(
+            {"permissions": {"allow": ["Bash(SEED)"]}, "hooks": {}}
+        )
+        self.write_live_settings(
+            {
+                "permissions": {"allow": ["Bash(SEED)", "Bash(LIVE_ONLY)"]},
+                "hooks": {},
+            }
+        )
+        out, code = self.run_sync()
+        self.assertEqual(code, 0)
+        seed = self.load_settings_seed()
+        self.assertEqual(seed["permissions"]["allow"], ["Bash(SEED)"])  # type: ignore[index]
+        self.assertIn("permissions live-only", out)
+        self.assertIn("Bash(LIVE_ONLY)", out)
+        backups = list(self.claude_dir.glob("settings.json.bak.*"))
+        self.assertEqual(len(backups), 0)
+
+    def test_sync_opencode_permission_bash_missing_key_reported(self) -> None:
+        seed_oc = {"permission": {"bash": {"git status*": "allow"}}}
+        self.write_settings_seed({"permissions": {"allow": []}})
+        self.write_opencode_seed(seed_oc)
+        self.write_live_opencode(
+            {"permission": {"bash": {"git status*": "allow", "npm run*": "allow"}}}
+        )
+        out, code = self.run_sync()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.load_opencode_seed(), seed_oc)
+        self.assertIn("live-only", out)
+        self.assertIn("npm run*", out)
+
+    def test_sync_opencode_permission_bash_value_mismatch_reported(self) -> None:
+        seed_oc = {"permission": {"bash": {"rm -f *": "ask"}}}
+        self.write_settings_seed({"permissions": {"allow": []}})
+        self.write_opencode_seed(seed_oc)
+        self.write_live_opencode({"permission": {"bash": {"rm -f *": "allow"}}})
+        out, code = self.run_sync()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.load_opencode_seed(), seed_oc)
+        self.assertIn("differs", out)
+        self.assertIn("live=", out)
+        self.assertIn("seed=", out)
+
+    def test_sync_opencode_no_hooks_equivalent_written(self) -> None:
+        seed_oc = {"$schema": "x"}
+        self.write_settings_seed({"permissions": {"allow": []}})
+        self.write_opencode_seed(seed_oc)
+        self.write_live_opencode({"$schema": "y", "agent": "z"})
+        _out, code = self.run_sync()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.load_opencode_seed(), seed_oc)
+
+    def test_sync_creates_backup_before_write(self) -> None:
+        self.write_settings_seed({"permissions": {"allow": []}, "hooks": {}})
+        self.write_live_settings({"permissions": {"allow": []}, "hooks": {"X": []}})
+        self.run_sync()
+        backups = list(self.claude_dir.glob("settings.json.bak.*"))
+        self.assertEqual(len(backups), 1)
+        backup_content = json.loads(backups[0].read_text())
+        self.assertEqual(backup_content["hooks"], {})
+
+    def test_sync_silent_when_nothing_to_sync(self) -> None:
+        self.write_settings_seed({"permissions": {"allow": ["Bash(X)"]}, "hooks": {}})
+        self.write_live_settings({"permissions": {"allow": ["Bash(X)"]}, "hooks": {}})
+        out, code = self.run_sync()
+        self.assertEqual(out, "")
+        self.assertEqual(code, 0)
+
+    def test_sync_loudfails_on_unparseable_live_settings(self) -> None:
+        self.write_settings_seed({"permissions": {"allow": []}})
+        self.write_live_settings_raw("{ broken json")
+        out, code = self.run_sync()
+        self.assertNotEqual(code, 0)
+        self.assertIn("cannot sync", out)
+
+    def test_sync_loudfails_on_unparseable_seed(self) -> None:
+        self.write_settings_seed_raw("{ broken json")
+        self.write_live_settings({"permissions": {"allow": []}})
+        out, code = self.run_sync()
+        self.assertNotEqual(code, 0)
+        self.assertIn("cannot sync", out)
+        self.assertIn("seed", out)
+
+    def test_sync_missing_seed_file_is_silent_noop(self) -> None:
+        self.write_live_settings({"permissions": {"allow": []}})
+        out, code = self.run_sync()
+        self.assertEqual(out, "")
+        self.assertEqual(code, 0)
+        self.assertFalse((self.claude_dir / "settings.json").exists())
+
+    def test_sync_missing_live_file_is_silent_noop(self) -> None:
+        seed = {"permissions": {"allow": []}, "hooks": {}}
+        self.write_settings_seed(seed)
+        out, code = self.run_sync()
+        self.assertEqual(out, "")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.load_settings_seed(), seed)
+
+    def test_sync_respects_dotfiles_root_override(self) -> None:
+        custom_root = Path(self.tmpdir) / "other-dotfiles"
+        (custom_root / "claude").mkdir(parents=True)
+        (custom_root / "claude" / "settings.json").write_text(
+            json.dumps({"permissions": {"allow": []}})
+        )
+        self.write_live_settings({"permissions": {"allow": []}, "hooks": {"X": []}})
+        _out, code = self.run_sync(root=custom_root)
+        self.assertEqual(code, 0)
+        seed_after = json.loads((custom_root / "claude" / "settings.json").read_text())
+        self.assertEqual(seed_after["hooks"], {"X": []})
+        self.assertFalse((self.claude_dir / "settings.json").exists())
+
+    def test_sync_rejects_missing_dotfiles_root(self) -> None:
+        nonexistent_root = Path(self.tmpdir) / "does-not-exist"
+        out, code = self.run_sync(root=nonexistent_root)
+        self.assertEqual(code, 1)
+        self.assertIn("does not exist", out)
+        self.assertFalse(nonexistent_root.exists())
+
+    def test_settings_seed_path_accepts_root_override(self) -> None:
+        custom_root = Path(self.tmpdir) / "alt"
+        (custom_root / "claude").mkdir(parents=True)
+        self.assertEqual(
+            ssdc.settings_seed_path(custom_root),
+            custom_root / "claude" / "settings.json",
+        )
+        self.mark_work()
+        self.assertEqual(
+            ssdc.settings_seed_path(custom_root),
+            custom_root / "claude" / "settings.work.json",
+        )
+
+    def test_opencode_seed_path_accepts_root_override(self) -> None:
+        custom_root = Path(self.tmpdir) / "alt2"
+        self.assertEqual(
+            ssdc.opencode_seed_path(custom_root),
+            custom_root / "opencode" / "opencode.jsonc",
+        )
+        self.mark_work()
+        self.assertIsNone(ssdc.opencode_seed_path(custom_root))
+
+    def test_main_dispatches_sync_to_seed_via_argparse(self) -> None:
+        custom_root = Path(self.tmpdir) / "argparse-root"
+        with patch.object(ssdc, "cmd_sync_to_seed") as mock_cmd:
+            mock_cmd.return_value = 0
+            ssdc.main(["sync-to-seed", "--dotfiles-root", str(custom_root)])
+        mock_cmd.assert_called_once_with(custom_root)
 
 
 if __name__ == "__main__":
