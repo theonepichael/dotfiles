@@ -87,21 +87,46 @@ Subcommands
             clobbered on the next approval and SessionStart never re-fires
             (the session never restarted). Close your Claude Code
             sessions, then run ``fix``.
+    sync-to-seed
+            the reverse direction: mirror live settings back into the
+            dotfiles seed. For a live-first edit (e.g. testing a
+            SessionStart hook fix immediately in
+            ``~/.claude/settings.json``) that needs forwarding into git.
+
+            * ``hooks``: wholesale-mirrored live->seed (same rationale as
+              fix()'s seed->live direction — hooks aren't live-modified by
+              approval flows, so any divergence is genuine drift).
+            * ``permissions`` / opencode's ``permission.*``: never
+              written, only reported — live approvals are often
+              profile-specific, so a live-only entry isn't necessarily
+              drift to repair.
+
+            No active-session guard needed (unlike ``fix``) — this only
+            writes the seed file, never the live files Claude Code/
+            opencode hold in memory. Same backup-then-atomic-write pattern
+            as ``fix``. Accepts ``--dotfiles-root PATH`` to target a
+            worktree instead of ``~/dotfiles`` (the default) — point it at
+            a fresh worktree per the dotfiles-first git policy rather than
+            writing directly into the main checkout.
 
 Usage
 -----
     settings_seed_drift_check.py           # check (default)
     settings_seed_drift_check.py check
     settings_seed_drift_check.py fix
+    settings_seed_drift_check.py sync-to-seed [--dotfiles-root PATH]
 
 Exits 0 from ``check`` when there is no drift and no parse failure;
 exits nonzero from ``check`` on a parse failure (so the user notices),
 but never blocks the session otherwise. ``fix`` exits 1 when it refused
 to run (active sessions) or hit a parse failure, 0 otherwise.
+``sync-to-seed`` exits 1 on a parse failure or a ``--dotfiles-root`` that
+doesn't exist, 0 otherwise.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
@@ -262,14 +287,18 @@ def resolve_profile() -> str:
         return "personal"
 
 
-def settings_seed_path() -> Path:
-    """Return the seed settings.json path for this machine's profile."""
+def settings_seed_path(root: Path | None = None) -> Path:
+    """Return the seed settings.json path for this machine's profile,
+    under ``root`` (default the ``DOTFILES`` module constant — resolved at
+    call time, not bound at import, so callers that don't pass ``root``
+    still pick up a patched/overridden ``DOTFILES``)."""
     name = "settings.work.json" if resolve_profile() == "work" else "settings.json"
-    return DOTFILES / "claude" / name
+    return (root if root is not None else DOTFILES) / "claude" / name
 
 
-def opencode_seed_path() -> Path | None:
-    """Return the opencode.jsonc seed path, or None on a work machine.
+def opencode_seed_path(root: Path | None = None) -> Path | None:
+    """Return the opencode.jsonc seed path under ``root``, or None on a
+    work machine.
 
     opencode is never installed on a work machine (install.py rejects
     --profile=work --harness=opencode outright), so there's no seed to
@@ -277,7 +306,7 @@ def opencode_seed_path() -> Path | None:
     """
     if resolve_profile() == "work":
         return None
-    return DOTFILES / "opencode" / "opencode.jsonc"
+    return (root if root is not None else DOTFILES) / "opencode" / "opencode.jsonc"
 
 
 # ── drift detection ──────────────────────────────────────────────────────────
@@ -464,6 +493,79 @@ def _hooks_fix(
     if live.get("hooks") != seed_hooks:
         return seed_hooks, "hooks overwritten from seed"
     return None, ""
+
+
+def _hooks_reverse_sync(
+    live: dict[str, object], seed: dict[str, object]
+) -> tuple[object | None, str]:
+    """Decide the wholesale live -> seed action for hooks (sync-to-seed's
+    counterpart to :func:`_hooks_fix`).
+
+    Reuses ``_hooks_fix``'s value computation by calling it with live and
+    seed swapped — that part is genuinely symmetric (first arg is "source
+    of truth", second is "target to overwrite"). But ``_hooks_fix``'s
+    description strings are hardcoded for the seed->live direction
+    ("hooks overwritten from seed"); printing those verbatim here would
+    say "from seed" when the value actually came from live. This wrapper
+    keeps the value logic but supplies its own live->seed-worded
+    description.
+    """
+    new_value, _ = _hooks_fix(live, seed)
+    if new_value is None:
+        return None, ""
+    if new_value == {}:
+        return new_value, "hooks dropped from seed (live has none)"
+    return new_value, "hooks mirrored from live"
+
+
+def _settings_permissions_live_only(
+    seed_perm: dict[str, object], live_perm: dict[str, object]
+) -> list[str]:
+    """Return description fragments like "allow +[...]" for permissions
+    sub-keys (allow/deny/ask) present live but not in seed. These are
+    plain string lists (patterns), so presence is the only signal — there
+    is no per-entry value to diverge. Report-only — never used to write
+    anything."""
+    fragments = []
+    for sub in ("allow", "deny", "ask"):
+        seed_v = seed_perm.get(sub, [])
+        live_v = live_perm.get(sub, [])
+        if not isinstance(seed_v, list) or not isinstance(live_v, list):
+            continue
+        missing = [e for e in live_v if e not in seed_v]
+        if missing:
+            fragments.append(f"{sub} +{missing!r}")
+    return fragments
+
+
+def _opencode_permission_live_only(
+    seed_perm: dict[str, object], live_perm: dict[str, object]
+) -> list[str]:
+    """Same idea for opencode's ``permission.bash`` and
+    ``permission.external_directory`` — both dicts of pattern/path ->
+    verdict. Unlike settings.json's lists, a shared key can carry a
+    *different* verdict live vs seed (e.g. "ask" -> "allow"), which is
+    real drift even though the key exists in both — so both presence and
+    value mismatches are reported."""
+    fragments = []
+    for sub in ("bash", "external_directory"):
+        seed_d = seed_perm.get(sub, {})
+        live_d = live_perm.get(sub, {})
+        if not isinstance(seed_d, dict) or not isinstance(live_d, dict):
+            continue
+        parts = []
+        missing = [k for k in live_d if k not in seed_d]
+        if missing:
+            parts.append(f"+{missing!r}")
+        differing = [k for k in live_d if k in seed_d and live_d[k] != seed_d[k]]
+        if differing:
+            detail = ", ".join(
+                f"{k!r} live={live_d[k]!r} seed={seed_d[k]!r}" for k in differing
+            )
+            parts.append(f"differs[{detail}]")
+        if parts:
+            fragments.append(f"{sub} " + " ".join(parts))
+    return fragments
 
 
 def _merge_opencode_permission(
@@ -705,6 +807,99 @@ def _fix_opencode_file(live_path: Path, seed_path: Path) -> int:
     return 0
 
 
+# ── sync-to-seed: reverse direction (live -> seed) ─────────────────────────
+
+
+def _sync_settings_to_seed(live_path: Path, seed_path: Path) -> int:
+    """Mirror live settings.json back into the seed. Return 0 on success
+    or no-action, 1 on parse failure.
+
+    hooks are wholesale-mirrored live->seed (they're not live-modified by
+    approval flows, so any divergence is genuine drift, same rationale as
+    fix()'s seed->live direction). permissions are never written here —
+    live approvals are often profile-specific — only reported.
+    """
+    try:
+        live = _load_json_strict(live_path)
+    except FileNotFoundError:
+        return 0  # no live file → nothing to sync
+    except DriftCheckError as exc:
+        _print_loud(f"[settings_seed_drift_check] cannot sync {live_path}: {exc}")
+        return 1
+    try:
+        seed = _load_json_strict(seed_path)
+    except FileNotFoundError:
+        return 0  # no seed → silent no-op
+    except DriftCheckError as exc:
+        _print_loud(
+            f"[settings_seed_drift_check] cannot sync — seed {seed_path} unparseable: {exc}"
+        )
+        return 1
+
+    new_hooks, hook_desc = _hooks_reverse_sync(live, seed)
+
+    report_lines: list[str] = []
+    live_perm = live.get("permissions", {})
+    seed_perm = seed.get("permissions", {})
+    if isinstance(live_perm, dict) and isinstance(seed_perm, dict):
+        fragments = _settings_permissions_live_only(seed_perm, live_perm)
+        if fragments:
+            report_lines.append(
+                f"settings.json permissions live-only (not synced): {', '.join(fragments)}"
+            )
+
+    if new_hooks is not None:
+        if new_hooks == {}:
+            seed.pop("hooks", None)
+        else:
+            seed["hooks"] = new_hooks  # type: ignore[assignment]
+        stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+        backup = seed_path.with_suffix(seed_path.suffix + f".bak.{stamp}")
+        shutil.copy2(seed_path, backup)
+        _atomic_write(seed_path, seed)
+        print(
+            f"settings_seed_drift_check: synced {seed_path} "
+            f"({hook_desc}) — backup at {backup}"
+        )
+
+    for line in report_lines:
+        print(line)
+    return 0
+
+
+def _sync_opencode_to_seed(live_path: Path, seed_path: Path) -> int:
+    """Mirror live opencode.jsonc permission drift back into the seed as a
+    report only — there is no hooks-equivalent key in opencode.jsonc, so
+    nothing is ever wholesale-written for this file. Return 0 on success,
+    1 on parse failure."""
+    try:
+        live = _load_json_strict(live_path)
+    except FileNotFoundError:
+        return 0
+    except DriftCheckError as exc:
+        _print_loud(f"[settings_seed_drift_check] cannot sync {live_path}: {exc}")
+        return 1
+    try:
+        seed = _load_json_strict(seed_path)
+    except FileNotFoundError:
+        return 0
+    except DriftCheckError as exc:
+        _print_loud(
+            f"[settings_seed_drift_check] cannot sync — seed {seed_path} unparseable: {exc}"
+        )
+        return 1
+
+    live_perm = live.get("permission", {})
+    seed_perm = seed.get("permission", {})
+    if isinstance(live_perm, dict) and isinstance(seed_perm, dict):
+        fragments = _opencode_permission_live_only(seed_perm, live_perm)
+        if fragments:
+            print(
+                f"opencode.jsonc permission live-only (not synced): {', '.join(fragments)}"
+            )
+    return 0
+
+
 # ── active-session detection ─────────────────────────────────────────────────
 
 
@@ -824,18 +1019,48 @@ def cmd_fix() -> int:
     return exit_code
 
 
-def main() -> int:
-    args = sys.argv[1:]
-    subcommand = args[0] if args else "check"
+def cmd_sync_to_seed(dotfiles_root: Path) -> int:
+    """Mirror live settings back into the dotfiles seed (reverse of
+    fix()). No active-session guard needed — this only writes the seed
+    file in ``dotfiles_root``, never the live files Claude Code/opencode
+    hold in memory for a session's lifetime."""
+    if not dotfiles_root.is_dir():
+        _print_loud(
+            f"[settings_seed_drift_check] --dotfiles-root {dotfiles_root} "
+            "does not exist or is not a directory."
+        )
+        return 1
+
+    exit_code = 0
+    settings_live = HOME / ".claude" / "settings.json"
+    settings_seed = settings_seed_path(dotfiles_root)
+    exit_code = _sync_settings_to_seed(settings_live, settings_seed) or exit_code
+
+    oc_seed = opencode_seed_path(dotfiles_root)
+    if oc_seed is not None:
+        oc_live = HOME / ".config" / "opencode" / "opencode.jsonc"
+        exit_code = _sync_opencode_to_seed(oc_live, oc_seed) or exit_code
+
+    return exit_code
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="settings_seed_drift_check")
+    subparsers = parser.add_subparsers(dest="subcommand")
+    subparsers.add_parser("check")
+    subparsers.add_parser("fix")
+    sync_parser = subparsers.add_parser("sync-to-seed")
+    sync_parser.add_argument(
+        "--dotfiles-root", type=Path, default=DOTFILES, dest="dotfiles_root"
+    )
+
+    args = parser.parse_args(argv)
+    subcommand = args.subcommand or "check"
     if subcommand == "check":
         return cmd_check()
     if subcommand == "fix":
         return cmd_fix()
-    print(
-        f"settings_seed_drift_check: unknown subcommand {subcommand!r}",
-        file=sys.stderr,
-    )
-    return 2
+    return cmd_sync_to_seed(args.dotfiles_root)
 
 
 if __name__ == "__main__":
