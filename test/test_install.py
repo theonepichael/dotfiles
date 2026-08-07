@@ -557,9 +557,7 @@ def test_seed_vscode_settings_reports_drift_when_content_differs(home, monkeypat
     install.seed_vscode_settings(ctx)
 
     dest = vscode_dir / "settings.json"
-    live = json.loads(dest.read_text())
-    live["editor.fontSize"] = 999
-    dest.write_text(json.dumps(live))
+    dest.write_text(dest.read_text() + "\n// live edit\n")
 
     results = install.seed_vscode_settings(make_ctx(home, is_wsl=True))
     drift_by_name = {name: drift for _, (name, drift) in results}
