@@ -610,6 +610,23 @@ class GuardTests(unittest.TestCase):
             {"items": 2, "pending_items": 1}, {"items": 2, "pending_items": 1}
         )  # no raise
 
+    def test_missing_store_on_one_side_is_not_a_mismatch(self):
+        # A None schema_version means that store's file doesn't exist yet on
+        # that machine (e.g. no pending item ever created there) — not a
+        # real cross-machine disagreement. Must not raise.
+        sync._check_schema_versions(
+            {"items": 2, "pending_items": 1}, {"items": 2, "pending_items": None}
+        )
+        sync._check_schema_versions(
+            {"items": 2, "pending_items": None}, {"items": 2, "pending_items": 1}
+        )
+
+    def test_real_mismatch_still_caught_when_other_store_is_missing(self):
+        with self.assertRaises(sync.SyncFatalError):
+            sync._check_schema_versions(
+                {"items": 2, "pending_items": None}, {"items": 3, "pending_items": None}
+            )
+
 
 # ── local lock (timeout + mutual exclusion) ────────────────────────────────────
 

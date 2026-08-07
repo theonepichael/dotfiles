@@ -650,11 +650,23 @@ def _check_protocol_version(payload: dict[str, object]) -> None:
 def _check_schema_versions(
     local_schema: dict[str, object], remote_schema: dict[str, object]
 ) -> None:
+    """Hard-refuse a genuine cross-machine schema disagreement, per store.
+
+    A ``None`` on either side means that store's file doesn't exist yet on
+    that machine (e.g. no pending item has ever been created there) — the
+    same state ``dev_status.load_pending()`` treats as "no items," not a
+    schema violation. That's not a disagreement to guard against; only
+    compare when both sides actually have a recorded version.
+    """
     for key in ("items", "pending_items"):
-        if local_schema.get(key) != remote_schema.get(key):
+        local_v = local_schema.get(key)
+        remote_v = remote_schema.get(key)
+        if local_v is None or remote_v is None:
+            continue
+        if local_v != remote_v:
             raise SyncFatalError(
-                f"schema_version mismatch for {key}: local={local_schema.get(key)!r} "
-                f"remote={remote_schema.get(key)!r} — refusing to merge"
+                f"schema_version mismatch for {key}: local={local_v!r} "
+                f"remote={remote_v!r} — refusing to merge"
             )
 
 
