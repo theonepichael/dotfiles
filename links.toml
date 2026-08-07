@@ -108,6 +108,14 @@ src = "claude/scripts/dev_status.py"
 dest = "~/.claude/scripts/dev_status.py"
 
 [[link]]
+src = "claude/scripts/dev_status_sync.py"
+dest = "~/.claude/scripts/dev_status_sync.py"
+
+[[link]]
+src = "claude/scripts/test_dev_status_sync.py"
+dest = "~/.claude/scripts/test_dev_status_sync.py"
+
+[[link]]
 src = "claude/scripts/gen_claude_completion.py"
 dest = "~/.claude/scripts/gen_claude_completion.py"
 
