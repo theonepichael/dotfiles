@@ -58,16 +58,31 @@ critiques side by side — not delegated to the reviewer model or to
 deterministic code. A repeated suggestion you already rejected (and noted as
 rejected) does not count as new.
 
-Strip any "Rejected feedback" notes from the plan before showing or saving
-the final version — they're working scratch for the reviewer, not part of
-the plan itself.
+Round-by-round narration inline in the plan while the loop is running —
+"Rejected feedback" notes, "changed in round N" framing, per-round
+"critique point X" cross-references — is legitimate working scratch: the
+reviewer is called statelessly each round, so without some record it will
+just repeat what you already addressed. But before the plan is shown as
+final or saved to disk (converged or capped), do one cleanup pass: move all
+of it out of the plan into a separate critique-notes file, written to
+`<current_plan without its extension>-critique-notes.md` (e.g.
+`~/.claude/data/grill/<topic-slug>-plan-critique-notes.md`) — a
+round-by-round record of what was raised each round, what changed in
+response, and the rejected-feedback rationale. Then rewrite each affected
+step in the plan itself to state the final decision plainly, as if it had
+been correct from the start, and drop any trailing per-round changelog
+section. Downstream tooling (`dev_status.py` `related_files`, a future
+executor session, `grill.py plan_path`) reads the plan file as *the* plan —
+the critique history is a companion artifact, not inline noise in it.
 
 ## On convergence
 
-Show the final revised plan and the summary. If the input came from an
-existing file (e.g. a `grill.py` `plan_path`), confirm before overwriting it —
-`question` tool: `Yes, overwrite (recommended)` / `No, leave as-is`. Never
-silently rewrite a file.
+Show the final revised plan and the summary, and save both files: the
+cleaned-up plan and the critique-notes file described above. If the plan
+came from an existing file (e.g. a `grill.py` `plan_path`), confirm before
+overwriting it — `question` tool: `Yes, overwrite (recommended)` / `No,
+leave as-is`. Never silently rewrite a file. The critique-notes file is new
+each run, so it doesn't need the same overwrite confirmation.
 
 ## On cap-out without convergence
 
