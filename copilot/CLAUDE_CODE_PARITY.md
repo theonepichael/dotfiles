@@ -194,11 +194,12 @@ backlog verbatim.
   official customization docs (*Adding agent skills*, *Using hooks*,
   *Adding custom instructions*, *Invoking custom agents*) exposes an
   AskUserQuestion-style structured multi-choice prompt surface. **Confirmed:
-  Copilot CLI is in the plain-text-question tier** (along with agy and
-  opencode), not the Claude Code tier. The ported skills' existing
-  treatment (plain-text question, recommendation first per CLAUDE.md's
-  "Judgment calls — lead with a recommendation") is correct and needs no
-  change.
+  Copilot CLI is in the plain-text-question tier along with agy** — not
+  opencode, which has its own structured `question` tool (confirmed in its
+  own command/skill files) despite earlier drafts of this doc lumping it
+  in — and not the Claude Code tier. The ported skills' existing treatment
+  (plain-text question, recommendation first per CLAUDE.md's "Judgment
+  calls — lead with a recommendation") is correct and needs no change.
 
 - **Mid-skill delegation works (2026-08-03 finding).** A throwaway
   `~/.copilot/skills/zz-probe-delegation/SKILL.md` whose body said "now use

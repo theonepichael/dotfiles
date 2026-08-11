@@ -6,10 +6,13 @@ implementation so the scope is explicit and reviewable on its own, separate
 from the `--rollback` code today (`install.sh` lines ~130–196, documented in
 `README.md` under "Failures, skips, and rollback").
 
-**Status: implemented.** The "Baseline" section below describes the
-pre-implementation behavior for context; see requirements #1–#4 for what
-changed and `README.md`'s "Failures, skips, and rollback" section for the
-current user-facing behavior.
+**Status: implemented**, including the `--wipe` modifier added afterward (see
+requirement #5, added once the base rollback landed). The "Baseline" section
+below describes the pre-implementation behavior for context; see
+requirements #1–#5 for what changed, `README.md`'s "Failures, skips, and
+rollback" section for the current user-facing behavior, and `install.sh
+--help`/`README.md`'s migration note for the `history.tsv` → `history.jsonl`
+manifest-format change this feature also depended on.
 
 ## Baseline: what `--rollback` does today
 
@@ -59,7 +62,7 @@ when something else on the machine has since come to depend on a package
 
 ### 3. Out of scope: system-level side effects
 
-Explicitly **not** part of this rollback feature — stays file-level only
+Explicitly **not** part of a plain `--rollback` — stays file-level only
 (packages, as covered in #2, are also left untouched):
 
 - watchcommit services: systemd `--user` unit (enable/start,
@@ -71,7 +74,11 @@ Explicitly **not** part of this rollback feature — stays file-level only
 
 Anyone revisiting this later: these were deliberately descoped, not
 overlooked — treat adding them as a separate feature request, not a bug in
-this one.
+this one. **Exception carved out by `--wipe` (requirement #5):** with that
+modifier, the Linux watchcommit systemd `--user` unit *is* disabled and
+stopped. The macOS launchd agent, Caps Lock→Escape remap, and Rectangle
+preferences remain untouched even under `--wipe` — none of them have a clean
+filesystem-delete equivalent.
 
 ### 4. Failure handling: skip-and-report
 
@@ -83,6 +90,26 @@ logged via the same skip-and-report mechanism and rollback continues with
 everything else. End with a loud summary of
 what didn't reverse cleanly, non-zero exit if anything was skipped — same
 contract the rest of the script already has.
+
+### 5. `--wipe`: optional full teardown, not just original-state restore
+
+Added after the base rollback feature above shipped, as a modifier on
+`--rollback` (requires it; rejected standalone). Where plain `--rollback`
+restores the machine to its state just before `install.sh` first ran
+(originals restored from `.bak`), `--wipe` goes further — a true blank-slate
+undo with nothing dotfiles-related left behind, at the cost of the original
+pre-dotfiles files:
+
+- Deletes `.bak` backups outright instead of restoring them.
+- Sweeps state the installer creates but never records in its manifest:
+  nvim's runtime directories (`~/.local/share/nvim`, `~/.local/state/nvim`,
+  `~/.cache/nvim`).
+- On Linux, disables and stops the watchcommit systemd `--user` service —
+  see the exception carved out of requirement #3 above.
+- Packages are still never touched, same as plain rollback.
+- Still excluded, same as plain rollback and for the same reason (no clean
+  filesystem-delete equivalent): the macOS watchcommit launchd agent,
+  Rectangle preferences, and the Caps Lock→Escape remap.
 
 ## Acceptance criteria
 

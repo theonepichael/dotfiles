@@ -44,14 +44,34 @@ official migration docs at antigravity.google/docs/cli/gcli-migration.
 All 5 (`dashboard`, `grill-me`, `make-skill`, `second-opinion`, `standup`)
 ported from the current `claude/commands/`/`copilot/skills/` content as of
 2026-07-28, not from the stale legacy-path copies that predated this doc.
-`grill-me`, `standup`, and `second-opinion` needed no agy-specific rewording
-beyond dropping `allowed-tools` — their bodies were already harness-neutral
-after the same-day consolidation pass that introduced "the shared
-instructions file" phrasing. `dashboard` and `make-skill` got small
-agy-specific adjustments (verified `-p` flag, `references/` vs `ref/`,
-Trigger section reflecting agy's progressive-disclosure model instead of
-Claude Code's model-invoked/user-invoked split or Copilot's pure
-description-match).
+`standup` and `second-opinion` needed no agy-specific rewording beyond
+dropping `allowed-tools` — their bodies were already harness-neutral after
+the same-day consolidation pass that introduced "the shared instructions
+file" phrasing. `dashboard` and `make-skill` got small agy-specific
+adjustments (verified `-p` flag, `references/` vs `ref/`, Trigger section
+reflecting agy's progressive-disclosure model instead of Claude Code's
+model-invoked/user-invoked split or Copilot's pure description-match).
+
+**Known gap: `grill-me` is missing its "clear-and-go" step.** Claude Code's,
+Copilot's, and opencode's `grill-me` all have a step 5 in "End of session"
+that offers to mark the plan pending-execution (`grill.py
+mark-pending-execution`) and describes how it gets picked back up next
+session. `agy/skills/grill-me/SKILL.md` stops at step 4 — this step was
+dropped, not adapted, during the port. Since agy has no `SessionStart` hook
+(confirmed in §3 below), the fix is the same shape as opencode's version:
+keep the offer, but describe manual resume (tell the user to run
+`grill.py pending-plan --consume` themselves at the start of the next
+session) instead of claiming an auto-surfacing hook that doesn't exist here.
+Not yet ported — flagging as an open item rather than silently leaving it
+missing.
+
+**Known gap: no `backlog-item`.** `agy/skills/` has 5 skills; `claude/commands`,
+`copilot/skills`, and `opencode/command` all have 6, including `backlog-item`
+(ported 2026-08-03, after this doc was last touched). Not evaluated yet
+whether agy's skill-invocation model (model-decision only, no runtime
+skill-to-skill delegation confirmed) can support `backlog-item`'s
+delegation to `grill-me`/`second-opinion` the way opencode's native `skill`
+tool does — needs investigation before porting, not a straightforward copy.
 
 ## 3. Verification results (probed 2026-07-28, agy 1.1.8)
 
@@ -93,10 +113,12 @@ verbatim — empirically confirming agy loads skills from the new
   (`--json-schema` constrains *print-mode output shape*, not interactive
   user prompts), `agy help`, the agent/plugin subcommands, or the
   customization docs exposes an AskUserQuestion-style multi-choice surface.
-  **Confirmed: agy is in the Copilot/opencode tier** (plain-text questions
-  with a stated recommendation), not the Claude Code tier. The ported
-  skills' existing treatment (plain-text question, recommendation first) is
-  correct and needs no change.
+  **Confirmed: agy is in the plain-text-question tier along with Copilot
+  CLI** (not the Claude Code tier), and not opencode either — opencode has
+  its own structured `question` tool (confirmed in its own command/skill
+  files), so it's not a peer here despite earlier drafts of this doc lumping
+  it in. The ported skills' existing treatment (plain-text question,
+  recommendation first) is correct and needs no change.
 
 ## 4. Install state on this machine (versioning note)
 

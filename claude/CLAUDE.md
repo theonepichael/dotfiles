@@ -16,11 +16,11 @@ decision points like `grill.py`'s Q&A loop.
 
 When a step specifically needs the user to pick among 2–4 concrete,
 enumerable options, state the recommendation first. In harnesses with a
-structured multi-choice prompt (Claude Code's `AskUserQuestion`), use it,
-labeling the recommendation "(Recommended)". In harnesses without one
-(Copilot CLI, opencode, agy), state the options in plain conversational text
-with the same recommendation, and wait for a plain-text reply — never design
-a step around a UI widget a harness doesn't have.
+structured multi-choice prompt (Claude Code's `AskUserQuestion`, opencode's
+`question` tool), use it, labeling the recommendation "(Recommended)". In
+harnesses without one (Copilot CLI, agy), state the options in plain
+conversational text with the same recommendation, and wait for a plain-text
+reply — never design a step around a UI widget a harness doesn't have.
 
 For genuinely open-ended questions, ask in plain text regardless of harness:
 state the question directly, give your recommended answer with brief
@@ -248,6 +248,15 @@ and prose cross-references, use slugs for any item references — never raw hex 
 Follow the Git section's worktree-first policy below: create a fresh
 worktree scoped to the item's slug before touching the repo under
 `related_files`, rather than branching in the main checkout.
+
+#### Cross-machine sync
+
+The backlog/pending store is per-machine by default. If the user wants it
+reconciled with another machine's store, use
+`python3 ~/.claude/scripts/dev_status_sync.py sync` (add `--dry-run` to
+preview, or `status` to check divergence without merging) — a desktop-
+initiated bidirectional merge over SSH. This is a manual, occasional
+operation, not part of the normal add/update/done loop above.
 
 ### Pending Items
 

@@ -31,6 +31,8 @@ chmod +x install.sh
 ./install.sh --harness=claude                        # personal machine, Claude Code
 ./install.sh --profile=work --harness=copilot         # work machine, Copilot only
 ./install.sh --harness=claude,opencode                # both harnesses, personal
+./install.sh --harness=claude,agy                     # Claude Code + Antigravity CLI
+./install.sh --dry-run --harness=claude               # preview only, nothing written
 ```
 
 `./install.sh` is a ~20-line POSIX bootstrap: it finds a Python 3.12+ on
@@ -46,10 +48,15 @@ not in the installer — add, move, or retire a mapping by editing that file
 copy-once seed files and the WSL-side VS Code path need real code.
 
 `--harness` is required on every run — there's no default. Pick any
-combination of `claude`, `copilot`, `opencode` (comma-separated); `--profile`
-(personal by default) controls machine-level concerns like watchcommit and
-personal API-key setup, and never restricts which harness(es) you can
-choose. See "Harness selection" and "Work profile" below.
+combination of `claude`, `copilot`, `opencode`, `agy` (comma-separated);
+`--profile` (personal by default) controls machine-level concerns like
+watchcommit and personal API-key setup, and never restricts which harness(es)
+you can choose. See "Harness selection" and "Work profile" below.
+
+Add `--dry-run` to preview any run (including `--rollback`) without writing
+or removing anything — no packages installed, no files touched, no history
+recorded. Detection of what's already on the machine still runs for real, so
+the preview reflects actual state.
 
 `~/.secrets` (gitignored, sourced by `.zshrc` if present) is available for any
 API keys or tokens you want on the shell PATH — nothing in this repo requires
@@ -81,7 +88,7 @@ exists and HEAD has since moved ahead of it.
 ## Harness selection
 
 `--harness` picks which coding-agent harness(es) get installed and wired up
-— comma-separated, at least one of `claude`, `copilot`, `opencode`. No
+— comma-separated, at least one of `claude`, `copilot`, `opencode`, `agy`. No
 default; every run states its intent explicitly. Selecting fewer harnesses
 on a later run doesn't uninstall the ones left out — this script is purely
 additive, same as everything else it does. Use `--rollback` (which reverses
@@ -126,10 +133,26 @@ remove something.
   can invoke an arbitrary other command as its own argument), not
   individually-risky commands worth pre-approving. `opencode` is never
   installed on a work machine at all — see "Work profile" below.
+- **`agy`** — wires config for [Antigravity CLI](https://antigravity.google/docs/cli)
+  (Google's Gemini-backed CLI); the binary itself is assumed already
+  installed, same as `opencode` — this script only wires its config:
+  - **Shared instructions file**: `claude/CLAUDE.md` is symlinked to
+    `~/.gemini/GEMINI.md`, agy's global-rules path (no `CLAUDE.md` fallback
+    like opencode has, so it needs a real link of its own).
+  - **`agy/skills/<name>/SKILL.md`**: ports of the dashboard, standup,
+    second-opinion, grill-me, and make-skill skills (`backlog-item` not yet
+    ported), symlinked into `~/.gemini/antigravity-cli/skills/<name>/SKILL.md`
+    — agy's current global skills path. Like Copilot's, agy's skills are
+    description-matched, not typed-slash: there's no `/dashboard` to type,
+    and no `AskUserQuestion`-style prompt, so the ported skills use plain
+    conversational back-and-forth for judgment calls.
+  - agy has no `SessionStart`-equivalent hook event, so there's no
+    auto-render-dashboard wiring for it, unlike Claude Code and Copilot.
+  - See `agy/CLAUDE_CODE_PARITY.md` for the full verification notes.
 
 The shared `~/.claude/scripts/*.py` (dev_status, grill, second_opinion,
 standup, etc.) are symlinked regardless of which harness(es) are selected —
-all three harnesses' skills/hooks call these same paths.
+all four harnesses' skills/hooks call these same paths.
 
 ## Work profile
 
@@ -225,10 +248,13 @@ filesystem-delete equivalent.
 
 Everything is symlinked — edits in `~/dotfiles` take effect immediately. The
 full, authoritative table is `links.toml`; the rows above are the
-highlights. The two exceptions are the copy-once seeds
-(`claude/settings.json`, `opencode/opencode.jsonc` and their `.work`
-variants), which are copied rather than symlinked because both tools
-rewrite them in place.
+highlights. Three things are copied instead of symlinked:
+`claude/settings.json` (and its `.work` variant) and `opencode/opencode.jsonc`
+(no `.work` variant — `--profile=work --harness=opencode` is rejected
+outright, so only one variant of that seed exists) are copy-once seeds,
+because both tools rewrite the file in place once live; the WSL-side VS Code
+`settings.json`/`keybindings.json` are copied for an unrelated reason —
+Windows can't read a WSL-side symlink through `DrvFs`.
 
 ## The installer does
 
@@ -372,7 +398,5 @@ session, no separate config needed.
     rollback, backup-and-restore, work profile + guard, `--force`,
     argument errors) inside throwaway Docker containers, one Ubuntu (apt
     branch) and one Fedora (dnf branch), so real package managers get
-    exercised without touching the real machine. Requires Docker.
-    **Note**: `scenarios.sh` still drives the pre-Python installer's TSV
-    manifest path and has not been ported to `history.jsonl` yet — run the
-    fast tier for now
+    exercised without touching the real machine. Requires Docker. Drives
+    the current `history.jsonl` manifest path
