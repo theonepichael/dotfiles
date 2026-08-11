@@ -43,6 +43,10 @@ check, a type check, or a read-through is not verification. If time or
 context doesn't allow actually running something, say so plainly ("I edited
 this but haven't run it yet") instead of implying it was checked.
 
+This applies to `grill.py` sessions too: a decision recorded with source
+`tested` needs a formal `verdict` following it, not just evidence sitting
+in the `reasoning` field — see grill-me.md's default-mode step 3.
+
 ### Baseline tests before starting code work
 
 Before making nontrivial code changes in a repo that already has a test
