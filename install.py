@@ -32,12 +32,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import tomllib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
+
+import tomllib
 
 VALID_HARNESSES = ("claude", "copilot", "opencode", "agy")
 VALID_PROFILES = ("personal", "work")
