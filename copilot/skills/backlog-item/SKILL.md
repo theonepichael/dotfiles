@@ -8,8 +8,12 @@ The target item is whatever slug or integer N the user named in their
 prompt (e.g. `/backlog-item 4`, "work on backlog item 4"). If none is
 named, ask which item — never guess.
 
-Work the named item to done, one step at a time. Every gate below stops and
-waits for the user — never collapse two gates into one approval.
+Work the named item to done, one step at a time. Every user-approval gate
+below (`## 10`, `## 11`) stops and waits for the user — never collapse two
+gates into one approval. Distinct from those: the item's own `gate` field in
+`dev_status.py` (step 5, step 12) is a judgment-step verification checkpoint,
+not a user-approval stop — same word, different mechanism, don't conflate
+them.
 
 ## 1. Resolve
 `python3 ~/.claude/scripts/dev_status.py show <slug|N>`. Read the full
@@ -66,6 +70,35 @@ already present (per the shared instructions file's "Plans and
 deliverables get a path on record" rule) — neither skill has knowledge of
 `dev_status.py`, so nothing else performs this update, and step 1's resume
 branch depends on it.
+
+### Architecture capture (new modules only)
+
+If the artifact's related_files point into a module with no
+`docs/architecture/{module-slug}.md` yet in the target repo — a genuinely
+new module, not routine work in an existing one; judgment call, ask if
+unclear — run one more pass before continuing: draft a 300–600 word doc
+covering the module's boundary/responsibility (one paragraph), key
+interfaces it exposes or consumes, explicit non-goals, and known
+unknowns/deferred decisions. Save it to `docs/architecture/{module-slug}.md`
+in the target repo (project documentation, not `~/.claude/data/grill/`) and
+reference it from the spec/plan. A later item touching the same module cites
+the existing doc instead of repeating this pass — check for it first.
+
+### Gate classification
+
+Once the spec/plan is recorded (and after architecture capture, if it ran),
+classify its concrete implementation steps: **mechanical** (a rote,
+unambiguous transformation — no interpretation needed) or **judgment**
+(interprets a requirement, makes a design choice, or has ambiguous
+acceptance criteria). If any step is judgment, set the item's gate before
+continuing:
+
+```bash
+python3 ~/.claude/scripts/dev_status.py gate-set <slug|N> '{"required": true, "criteria": ["<short imperative criterion per judgment step>", "..."]}'
+```
+
+If every step is mechanical, leave the gate unset (inert by default) —
+don't call `gate-set` for a step breakdown with no judgment calls in it.
 
 ## 6. Critique
 Offer to now use the `second-opinion` skill against the resulting plan or
@@ -131,5 +164,8 @@ itself.
 
 ## 12. Close
 `dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
-`done` on an in-review item. Display the full dashboard stdout these
-print; don't just narrate a one-line confirmation.
+`done` on an in-review item. If `approve` refuses citing an unmet gate,
+actually check each criterion from `show <slug|N>` against the diff — don't
+pass it reflexively — then `dev_status.py gate-pass <slug|N>` and retry
+`approve`. Display the full dashboard stdout these print; don't just
+narrate a one-line confirmation.

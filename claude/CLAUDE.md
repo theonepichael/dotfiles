@@ -192,6 +192,13 @@ you're working solo and are confident it's ready), use `approve` to mark it done
 (`approve` to complete, `reject <feedback>` to send back) rather than patching
 `status` directly, which is also refused for in-review items.
 
+An item whose implementation plan had judgment-call steps may also carry a
+`gate` (set via `gate-set` when the plan was classified — see backlog-item.md
+step 5). Both `done` and `approve` refuse when `gate.required` is true and
+`gate.passed` isn't — `show <id>` to see the unmet criteria, verify each
+against the actual work (never reflexively), then `gate-pass <id>` and retry.
+`gate` can't be set via a raw `update` patch — always `gate-set`/`gate-pass`.
+
 `start`/`done`/`update`/`review`/`approve`/`reject` already render the full dashboard as part of their own
 stdout — after running one, display that stdout to the user instead of just
 narrating a one-line confirmation.

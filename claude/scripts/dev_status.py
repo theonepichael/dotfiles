@@ -121,6 +121,24 @@ _COLORS = {
 # ── data model ───────────────────────────────────────────────────────────────
 
 
+class Gate(TypedDict):
+    """A judgment-step verification checkpoint on a backlog item.
+
+    Set once via ``gate-set`` when an item's plan/spec is classified
+    (mechanical steps need no gate; a plan with judgment steps gets
+    ``required: True`` and ``criteria`` drawn from those steps' acceptance
+    criteria). ``passed`` stays ``None`` until ``gate-pass`` records one,
+    and every ``gate-set`` call resets ``passed``/``passed_at`` to ``None``
+    — re-classifying (e.g. after a plan revision) invalidates any prior
+    pass, mirroring grill.py's ``revise`` resetting a decision's verdict.
+    """
+
+    required: bool
+    criteria: list[str]
+    passed: bool | None
+    passed_at: str | None
+
+
 class BacklogItem(TypedDict):
     """A single backlog item as stored in ``items.json`` (schema v2).
 
@@ -128,7 +146,10 @@ class BacklogItem(TypedDict):
     absence of ``priority`` is equivalent to ``"normal"`` (see
     :data:`_PRIORITY_RANK`), and ``completed_at`` only exists while
     ``status`` is ``"done"`` (stamped and cleared by
-    :func:`_apply_status_transition`).
+    :func:`_apply_status_transition`). ``gate`` is likewise absent on any
+    item created before its introduction or never classified — absence is
+    equivalent to an inert gate (see :func:`_gate_block_message`), the same
+    absence-means-default convention ``priority`` already uses.
     """
 
     id: str
@@ -145,6 +166,7 @@ class BacklogItem(TypedDict):
     completed_at: NotRequired[str]
     review_feedback: NotRequired[str]
     review_content_hash: NotRequired[str]
+    gate: NotRequired[Gate]
 
 
 class PendingItem(TypedDict):
@@ -229,6 +251,28 @@ def _apply_status_transition(
         item[stamp_field] = today()
     elif old_status == done_value and new_status != done_value:
         item.pop(stamp_field, None)
+
+
+def _gate_block_message(cmd: str, item: BacklogItem) -> str | None:
+    """Return a refusal message if ``item``'s gate blocks a done-transition.
+
+    ``None`` means the gate doesn't block: absent, not required, or already
+    passed. Called from both :func:`cmd_done` and :func:`cmd_approve` —
+    either command can complete an item, so both need the same check.
+
+    Args:
+        cmd: Command name to prefix onto the message.
+        item: The item being transitioned to done.
+    """
+    gate = item.get("gate")
+    if not gate or not gate.get("required") or gate.get("passed") is True:
+        return None
+    n = len(gate.get("criteria", []))
+    return (
+        f"[{cmd}] {item.get('id', '?')} has an unmet gate ({n} criterion/criteria "
+        "unconfirmed) -- run 'gate-pass <id>' once verified, or 'show <id>' to "
+        "review the criteria."
+    )
 
 
 def _category_tag(category: str) -> str:
@@ -1054,6 +1098,19 @@ def _pending_suffix(item: dict[str, object], color: bool) -> str:
     return marker + since
 
 
+def _gate_suffix(item: dict[str, object], color: bool) -> str:
+    """Render a trailing marker for an item whose gate blocks completion.
+
+    Without this, an item refused by :func:`_gate_block_message` looks
+    identical to any other item on the dashboard until someone actually
+    runs ``approve``/``done`` and hits the refusal.
+    """
+    gate = cast(dict[str, object] | None, item.get("gate"))
+    if not gate or not gate.get("required") or gate.get("passed") is True:
+        return ""
+    return " " + _colorize("\U0001f512 gate", _COLORS["warn"], color)
+
+
 def render(
     items: list[BacklogItem] | None = None,
     pending_items: list[PendingItem] | None = None,
@@ -1196,8 +1253,11 @@ def render(
         show_age=True,
         show_priority=True,
         color_code="in_progress",
+        line_suffix=_gate_suffix,
     )
-    add_section("READY", ready, show_priority=True, color_code="ready")
+    add_section(
+        "READY", ready, show_priority=True, color_code="ready", line_suffix=_gate_suffix
+    )
     add_section(
         "BLOCKED",
         blocked,
@@ -1205,6 +1265,7 @@ def render(
         show_age=True,
         show_priority=True,
         color_code="blocked",
+        line_suffix=_gate_suffix,
     )
     add_section(
         "IN REVIEW",
@@ -1212,6 +1273,7 @@ def render(
         show_age=True,
         show_priority=True,
         color_code="in_review",
+        line_suffix=_gate_suffix,
     )
     add_section("DONE", done, color_code="done")
 
@@ -1522,6 +1584,15 @@ def cmd_update(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
+    if "gate" in patch:
+        print(
+            "[update] cannot modify 'gate' directly -- use 'gate-set <id> "
+            '\'{"required": true, "criteria": [...]}\'\' to classify or '
+            "'gate-pass <id>' to record a pass.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     unknown = set(patch) - BACKLOG_MUTABLE_FIELDS - IMMUTABLE_FIELDS
     if unknown:
         print(
@@ -1624,6 +1695,10 @@ def cmd_done(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        gate_msg = _gate_block_message("done", m.item)
+        if gate_msg:
+            print(gate_msg, file=sys.stderr)
+            sys.exit(1)
         _apply_status_transition(
             cast(dict[str, object], m.item), "done", "completed_at", "done"
         )
@@ -1671,6 +1746,10 @@ def cmd_approve(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        gate_msg = _gate_block_message("approve", m.item)
+        if gate_msg:
+            print(gate_msg, file=sys.stderr)
+            sys.exit(1)
         _apply_status_transition(
             cast(dict[str, object], m.item), "done", "completed_at", "done"
         )
@@ -1708,6 +1787,100 @@ def cmd_reject(args: argparse.Namespace) -> None:
         m.item["review_feedback"] = feedback
         m.item.pop("review_content_hash", None)
         m.item["updated"] = today()
+
+
+def cmd_gate_set(args: argparse.Namespace) -> None:
+    """Handle ``gate-set``: classify an item's judgment-step verification gate.
+
+    Always resets ``passed``/``passed_at`` to ``None`` — re-classifying a
+    gate invalidates any prior pass (see :class:`Gate`'s docstring).
+    """
+    patch = _parse_json_arg(args.json, "gate-set")
+
+    if "required" not in patch or not isinstance(patch["required"], bool):
+        print("[gate-set] 'required' (bool) is required", file=sys.stderr)
+        sys.exit(1)
+    required = cast(bool, patch["required"])
+
+    criteria_raw = _list_field(patch, "criteria")
+    if not all(isinstance(c, str) and c.strip() for c in criteria_raw):
+        print(
+            "[gate-set] 'criteria' must be a list of non-empty strings",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    criteria = cast(list[str], criteria_raw)
+
+    if required and not criteria:
+        print(
+            "[gate-set] 'criteria' cannot be empty when required=true",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    with _backlog_mutation("gate-set", args.id, args.if_rev, announce=True) as m:
+        m.item["gate"] = {
+            "required": required,
+            "criteria": criteria,
+            "passed": None,
+            "passed_at": None,
+        }
+        m.item["updated"] = today()
+
+
+def cmd_gate_pass(args: argparse.Namespace) -> None:
+    """Handle ``gate-pass``: record that an item's gate criteria are satisfied."""
+    with _backlog_mutation("gate-pass", args.id, args.if_rev, announce=True) as m:
+        gate = m.item.get("gate")
+        if not gate or not gate.get("required"):
+            print(
+                f"[gate-pass] {m.slug} has no required gate -- nothing to pass",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        gate["passed"] = True
+        gate["passed_at"] = today()
+        m.item["updated"] = today()
+
+
+def cmd_backfill_gate(args: argparse.Namespace) -> None:
+    """Handle ``backfill-gate``: stamp an explicit inert gate on legacy items.
+
+    Items created before ``gate`` existed have no ``gate`` key at all —
+    code already treats that as inert (see :func:`_gate_block_message`),
+    but leaving it implicit means ``show``/the dashboard can't distinguish
+    "not yet classified" from "classified, not required". This makes it
+    explicit. There's no reliable signal in the existing schema (no
+    per-item verdict data) to infer a *required* gate from, so this never
+    sets ``required: true`` -- that only ever happens via a deliberate
+    ``gate-set`` call. Dry run by default; ``--apply`` writes.
+    """
+    with backlog_lock():
+        items = load_items()
+        missing = [i for i in items if "gate" not in i]
+        if not missing:
+            print("[backfill-gate] nothing to do -- every item already has a gate")
+            return
+        print(f"[backfill-gate] {len(missing)} item(s) missing 'gate':")
+        for i in missing:
+            print(f"  {i['id']}: {i.get('summary', '')}")
+        if not args.apply:
+            print(
+                f"[backfill-gate] dry run -- re-run with --apply to stamp "
+                f"{len(missing)} item(s) with an inert gate"
+            )
+            return
+        for i in missing:
+            i["gate"] = {
+                "required": False,
+                "criteria": [],
+                "passed": None,
+                "passed_at": None,
+            }
+        new_rev = bump_rev()
+        save_items(items)
+        print(f"[backfill-gate] stamped {len(missing)} item(s)")
+        render(items, load_pending(), rev=new_rev)
 
 
 def cmd_rename(args: argparse.Namespace) -> None:
@@ -2147,7 +2320,8 @@ def main() -> None:
     )
     sub = parser.add_subparsers(
         dest="cmd",
-        metavar="{render,list,show,add,update,start,done,review,approve,reject,rename,remove,block,unblock,prune}",
+        metavar="{render,list,show,add,update,start,done,review,approve,reject,"
+        "gate-set,gate-pass,backfill-gate,rename,remove,block,unblock,prune}",
     )
 
     sub.add_parser("render", help="render dashboard (pure — no side effects)")
@@ -2195,6 +2369,24 @@ def main() -> None:
     _add_id_arg(p)
     p.add_argument("feedback", metavar="<feedback>")
     _add_if_rev_arg(p)
+
+    p = sub.add_parser("gate-set", help="classify an item's judgment-verification gate")
+    _add_id_arg(p)
+    p.add_argument("json", metavar='\'{"required": true, "criteria": ["..."]}\'')
+    _add_if_rev_arg(p)
+
+    p = sub.add_parser(
+        "gate-pass", help="record that an item's gate criteria are satisfied"
+    )
+    _add_id_arg(p)
+    _add_if_rev_arg(p)
+
+    p = sub.add_parser(
+        "backfill-gate", help="stamp an explicit inert gate on legacy items"
+    )
+    p.add_argument(
+        "--apply", action="store_true", help="write changes (default: dry run)"
+    )
 
     p = sub.add_parser("rename", help="rename slug (rewrites all references)")
     _add_id_arg(p, "old_slug")
@@ -2257,6 +2449,9 @@ def main() -> None:
         "review": cmd_review,
         "approve": cmd_approve,
         "reject": cmd_reject,
+        "gate-set": cmd_gate_set,
+        "gate-pass": cmd_gate_pass,
+        "backfill-gate": cmd_backfill_gate,
         "rename": cmd_rename,
         "remove": cmd_remove,
         "block": cmd_block,
