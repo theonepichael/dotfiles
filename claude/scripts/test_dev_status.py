@@ -33,6 +33,7 @@ def make_item(
     related_files=None,
     review_feedback=None,
     review_content_hash=None,
+    gate=None,
 ):
     item = {
         "id": slug,
@@ -52,6 +53,8 @@ def make_item(
         item["review_feedback"] = review_feedback
     if review_content_hash is not None:
         item["review_content_hash"] = review_content_hash
+    if gate is not None:
+        item["gate"] = gate
     return item
 
 
@@ -2407,6 +2410,308 @@ class BacklogTestCase(unittest.TestCase):
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("stale rev", err.getvalue())
 
+    # ── 41: gate field ────────────────────────────────────────────────────
+
+    def test_41a_gate_set_happy_path(self):
+        self.write_items([make_item("gt-item")])
+        dev_status.cmd_gate_set(
+            _args(id="gt-item", json='{"required": true, "criteria": ["check X"]}')
+        )
+        item = self._item_by_id("gt-item")
+        self.assertEqual(
+            item["gate"],
+            {
+                "required": True,
+                "criteria": ["check X"],
+                "passed": None,
+                "passed_at": None,
+            },
+        )
+
+    def test_41b_gate_set_required_true_needs_criteria(self):
+        self.write_items([make_item("gt-item")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_gate_set(
+                    _args(id="gt-item", json='{"required": true, "criteria": []}')
+                )
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("cannot be empty", err.getvalue())
+        self.assertNotIn("gate", self._item_by_id("gt-item"))
+
+    def test_41c_gate_set_missing_required_field_refused(self):
+        self.write_items([make_item("gt-item")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_gate_set(_args(id="gt-item", json='{"criteria": []}'))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("'required' (bool) is required", err.getvalue())
+
+    def test_41d_gate_set_non_string_criteria_refused(self):
+        self.write_items([make_item("gt-item")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_gate_set(
+                    _args(id="gt-item", json='{"required": false, "criteria": [1]}')
+                )
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("list of non-empty strings", err.getvalue())
+
+    def test_41e_gate_set_required_false_ok(self):
+        self.write_items([make_item("gt-item")])
+        dev_status.cmd_gate_set(
+            _args(id="gt-item", json='{"required": false, "criteria": []}')
+        )
+        item = self._item_by_id("gt-item")
+        self.assertEqual(item["gate"]["required"], False)
+
+    def test_41f_gate_set_resets_prior_pass(self):
+        self.write_items(
+            [
+                make_item(
+                    "gt-item",
+                    gate={
+                        "required": True,
+                        "criteria": ["old"],
+                        "passed": True,
+                        "passed_at": "2026-01-01",
+                    },
+                )
+            ]
+        )
+        dev_status.cmd_gate_set(
+            _args(id="gt-item", json='{"required": true, "criteria": ["new"]}')
+        )
+        item = self._item_by_id("gt-item")
+        self.assertIsNone(item["gate"]["passed"])
+        self.assertIsNone(item["gate"]["passed_at"])
+        self.assertEqual(item["gate"]["criteria"], ["new"])
+
+    def test_41g_gate_pass_happy_path(self):
+        self.write_items(
+            [
+                make_item(
+                    "gt-item",
+                    gate={
+                        "required": True,
+                        "criteria": ["x"],
+                        "passed": None,
+                        "passed_at": None,
+                    },
+                )
+            ]
+        )
+        dev_status.cmd_gate_pass(_args(id="gt-item"))
+        item = self._item_by_id("gt-item")
+        self.assertTrue(item["gate"]["passed"])
+        self.assertIsNotNone(item["gate"]["passed_at"])
+
+    def test_41h_gate_pass_refuses_without_required_gate(self):
+        for gate in (
+            None,
+            {"required": False, "criteria": [], "passed": None, "passed_at": None},
+        ):
+            self.write_items([make_item("gt-item", gate=gate)])
+            err = io.StringIO()
+            with self.assertRaises(SystemExit) as cm:
+                with patch("sys.stderr", err):
+                    dev_status.cmd_gate_pass(_args(id="gt-item"))
+            self.assertEqual(cm.exception.code, 1)
+            self.assertIn("nothing to pass", err.getvalue())
+
+    def test_41i_update_refuses_gate_field(self):
+        self.write_items([make_item("gt-item")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_update(
+                    _args(id="gt-item", patch='{"gate": {"required": true}}')
+                )
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("cannot modify 'gate'", err.getvalue())
+        self.assertIn("gate-set", err.getvalue())
+
+    def test_41j_done_refuses_on_unmet_gate(self):
+        self.write_items(
+            [
+                make_item(
+                    "gt-item",
+                    status="in-progress",
+                    gate={
+                        "required": True,
+                        "criteria": ["x", "y"],
+                        "passed": None,
+                        "passed_at": None,
+                    },
+                )
+            ]
+        )
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_done(_args(id="gt-item"))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("unmet gate", err.getvalue())
+        self.assertIn("gate-pass", err.getvalue())
+        self.assertEqual(self._item_by_id("gt-item")["status"], "in-progress")
+
+    def test_41k_done_succeeds_after_gate_pass(self):
+        self.write_items(
+            [
+                make_item(
+                    "gt-item",
+                    status="in-progress",
+                    gate={
+                        "required": True,
+                        "criteria": ["x"],
+                        "passed": None,
+                        "passed_at": None,
+                    },
+                )
+            ]
+        )
+        dev_status.cmd_gate_pass(_args(id="gt-item"))
+        dev_status.cmd_done(_args(id="gt-item"))
+        self.assertEqual(self._item_by_id("gt-item")["status"], "done")
+
+    def test_41l_done_unaffected_by_absent_or_inert_gate(self):
+        for gate in (
+            None,
+            {"required": False, "criteria": [], "passed": None, "passed_at": None},
+        ):
+            self.write_items([make_item("gt-item", status="in-progress", gate=gate)])
+            dev_status.cmd_done(_args(id="gt-item"))
+            self.assertEqual(self._item_by_id("gt-item")["status"], "done")
+
+    def test_41m_approve_refuses_on_unmet_gate(self):
+        self.write_items(
+            [
+                make_item(
+                    "gt-item",
+                    status="in-progress",
+                    gate={
+                        "required": True,
+                        "criteria": ["x"],
+                        "passed": None,
+                        "passed_at": None,
+                    },
+                )
+            ]
+        )
+        dev_status.cmd_review(_args(id="gt-item"))
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm:
+            with patch("sys.stderr", err):
+                dev_status.cmd_approve(_args(id="gt-item"))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("unmet gate", err.getvalue())
+        self.assertEqual(self._item_by_id("gt-item")["status"], "in-review")
+
+    def test_41n_approve_succeeds_after_gate_pass(self):
+        self.write_items(
+            [
+                make_item(
+                    "gt-item",
+                    status="in-progress",
+                    gate={
+                        "required": True,
+                        "criteria": ["x"],
+                        "passed": None,
+                        "passed_at": None,
+                    },
+                )
+            ]
+        )
+        dev_status.cmd_review(_args(id="gt-item"))
+        dev_status.cmd_gate_pass(_args(id="gt-item"))
+        dev_status.cmd_approve(_args(id="gt-item"))
+        self.assertEqual(self._item_by_id("gt-item")["status"], "done")
+
+    def test_41o_dashboard_shows_gate_marker_when_unmet(self):
+        self.write_items(
+            [
+                make_item(
+                    "gt-item",
+                    status="in-progress",
+                    gate={
+                        "required": True,
+                        "criteria": ["x"],
+                        "passed": None,
+                        "passed_at": None,
+                    },
+                )
+            ]
+        )
+        out = io.StringIO()
+        dev_status.render(self.read_items(), [], out=out, err=io.StringIO())
+        self.assertIn("gate", out.getvalue())
+
+    def test_41p_dashboard_no_gate_marker_when_passed_or_absent(self):
+        for gate in (
+            None,
+            {"required": False, "criteria": [], "passed": None, "passed_at": None},
+            {
+                "required": True,
+                "criteria": ["x"],
+                "passed": True,
+                "passed_at": "2026-01-01",
+            },
+        ):
+            self.write_items([make_item("gt-item", status="in-progress", gate=gate)])
+            out = io.StringIO()
+            dev_status.render(self.read_items(), [], out=out, err=io.StringIO())
+            self.assertNotIn("gate", out.getvalue())
+
+    def test_41q_backfill_gate_dry_run_makes_no_changes(self):
+        self.write_items([make_item("bf-item")])
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.cmd_backfill_gate(_args())
+        self.assertNotIn("gate", self._item_by_id("bf-item"))
+        self.assertIn("dry run", out.getvalue())
+
+    def test_41r_backfill_gate_apply_stamps_inert_gate(self):
+        self.write_items([make_item("bf-item"), make_item("bf-item2")])
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.cmd_backfill_gate(_args(apply=True))
+        for slug in ("bf-item", "bf-item2"):
+            item = self._item_by_id(slug)
+            self.assertEqual(
+                item["gate"],
+                {
+                    "required": False,
+                    "criteria": [],
+                    "passed": None,
+                    "passed_at": None,
+                },
+            )
+
+    def test_41s_backfill_gate_apply_skips_already_gated_items(self):
+        self.write_items(
+            [
+                make_item(
+                    "bf-item",
+                    gate={
+                        "required": True,
+                        "criteria": ["x"],
+                        "passed": True,
+                        "passed_at": "2026-01-01",
+                    },
+                )
+            ]
+        )
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.cmd_backfill_gate(_args(apply=True))
+        item = self._item_by_id("bf-item")
+        self.assertTrue(item["gate"]["required"])
+        self.assertTrue(item["gate"]["passed"])
+        self.assertIn("nothing to do", out.getvalue())
+
 
 # ── arg helper ────────────────────────────────────────────────────────────────
 
@@ -2416,6 +2721,7 @@ class _args:
 
     if_rev = None  # default; argparse always sets --if-rev (default None)
     status = None  # default; argparse sets --status (default None) for `list`
+    apply = False  # default; argparse sets --apply (default False) for backfill-gate
 
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
