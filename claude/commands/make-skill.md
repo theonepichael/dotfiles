@@ -29,7 +29,7 @@ Probe with headless runs: `claude -p '<a real trigger phrase>'` for model-invoke
 ## 5. Plumbing (house convention)
 
 1. File lives at `~/dotfiles/claude/commands/<name>.md`.
-2. Add a `symlink claude/commands/<name>.md ~/.claude/commands/<name>.md` line in install.sh next to the existing ones (same for any ref files).
+2. Add a `[[link]]` entry (`src = "claude/commands/<name>.md"`, `dest = "~/.claude/commands/<name>.md"`, `harness = "claude"`) in `links.toml` next to the existing ones (same for any ref files).
 3. Create the live symlink now: `ln -s ~/dotfiles/claude/commands/<name>.md ~/.claude/commands/<name>.md`.
 4. Conventional commit, scope `claude`: `feat` for a new skill, `refactor`/`docs` for revisions.
 

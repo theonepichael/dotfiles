@@ -90,6 +90,11 @@ src = "claude/commands/second-opinion.md"
 dest = "~/.claude/commands/second-opinion.md"
 harness = "claude"
 
+[[link]]
+src = "claude/commands/spec.md"
+dest = "~/.claude/commands/spec.md"
+harness = "claude"
+
 # backlog-item orchestrates grill-me/second-opinion via each harness's native
 # skill mechanism. opencode and Copilot CLI have ports; agy remains unported
 # (description-match-only activation, mid-run delegation uncertain).
