@@ -41,7 +41,7 @@ official migration docs at antigravity.google/docs/cli/gcli-migration.
 
 ## 2. Skills — ported (`agy/skills/`)
 
-All 5 (`dashboard`, `grill-me`, `make-skill`, `second-opinion`, `standup`)
+5 of 6 (`dashboard`, `grill-me`, `make-skill`, `second-opinion`, `standup`)
 ported from the current `claude/commands/`/`copilot/skills/` content as of
 2026-07-28, not from the stale legacy-path copies that predated this doc.
 `standup` and `second-opinion` needed no agy-specific rewording beyond
@@ -51,6 +51,9 @@ file" phrasing. `dashboard` and `make-skill` got small agy-specific
 adjustments (verified `-p` flag, `references/` vs `ref/`, Trigger section
 reflecting agy's progressive-disclosure model instead of Claude Code's
 model-invoked/user-invoked split or Copilot's pure description-match).
+`spec` was added later, 2026-08-12, following the same no-`allowed-tools`,
+plain-text-question conventions as `standup`/`second-opinion` — not yet
+covered by the 2026-07-28 verification pass below.
 
 **Known gap: `grill-me` is missing its "clear-and-go" step.** Claude Code's,
 Copilot's, and opencode's `grill-me` all have a step 5 in "End of session"
@@ -65,8 +68,8 @@ session) instead of claiming an auto-surfacing hook that doesn't exist here.
 Not yet ported — flagging as an open item rather than silently leaving it
 missing.
 
-**Known gap: no `backlog-item`.** `agy/skills/` has 5 skills; `claude/commands`,
-`copilot/skills`, and `opencode/command` all have 6, including `backlog-item`
+**Known gap: no `backlog-item`.** `agy/skills/` has 6 skills; `claude/commands`,
+`copilot/skills`, and `opencode/command` all have 7, including `backlog-item`
 (ported 2026-08-03, after this doc was last touched). Not evaluated yet
 whether agy's skill-invocation model (model-decision only, no runtime
 skill-to-skill delegation confirmed) can support `backlog-item`'s

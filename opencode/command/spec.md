@@ -1,8 +1,5 @@
 ---
-name: spec
 description: "Turn a vague coding task into a structured specification (objective, context, inputs, output format, constraints, evaluation criteria, edge cases, verification steps) before generation begins. Use when the user wants to formalize a task, write a spec, or invokes /spec."
-argument-hint: [task description]
-allowed-tools: [Read, Glob, Grep, Write, AskUserQuestion, "Bash(python3 ~/.claude/scripts/second_opinion.py:*)"]
 ---
 If $ARGUMENTS is empty, use the task under discussion in the conversation; if neither exists, ask what to spec.
 
@@ -21,7 +18,7 @@ Fill in what you can from $ARGUMENTS and context already in scope (files read, p
 
 ## 2. Fill gaps — ask, don't guess
 
-For each field you can't confidently fill, ask one at a time, applying CLAUDE.md's recommendation-first convention. Skip fields already unambiguous from context — a trivial task doesn't need all eight interrogated.
+For each field you can't confidently fill, ask one at a time. When the plausible answers are enumerable (2–4 real options), use the `question` tool with your recommendation as the first option, labeled "(Recommended)". When the question is genuinely open-ended, state it directly, give your recommended answer with brief reasoning, and wait for the response. Skip fields already unambiguous from context — a trivial task doesn't need all eight interrogated.
 
 ## 3. Escalate real decisions — don't resolve them here
 
@@ -29,9 +26,9 @@ A missing fact gets asked directly (step 2). A genuinely open branch — multipl
 
 ## 4. Save and confirm
 
-Write the spec to `~/.claude/data/grill/<topic-slug>-spec.md` (the same central location grill-me/second-opinion use for plan artifacts — never a per-session scratchpad). Show it to the user. Apply CLAUDE.md's "plans and deliverables get a path on record" backlog convention if this is tracked work.
+Write the spec to `~/.claude/data/grill/<topic-slug>-spec.md` (the same central location grill-me/second-opinion use for plan artifacts — never a per-session scratchpad). Show it to the user. Apply the shared instructions file's "plans and deliverables get a path on record" backlog convention if this is tracked work.
 
-Then ask, via AskUserQuestion: "Start generation against this spec now?" — `Yes (recommended)` / `No, stop here`.
+Then ask, via the `question` tool: "Start generation against this spec now?" — `Yes (recommended)` / `No, stop here`.
 
 ## 5. Generation
 
@@ -41,11 +38,10 @@ If yes: implement directly in this session, using the spec as the source of trut
 
 After generation, check the result against every **Evaluation criteria** and **Edge cases** line explicitly, and actually run the **Verification steps** — execute them, don't just describe them. If anything fails, revise and re-check. Cap this at 3 rounds (same cap as `/second-opinion`'s convergence loop); if verification steps are still failing after round 3, stop and state plainly, distinct from a passing finish: "Stopped after 3 rounds — still failing: `<specific step>`." Then ask the user how to proceed rather than looping further.
 
-Once verification passes (or is stopped-and-reported), ask via AskUserQuestion: "Run an audit pass for specification gaming?" — `Yes (recommended unless this is trivial)` / `No, done`. A yes reuses `/second-opinion`'s adversarial critique loop against the result and the spec's Objective — does it satisfy the letter while missing the intent? — rather than self-grading.
+Once verification passes (or is stopped-and-reported), ask via the `question` tool: "Run an audit pass for specification gaming?" — `Yes (recommended unless this is trivial)` / `No, done`. A yes checks whether the result satisfies the letter while missing the Objective, via adversarial critique — prefer the native path since you're already running inside opencode: spawn the `adversary` agent (Task tool, no subprocess) with the spec's Objective, the result, and a prompt that argues the result games the spec rather than satisfies it. Fall back to `/second-opinion`'s `second_opinion.py review` loop only if `adversary` is erroring or unavailable.
 
 ## 7. Plumbing (house convention)
 
-1. File lives at `~/dotfiles/claude/commands/spec.md`.
-2. Add a `[[link]]` entry (`src = "claude/commands/spec.md"`, `dest = "~/.claude/commands/spec.md"`, `harness = "claude"`) in `links.toml` next to the existing ones.
-3. Create the live symlink now: `ln -s ~/dotfiles/claude/commands/spec.md ~/.claude/commands/spec.md`.
-4. Conventional commit, scope `claude`: `feat`.
+1. File lives at `~/dotfiles/opencode/command/spec.md`.
+2. Add a `[[link]]` entry (`src = "opencode/command/spec.md"`, `dest = "~/.config/opencode/commands/spec.md"`, `harness = "opencode"`) in `links.toml` next to the existing ones.
+3. Conventional commit, scope `opencode`: `feat`.

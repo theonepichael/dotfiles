@@ -17,7 +17,8 @@ record — never start from the dashboard's one-line summary (the shared
 instructions file). Empty context/next_steps/related_files: stop and ask
 the user to fill them in; don't fabricate a plan from the title. Numeric
 id: note the rendered rev for `--if-rev` on the next mutating call.
-related_files already names a grill plan (`~/.claude/data/grill/<slug>-plan.md`)?
+related_files already names a grill plan (`~/.claude/data/grill/<slug>-plan.md`)
+or a spec (`~/.claude/data/grill/<slug>-spec.md`)?
 Planning and critique (steps 5–6) are already done — skip to step 8.
 Worktree already has implemented, uncommitted changes (e.g. handed back
 from an external executor)? Skip straight to step 9. Either skip: the
@@ -43,22 +44,32 @@ Run that repo's test suite (or the most relevant targeted subset) in the
 fresh worktree before touching anything (the shared instructions file's
 "Baseline tests before starting code work").
 
-## 5. Plan
-Now use the `grill-me` skill with the item's context/next_steps as topic.
-Let grill-me run its full protocol — Q&A, plan recording, showing the
-render output, and the `--verify` offer if any decision was
-defaulted/assumed. Only when it reaches its own end-of-session
-clear-and-go offer: do not ask the user that question and do not run
-`mark-pending-execution` yet — move immediately to step 6 here instead.
-Once grill-me has recorded a plan path, update the backlog item's
-`related_files` to include it if not already present (per the shared
-instructions file's "Plans and deliverables get a path on record" rule) —
-grill-me has no knowledge of `dev_status.py`, so nothing else performs this
-update, and step 1's resume branch depends on it.
+## 5. Spec or plan
+Default: now use the `spec` skill with the item's context/next_steps as
+the task. Let it run through drafting and saving (its steps 1–4). Only
+when it reaches its own step 4 generation offer: do not ask that question
+and do not implement yet — move immediately to step 6 here instead, same
+as the grill-me interception this replaces for well-scoped items.
+
+If `spec`'s own step 3 escalates — a genuinely open design branch, not
+just a missing fact — use the `grill-me` skill for that decision instead,
+with the item's context/next_steps as topic. Let grill-me run its full
+protocol — Q&A, plan recording, showing the render output, and the
+`--verify` offer if any decision was defaulted/assumed. Only when it
+reaches its own end-of-session clear-and-go offer: do not ask the user
+that question and do not run `mark-pending-execution` yet — move
+immediately to step 6 here instead.
+
+Once whichever skill ran has recorded its artifact path (spec path or plan
+path), update the backlog item's `related_files` to include it if not
+already present (per the shared instructions file's "Plans and
+deliverables get a path on record" rule) — neither skill has knowledge of
+`dev_status.py`, so nothing else performs this update, and step 1's resume
+branch depends on it.
 
 ## 6. Critique
-Offer to now use the `second-opinion` skill against the resulting plan
-file. Recommended: yes — critique the plan before committing to an
+Offer to now use the `second-opinion` skill against the resulting plan or
+spec file. Recommended: yes — critique it before committing to an
 executor.
 
 ## 7. Handoff

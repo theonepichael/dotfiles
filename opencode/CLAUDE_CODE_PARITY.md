@@ -42,6 +42,12 @@ repo, with the other 3 (`make-skill`, `second-opinion`, `standup`) sitting as
 untracked manual copies in `~/.config/opencode/commands/` that a fresh
 `install.sh` run would silently drop. The 3 missing files have now been
 pulled into the repo and wired into install.sh alongside the existing two.
+
+**Update (2026-08-12): 7th command added.** `spec.md` was added at
+`opencode/command/spec.md` (plus a delegated `opencode/skills/spec/SKILL.md`
+copy, same split as `grill-me`/`second-opinion` below) and symlinked via
+`links.toml` — the actual current linking mechanism; "install.sh" above is
+this doc's original, now-imprecise, shorthand for it.
 `backlog-item` was ported from Claude Code on 2026-08-03; because it
 delegates planning/critique to `grill-me`/`second-opinion` at runtime, the
 port also introduced this repo's first two opencode **skills** (see the
@@ -113,14 +119,17 @@ separate (see `opencode.ai/docs/commands/` vs `opencode.ai/docs/skills/`):
   block) and load a skill with `skill({ name: "..." })` when relevant.
   opencode's `skill` tool only loads `SKILL.md` files — commands are
   invisible to it — so `backlog-item`'s runtime delegation to
-  grill-me/second-opinion (which Claude Code does through its own Skill
-  tool) needs real skills here. This repo tracks two,
-  `opencode/skills/grill-me/SKILL.md` and
-  `opencode/skills/second-opinion/SKILL.md`, symlinked into
-  `~/.config/opencode/skills/<name>/SKILL.md` by install.sh. They are
-  model-invoked copies of the same two protocols the user-typed `/grill-me`
-  and `/second-opinion` commands carry — deliberate full duplication, one
-  copy per layer, each adapted to how its layer is invoked. Skills are
+  grill-me/second-opinion/spec (which Claude Code does through its own Skill
+  tool) needs real skills here. This repo tracks three,
+  `opencode/skills/grill-me/SKILL.md`,
+  `opencode/skills/second-opinion/SKILL.md`, and
+  `opencode/skills/spec/SKILL.md` (added 2026-08-12, once `backlog-item`
+  started delegating to `spec` too), symlinked into
+  `~/.config/opencode/skills/<name>/SKILL.md` via `links.toml`. They are
+  model-invoked copies of the same protocols the user-typed `/grill-me`,
+  `/second-opinion`, and `/spec` commands carry — deliberate full
+  duplication, one copy per layer, each adapted to how its layer is
+  invoked. Skills are
   auto-discovered from `~/.config/opencode/skills/<name>/SKILL.md`,
   `.opencode/skills/<name>/`, and **also from the Claude-Code-compat
   paths** `~/.claude/skills/<name>/` and `~/.agents/skills/<name>/` (per
