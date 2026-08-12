@@ -11,8 +11,11 @@ the script's.
 
 ```
 second_opinion.py detect                        # which backends are present (JSON)
-second_opinion.py review <plan-file-or-text>     # one critique from the
-                                                  # priority-selected backend
+second_opinion.py review <plan-file-or-text> \
+    [--focus-file <path>]                        # one critique from the
+                                                  # priority-selected backend,
+                                                  # optionally scoped with
+                                                  # plan-specific risk hints
 ```
 
 ## Resolving the target plan
@@ -33,6 +36,33 @@ time anything references this path later, e.g. a `dev_status.py`
 meant for short descriptions (a `context`/`next_steps`/note field on a
 `dev_status.py` item, etc.) — reference the file path there instead.
 
+## Deriving focus hints
+
+Before each `review` call, read `current_plan` and identify 2-3 short,
+concrete risk areas specific to *this* plan's content — not generic advice
+("test your code", "handle errors") but what's actually likely to go wrong
+given what the plan does (e.g. "concurrent writes during the migration
+window", "auth token refresh on the retry path", "the fallback UI state
+when the API times out"). Write them as a short bullet list to
+`<current_plan without its extension>-focus.md` and pass
+`--focus-file <that path>` to `review`. Skip `--focus-file` entirely if
+nothing plan-specific stands out — never write generic filler bullets just
+to have something to pass.
+
+This is a fresh judgment call each round, not a one-time setup step: the
+plan changes between rounds (see the revision step below), so the risk
+areas can shift too. The focus file is working scratch, like the plan
+itself mid-loop — it supplements the reviewer's prompt, it doesn't replace
+any of it, and it isn't a deliverable: don't add it to a backlog item's
+`related_files` (that's for the final plan and critique-notes file only,
+per the section below).
+
+The point of these hints is to sharpen the critique on this plan's actual
+risk surface, not to narrow the reviewer's attention to only what you
+anticipated — the reviewer still receives the full generic adversarial
+prompt regardless, so it stays free to surface things you didn't think to
+flag.
+
 ## Iteration loop
 
 ```
@@ -41,7 +71,10 @@ current_plan = <resolved input>
 prior_critique = None
 
 loop:
-    critique = second_opinion.py review <current_plan>   # one call
+    focus_hints = derive 2-3 plan-specific risk bullets from current_plan
+                  (see above), or skip if nothing specific stands out
+    critique = second_opinion.py review <current_plan> \
+                   [--focus-file <focus-hints-path>]   # one call
     show "Round N critique" + critique in chat
 
     if round > 1 and critique raises nothing substantively

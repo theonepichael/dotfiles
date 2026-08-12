@@ -37,13 +37,38 @@ Be specific and concrete:
 - What did the author miss or assume without justification?
 - Where do you disagree, and why?
 - Is there a simpler approach?
-
+{focus_section}
 If the plan is genuinely solid, say so briefly — but don't pad
 agreement with praise. Skip preamble.
 
 ---
 {plan_text}
 """
+
+FOCUS_SECTION = """
+The plan's author flagged these as this plan's specific risk points —
+scrutinize them closely, but don't let them limit the rest of your review:
+{hints}
+"""
+
+
+def build_prompt(plan_text: str, focus_hints: str | None) -> str:
+    """Build the critique prompt, optionally inserting plan-specific focus hints.
+
+    Args:
+        plan_text: The plan to review.
+        focus_hints: Bullet-point text naming risk areas specific to this
+            plan, or ``None``/blank to omit the section entirely.
+
+    Returns:
+        The fully-formatted critique prompt.
+    """
+    focus_section = (
+        FOCUS_SECTION.format(hints=focus_hints.strip())
+        if focus_hints and focus_hints.strip()
+        else ""
+    )
+    return CRITIQUE_PROMPT.format(plan_text=plan_text, focus_section=focus_section)
 
 
 def die(msg: str) -> NoReturn:
@@ -352,7 +377,13 @@ def cmd_review(args: argparse.Namespace) -> None:
             die("no backend available — install one of: " + ", ".join(BACKEND_PRIORITY))
 
     plan_text = resolve_plan_text(args.plan)
-    prompt = CRITIQUE_PROMPT.format(plan_text=plan_text)
+    focus_hints = None
+    if args.focus_file:
+        focus_path = Path(args.focus_file).expanduser()
+        if not focus_path.is_file():
+            die(f"--focus-file not found: {focus_path}")
+        focus_hints = focus_path.read_text()
+    prompt = build_prompt(plan_text, focus_hints)
 
     failures = []
     for backend in candidates:
@@ -393,6 +424,13 @@ def main() -> None:
         choices=BACKEND_PRIORITY,
         default=None,
         help="force this backend instead of priority-order fallback",
+    )
+    p.add_argument(
+        "--focus-file",
+        default=None,
+        help="path to a file of plan-specific risk hints, appended to the "
+        "critique prompt as areas to scrutinize (supplements, not replaces, "
+        "the generic adversarial mandate)",
     )
 
     args = parser.parse_args()
