@@ -13,8 +13,9 @@ record — never start from the dashboard's one-line summary (CLAUDE.md).
 Empty context/next_steps/related_files: stop and ask the user to fill them
 in; don't fabricate a plan from the title. Numeric id: note the rendered rev
 for `--if-rev` on the next mutating call. related_files already names a
-grill plan (`~/.claude/data/grill/<slug>-plan.md`)? Planning and critique
-(steps 5–6) are already done — skip to step 8. Worktree already has
+grill plan (`~/.claude/data/grill/<slug>-plan.md`) or a spec
+(`~/.claude/data/grill/<slug>-spec.md`)? Planning and critique (steps 5–6)
+are already done — skip to step 8. Worktree already has
 implemented, uncommitted changes (e.g. handed back from an external
 executor)? Skip straight to step 9.
 
@@ -33,22 +34,30 @@ Run that repo's test suite (or the most relevant targeted subset) in the
 fresh worktree before touching anything (CLAUDE.md's "Baseline tests before
 starting code work").
 
-## 5. Plan
-Load the `grill-me` skill via opencode's native skill tool
-(`skill({ name: "grill-me" })`) and follow its protocol with the item's
-context/next_steps as topic. Let it own its full protocol — Q&A, --verify,
-clear-and-go — don't hand-roll `grill.py` calls here. Once it records a plan
-path, add that path to the item's related_files if missing (CLAUDE.md's
-"Plans and deliverables get a path on record"). Take the clear-and-go offer
-seriously: this user's default is a hardened plan handed to a cheaper
-executor, not continuing in-session. Decline grill-me's own clear-and-go
-offer here — step 7 below owns the handoff decision, since this user's real
-executors include targets grill-me's clear-and-go doesn't reach.
+## 5. Spec or plan
+Default: load the `spec` skill via opencode's native skill tool
+(`skill({ name: "spec" })`) with the item's context/next_steps as the task.
+Let it draft and save the spec (its steps 1–4), but decline its own step 5
+generation offer — step 7 below owns the handoff decision, same as the
+grill-me case this replaces for well-scoped items.
+
+If `spec`'s own step 3 escalates — a genuinely open design branch, not just
+a missing fact — load the `grill-me` skill (`skill({ name: "grill-me" })`)
+for that decision instead, with the item's context/next_steps as topic. Let
+it own its full protocol — Q&A, --verify, clear-and-go — don't hand-roll
+`grill.py` calls here. Take the clear-and-go offer seriously if grill-me
+runs: this user's default is a hardened plan handed to a cheaper executor,
+not continuing in-session. Decline grill-me's own clear-and-go offer too,
+for the same reason as `spec`'s.
+
+Once whichever skill ran records its artifact path (spec path or
+`plan_path`), add it to the item's related_files if missing (CLAUDE.md's
+"Plans and deliverables get a path on record").
 
 ## 6. Critique
 Offer the `second-opinion` skill (same skill tool,
-`skill({ name: "second-opinion" })`) against the resulting plan file.
-Recommended: yes — critique the plan before committing to an executor.
+`skill({ name: "second-opinion" })`) against the resulting plan or spec
+file. Recommended: yes — critique it before committing to an executor.
 
 ## 7. Handoff
 Decide who implements the plan — ask if it isn't already obvious from the

@@ -198,6 +198,11 @@ dest = "~/.copilot/skills/backlog-item/SKILL.md"
 harness = "copilot"
 
 [[link]]
+src = "copilot/skills/spec/SKILL.md"
+dest = "~/.copilot/skills/spec/SKILL.md"
+harness = "copilot"
+
+[[link]]
 src = "copilot/aliases.zsh"
 dest = "~/.copilot_aliases"
 harness = "copilot"
@@ -234,6 +239,11 @@ dest = "~/.config/opencode/commands/second-opinion.md"
 harness = "opencode"
 
 [[link]]
+src = "opencode/command/spec.md"
+dest = "~/.config/opencode/commands/spec.md"
+harness = "opencode"
+
+[[link]]
 src = "opencode/command/standup.md"
 dest = "~/.config/opencode/commands/standup.md"
 harness = "opencode"
@@ -255,6 +265,11 @@ harness = "opencode"
 [[link]]
 src = "opencode/skills/second-opinion/SKILL.md"
 dest = "~/.config/opencode/skills/second-opinion/SKILL.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/skills/spec/SKILL.md"
+dest = "~/.config/opencode/skills/spec/SKILL.md"
 harness = "opencode"
 
 # ── agy (Google Antigravity CLI, Gemini-backed) ──────────────────────────
@@ -286,6 +301,11 @@ harness = "agy"
 [[link]]
 src = "agy/skills/grill-me/SKILL.md"
 dest = "~/.gemini/antigravity-cli/skills/grill-me/SKILL.md"
+harness = "agy"
+
+[[link]]
+src = "agy/skills/spec/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/spec/SKILL.md"
 harness = "agy"
 
 [[link]]

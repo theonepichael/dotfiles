@@ -116,13 +116,15 @@ the locally-installed CLI surface, except where noted.
 
 ## 2. Skills — ported (`copilot/skills/`)
 
-All 6 (`backlog-item`, `dashboard`, `grill-me`, `make-skill`,
-`second-opinion`, `standup`) live in the repo at
+All 7 (`backlog-item`, `dashboard`, `grill-me`, `make-skill`,
+`second-opinion`, `spec`, `standup`) live in the repo at
 `copilot/skills/<name>/SKILL.md` and are symlinked into
 `~/.copilot/skills/<name>/SKILL.md` by the `copilot/skills/*` entries in
-`links.toml`. `backlog-item` orchestrates `grill-me`/`second-opinion` via
-mid-skill delegation (see the 2026-08-03 finding in section 3 below,
-verified the same day `backlog-item` was added). The other 5 were verified
+`links.toml`. `backlog-item` orchestrates `grill-me`/`second-opinion`/`spec`
+via mid-skill delegation (see the 2026-08-03 finding in section 3 below,
+verified the same day `backlog-item` was added — `spec` was added later,
+2026-08-12, and follows the same delegation shape but has not yet had its
+own live probe run). The other 5 (excluding `spec`) were verified
 2026-07-28 — `copilot skill list` listed all 6 as of 2026-08-03 under
 "Personal skills" **and** a live end-to-end invocation probe
 (`copilot -p "<activate dashboard; run dev_status.py render; show stdout
