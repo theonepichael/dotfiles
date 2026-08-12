@@ -1,0 +1,51 @@
+---
+name: spec
+description: "Turn a vague coding task into a structured specification (objective, context, inputs, output format, constraints, evaluation criteria, edge cases, verification steps) before generation begins. Use when the user wants to formalize a task, write a spec, or invokes /spec."
+argument-hint: [task description]
+allowed-tools: [Read, Glob, Grep, Write, AskUserQuestion, "Bash(python3 ~/.claude/scripts/second_opinion.py:*)"]
+---
+If $ARGUMENTS is empty, use the task under discussion in the conversation; if neither exists, ask what to spec.
+
+## 1. Draft the eight fields
+
+Fill in what you can from $ARGUMENTS and context already in scope (files read, prior discussion) — don't ask about anything inferable from the codebase.
+
+- **Objective** — one sentence: what exists when this is done.
+- **Context** — what the agent needs to know: existing code, conventions, prior decisions.
+- **Inputs** — data, files, tools, assumptions in bounds.
+- **Output format** — the literal shape of the deliverable: file structure, schema, API.
+- **Constraints** — what to avoid: new deps, paid APIs, style rules.
+- **Evaluation criteria** — how correctness gets judged.
+- **Edge cases** — what could go wrong or fall through.
+- **Verification steps** — tests/checks that must pass before this counts as done.
+
+## 2. Fill gaps — ask, don't guess
+
+For each field you can't confidently fill, ask one at a time, applying CLAUDE.md's recommendation-first convention. Skip fields already unambiguous from context — a trivial task doesn't need all eight interrogated.
+
+## 3. Escalate real decisions — don't resolve them here
+
+A missing fact gets asked directly (step 2). A genuinely open branch — multiple viable designs, unclear tradeoffs, a decision that cascades into others — gets named and handed to `/grill-me` instead: tell the user which field is blocked and why, and wait for that decision before drafting it. Never interrogate architecture inline in a spec.
+
+## 4. Save and confirm
+
+Write the spec to `~/.claude/data/grill/<topic-slug>-spec.md` (the same central location grill-me/second-opinion use for plan artifacts — never a per-session scratchpad). Show it to the user. Apply CLAUDE.md's "plans and deliverables get a path on record" backlog convention if this is tracked work.
+
+Then ask, via AskUserQuestion: "Start generation against this spec now?" — `Yes (recommended)` / `No, stop here`.
+
+## 5. Generation
+
+If yes: implement directly in this session, using the spec as the source of truth for scope. The spec is complete — nothing it didn't say yes to gets improvised.
+
+## 6. Validation and audit
+
+After generation, check the result against every **Evaluation criteria** and **Edge cases** line explicitly, and actually run the **Verification steps** — execute them, don't just describe them. If anything fails, revise and re-check; don't call it done until they pass.
+
+For substantive or high-stakes specs, follow with one audit pass for specification gaming — does the result satisfy the letter while missing the objective? Reuse `/second-opinion`'s adversarial critique loop for this rather than self-grading.
+
+## 7. Plumbing (house convention)
+
+1. File lives at `~/dotfiles/claude/commands/spec.md`.
+2. Add a `[[link]]` entry (`src = "claude/commands/spec.md"`, `dest = "~/.claude/commands/spec.md"`, `harness = "claude"`) in `links.toml` next to the existing ones.
+3. Create the live symlink now: `ln -s ~/dotfiles/claude/commands/spec.md ~/.claude/commands/spec.md`.
+4. Conventional commit, scope `claude`: `feat`.
