@@ -40,7 +40,7 @@ starting code work").
 ## 5. Spec or plan
 Default: load the `spec` skill via opencode's native skill tool
 (`skill({ name: "spec" })`) with the item's context/next_steps as the task.
-Let it draft and save the spec (its steps 1–4), but decline its own step 5
+Let it draft and save the spec (its steps 1–4), but decline its own step 4
 generation offer — step 7 below owns the handoff decision, same as the
 grill-me case this replaces for well-scoped items.
 

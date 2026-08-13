@@ -607,9 +607,7 @@ class GrillTestCase(unittest.TestCase):
             grill.cmd_mark_pending_execution(
                 ns(session=slug, backlog_slug="iron-lb-example")
             )
-        self.assertEqual(
-            grill.load_session(slug)["backlog_slug"], "iron-lb-example"
-        )
+        self.assertEqual(grill.load_session(slug)["backlog_slug"], "iron-lb-example")
 
     def test_21g_mark_pending_execution_rejects_invalid_backlog_slug(self) -> None:
         slug = self.new_session()

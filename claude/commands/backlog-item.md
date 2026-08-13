@@ -41,7 +41,7 @@ starting code work").
 ## 5. Spec or plan
 Default: delegate to the `spec` skill (Skill tool) with the item's context/
 next_steps as the task. Let it draft and save the spec (its steps 1–4), but
-decline its own step 5 generation offer — step 7 below owns the handoff
+decline its own step 4 generation offer — step 7 below owns the handoff
 decision, same as the grill-me case this replaces for well-scoped items.
 
 If `/spec`'s own step 3 escalates — a genuinely open design branch, not
