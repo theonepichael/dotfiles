@@ -113,7 +113,7 @@ CAPS_LOCK_TO_ESCAPE = [
 ]
 
 USAGE = """\
-usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run]
+usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--no-nvim-pin]
 
   --harness   required unless --rollback. Comma-separated, at least one of:
               claude, copilot, opencode, agy. No default — every run must
@@ -161,6 +161,15 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=per
               profile/harness branches apply) still runs for real, so the
               preview reflects actual machine state. The one flag allowed
               alongside --rollback, to preview an undo before running it.
+  --no-nvim-pin  Linux only. By default, _install_neovim_fallback always
+              ends up with ~/.local/bin/nvim pinned to
+              NEOVIM_FALLBACK_VERSION, even when the distro's own neovim
+              package already clears the 0.11 floor — reproducible across
+              machines regardless of what apt/dnf happens to ship. This
+              flag restores the old rescue-only behavior: the fallback is
+              only installed when the neovim on PATH is missing, too old,
+              or has a broken runtime; a distro package that's merely
+              "good enough" is left alone rather than overridden.
 
 Examples:
   ./install.sh --harness=claude
@@ -384,6 +393,7 @@ class Options:
     force: bool = False
     dry_run: bool = False
     wipe: bool = False
+    no_nvim_pin: bool = False
 
 
 @dataclass
@@ -504,6 +514,7 @@ def parse_args(argv: Sequence[str]) -> Options:
     parser.add_argument("--wipe", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", dest="dry_run", action="store_true")
+    parser.add_argument("--no-nvim-pin", dest="no_nvim_pin", action="store_true")
     parser.add_argument("-h", "--help", dest="help", action="store_true")
 
     args, extras = parser.parse_known_args(list(argv))
@@ -576,6 +587,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         force=args.force,
         dry_run=args.dry_run,
         wipe=args.wipe,
+        no_nvim_pin=args.no_nvim_pin,
     )
 
 
@@ -840,23 +852,57 @@ def _install_nerd_font(ctx: Context) -> None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def _fallback_already_pinned(ctx: Context) -> bool:
+    """Whether ~/.local/bin/nvim already resolves to our own pinned install.
+
+    Checked by identity (the shim must actually be our symlink into
+    ~/.local/opt/neovim), not just by version number — a same-numbered
+    binary from some other source shouldn't count, since only our symlink
+    is guaranteed to keep pointing at NEOVIM_FALLBACK_VERSION as that
+    constant changes. Compares the full ``NVIM vX.Y.Z`` line, not just
+    (major, minor) like :func:`parse_neovim_version` — a patch-only pin
+    bump must still be detected as "not yet pinned".
+    """
+    prefix = ctx.home / ".local" / "opt" / "neovim"
+    shim = ctx.home / ".local" / "bin" / "nvim"
+    nvim_bin = prefix / "bin" / "nvim"
+    if not shim.is_symlink():
+        return False
+    try:
+        if shim.resolve() != nvim_bin.resolve():
+            return False
+    except OSError:
+        return False
+    result = run_command([str(shim), "--version"], capture=True)
+    if not result.ok:
+        return False
+    first_line = result.stdout.splitlines()[0] if result.stdout.strip() else ""
+    return first_line == f"NVIM v{NEOVIM_FALLBACK_VERSION}"
+
+
 def _install_neovim_fallback(ctx: Context) -> None:
-    """Fetch a modern Neovim onto Linux when apt's is too old or broken.
+    """Fetch a modern, pinned Neovim onto Linux.
 
     apt/dnf's neovim (LINUX_PACKAGES) is frequently below the 0.11 floor
     this repo's vendored config needs, and has no upstream mechanism to fix
-    that short of a PPA. When the Neovim currently on PATH is missing, too
-    old, or has a broken runtime (this repo's own incident — see
-    _wipe_neovim_dirs), this installs a pinned upstream release into
-    ~/.local/opt/neovim (never ~/.local/share/nvim — see the warning
-    there) and points ~/.local/bin/nvim at it, self-healing exactly the
-    kind of broken install that caused that incident.
+    that short of a PPA. By default this always ends up with
+    ~/.local/bin/nvim pinned to NEOVIM_FALLBACK_VERSION, even when the
+    distro package already clears the floor — reproducible across machines
+    regardless of what apt/dnf happens to ship. ``--no-nvim-pin`` restores
+    the old rescue-only behavior: only install when the Neovim currently on
+    PATH is missing, too old, or has a broken runtime (this repo's own
+    incident — see _wipe_neovim_dirs). Either way, installs land in
+    ~/.local/opt/neovim (never ~/.local/share/nvim — see the warning there)
+    with ~/.local/bin/nvim symlinked at it.
     """
+    if _fallback_already_pinned(ctx):
+        return
+
     version, runtime_ok = _neovim_status()
     already_good = (
         version is not None and (version[0], version[1]) >= (0, 11) and runtime_ok
     )
-    if already_good:
+    if ctx.opts.no_nvim_pin and already_good:
         return
 
     machine = platform.machine()
