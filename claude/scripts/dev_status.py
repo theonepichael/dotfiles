@@ -121,7 +121,7 @@ SLUG_MIN, SLUG_MAX = 3, 40
 
 CATEGORY_TAG = {"bug": "bug", "feature": "feat", "chore": "chore", "research": "rsrch"}
 STALE_DAYS = 7
-SECTION_WIDTH = 44
+SECTION_WIDTH = 76
 _RESET = "\x1b[0m"
 _COLORS = {
     "in_progress": "\x1b[33m",
@@ -1642,7 +1642,7 @@ def _recap_section_lines(color: bool) -> list[str] | None:
         return None
 
     frame_code = _COLORS.get("done")
-    top = _colorize(_section_top("RECAP"), frame_code, color)
+    top = _colorize(_section_top("RECAP 👋"), frame_code, color)
     bottom = _colorize(_section_bottom(), frame_code, color)
     wrapped = textwrap.wrap(text, width=SECTION_WIDTH - 3) or [text]
     lines = [top]
