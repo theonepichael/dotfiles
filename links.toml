@@ -345,6 +345,18 @@ src = "agy/skills/backlog-item/SKILL.md"
 dest = "~/.gemini/antigravity-cli/skills/backlog-item/SKILL.md"
 harness = "agy"
 
+# Standalone hooks.json is discovered from ~/.gemini/config/hooks.json --
+# a DIFFERENT root than skills (~/.gemini/antigravity-cli/skills/ above).
+# Confirmed empirically: ~/.gemini/antigravity-cli/hooks.json and a
+# plugins/<name>/hooks.json under that same root were both silently
+# ignored at runtime despite `agy plugin validate` accepting the plugin
+# shape; only ~/.gemini/config/hooks.json actually fired. See
+# agy/CLAUDE_CODE_PARITY.md for the full probe record.
+[[link]]
+src = "agy/hooks.json"
+dest = "~/.gemini/config/hooks.json"
+harness = "agy"
+
 # ── watchcommit (personal machines only) ─────────────────────────────────
 # It auto-pushes to a personal remote under your personal Claude account
 # login, which has no place on work hardware.

@@ -141,6 +141,44 @@ skills (including `spec`) are present at
   unlinks) — and that fires on the *first* invocation only by side effect,
   not by design. **Conclusion: not worth wiring** an auto-render hook for
   agy; `dashboard`'s agy version correctly makes no SessionStart claim.
+- **`PostToolUse` IS wired and confirmed live (2026-08-13), but its real
+  discovery path and payload both diverge from `hooks.md`.** Both findings
+  came from empirical probing (a diagnostic hook dumping raw stdin), not
+  from the docs alone, after several doc-plausible locations silently did
+  nothing:
+  - **Discovery path**: a standalone `hooks.json` is only picked up from
+    `~/.gemini/config/hooks.json` — a *different* root than skills
+    (`~/.gemini/antigravity-cli/skills/`, §1 above). Tried and confirmed
+    **not** discovered: `~/.gemini/antigravity-cli/hooks.json` (silent
+    no-op), a full `plugins/<name>/{plugin.json,hooks.json}` bundle under
+    that same `antigravity-cli/plugins/` root (`agy plugin validate`
+    accepts the shape and reports `hooks: 1 processed`, but `agy plugin
+    enable <name>` then fails with `"plugin ... not found or invalid"` —
+    validate accepts any path you hand it, it doesn't confirm the path is
+    an actual scanned root), and a project-relative `.agents/hooks.json`
+    at the repo root (this repo doesn't use `agy --project`/`--new-project`
+    registration, which project-relative discovery may require and which
+    wasn't tested further once the global path worked).
+  - **Payload is richer than `hooks.md`'s documented example.** The doc's
+    `PostToolUse` input example shows only `{stepIdx, error, ...common
+    fields}` — no tool-call information at all. The real payload includes
+    a full `toolCall: {name, args}`, same shape as the doc's own
+    `PreToolUse` example. Confirmed tool names and their file-path arg key
+    (both `TargetFile`, conveniently): `write_to_file` (new file) and
+    `replace_file_content` (existing file edit) — probed by capturing raw
+    stdin from real `agy --dangerously-skip-permissions -p "..."` edit and
+    create calls. Extraction: `.toolCall.args.TargetFile`.
+  - **Output contract confirmed as documented**: an empty `{}` on stdout.
+    A hook that exits without emitting valid JSON was not tested for
+    failure behavior — always emit `{}` regardless of which branch a
+    handler script takes, don't rely on early `exit 0`.
+  - Wired at `agy/hooks.json` → `~/.gemini/config/hooks.json`: runs `ruff
+    format` + `ruff check --fix` on any `.py` file `write_to_file`/
+    `replace_file_content` touches, inside a uv/ruff project (walks up for
+    `pyproject.toml`) — ported from the same Claude Code/Copilot
+    PostToolUse mechanism. Verified end-to-end: introduced a real
+    formatting violation, ran a live `agy -p` edit, confirmed the hook
+    auto-fixed it before the next tool call saw the file.
 - **MCP config format differs**: `~/.gemini/config/mcp_config.json` with a
   `serverUrl` key, replacing inline `~/.gemini/settings.json` declarations
   from the Gemini CLI era. Not touched by this port; this repo doesn't
