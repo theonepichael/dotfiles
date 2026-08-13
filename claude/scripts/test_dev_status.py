@@ -385,9 +385,11 @@ class BacklogTestCase(unittest.TestCase):
         self.write_items(items)
         original_content = self.items_file.read_text()
 
-        with patch("os.replace", side_effect=OSError("disk full")):
-            with self.assertRaises(OSError):
-                dev_status.save_items(items)
+        with (
+            patch("os.replace", side_effect=OSError("disk full")),
+            self.assertRaises(OSError),
+        ):
+            dev_status.save_items(items)
 
         self.assertEqual(self.items_file.read_text(), original_content)
         tmp_files = list(self.data_dir.glob(".items_tmp_*"))
@@ -405,10 +407,12 @@ class BacklogTestCase(unittest.TestCase):
 
         # Patch os.fsync so we can assert it was called; patch os.replace to
         # raise so the path cleans up the temp file as in test_14.
-        with patch("os.fsync") as fsync_mock:
-            with patch("os.replace", side_effect=OSError("disk full")):
-                with self.assertRaises(OSError):
-                    dev_status.save_items(items)
+        with (
+            patch("os.fsync") as fsync_mock,
+            patch("os.replace", side_effect=OSError("disk full")),
+            self.assertRaises(OSError),
+        ):
+            dev_status.save_items(items)
 
         # os.fsync should have been called for the temp file (and possibly
         # for the directory). We don't assert exact call args because FDs
@@ -686,9 +690,12 @@ class BacklogTestCase(unittest.TestCase):
     def test_20n_list_status_invalid_rejected(self):
         # argparse rejects unknown --status values with exit code 2.
         err = io.StringIO()
-        with patch("sys.stderr", err), self.assertRaises(SystemExit) as cm:
-            with patch("sys.argv", ["dev_status", "list", "--status", "bogus"]):
-                dev_status.main()
+        with (
+            patch("sys.stderr", err),
+            self.assertRaises(SystemExit) as cm,
+            patch("sys.argv", ["dev_status", "list", "--status", "bogus"]),
+        ):
+            dev_status.main()
         self.assertEqual(cm.exception.code, 2)
         self.assertIn("bogus", err.getvalue())
 
@@ -1135,13 +1142,13 @@ class BacklogTestCase(unittest.TestCase):
                     f"stderr={err.getvalue()!r}"
                 )
         # --force is not a registered argument of the remove subparser.
-        with self.assertRaises(SystemExit):
-            with (
-                patch("sys.argv", ["dev_status", "remove", "item-a", "--force"]),
-                patch("sys.stderr", io.StringIO()),
-                patch("sys.stdout", io.StringIO()),
-            ):
-                dev_status.main()
+        with (
+            self.assertRaises(SystemExit),
+            patch("sys.argv", ["dev_status", "remove", "item-a", "--force"]),
+            patch("sys.stderr", io.StringIO()),
+            patch("sys.stdout", io.StringIO()),
+        ):
+            dev_status.main()
 
     # ── 48: metavar string lists remove between rename and block ───────────
 
@@ -1149,9 +1156,12 @@ class BacklogTestCase(unittest.TestCase):
         # The top-level subparsers metavar is the {…} set shown next to the
         # program name in --help. Parse with -h and capture the usage line.
         out = io.StringIO()
-        with self.assertRaises(SystemExit):
-            with patch("sys.argv", ["dev_status", "-h"]), patch("sys.stdout", out):
-                dev_status.main()
+        with (
+            self.assertRaises(SystemExit),
+            patch("sys.argv", ["dev_status", "-h"]),
+            patch("sys.stdout", out),
+        ):
+            dev_status.main()
         usage = out.getvalue()
         # rename appears before remove, remove before block in the metavar.
         self.assertLess(usage.index("rename"), usage.index("remove"))
@@ -1882,11 +1892,12 @@ class BacklogTestCase(unittest.TestCase):
                 }
             ]
         )
-        with patch("sys.stdout", io.StringIO()), patch("sys.stderr", io.StringIO()):
-            with patch.object(
-                dev_status, "_backup_before_bulk_delete", lambda _p: None
-            ):
-                dev_status.cmd_prune(_args(force=True))
+        with (
+            patch("sys.stdout", io.StringIO()),
+            patch("sys.stderr", io.StringIO()),
+            patch.object(dev_status, "_backup_before_bulk_delete", lambda _p: None),
+        ):
+            dev_status.cmd_prune(_args(force=True))
         pending_on_disk = dev_status.load_pending()
         self.assertEqual(pending_on_disk[0]["blocking"], [])
 
@@ -2086,18 +2097,18 @@ class BacklogTestCase(unittest.TestCase):
                 }
             ]
         )
-        with patch.object(dev_status, "_backup_before_bulk_delete", lambda _p: None):
-            with patch(
+        with (
+            patch.object(dev_status, "_backup_before_bulk_delete", lambda _p: None),
+            patch(
                 "dev_status.save_items", wraps=dev_status.save_items
-            ) as save_items_mock:
-                with patch(
-                    "dev_status.save_pending", wraps=dev_status.save_pending
-                ) as save_pending_mock:
-                    with (
-                        patch("sys.stdout", io.StringIO()),
-                        patch("sys.stderr", io.StringIO()),
-                    ):
-                        dev_status.cmd_prune(_args(force=True))
+            ) as save_items_mock,
+            patch(
+                "dev_status.save_pending", wraps=dev_status.save_pending
+            ) as save_pending_mock,
+            patch("sys.stdout", io.StringIO()),
+            patch("sys.stderr", io.StringIO()),
+        ):
+            dev_status.cmd_prune(_args(force=True))
         self.assertEqual(save_items_mock.call_count, 1)
         self.assertEqual(save_pending_mock.call_count, 1)
         # And the ref-purge is still correctly persisted, not just fewer
@@ -2141,9 +2152,8 @@ class BacklogTestCase(unittest.TestCase):
         dev_status.cmd_review(_args(id="rv-item"))
         for bad in ("", "   "):
             err = io.StringIO()
-            with self.assertRaises(SystemExit) as cm:
-                with patch("sys.stderr", err):
-                    dev_status.cmd_reject(_args(id="rv-item", feedback=bad))
+            with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+                dev_status.cmd_reject(_args(id="rv-item", feedback=bad))
             self.assertEqual(cm.exception.code, 1)
             self.assertIn("feedback is required", err.getvalue())
             item = self._item_by_id("rv-item")
@@ -2172,11 +2182,8 @@ class BacklogTestCase(unittest.TestCase):
         self.write_items([make_item("rv-item", status="in-progress")])
         for field in ("review_feedback", "review_content_hash"):
             err = io.StringIO()
-            with self.assertRaises(SystemExit) as cm:
-                with patch("sys.stderr", err):
-                    dev_status.cmd_update(
-                        _args(id="rv-item", patch=f'{{"{field}": "x"}}')
-                    )
+            with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+                dev_status.cmd_update(_args(id="rv-item", patch=f'{{"{field}": "x"}}'))
             self.assertEqual(cm.exception.code, 1)
             msg = err.getvalue()
             self.assertIn("cannot modify", msg)
@@ -2282,9 +2289,8 @@ class BacklogTestCase(unittest.TestCase):
                 [make_item("rv-item", status=status, review_content_hash=None)]
             )
             err = io.StringIO()
-            with self.assertRaises(SystemExit) as cm:
-                with patch("sys.stderr", err):
-                    dev_status.cmd_review(_args(id="rv-item"))
+            with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+                dev_status.cmd_review(_args(id="rv-item"))
             self.assertEqual(cm.exception.code, 1)
             self.assertIn("only an in-progress", err.getvalue())
 
@@ -2485,9 +2491,8 @@ class BacklogTestCase(unittest.TestCase):
         ):
             self.write_items([make_item("gt-item", gate=gate)])
             err = io.StringIO()
-            with self.assertRaises(SystemExit) as cm:
-                with patch("sys.stderr", err):
-                    dev_status.cmd_gate_pass(_args(id="gt-item"))
+            with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+                dev_status.cmd_gate_pass(_args(id="gt-item"))
             self.assertEqual(cm.exception.code, 1)
             self.assertIn("nothing to pass", err.getvalue())
 
@@ -3129,11 +3134,13 @@ class BacklogTestCase(unittest.TestCase):
     def test_r23_backend_failure_leaves_prior_cache_intact(self):
         self._write_cache("Old cached text.", age_hours=0, backend="agy")
         self._seed_recent_journal()
-        with patch.object(llm_backends, "available_backends", return_value=["agy"]):
-            with patch.object(
+        with (
+            patch.object(llm_backends, "available_backends", return_value=["agy"]),
+            patch.object(
                 llm_backends, "run_agy", side_effect=llm_backends.BackendError("boom")
-            ):
-                backend, text = dev_status._run_recap_regen()
+            ),
+        ):
+            backend, text = dev_status._run_recap_regen()
         self.assertEqual((backend, text), ("", ""))
         cache = json.loads(self.recap_cache_file.read_text())
         self.assertEqual(cache["text"], "Old cached text.")
@@ -3141,13 +3148,15 @@ class BacklogTestCase(unittest.TestCase):
     def test_r23b_backend_timeout_leaves_prior_cache_intact(self):
         self._write_cache("Old cached text.", age_hours=0, backend="agy")
         self._seed_recent_journal()
-        with patch.object(llm_backends, "available_backends", return_value=["agy"]):
-            with patch.object(
+        with (
+            patch.object(llm_backends, "available_backends", return_value=["agy"]),
+            patch.object(
                 llm_backends,
                 "run_agy",
                 side_effect=llm_backends.BackendError("timed out after 60s — killed"),
-            ):
-                backend, text = dev_status._run_recap_regen()
+            ),
+        ):
+            backend, text = dev_status._run_recap_regen()
         self.assertEqual((backend, text), ("", ""))
         cache = json.loads(self.recap_cache_file.read_text())
         self.assertEqual(cache["text"], "Old cached text.")
@@ -3170,9 +3179,11 @@ class BacklogTestCase(unittest.TestCase):
     def test_r25_recap_fresh_cache_prints_without_regen_call(self):
         self._write_cache("Fresh recap.", age_hours=0)
         out = io.StringIO()
-        with patch.object(dev_status, "_run_recap_regen") as mock_regen:
-            with patch("sys.stdout", out):
-                dev_status.cmd_recap(_args())
+        with (
+            patch.object(dev_status, "_run_recap_regen") as mock_regen,
+            patch("sys.stdout", out),
+        ):
+            dev_status.cmd_recap(_args())
         mock_regen.assert_not_called()
         self.assertIn("Fresh recap.", out.getvalue())
 
@@ -3203,11 +3214,13 @@ class BacklogTestCase(unittest.TestCase):
             self._write_cache("Written while we waited.", age_hours=0)
             yield True
 
-        with patch.object(dev_status, "_regen_lock", _fake_lock):
-            with patch.object(dev_status, "_run_recap_regen") as mock_regen:
-                out = io.StringIO()
-                with patch("sys.stdout", out):
-                    dev_status.cmd_recap(_args())
+        with (
+            patch.object(dev_status, "_regen_lock", _fake_lock),
+            patch.object(dev_status, "_run_recap_regen") as mock_regen,
+        ):
+            out = io.StringIO()
+            with patch("sys.stdout", out):
+                dev_status.cmd_recap(_args())
         mock_regen.assert_not_called()
         self.assertIn("Written while we waited.", out.getvalue())
 
@@ -3251,11 +3264,11 @@ class BacklogTestCase(unittest.TestCase):
 
     def test_r32_run_recap_regen_caches_empty_normalized_result(self):
         self._seed_recent_journal()
-        with patch.object(llm_backends, "available_backends", return_value=["agy"]):
-            with patch.object(
-                llm_backends, "run_agy", return_value="*** \U0001f389 ***"
-            ):
-                backend, text = dev_status._run_recap_regen()
+        with (
+            patch.object(llm_backends, "available_backends", return_value=["agy"]),
+            patch.object(llm_backends, "run_agy", return_value="*** \U0001f389 ***"),
+        ):
+            backend, text = dev_status._run_recap_regen()
         self.assertEqual(backend, "agy")
         self.assertEqual(text, "")
         cache = json.loads(self.recap_cache_file.read_text())
