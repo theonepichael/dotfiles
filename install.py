@@ -113,7 +113,7 @@ CAPS_LOCK_TO_ESCAPE = [
 ]
 
 USAGE = """\
-usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--no-nvim-pin]
+usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--no-nvim-pin] [--reseed]
 
   --harness   required unless --rollback. Comma-separated, at least one of:
               claude, copilot, opencode, agy. No default — every run must
@@ -170,6 +170,13 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=per
               only installed when the neovim on PATH is missing, too old,
               or has a broken runtime; a distro package that's merely
               "good enough" is left alone rather than overridden.
+  --reseed    force an overwrite of drifted copy-once seeds (VS Code
+              settings.json/keybindings.json, Claude Code settings.json,
+              opencode.jsonc) with the repo's current version, instead of
+              only reporting drift. The pre-existing file is backed up to
+              <name>.bak once, the first time a given file is reseeded;
+              later reseeds of the same file reuse that backup rather than
+              overwriting it again. Cannot be combined with --rollback.
 
 Examples:
   ./install.sh --harness=claude
@@ -331,8 +338,14 @@ class Manifest:
 
         Unparseable lines are dropped rather than raising: a truncated last
         line (power loss mid-append) must not make the whole history
-        unrollbackable.
+        unrollbackable. A missing file (no run has ever recorded anything
+        yet) returns an empty list rather than raising ``FileNotFoundError``
+        — callers on the normal (non-rollback) install path, like
+        ``--reseed``'s ``has_backup`` lookup, hit this on a fresh machine
+        and have no external existence guard of their own.
         """
+        if not self.path.is_file():
+            return []
         entries: list[dict[str, object]] = []
         for line in self.path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -345,6 +358,18 @@ class Manifest:
             if isinstance(parsed, dict):
                 entries.append(parsed)
         return entries
+
+    def has_backup(self, dest: Path) -> bool:
+        """Return whether a ``file-backed-up`` entry exists for ``dest``.
+
+        The source of truth for "has this dest's true original already been
+        preserved," not merely whether a ``<name>.bak`` file happens to
+        exist on disk — see ``seed_file``'s reseed branch.
+        """
+        return any(
+            entry.get("kind") == "file-backed-up" and entry.get("dest") == str(dest)
+            for entry in self.entries()
+        )
 
     def _record(self, entry: dict[str, object]) -> None:
         if self.dry_run:
@@ -394,6 +419,7 @@ class Options:
     dry_run: bool = False
     wipe: bool = False
     no_nvim_pin: bool = False
+    reseed: bool = False
 
 
 @dataclass
@@ -515,6 +541,7 @@ def parse_args(argv: Sequence[str]) -> Options:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", dest="dry_run", action="store_true")
     parser.add_argument("--no-nvim-pin", dest="no_nvim_pin", action="store_true")
+    parser.add_argument("--reseed", action="store_true")
     parser.add_argument("-h", "--help", dest="help", action="store_true")
 
     args, extras = parser.parse_known_args(list(argv))
@@ -560,7 +587,9 @@ def parse_args(argv: Sequence[str]) -> Options:
     # alongside it (not just --harness) keeps them from being silently
     # ignored, which would mislead someone into thinking they rolled back
     # "as work" or similar.
-    if args.rollback and (harness_set or args.profile != "personal" or args.force):
+    if args.rollback and (
+        harness_set or args.profile != "personal" or args.force or args.reseed
+    ):
         _fail("--rollback must be used alone, with no other flags")
 
     if args.wipe and not args.rollback:
@@ -588,6 +617,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         dry_run=args.dry_run,
         wipe=args.wipe,
         no_nvim_pin=args.no_nvim_pin,
+        reseed=args.reseed,
     )
 
 
@@ -1374,10 +1404,23 @@ def _bash_permissions(config: dict[str, object]) -> dict[str, object]:
 
 
 def describe_settings_drift(seed: Path, live: Path) -> str:
-    """Describe how a live settings.json diverged from its seed."""
+    """Describe how a live settings.json diverged from its seed.
+
+    Text equality is checked first, before any JSON parsing is attempted —
+    see ``describe_vscode_drift``'s docstring for why (this mirrors its
+    exact shape). Only once text has already proven to differ does an
+    unparseable live file get its own non-empty fallback, so a corrupted
+    live settings.json is no longer invisible to drift reporting.
+    """
+    if not seed.is_file() or not live.is_file():
+        return ""
+    seed_text = seed.read_text(encoding="utf-8")
+    live_text = live.read_text(encoding="utf-8")
+    if seed_text == live_text:
+        return ""
     pair = _load_json_pair(seed, live)
     if pair is None:
-        return ""
+        return "content differs from the repo copy (unreadable or invalid JSON)"
     return ", ".join(json_key_drift(*pair))
 
 
@@ -1385,16 +1428,26 @@ def describe_opencode_drift(seed: Path, live: Path) -> str:
     """Describe how a live opencode.jsonc diverged from its seed.
 
     A returned allowlist bypass outranks (and replaces) the generic key
-    list: it's a security regression, not config drift to skim past.
+    list: it's a security regression, not config drift to skim past. Text
+    equality is checked before any JSON parsing, same as
+    ``describe_settings_drift`` — this is what keeps a byte-identical
+    ``opencode.jsonc`` containing a ``//`` comment from being misreported as
+    drifted just because ``json.loads`` can't parse it.
     """
+    if not seed.is_file() or not live.is_file():
+        return ""
+    seed_text = seed.read_text(encoding="utf-8")
+    live_text = live.read_text(encoding="utf-8")
+    if seed_text == live_text:
+        return ""
     pair = _load_json_pair(seed, live)
     if pair is None:
-        return ""
+        return "content differs from the repo copy (unreadable or invalid JSON)"
     bypasses = opencode_bypass_drift(*pair)
     if bypasses:
         return (
             f"SECURITY: {', '.join(bypasses)} still allowed in your live "
-            "opencode.jsonc (allowlist bypass) — delete the file and re-run to fix"
+            "opencode.jsonc (allowlist bypass) — re-run with --reseed to fix"
         )
     return ", ".join(json_key_drift(*pair))
 
@@ -1548,7 +1601,86 @@ def seed_file(
         ctx.manifest.record_copy(dest)
         print(PALETTE.ok(f"  copied {ctx.display(dest)} (from {seed.name})"))
         return ""
-    return drift(seed, dest)
+
+    drift_desc = drift(seed, dest)
+    if not drift_desc or not ctx.opts.reseed:
+        return drift_desc
+    return _reseed_file(ctx, seed, dest, skip_label=skip_label, drift_desc=drift_desc)
+
+
+def _reseed_file(
+    ctx: Context, seed: Path, dest: Path, *, skip_label: str, drift_desc: str
+) -> str:
+    """Back up and overwrite a drifted copy-once seed with the repo's version.
+
+    Only called once ``seed_file`` has already confirmed real drift and
+    ``--reseed`` is set. ``dest``'s true original is preserved exactly
+    once, tracked via the manifest (not merely a ``<name>.bak``'s presence
+    on disk — see ``Manifest.has_backup``): a foreign, unrecorded ``.bak``
+    blocks the reseed entirely rather than risking either file, and a
+    recorded backup whose ``.bak`` was since deleted is treated as if no
+    backup had ever been taken.
+    """
+    backup = dest.with_name(dest.name + ".bak")
+    has_backup = ctx.manifest.has_backup(dest)
+    backup_exists = backup.exists()
+
+    # A .bak this dotfiles tool never recorded — don't touch either file.
+    if not has_backup and backup_exists:
+        if ctx.opts.dry_run:
+            _preview(
+                f"would skip reseeding {ctx.display(dest)} — {backup.name} exists "
+                "but isn't a recorded backup, resolve manually"
+            )
+            return drift_desc
+        ctx.reporter.skip(
+            skip_label,
+            f"{backup} exists but isn't a recorded backup — resolve manually",
+        )
+        return drift_desc
+
+    # True original not (or no longer) safely preserved anywhere.
+    needs_backup = not has_backup or not backup_exists
+
+    if ctx.opts.dry_run:
+        if needs_backup:
+            _preview(
+                f"would back up {ctx.display(dest)} → {dest.name}.bak, "
+                f"then reseed from {seed.name}"
+            )
+        else:
+            _preview(
+                f"would reseed {ctx.display(dest)} from {seed.name} (already backed up)"
+            )
+        return ""
+
+    if needs_backup:
+        try:
+            shutil.move(str(dest), str(backup))
+        except (OSError, shutil.Error):
+            ctx.reporter.skip(skip_label, "reseed backup failed")
+            return ""
+        ctx.manifest.record_backup(dest, backup)
+        print(f"  Backing up {dest} → {backup}")
+
+    try:
+        shutil.copy(seed, dest)
+    except OSError:
+        ctx.reporter.skip(skip_label, "copy failed")
+        if needs_backup:
+            try:
+                shutil.move(str(backup), str(dest))
+            except (OSError, shutil.Error):
+                ctx.reporter.skip(
+                    skip_label,
+                    f"could not restore {dest} from {backup} after failed "
+                    f"reseed — {dest.name} is missing; restore manually",
+                )
+        return ""
+
+    ctx.manifest.record_copy(dest)
+    print(PALETTE.ok(f"  reseeded {ctx.display(dest)} (from {seed.name})"))
+    return ""
 
 
 def seed_claude_settings(ctx: Context) -> tuple[str, str]:
@@ -1927,15 +2059,22 @@ def do_rollback(ctx: Context) -> int:
     # recognized as already handled rather than misreported as a missing
     # backup.
     restored: set[Path] = set()
+    # Which dest paths a file-backed-up entry has already restored (non-wipe
+    # path only), processed newest-to-oldest in this same pass. Lets a plain
+    # file-copied entry for the same dest — e.g. the original bootstrap copy
+    # that predates any --reseed of it — recognize its target was already
+    # correctly restored by a later (already-processed) entry, instead of
+    # unconditionally deleting it a second time.
+    restored_dests: set[Path] = set()
 
     for entry in reversed(entries):
         match entry.get("kind"):
             case "symlink-created":
                 _rollback_symlink(ctx, entry, skips)
             case "file-copied":
-                _rollback_copy(ctx, entry)
+                _rollback_copy(ctx, entry, restored_dests)
             case "file-backed-up":
-                _rollback_backup(ctx, entry, skips, restored)
+                _rollback_backup(ctx, entry, skips, restored, restored_dests)
             case "package-installed":
                 print(
                     f"  package left installed (profile-independent): "
@@ -2099,9 +2238,22 @@ def _rollback_symlink(ctx: Context, entry: dict[str, object], skips: Reporter) -
     print(f"  removed symlink {dest}")
 
 
-def _rollback_copy(ctx: Context, entry: dict[str, object]) -> None:
-    """Undo one ``file-copied`` entry."""
+def _rollback_copy(
+    ctx: Context, entry: dict[str, object], restored_dests: set[Path]
+) -> None:
+    """Undo one ``file-copied`` entry.
+
+    Skipped when ``dest`` is in ``restored_dests``: a newer (already
+    processed, since this walk runs newest-to-oldest) ``file-backed-up``
+    entry for the same path already correctly restored it this pass, so
+    unlinking here would delete that restored original rather than a
+    dotfiles-managed copy — see ``do_rollback``'s comment on
+    ``restored_dests``.
+    """
     dest = Path(str(entry.get("dest", "")))
+    if dest in restored_dests:
+        print(f"  {dest} left in place (already restored by a later entry)")
+        return
     if not dest.is_file():
         return
     if ctx.opts.dry_run:
@@ -2112,7 +2264,11 @@ def _rollback_copy(ctx: Context, entry: dict[str, object]) -> None:
 
 
 def _rollback_backup(
-    ctx: Context, entry: dict[str, object], skips: Reporter, restored: set[Path]
+    ctx: Context,
+    entry: dict[str, object],
+    skips: Reporter,
+    restored: set[Path],
+    restored_dests: set[Path],
 ) -> None:
     """Restore one ``file-backed-up`` entry from its ``.bak`` path.
 
@@ -2146,6 +2302,7 @@ def _rollback_backup(
             return
         print(f"  restored {dest} from {backup}")
         restored.add(backup)
+        restored_dests.add(dest)
         return
     if backup not in restored:
         wording = (
@@ -2187,7 +2344,10 @@ def print_summary(
     ):
         if drift:
             print(PALETTE.warn(f"⚠ {path} drifted from {seed_name}: {drift}"))
-            print("  (copy-once by design — port changes manually if wanted)")
+            print(
+                "  (copy-once by design — re-run with --reseed to overwrite, "
+                "or port changes manually)"
+            )
 
     if dry:
         print("  dry run — nothing was changed; re-run without --dry-run to apply")

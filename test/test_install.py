@@ -58,6 +58,7 @@ def make_ctx(
     force=False,
     wipe=False,
     no_nvim_pin=False,
+    reseed=False,
     system="Linux",
     is_wsl=False,
     dotfiles=REPO_ROOT,
@@ -70,6 +71,7 @@ def make_ctx(
         force=force,
         wipe=wipe,
         no_nvim_pin=no_nvim_pin,
+        reseed=reseed,
     )
     state_dir = home / ".local" / "state" / "dotfiles"
     return install.Context(
@@ -157,6 +159,8 @@ def parse_error(argv, capsys):
         (["--rollback", "--harness=claude"], "must be used alone"),
         (["--rollback", "--profile=work"], "must be used alone"),
         (["--rollback", "--force"], "must be used alone"),
+        (["--rollback", "--reseed"], "must be used alone"),
+        (["--reseed"], "no --harness specified"),
         # No --harness alongside --wipe, deliberately: exercises the
         # parse_args ordering fix (the --wipe-without-rollback check must
         # fire before the missing-harness check, not after).
@@ -222,6 +226,11 @@ def test_defaults():
 def test_no_nvim_pin_flag_parses():
     opts = install.parse_args(["--harness=claude", "--no-nvim-pin"])
     assert opts.no_nvim_pin
+
+
+def test_reseed_flag_parses():
+    opts = install.parse_args(["--harness=claude", "--reseed"])
+    assert opts.reseed
 
 
 # ── links.toml ────────────────────────────────────────────────────────────────
@@ -540,6 +549,303 @@ def test_drift_helpers_on_raw_dicts():
     assert install.opencode_bypass_drift({}, {}) == []
 
 
+# ── --reseed ─────────────────────────────────────────────────────────────────
+
+
+def _raise_oserror(*args, **kwargs):
+    raise OSError("simulated failure")
+
+
+def test_manifest_entries_and_has_backup_with_no_history_file(home):
+    """Eval criterion 13: a fresh machine has no history.jsonl yet."""
+    ctx = make_ctx(home, harnesses=("claude",), reseed=True)
+    assert not ctx.manifest.path.exists()
+    assert ctx.manifest.entries() == []
+    assert ctx.manifest.has_backup(home / ".claude" / "settings.json") is False
+
+
+def test_reseed_backs_up_and_overwrites_drifted_file(home):
+    """Eval criterion 1."""
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    live = json.loads((REPO_ROOT / "claude" / "settings.json").read_text())
+    live["model"] = "drifted-value"
+    dest.write_text(json.dumps(live))
+
+    ctx = make_ctx(home, harnesses=("claude",), reseed=True)
+    _, drift = install.seed_claude_settings(ctx)
+
+    backup = home / ".claude" / "settings.json.bak"
+    assert drift == ""
+    assert json.loads(backup.read_text())["model"] == "drifted-value"
+    assert dest.read_text() == (REPO_ROOT / "claude" / "settings.json").read_text()
+    assert kinds(ctx, "file-backed-up") == [
+        {"kind": "file-backed-up", "dest": str(dest), "backup": str(backup)}
+    ]
+    assert kinds(ctx, "file-copied") == [{"kind": "file-copied", "dest": str(dest)}]
+
+
+def test_reseed_when_dest_missing_is_a_plain_copy(home):
+    """Eval criterion 2: identical to today's behavior, no new code path."""
+    ctx = make_ctx(home, harnesses=("claude",), reseed=True)
+    _, drift = install.seed_claude_settings(ctx)
+
+    dest = home / ".claude" / "settings.json"
+    assert drift == ""
+    assert dest.is_file()
+    assert not (home / ".claude" / "settings.json.bak").exists()
+    assert kinds(ctx, "file-backed-up") == []
+    assert kinds(ctx, "file-copied") == [{"kind": "file-copied", "dest": str(dest)}]
+
+
+def test_reseed_noop_when_drift_is_empty(home):
+    """Eval criterion 3: real text drift but no *value* drift is still a no-op."""
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.seed_claude_settings(ctx)
+
+    dest = home / ".claude" / "settings.json"
+    seed_path = REPO_ROOT / "claude" / "settings.json"
+    values = json.loads(seed_path.read_text())
+    reformatted = json.dumps(values, indent=4, sort_keys=True)
+    dest.write_text(reformatted)
+    assert dest.read_text() != seed_path.read_text()  # real text drift
+    assert install.describe_settings_drift(seed_path, dest) == ""  # no value drift
+
+    reseed_ctx = make_ctx(home, harnesses=("claude",), reseed=True)
+    _, drift = install.seed_claude_settings(reseed_ctx)
+
+    assert drift == ""
+    assert not (home / ".claude" / "settings.json.bak").exists()
+    assert dest.read_text() == reformatted
+    assert kinds(reseed_ctx, "file-backed-up") == []
+    assert len(kinds(reseed_ctx, "file-copied")) == 1  # only the initial seed
+
+
+def test_reseed_dry_run_previews_fresh_backup_and_changes_nothing(home, capsys):
+    """Eval criterion 4, fresh-backup variant."""
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text(json.dumps({"model": "drifted-value"}))
+    before = dest.read_text()
+
+    ctx = make_ctx(home, harnesses=("claude",), reseed=True, dry_run=True)
+    _, drift = install.seed_claude_settings(ctx)
+    out = capsys.readouterr().out
+
+    assert drift == ""
+    assert "would back up" in out
+    assert "then reseed from settings.json" in out
+    assert dest.read_text() == before
+    assert not (home / ".claude" / "settings.json.bak").exists()
+    assert not ctx.manifest.path.exists()
+
+
+def test_reseed_dry_run_previews_already_backed_up(home, capsys):
+    """Eval criterion 4, already-backed-up variant."""
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    backup = home / ".claude" / "settings.json.bak"
+    dest.write_text(json.dumps({"model": "drifted-value"}))
+    backup.write_text("true-original\n")
+    make_ctx(home, harnesses=("claude",)).manifest.record_backup(dest, backup)
+
+    ctx = make_ctx(home, harnesses=("claude",), reseed=True, dry_run=True)
+    _, drift = install.seed_claude_settings(ctx)
+    out = capsys.readouterr().out
+
+    assert drift == ""
+    assert "already backed up" in out
+    assert backup.read_text() == "true-original\n"
+    assert dest.read_text() == json.dumps({"model": "drifted-value"})
+
+
+def test_reseed_dry_run_previews_foreign_backup_blocks_it(home, capsys):
+    """Eval criterion 4, foreign-backup-blocks-it variant."""
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    backup = home / ".claude" / "settings.json.bak"
+    dest.write_text(json.dumps({"model": "drifted-value"}))
+    backup.write_text("foreign\n")
+
+    ctx = make_ctx(home, harnesses=("claude",), reseed=True, dry_run=True)
+    _, drift = install.seed_claude_settings(ctx)
+    out = capsys.readouterr().out
+
+    assert drift != ""
+    assert "would skip reseeding" in out
+    assert "resolve manually" in out
+    assert backup.read_text() == "foreign\n"
+    assert dest.read_text() == json.dumps({"model": "drifted-value"})
+
+
+def test_reseed_foreign_unrecorded_backup_blocks_reseed(home, capsys):
+    """Eval criterion 9 (real run, not dry-run)."""
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    backup = home / ".claude" / "settings.json.bak"
+    dest.write_text(json.dumps({"model": "drifted-value"}))
+    backup.write_text("foreign\n")
+
+    ctx = make_ctx(home, harnesses=("claude",), reseed=True)
+    _, drift = install.seed_claude_settings(ctx)
+    out = capsys.readouterr().out
+
+    assert drift != ""
+    assert "SKIPPED" in out
+    assert "resolve manually" in out
+    assert backup.read_text() == "foreign\n"
+    assert dest.read_text() == json.dumps({"model": "drifted-value"})
+    assert kinds(ctx, "file-backed-up") == []
+    assert kinds(ctx, "file-copied") == []
+
+
+def test_reseed_backup_move_failure_is_skipped_not_raised(home, monkeypatch, capsys):
+    """Eval criterion 12: a move failure never falls through to a copy attempt."""
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    live = json.loads((REPO_ROOT / "claude" / "settings.json").read_text())
+    live["model"] = "drifted-value"
+    dest.write_text(json.dumps(live))
+    monkeypatch.setattr(install.shutil, "move", _raise_oserror)
+
+    ctx = make_ctx(home, harnesses=("claude",), reseed=True)
+    _, drift = install.seed_claude_settings(ctx)
+    out = capsys.readouterr().out
+
+    assert drift == ""
+    assert "SKIPPED" in out
+    assert "reseed backup failed" in out
+    assert dest.read_text() == json.dumps(live)
+    assert kinds(ctx, "file-backed-up") == []
+    assert kinds(ctx, "file-copied") == []
+
+
+def test_reseed_copy_failure_restores_dest_from_backup(home, monkeypatch, capsys):
+    """Eval criterion 12: a copy failure after a successful move restores
+    dest from backup, rather than leaving the live application with no
+    config file at all."""
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    live = json.loads((REPO_ROOT / "claude" / "settings.json").read_text())
+    live["model"] = "drifted-value"
+    dest.write_text(json.dumps(live))
+    monkeypatch.setattr(install.shutil, "copy", _raise_oserror)
+
+    ctx = make_ctx(home, harnesses=("claude",), reseed=True)
+    _, drift = install.seed_claude_settings(ctx)
+    out = capsys.readouterr().out
+
+    assert drift == ""
+    assert "SKIPPED" in out
+    assert "copy failed" in out
+    assert dest.read_text() == json.dumps(live)
+    assert not (home / ".claude" / "settings.json.bak").exists()
+    # The backup entry is still recorded (the physical move did succeed);
+    # only the copy step failed and its recovery moved the file back.
+    assert len(kinds(ctx, "file-backed-up")) == 1
+    assert kinds(ctx, "file-copied") == []
+
+
+def test_reseed_recorded_backup_deleted_from_disk_takes_fresh_backup(home):
+    """Eval criterion 15: a recorded-but-deleted .bak is treated as state 1,
+    not silently skipped."""
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    stale_backup = home / ".claude" / "settings.json.bak"
+    live = json.loads((REPO_ROOT / "claude" / "settings.json").read_text())
+    live["model"] = "drifted-value"
+    dest.write_text(json.dumps(live))
+    # A backup was recorded once, but the .bak file itself no longer exists.
+    make_ctx(home, harnesses=("claude",)).manifest.record_backup(dest, stale_backup)
+
+    ctx = make_ctx(home, harnesses=("claude",), reseed=True)
+    _, drift = install.seed_claude_settings(ctx)
+
+    assert drift == ""
+    assert json.loads(stale_backup.read_text())["model"] == "drifted-value"
+    assert dest.read_text() == (REPO_ROOT / "claude" / "settings.json").read_text()
+    assert len(kinds(ctx, "file-backed-up")) == 2
+    assert len(kinds(ctx, "file-copied")) == 1
+
+
+def test_two_consecutive_reseeds_then_rollback_restores_true_original(home):
+    """Eval criterion 7."""
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text(json.dumps({"model": "true-original"}))
+
+    ctx1 = make_ctx(home, harnesses=("claude",), reseed=True)
+    install.seed_claude_settings(ctx1)
+    assert dest.read_text() == (REPO_ROOT / "claude" / "settings.json").read_text()
+
+    live = json.loads(dest.read_text())
+    live["model"] = "intermediate-drift"
+    dest.write_text(json.dumps(live))
+
+    ctx2 = make_ctx(home, harnesses=("claude",), reseed=True)
+    install.seed_claude_settings(ctx2)
+    assert dest.read_text() == (REPO_ROOT / "claude" / "settings.json").read_text()
+
+    assert len(kinds(ctx2, "file-backed-up")) == 1
+    assert len(kinds(ctx2, "file-copied")) == 2
+
+    assert install.do_rollback(make_ctx(home)) == 0
+    assert json.loads(dest.read_text()) == {"model": "true-original"}
+
+
+def test_three_consecutive_reseeds_then_rollback_restores_true_original(home):
+    """Eval criterion 8: the invariant generalizes beyond the two-run case."""
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text(json.dumps({"model": "true-original"}))
+
+    for i in range(3):
+        ctx = make_ctx(home, harnesses=("claude",), reseed=True)
+        install.seed_claude_settings(ctx)
+        assert dest.read_text() == (REPO_ROOT / "claude" / "settings.json").read_text()
+        live = json.loads(dest.read_text())
+        live["model"] = f"intermediate-drift-{i}"
+        dest.write_text(json.dumps(live))
+
+    final_ctx = make_ctx(home, harnesses=("claude",), reseed=True)
+    install.seed_claude_settings(final_ctx)
+    assert len(kinds(final_ctx, "file-backed-up")) == 1
+    assert len(kinds(final_ctx, "file-copied")) == 4
+
+    assert install.do_rollback(make_ctx(home)) == 0
+    assert json.loads(dest.read_text()) == {"model": "true-original"}
+
+
+def test_bootstrap_then_single_reseed_then_rollback_restores_true_original(home):
+    """Eval criterion 14: the realistic sequence every real seed goes
+    through — a plain bootstrap copy, live edits, one --reseed, then
+    --rollback — not just the back-to-back-reseeds cases above. Regression
+    test for the do_rollback/_rollback_copy double-delete fix: without
+    ``restored_dests``, the original bootstrap's file-copied entry deletes
+    the just-restored true original a second time."""
+    dest = home / ".claude" / "settings.json"
+
+    bootstrap_ctx = make_ctx(home, harnesses=("claude",))
+    install.seed_claude_settings(bootstrap_ctx)
+    assert kinds(bootstrap_ctx, "file-copied") == [
+        {"kind": "file-copied", "dest": str(dest)}
+    ]
+
+    live = json.loads(dest.read_text())
+    live["model"] = "live-edited-value"
+    dest.write_text(json.dumps(live))
+    true_original_content = dest.read_text()
+
+    reseed_ctx = make_ctx(home, harnesses=("claude",), reseed=True)
+    install.seed_claude_settings(reseed_ctx)
+    assert dest.read_text() == (REPO_ROOT / "claude" / "settings.json").read_text()
+    assert len(kinds(reseed_ctx, "file-copied")) == 2
+    assert len(kinds(reseed_ctx, "file-backed-up")) == 1
+
+    assert install.do_rollback(make_ctx(home)) == 0
+    assert dest.read_text() == true_original_content
+
+
 # ── vscode WSL seeding ───────────────────────────────────────────────────────
 
 
@@ -690,6 +996,50 @@ def test_describe_vscode_drift_missing_file_is_nothing_to_compare(tmp_path):
     live = tmp_path / "live.json"
     seed.write_text('{"a": 1}')
     assert install.describe_vscode_drift(seed, live) == ""
+
+
+# ── settings/opencode drift: text-first check + corrupted-JSON fix ─────────────
+
+
+def test_describe_settings_drift_corrupted_json_now_reports_non_empty(tmp_path):
+    """Eval criterion 10: unparseable live JSON used to be invisible to drift."""
+    seed = tmp_path / "seed.json"
+    live = tmp_path / "live.json"
+    seed.write_text(json.dumps({"a": 1}))
+    live.write_text("{not valid json")
+    drift = install.describe_settings_drift(seed, live)
+    assert drift != ""
+    assert "unreadable or invalid JSON" in drift
+
+
+def test_describe_opencode_drift_corrupted_json_now_reports_non_empty(tmp_path):
+    seed = tmp_path / "seed.json"
+    live = tmp_path / "live.json"
+    seed.write_text(json.dumps({"a": 1}))
+    live.write_text("{not valid json")
+    drift = install.describe_opencode_drift(seed, live)
+    assert drift != ""
+    assert "unreadable or invalid JSON" in drift
+
+
+def test_describe_opencode_drift_identical_jsonc_with_comment_is_no_drift(tmp_path):
+    """Eval criterion 11: the text-equality check must fire before JSON
+    parsing, so a byte-identical commented JSONC file is never misreported
+    as corrupted/drifted just because json.loads can't parse the comment."""
+    seed = tmp_path / "seed.jsonc"
+    live = tmp_path / "live.jsonc"
+    content = '// a comment\n{"a": 1}'
+    seed.write_text(content)
+    live.write_text(content)
+    assert install.describe_opencode_drift(seed, live) == ""
+
+
+def test_describe_settings_drift_identical_is_no_drift(tmp_path):
+    seed = tmp_path / "seed.json"
+    live = tmp_path / "live.json"
+    seed.write_text(json.dumps({"a": 1}))
+    live.write_text(json.dumps({"a": 1}))
+    assert install.describe_settings_drift(seed, live) == ""
 
 
 # ── history + rollback ────────────────────────────────────────────────────────
