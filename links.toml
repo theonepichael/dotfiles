@@ -178,6 +178,22 @@ dest = "~/.copilot/hooks/session-start.json"
 harness = "copilot"
 platform = "linux"
 
+# Same bash-only, mac/linux-only wiring as session-start.json above. Runs
+# ruff format + ruff check --fix on any .py file the create/edit tools
+# touch, inside a uv/ruff project (detected by walking up for
+# pyproject.toml) -- same mechanism as the Claude Code PostToolUse hook.
+[[link]]
+src = "copilot/hooks/post-tool-use.json"
+dest = "~/.copilot/hooks/post-tool-use.json"
+harness = "copilot"
+platform = "mac"
+
+[[link]]
+src = "copilot/hooks/post-tool-use.json"
+dest = "~/.copilot/hooks/post-tool-use.json"
+harness = "copilot"
+platform = "linux"
+
 [[link]]
 src = "copilot/skills/dashboard/SKILL.md"
 dest = "~/.copilot/skills/dashboard/SKILL.md"
@@ -283,6 +299,16 @@ src = "opencode/skills/spec/SKILL.md"
 dest = "~/.config/opencode/skills/spec/SKILL.md"
 harness = "opencode"
 
+# tool.execute.after plugin -- runs ruff format + ruff check --fix on any
+# .py file the edit/write tools touch, inside a uv/ruff project. Same
+# mechanism as the Claude Code/Copilot/agy PostToolUse hooks; opencode's
+# analog is a TypeScript plugin, not a declarative JSON hook (see
+# opencode/CLAUDE_CODE_PARITY.md §5).
+[[link]]
+src = "opencode/plugin/ruff-format-on-edit.ts"
+dest = "~/.config/opencode/plugin/ruff-format-on-edit.ts"
+harness = "opencode"
+
 # ── agy (Google Antigravity CLI, Gemini-backed) ──────────────────────────
 # agy specifically looks for ~/.gemini/GEMINI.md (no CLAUDE.md fallback
 # like opencode's), so it needs a real link of its own. Skills live under
@@ -327,6 +353,18 @@ harness = "agy"
 [[link]]
 src = "agy/skills/backlog-item/SKILL.md"
 dest = "~/.gemini/antigravity-cli/skills/backlog-item/SKILL.md"
+harness = "agy"
+
+# Standalone hooks.json is discovered from ~/.gemini/config/hooks.json --
+# a DIFFERENT root than skills (~/.gemini/antigravity-cli/skills/ above).
+# Confirmed empirically: ~/.gemini/antigravity-cli/hooks.json and a
+# plugins/<name>/hooks.json under that same root were both silently
+# ignored at runtime despite `agy plugin validate` accepting the plugin
+# shape; only ~/.gemini/config/hooks.json actually fired. See
+# agy/CLAUDE_CODE_PARITY.md for the full probe record.
+[[link]]
+src = "agy/hooks.json"
+dest = "~/.gemini/config/hooks.json"
 harness = "agy"
 
 # ── watchcommit (personal machines only) ─────────────────────────────────

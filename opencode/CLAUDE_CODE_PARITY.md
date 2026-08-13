@@ -310,6 +310,41 @@ plugin. That's a real engineering task (TypeScript, not JSON config) and
 should be its own decision/backlog item once the keybind/command/agent
 parity work above is done and evaluated.
 
+**`tool.execute.after`: ported (2026-08-13) and confirmed live, with a
+richer real payload than the SDK's own type comments suggest.** Ported the
+Claude Code/Copilot/agy ruff-format-on-edit hook as
+`opencode/plugin/ruff-format-on-edit.ts` → `~/.config/opencode/plugin/`
+(global, singular `plugin/` — confirmed correct against a stray web source
+that claimed plural `plugins/`; `@opencode-ai/plugin`'s own installed
+`index.d.ts` was pulled from the npm tarball and checked directly rather
+than trusted from docs prose). The hook's exact signature, from that same
+`.d.ts`:
+
+```ts
+"tool.execute.after"?: (input: {
+    tool: string;
+    sessionID: string;
+    callID: string;
+    args: any;
+}, output: {
+    title: string;
+    output: string;
+    metadata: any;
+}) => Promise<void>;
+```
+
+`args` is typed `any` — the SDK doesn't publish built-in tool arg shapes,
+so the actual field names came from a diagnostic plugin dumping raw
+`input`/`output` to a file, then a real `opencode run --auto` edit and a
+real create. Confirmed: the edit tool is named `"edit"`, the create tool
+`"write"`, and **both** put the target path at `input.args.filePath`
+(edit also carries `oldString`/`newString`; write carries the new file's
+content). Runs `ruff format` + `ruff check --fix` via the plugin's `$`
+(Bun shell) on any `.py` `filePath`, inside a uv/ruff project (walks up
+for `pyproject.toml`). Verified end-to-end: introduced a real formatting
+violation, ran a live `opencode run --auto` edit, confirmed the hook
+auto-fixed it before the next tool call saw the file.
+
 ---
 
 ## 6. Config file location reference

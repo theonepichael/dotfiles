@@ -197,6 +197,25 @@ backlog verbatim.
   (`userPromptSubmitted`, `preToolUse`, etc.) are available if future
   items need them (e.g. permission gating, prompt logging); not used today.
 
+- **`postToolUse` wired and confirmed live (2026-08-13); `toolArgs` is a
+  JSON-encoded string, not a nested object as the official schema page
+  implies.** `copilot/hooks/post-tool-use.json` ports the Claude
+  Code/agy ruff-format-on-edit hook: matcher `create|edit`, runs `ruff
+  format` + `ruff check --fix` on any `.py` file touched, inside a
+  uv/ruff project. The docs page for this hook (*Post-tool use hook*,
+  `copilot-sdk/use-hooks/`) shows `toolArgs` as a plain object in its
+  example (`"toolArgs": {"path": "..."}`). A live probe (a diagnostic
+  hook dumping raw stdin, then a real `copilot -p` edit and a real
+  `copilot -p` file-create) captured the actual payload:
+  `"toolArgs":"{\"path\":\"...\",\"old_str\":\"...\",\"new_str\":\"...\"}"`
+  — `toolArgs` is a *string* holding JSON, so extraction needs a double
+  parse: `.toolArgs | fromjson | .path`, not `.toolArgs.path`. Confirmed
+  for both `edit` (`old_str`/`new_str` keys) and `create` (`file_text`
+  key) — both use the same `path` key for the target file. Verified
+  end-to-end: introduced a real formatting violation, ran a live
+  `copilot -p` edit, confirmed the hook auto-fixed it before the next
+  tool call saw the file.
+
 - **No structured multi-choice prompt widget.** Nothing in
   `copilot --help`, the full slash-command survey (`copilot help commands`),
   `copilot help config`, the `skill` subcommand family, or any of the
