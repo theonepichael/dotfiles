@@ -407,3 +407,6 @@ conflicting keys), same pattern as Claude Code's `~/.claude/settings.json` +
 - https://opencode.ai/docs/rules/
 - https://opencode.ai/docs/commands/
 - https://opencode.ai/docs/cli/
+- https://opencode.ai/docs/plugins/ — plugin file shape, global location; does **not** document `tool.execute.after`'s field-level schema or built-in tool arg shapes (`args` is untyped in its own examples)
+- `@opencode-ai/plugin` npm package, `dist/index.d.ts` (version pinned to the installed `opencode` CLI's own version, pulled straight from the registry tarball rather than trusted from docs prose) — ground truth for `tool.execute.after`'s exact signature (`input.tool`/`sessionID`/`callID`/`args`, `output.title`/`output`/`metadata`)
+- Live probe (2026-08-13): a diagnostic `tool.execute.after` plugin dumping raw `input`/`output` to a file, wired at `~/.config/opencode/plugin/zz-probe.ts`, run against a real `opencode run --auto` edit and a real create → confirmed built-in tool names (`edit`, `write`) and their shared file-path arg key (`args.filePath`), none of which the SDK types or docs page publish
