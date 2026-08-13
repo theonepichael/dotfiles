@@ -1188,12 +1188,13 @@ def render(
     index = build_index(items)
     buckets = _render_order(items)
     in_progress, ready, blocked, in_review, done = buckets
+    current_fingerprint = _board_fingerprint(items, pending_items)
     pending_ordered = _pending_render_order(pending_items)
     ordered: list[BacklogItem | PendingItem] = _concat_order(pending_ordered, buckets)
 
     if not ordered:
         print("(backlog is empty)", file=out)
-        for line in _recap_section_lines(_use_color(out)) or []:
+        for line in _recap_section_lines(_use_color(out), current_fingerprint) or []:
             print(line, file=out)
         print(f"item-map: rev={rev}", file=err)
         if dispatch:
@@ -1318,7 +1319,7 @@ def render(
     )
     add_section("DONE", done, color_code="done")
 
-    recap_lines = _recap_section_lines(color)
+    recap_lines = _recap_section_lines(color, current_fingerprint)
     if recap_lines:
         sections.append(recap_lines)
 
@@ -1531,18 +1532,28 @@ def _load_recap_cache() -> dict[str, object] | None:
     return data
 
 
-def _save_recap_cache(backend: str, text: str) -> None:
+def _save_recap_cache(backend: str, text: str, board_fingerprint: str) -> None:
     """Atomically persist a recap result. ``text`` may legitimately be empty.
 
     Caching an empty result (with a fresh timestamp) is deliberate: it's
     what bounds retries to :data:`RECAP_TTL_SECONDS` instead of re-triggering
     a backend call on every render forever (see module plan, Part 3).
+
+    ``board_fingerprint`` is the board's identity fingerprint (see
+    :func:`_board_fingerprint`) as of generation time -- persisted so a
+    later render can detect the board has moved since this text was
+    generated (see :func:`_recap_section_lines`), independent of how much
+    wall-clock time has passed. Deliberately not a counts-only summary: two
+    different real board states (e.g. one item moving ready->done while
+    another moves blocked->ready) can share identical counts while the
+    prose's specific claims are already wrong about *which* item changed.
     """
     payload = json.dumps(
         {
             "generated_at": datetime.now(UTC).isoformat(),
             "backend": backend,
             "text": text,
+            "board_fingerprint": board_fingerprint,
         }
     )
     _atomic_write_json(RECAP_CACHE_FILE, payload, ".recap_tmp_")
@@ -1595,16 +1606,31 @@ def _maybe_dispatch_recap_regen() -> None:
     Must be called *after* releasing :func:`backlog_lock`; a 60s backend
     call made while holding it would stall every concurrent mutation and
     the agent ``render``-before-``--if-rev`` flow.
+
+    A cache within :data:`RECAP_TTL_SECONDS` is only skipped if its board
+    fingerprint still matches the live board -- a mutation that lands
+    mid-TTL (e.g. a ``start``/``done`` right after a regen) must not have
+    to wait out the rest of the window before a refresh is even considered.
+
+    The quiet-journal check runs first, before touching the fingerprint:
+    it's a cheap last-line-of-the-journal read, versus the fingerprint's
+    full load-items-and-hash, and a mismatch during a quiet journal window
+    (e.g. a cross-machine sync landed a cache from elsewhere with no local
+    journal activity) would otherwise pay that cost only to bail out anyway
+    on the very next check.
     """
     if _recap_disabled():
         return
+    if not _journal_last_entry_within(RECAP_DISPATCH_WINDOW_HOURS):
+        return  # quiet journal -- a spawn now would just cache emptiness
     cache = _load_recap_cache()
     if cache is not None:
         age = _recap_cache_age_seconds(cache)
-        if age is not None and age <= RECAP_TTL_SECONDS:
-            return  # fresh -- nothing to refresh
-    if not _journal_last_entry_within(RECAP_DISPATCH_WINDOW_HOURS):
-        return  # quiet journal -- a spawn now would just cache emptiness
+        fingerprint_matches = (
+            cache.get("board_fingerprint") == _current_board_fingerprint()
+        )
+        if age is not None and age <= RECAP_TTL_SECONDS and fingerprint_matches:
+            return  # fresh and still accurate -- nothing to refresh
     subprocess.Popen(
         [sys.executable, str(Path(__file__).resolve()), "_internal-regen"],
         start_new_session=True,
@@ -1615,11 +1641,14 @@ def _maybe_dispatch_recap_regen() -> None:
     )
 
 
-def _recap_section_lines(color: bool) -> list[str] | None:
+def _recap_section_lines(color: bool, current_fingerprint: str) -> list[str] | None:
     """Build the dim RECAP frame's lines for :func:`render`, or ``None`` to omit it.
 
     Display rules, checked in order: kill-switch -> no cache/empty text ->
-    fresh (< :data:`RECAP_TTL_SECONDS`, shown plain) -> stale (<=
+    board has moved since generation (fingerprint mismatch -- omitted
+    regardless of age; a pre-migration cache with no ``"board_fingerprint"``
+    key compares unequal to any real fingerprint and is treated the same
+    way) -> fresh (< :data:`RECAP_TTL_SECONDS`, shown plain) -> stale (<=
     :data:`RECAP_STALE_MAX_HOURS`, shown with an age marker) -> older still
     (omitted).
     """
@@ -1630,6 +1659,8 @@ def _recap_section_lines(color: bool) -> list[str] | None:
         return None
     text = cache.get("text")
     if not isinstance(text, str) or not text:
+        return None
+    if cache.get("board_fingerprint") != current_fingerprint:
         return None
     age = _recap_cache_age_seconds(cache)
     if age is None:
@@ -1659,7 +1690,10 @@ RECAP_PROMPT = """\
 You are writing a short "welcome back" recap for a personal task dashboard, \
 in the style of an away-summary: second person, warm, plain text, no emoji, \
 1-3 sentences. Use ONLY the facts below -- never invent items, people, or \
-events not listed.
+events not listed. Refer to items by what they are (a short plain-language \
+description), never by an internal id or slug, even if one appears in the \
+facts below. Stay short, but be comprehensive within that space: name what \
+was actually done rather than only a count or a vague gesture at it.
 
 Recent activity (last 48h):
 {changelog}
@@ -1673,7 +1707,29 @@ def _render_changelog(entries: list[dict[str, object]]) -> str:
 
     Raw JSON envelopes waste tokens on structural syntax and degrade a
     fast/cheap model's comprehension -- this does the structuring in Python
-    instead so the prompt only spends tokens on the facts.
+    instead so the prompt only spends tokens on the facts. The slug is only
+    included when there's no summary to fall back on -- when both are
+    present the summary alone should describe the item, and the id-shaped
+    slug token invites a model to echo it back as if it were a name.
+    Audited against every ``_journal_entry`` call site: every one that
+    passes ``slug=`` also passes a non-empty ``summary=`` (backed by
+    ``cmd_add``'s/``pending add``'s own non-empty-summary/description
+    validation, and `cmd_rename`'s summary now being sourced from the
+    renamed item's own title) -- so the ``slug``-without-``summary``
+    fallback is defensive, not a live path in current practice. Kept
+    rather than removed, for legacy/hand-edited journal data (the same
+    defensive posture :func:`effective_blockers` takes for a missing
+    ``blocked_by`` referent).
+
+    Known remaining slug-shaped-text vectors, not guarded against here:
+    a `reject`'s freeform `feedback` string (may name another item by
+    slug) and, more speculatively, the `fields` detail list (only ever
+    fixed, non-slug-shaped Python identifiers like "summary"/"priority"
+    today, but nothing stops a future field name from being slug-shaped).
+    Both are lower-value to guard against than the two fixed here
+    (unconditional slug-append, `rename`'s synthetic summary): freeform
+    text can't be safely scrubbed without risking mangled prose, and field
+    names are code-controlled, not user data.
     """
     lines = []
     for e in entries:
@@ -1681,9 +1737,9 @@ def _render_changelog(entries: list[dict[str, object]]) -> str:
         time_str = ts.strftime("%H:%M") if ts else "??:??"
         line = f"[{time_str}] {e.get('cmd', '?')}"
         slug = e.get("slug")
-        if slug:
-            line += f" {slug}"
         summary = e.get("summary")
+        if slug and not summary:
+            line += f" {slug}"
         if summary:
             line += f" — {summary}"
         detail = []
@@ -1701,20 +1757,105 @@ def _render_changelog(entries: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+def _bucket_summary(
+    in_progress: int, ready: int, blocked: int, in_review: int, done: int, pending: int
+) -> str:
+    """Render bucket section counts as a compact summary string for the recap prompt.
+
+    Purely descriptive -- this is what the backend reads as "the facts"; it
+    is not used to detect staleness (see :func:`_board_fingerprint` for
+    that). Two different real board states can share the same counts (an
+    item moving ready->done while another moves blocked->ready leaves
+    every count unchanged), so counts alone would be too weak a staleness
+    signal even though they're the right level of detail for the prompt.
+    """
+    parts = [
+        f"in progress: {in_progress}",
+        f"ready: {ready}",
+        f"blocked: {blocked}",
+        f"in review: {in_review}",
+        f"done (recent): {done}",
+        f"pending: {pending}",
+    ]
+    return ", ".join(parts)
+
+
 def _current_bucket_summary() -> str:
     """Summarize the current board's section counts for the recap prompt."""
     items = load_items()
     pending_items = load_pending()
     in_progress, ready, blocked, in_review, done = _render_order(items)
-    parts = [
-        f"in progress: {len(in_progress)}",
-        f"ready: {len(ready)}",
-        f"blocked: {len(blocked)}",
-        f"in review: {len(in_review)}",
-        f"done (recent): {len(done)}",
-        f"pending: {len(pending_items)}",
-    ]
-    return ", ".join(parts)
+    return _bucket_summary(
+        len(in_progress),
+        len(ready),
+        len(blocked),
+        len(in_review),
+        len(done),
+        len(pending_items),
+    )
+
+
+def _board_fingerprint(
+    items: list[BacklogItem], pending_items: list[PendingItem]
+) -> str:
+    """Hash every item's identity + prose-bearing inputs for staleness checks.
+
+    Unlike :func:`_bucket_summary`'s counts, this changes on *any* status
+    move, ``blocked_by`` change, ``summary``/``description`` edit, or
+    membership change (an item added/removed, or moving between buckets
+    while total counts happen to stay put) -- exactly the cases a cached
+    recap's specific claims could be contradicted by, which a counts-only
+    comparison would silently miss.
+
+    ``blocked_by`` is included, not just ``status``: an open item's
+    ready-vs-blocked bucket is a function of :func:`effective_blockers`
+    (itself derived from every item's id/status/``blocked_by``), so two
+    items swapping which one blocks the other changes bucket membership
+    while leaving both items' own ``status`` untouched -- (id, status)
+    alone would miss it. A phantom ``blocked_by`` entry (a slug that no
+    longer resolves) is hashed as-is even though :func:`effective_blockers`
+    filters it out of bucket membership -- a harmless, accepted
+    over-invalidation (an extra regen dispatch, not a wrong display) rather
+    than a correctness problem worth the extra lookup to avoid.
+
+    ``summary``/``description`` is included because the recap prompt's
+    changelog lines *are* each item's summary/description (see
+    :func:`_render_changelog`) -- a title edit doesn't move an item between
+    buckets, but it does change what "you completed X" should now say,
+    which is exactly the class of contradiction this fingerprint exists to
+    catch, not just count/membership drift.
+
+    Deliberately excludes ``priority``/sort-order fields (they reorder a
+    bucket's rows but never move an item between buckets or change what a
+    "ready: N" claim means, nor do they appear in any recap prose) and the
+    DONE bucket's recency window (already a documented, accepted drift
+    source elsewhere -- see :func:`_render_order`'s docstring).
+    """
+    pairs = sorted(
+        (
+            item["id"],
+            item["status"],
+            item.get("summary", ""),
+            tuple(sorted(item.get("blocked_by", []))),
+        )
+        for item in items
+    )
+    pending_pairs = sorted(
+        (f"pending:{p['id']}", p["status"], p.get("description", ""), ())
+        for p in pending_items
+    )
+    digest = hashlib.sha256(json.dumps(pairs + pending_pairs).encode()).hexdigest()
+    return digest[:16]
+
+
+def _current_board_fingerprint() -> str:
+    """Fingerprint of the current on-disk board, for staleness checks.
+
+    Inherits whatever :func:`load_items`/:func:`load_pending` do with a
+    missing or corrupt data file (defaults/empty, per their own contract)
+    -- no special-casing here, same as :func:`_current_bucket_summary`.
+    """
+    return _board_fingerprint(load_items(), load_pending())
 
 
 def _build_recap_prompt(changelog: str, buckets: str) -> str:
@@ -1755,12 +1896,38 @@ def _run_recap_regen(backend_override: str | None = None) -> tuple[str, str]:
     :func:`_save_recap_cache`). Returns ``("", "")`` without touching the
     cache if there's nothing to summarize, or every candidate backend
     fails/times out -- the prior cache (if any) is left exactly as it was.
+
+    The board is loaded once for the prompt's counts (a board mutation
+    landing mid-call only affects what the backend was *asked about*, not
+    what gets cached as fresh -- that's correct, it's what the backend
+    actually saw). The cache's fingerprint is captured separately, in a
+    fresh read taken right before the write below rather than reused from
+    that same pre-call snapshot: this narrows the "board moved during
+    generation" race from the full, up-to-:data:`RECAP_TIMEOUT_SECONDS`-long
+    backend call down to the instant between that read and the write. Any
+    mutation landing in that narrow window (or after) is still caught: the
+    fingerprint is re-checked against the live board on every display (see
+    :func:`_recap_section_lines`) and every dispatch decision (see
+    :func:`_maybe_dispatch_recap_regen`) -- bounding a stale cache's
+    lifetime to at most one more regen cycle, self-triggered by the very
+    next command or render.
     """
     entries = read_journal_entries(within_hours=RECAP_DISPATCH_WINDOW_HOURS)
     if not entries:
         return "", ""
 
-    prompt = _build_recap_prompt(_render_changelog(entries), _current_bucket_summary())
+    items = load_items()
+    pending_items = load_pending()
+    in_progress, ready, blocked, in_review, done = _render_order(items)
+    buckets = _bucket_summary(
+        len(in_progress),
+        len(ready),
+        len(blocked),
+        len(in_review),
+        len(done),
+        len(pending_items),
+    )
+    prompt = _build_recap_prompt(_render_changelog(entries), buckets)
 
     candidates = (
         [backend_override] if backend_override else llm_backends.available_backends()
@@ -1784,7 +1951,14 @@ def _run_recap_regen(backend_override: str | None = None) -> tuple[str, str]:
         except llm_backends.BackendError:
             continue
         text = _normalize_recap_text(raw)
-        _save_recap_cache(cast(str, backend), text)
+        # Re-read the fingerprint post-call rather than reusing the
+        # pre-call snapshot: narrows the mid-call mutation race (see
+        # docstring) from "anywhere during the up-to-RECAP_TIMEOUT_SECONDS
+        # backend call" down to "the instant between this read and the
+        # write below" -- the prompt itself still reflects the pre-call
+        # board, which is correct (that's what the backend was actually
+        # asked about).
+        _save_recap_cache(cast(str, backend), text, _current_board_fingerprint())
         return cast(str, backend), text
     return "", ""
 
@@ -1814,14 +1988,19 @@ def _print_recap(cache: dict[str, object]) -> None:
 def cmd_recap(args: argparse.Namespace) -> None:
     """Handle ``recap``: the only synchronous regen path (explicit user intent).
 
-    Bare: prints the cache if fresh, otherwise blocks on the regen lock and
+    Bare: prints the cache if fresh *and* its board fingerprint still
+    matches the live board, otherwise blocks on the regen lock and
     regenerates (double-checking freshness after acquiring, in case an
     in-flight detached child just refreshed it). ``--force`` bypasses the
     freshness check entirely and always regenerates.
     """
 
+    current_fingerprint = _current_board_fingerprint()
+
     def _fresh_enough(cache: dict[str, object] | None) -> bool:
         if cache is None:
+            return False
+        if cache.get("board_fingerprint") != current_fingerprint:
             return False
         age = _recap_cache_age_seconds(cache)
         return age is not None and age <= RECAP_TTL_SECONDS
@@ -2542,9 +2721,11 @@ def cmd_rename(args: argparse.Namespace) -> None:
                 return word_re.sub(new_slug, text)
             return text
 
+        renamed_item: BacklogItem | None = None
         for item in items:
             if item["id"] == old_slug:
                 item["id"] = new_slug
+                renamed_item = item
             item["blocked_by"] = [
                 new_slug if s == old_slug else s for s in item.get("blocked_by", [])
             ]
@@ -2577,13 +2758,16 @@ def cmd_rename(args: argparse.Namespace) -> None:
         new_rev = bump_rev()
         save_items(items)
         save_pending(pending_items)
+        # renamed_item is guaranteed set: resolve_id/require_kind above
+        # already confirmed old_slug names a backlog item in `items`.
+        renamed_summary = cast(BacklogItem, renamed_item)["summary"]
         append_journal_event(
             _journal_entry(
                 "rename",
                 "backlog",
                 new_rev,
                 slug=new_slug,
-                summary=f"renamed from {old_slug} to {new_slug}",
+                summary=f"renamed an item ({renamed_summary})",
             )
         )
         print(f"[rename] {old_slug} → {new_slug}", file=sys.stderr)
