@@ -71,12 +71,16 @@ class SyncTestCase(unittest.TestCase):
         self.lock_file = self.data_dir / ".backlog.lock"
         self.sync_base_file = self.data_dir / "_sync-base.json"
         self.conflict_log_file = self.data_dir / "_sync-conflicts.jsonl"
+        self.journal_file = self.data_dir / "journal.jsonl"
+        self.machine_id_file = self.data_dir / "_machine_id"
         self._patches = [
             patch.object(dev_status, "DATA_DIR", self.data_dir),
             patch.object(dev_status, "ITEMS_FILE", self.items_file),
             patch.object(dev_status, "PENDING_FILE", self.pending_file),
             patch.object(dev_status, "META_FILE", self.meta_file),
             patch.object(dev_status, "LOCK_FILE", self.lock_file),
+            patch.object(dev_status, "JOURNAL_FILE", self.journal_file),
+            patch.object(dev_status, "MACHINE_ID_FILE", self.machine_id_file),
             patch.object(sync, "SYNC_BASE_FILE", self.sync_base_file),
             patch.object(sync, "CONFLICT_LOG_FILE", self.conflict_log_file),
         ]
@@ -555,6 +559,53 @@ class LocalCommitTests(SyncTestCase):
         self.assertIsNone(new_rev)
         self.assertFalse(self.sync_base_file.exists())
         self.assertFalse(self.conflict_log_file.exists())
+
+    def test_local_write_appends_one_sync_journal_event(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        dev_status.save_items([make_item("foo-bar", status="open")])
+        merged = [make_item("foo-bar", status="done")]
+        result = sync.SyncComputation(
+            merged_items=merged,
+            merged_pending=[],
+            conflicts=[],
+            needs_local_items_write=True,
+            needs_local_pending_write=False,
+            needs_remote_items_write=False,
+            needs_remote_pending_write=False,
+        )
+        new_rev = sync.local_commit(
+            {"items": 2, "pending_items": 1},
+            result,
+            [make_item("foo-bar", status="open")],
+            [],
+            None,
+            None,
+            "fedora",
+        )
+        self.assertTrue(self.journal_file.exists())
+        lines = self.journal_file.read_text().strip().splitlines()
+        self.assertEqual(len(lines), 1)
+        entry = json.loads(lines[0])
+        self.assertEqual(entry["cmd"], "sync")
+        self.assertEqual(entry["kind"], "sync")
+        self.assertEqual(entry["rev"], new_rev)
+        self.assertIn("fedora", entry["summary"])
+
+    def test_no_op_sync_appends_no_journal_event(self):
+        items = [make_item("foo-bar")]
+        result = sync.SyncComputation(
+            merged_items=items,
+            merged_pending=[],
+            conflicts=[],
+            needs_local_items_write=False,
+            needs_local_pending_write=False,
+            needs_remote_items_write=False,
+            needs_remote_pending_write=False,
+        )
+        sync.local_commit(
+            {"items": 2, "pending_items": 1}, result, items, [], items, [], "fedora"
+        )
+        self.assertFalse(self.journal_file.exists())
 
 
 # ── framed JSON (stdout/stdin sentinel markers) ────────────────────────────────

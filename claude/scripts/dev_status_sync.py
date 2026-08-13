@@ -596,6 +596,7 @@ def local_commit(
     local_pending_raw: list[dict[str, object]],
     base_items: list[dict[str, object]] | None,
     base_pending: list[dict[str, object]] | None,
+    host: str | None = None,
 ) -> int | None:
     """Perform the three independently-conditioned writes, in crash-safe order.
 
@@ -603,11 +604,19 @@ def local_commit(
     log flush (unconditional, whenever this point is reached at all) ->
     ``_sync-base.json`` (if the merge result differs from the old base on
     either side) -> rev bump (only if a local content write actually
-    happened). See the plan's "Write ordering" section for why each
-    condition is independent — the modal conflict case (local wins) is
-    exactly the case where local's content already matches the merge
-    result, so gating the conflict-log flush on "local needs writing" would
-    silently defeat it.
+    happened) -> one journal event, if a rev bump happened. See the plan's
+    "Write ordering" section for why each condition is independent — the
+    modal conflict case (local wins) is exactly the case where local's
+    content already matches the merge result, so gating the conflict-log
+    flush on "local needs writing" would silently defeat it.
+
+    The journal event is a local discontinuity marker, not journal syncing
+    (v1 stays machine-local) — it tells the recap's prose a merge happened
+    so it leans on the current bucket summaries instead of assuming a
+    continuous local narrative. ``local_lock`` (held by every caller of this
+    function) doesn't protect ``journal.jsonl`` against a concurrent
+    *local* ``dev_status.py`` append, so this briefly takes
+    ``dev_status.backlog_lock()`` itself, same as any other journal writer.
     """
     if result.needs_local_items_write:
         dev_status._backup_before_bulk_delete(dev_status.ITEMS_FILE)
@@ -630,9 +639,17 @@ def local_commit(
     if needs_base_write:
         save_sync_base(local_schema, result.merged_items, result.merged_pending)
 
-    if result.needs_local_items_write or result.needs_local_pending_write:
-        return dev_status.bump_rev()
-    return None
+    if not (result.needs_local_items_write or result.needs_local_pending_write):
+        return None
+
+    new_rev = dev_status.bump_rev()
+    with dev_status.backlog_lock():
+        dev_status.append_journal_event(
+            dev_status._journal_entry(
+                "sync", "sync", new_rev, summary=f"merged state from {host or 'remote'}"
+            )
+        )
+    return new_rev
 
 
 # ── transport ───────────────────────────────────────────────────────────────────
@@ -1052,6 +1069,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
             local_pending_raw,
             base_items,
             base_pending,
+            args.host,
         )
         print_diff(
             result,

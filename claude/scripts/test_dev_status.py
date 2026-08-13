@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """Tests for dev_status.py v2. Run with: python3 test_dev_status.py"""
 
+import fcntl
 import io
 import json
 import shutil
 import sys
 import tempfile
 import unittest
-from datetime import date, timedelta
+from contextlib import contextmanager
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 import dev_status
+import llm_backends
 
 
 class _TtyStringIO(io.StringIO):
@@ -66,17 +69,40 @@ class BacklogTestCase(unittest.TestCase):
         self.pending_file = self.data_dir / "pending_items.json"
         self.meta_file = self.data_dir / "_meta.json"
         self.lock_file = self.data_dir / ".backlog.lock"
+        self.journal_file = self.data_dir / "journal.jsonl"
+        self.machine_id_file = self.data_dir / "_machine_id"
+        self.recap_cache_file = self.data_dir / "recap-cache.json"
+        self.recap_regen_lock_file = self.data_dir / "recap-regen.lock"
         self._patches = [
             patch.object(dev_status, "DATA_DIR", self.data_dir),
             patch.object(dev_status, "ITEMS_FILE", self.items_file),
             patch.object(dev_status, "PENDING_FILE", self.pending_file),
             patch.object(dev_status, "META_FILE", self.meta_file),
             patch.object(dev_status, "LOCK_FILE", self.lock_file),
+            patch.object(dev_status, "JOURNAL_FILE", self.journal_file),
+            patch.object(dev_status, "MACHINE_ID_FILE", self.machine_id_file),
+            patch.object(dev_status, "RECAP_CACHE_FILE", self.recap_cache_file),
+            patch.object(
+                dev_status, "RECAP_REGEN_LOCK_FILE", self.recap_regen_lock_file
+            ),
         ]
         for p in self._patches:
             p.start()
+        # `_maybe_dispatch_recap_regen` spawns `dev_status.py _internal-regen` as a
+        # real, separate OS process — one that re-imports dev_status fresh and so
+        # does NOT see any of the patches above, meaning an unmocked Popen call
+        # here would read/write the *real* ~/.claude/data/backlog/ instead of this
+        # test's tmpdir (this happened once during development: a full test run
+        # spawned real agy/opencode calls against fabricated test journal data and
+        # wrote a real recap-cache.json/journal.jsonl into production). Mocking
+        # subprocess.Popen for every test in this fixture, not just recap-specific
+        # ones, closes that off by construction rather than relying on each test
+        # author to remember it.
+        self._popen_patch = patch("subprocess.Popen")
+        self.mock_popen = self._popen_patch.start()
 
     def tearDown(self):
+        self._popen_patch.stop()
         for p in self._patches:
             p.stop()
         shutil.rmtree(self.tmpdir)
@@ -2729,6 +2755,445 @@ class BacklogTestCase(unittest.TestCase):
                 dev_status.cmd_add(args)
         self.assertIn("reserved", err.getvalue())
 
+    # ── recap: journal, cache, dispatch, prompt/normalization, subcommand ───
+
+    def _journal_lines(self):
+        if not self.journal_file.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in self.journal_file.read_text().splitlines()
+            if line.strip()
+        ]
+
+    def _write_journal_line(self, entry):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        with open(self.journal_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def _seed_recent_journal(self, hours_ago=0.01):
+        ts = (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
+        self._write_journal_line(
+            {
+                "ts": ts,
+                "rev": 1,
+                "machine": "test-machine",
+                "cmd": "add",
+                "kind": "backlog",
+                "slug": "seed",
+                "summary": "seed entry",
+            }
+        )
+
+    def _write_cache(self, text, age_hours=0, backend="agy"):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        ts = (datetime.now(timezone.utc) - timedelta(hours=age_hours)).isoformat()
+        self.recap_cache_file.write_text(
+            json.dumps({"generated_at": ts, "backend": backend, "text": text})
+        )
+
+    # ── journal appends per mutation path ──────────────────────────────────
+
+    def test_r01_done_journals_status_transition(self):
+        self.write_items([make_item("j-done", status="in-progress")])
+        dev_status.cmd_done(_args(id="j-done"))
+        entries = self._journal_lines()
+        self.assertEqual(len(entries), 1)
+        e = entries[0]
+        self.assertEqual(e["cmd"], "done")
+        self.assertEqual(e["kind"], "backlog")
+        self.assertEqual(e["slug"], "j-done")
+        self.assertEqual(e["from_status"], "in-progress")
+        self.assertEqual(e["to_status"], "done")
+        self.assertNotIn("fields", e)
+        self.assertNotIn("feedback", e)
+
+    def test_r02_update_journals_patched_field_names(self):
+        self.write_items([make_item("j-upd")])
+        dev_status.cmd_update(
+            _args(id="j-upd", patch='{"context": "new", "priority": "high"}')
+        )
+        entries = self._journal_lines()
+        self.assertEqual(entries[-1]["cmd"], "update")
+        self.assertEqual(sorted(entries[-1]["fields"]), ["context", "priority"])
+        self.assertNotIn("from_status", entries[-1])
+
+    def test_r03_reject_journals_feedback(self):
+        self.write_items([make_item("j-rej", status="in-progress")])
+        dev_status.cmd_review(_args(id="j-rej"))
+        dev_status.cmd_reject(_args(id="j-rej", feedback="needs work"))
+        entries = self._journal_lines()
+        self.assertEqual(entries[-1]["cmd"], "reject")
+        self.assertEqual(entries[-1]["feedback"], "needs work")
+        self.assertEqual(entries[-1]["from_status"], "in-review")
+        self.assertEqual(entries[-1]["to_status"], "in-progress")
+
+    def test_r04_rename_journals_old_and_new_slug_in_summary(self):
+        self.write_items([make_item("old-slug")])
+        dev_status.cmd_rename(_args(old_slug="old-slug", new_slug="new-slug"))
+        entries = self._journal_lines()
+        self.assertEqual(entries[-1]["cmd"], "rename")
+        self.assertEqual(entries[-1]["slug"], "new-slug")
+        self.assertIn("old-slug", entries[-1]["summary"])
+        self.assertIn("new-slug", entries[-1]["summary"])
+
+    def test_r05_prune_journals_count(self):
+        old = (date.today() - timedelta(days=30)).isoformat()
+        self.write_items(
+            [make_item("old-done", status="done", updated=old)],
+        )
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        items = self.read_items()
+        items[0]["completed_at"] = old
+        dev_status.save_items(items)
+        with patch.object(dev_status, "_backup_before_bulk_delete", lambda _p: None):
+            dev_status.cmd_prune(_args(force=True))
+        entries = self._journal_lines()
+        self.assertEqual(entries[-1]["cmd"], "prune")
+        self.assertEqual(entries[-1]["count"], 1)
+
+    def test_r06_add_journals_summary(self):
+        dev_status.cmd_add(_args(json='{"id": "j-add", "summary": "New thing"}'))
+        entries = self._journal_lines()
+        self.assertEqual(entries[-1]["cmd"], "add")
+        self.assertEqual(entries[-1]["kind"], "backlog")
+        self.assertEqual(entries[-1]["slug"], "j-add")
+        self.assertEqual(entries[-1]["summary"], "New thing")
+
+    def test_r07_pending_add_journals_as_pending_kind(self):
+        dev_status.cmd_pending_add(
+            _args(
+                json='{"id": "j-pend", "description": "waiting on reply", "kind": "email"}'
+            )
+        )
+        entries = self._journal_lines()
+        self.assertEqual(entries[-1]["cmd"], "add")
+        self.assertEqual(entries[-1]["kind"], "pending")
+        self.assertEqual(entries[-1]["slug"], "j-pend")
+
+    def test_r08_pending_update_journals_fields_and_status_transition(self):
+        self.write_pending(
+            [
+                {
+                    "id": "j-pend",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "waiting",
+                    "kind": "email",
+                    "source_ref": {},
+                    "context": "",
+                    "next_steps": [],
+                    "blocking": [],
+                    "outcome": None,
+                }
+            ]
+        )
+        dev_status.cmd_pending_update(
+            _args(id="j-pend", patch='{"status": "reply_received"}')
+        )
+        entries = self._journal_lines()
+        self.assertEqual(entries[-1]["cmd"], "update")
+        self.assertEqual(entries[-1]["kind"], "pending")
+        self.assertEqual(entries[-1]["fields"], ["status"])
+        self.assertEqual(entries[-1]["from_status"], "waiting_for_reply")
+        self.assertEqual(entries[-1]["to_status"], "reply_received")
+
+    def test_r09_journal_append_failure_swallowed_mutation_still_succeeds(self):
+        self.write_items([make_item("jf-item", status="in-progress")])
+        # Point JOURNAL_FILE at a directory: `open(..., "a")` raises
+        # IsADirectoryError (an OSError subclass) instead of ever writing.
+        with patch.object(dev_status, "JOURNAL_FILE", self.data_dir):
+            err = io.StringIO()
+            with patch("sys.stderr", err):
+                dev_status.cmd_done(_args(id="jf-item"))
+            self.assertIn("append failed", err.getvalue())
+        self.assertEqual(self._item_by_id("jf-item")["status"], "done")
+
+    # ── journal reader ──────────────────────────────────────────────────────
+
+    def test_r10_reader_skips_trailing_partial_line_silently(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        good = json.dumps(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "rev": 1,
+                "machine": "x",
+                "cmd": "add",
+                "kind": "backlog",
+            }
+        )
+        self.journal_file.write_text(good + "\n" + '{"cmd": "add", "kind": "back')
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            entries = dev_status.read_journal_entries()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(err.getvalue(), "")
+
+    def test_r11_reader_warns_on_middle_line_corruption(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(timezone.utc).isoformat()
+        good1 = json.dumps(
+            {"ts": now, "rev": 1, "machine": "x", "cmd": "add", "kind": "backlog"}
+        )
+        good2 = json.dumps(
+            {"ts": now, "rev": 2, "machine": "x", "cmd": "done", "kind": "backlog"}
+        )
+        self.journal_file.write_text(
+            good1 + "\n" + "not valid json at all\n" + good2 + "\n"
+        )
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            entries = dev_status.read_journal_entries()
+        self.assertEqual(len(entries), 2)
+        self.assertIn("corrupt", err.getvalue())
+
+    # ── dispatch ────────────────────────────────────────────────────────────
+
+    def test_r12_trigger_passes_spawns_detached_internal_regen(self):
+        self._seed_recent_journal()
+        dev_status._maybe_dispatch_recap_regen()
+        self.mock_popen.assert_called_once()
+        argv, kwargs = self.mock_popen.call_args
+        self.assertIn("_internal-regen", argv[0])
+        self.assertTrue(kwargs["start_new_session"])
+        self.assertTrue(kwargs["close_fds"])
+        self.assertEqual(kwargs["stdin"], dev_status.subprocess.DEVNULL)
+        self.assertEqual(kwargs["stdout"], dev_status.subprocess.DEVNULL)
+        self.assertEqual(kwargs["stderr"], dev_status.subprocess.DEVNULL)
+
+    def test_r13_fresh_cache_spawns_nothing(self):
+        self._seed_recent_journal()
+        self._write_cache("Fresh.", age_hours=0)
+        dev_status._maybe_dispatch_recap_regen()
+        self.mock_popen.assert_not_called()
+
+    def test_r14_journal_last_line_older_than_48h_spawns_nothing(self):
+        self._seed_recent_journal(hours_ago=50)
+        dev_status._maybe_dispatch_recap_regen()
+        self.mock_popen.assert_not_called()
+
+    def test_r15_kill_switch_spawns_nothing_and_displays_nothing(self):
+        self.write_items([make_item("x")])
+        self._seed_recent_journal()
+        self._write_cache("Should be hidden.", age_hours=0)
+        with patch.dict("os.environ", {"DEVSTATUS_RECAP_DISABLE": "1"}):
+            dev_status._maybe_dispatch_recap_regen()
+            self.mock_popen.assert_not_called()
+            out = io.StringIO()
+            with patch("sys.stdout", out):
+                dev_status.render()
+            self.assertNotIn("RECAP", out.getvalue())
+            self.assertNotIn("Should be hidden", out.getvalue())
+
+    def test_r16_dispatch_never_fires_while_backlog_lock_is_held(self):
+        self.write_items([make_item("lk-item", status="in-progress")])
+        self._seed_recent_journal()
+        acquired = {"ok": False}
+
+        def _side_effect(*_a, **_kw):
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            with open(self.lock_file, "w") as f:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired["ok"] = True
+                    fcntl.flock(f, fcntl.LOCK_UN)
+                except OSError:
+                    acquired["ok"] = False
+            return MagicMock()
+
+        self.mock_popen.side_effect = _side_effect
+        dev_status.cmd_done(_args(id="lk-item"))
+        self.assertTrue(acquired["ok"])
+
+    # ── regen lock ──────────────────────────────────────────────────────────
+
+    def test_r17_internal_regen_noop_when_lock_already_held(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        with open(self.recap_regen_lock_file, "w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            try:
+                with patch.object(dev_status, "_run_recap_regen") as mock_regen:
+                    dev_status.cmd_internal_regen()
+                mock_regen.assert_not_called()
+            finally:
+                fcntl.flock(held, fcntl.LOCK_UN)
+
+    # ── render display rules ────────────────────────────────────────────────
+
+    def test_r18_no_section_without_cache(self):
+        self.write_items([make_item("x")])
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.render()
+        self.assertNotIn("RECAP", out.getvalue())
+
+    def test_r19_fresh_cache_shown_without_age_marker(self):
+        self.write_items([make_item("x")])
+        self._write_cache("Great progress today.", age_hours=0)
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.render()
+        self.assertIn("RECAP", out.getvalue())
+        self.assertIn("Great progress today.", out.getvalue())
+        self.assertNotIn("ago)", out.getvalue())
+
+    def test_r20_stale_cache_shown_with_age_marker(self):
+        self.write_items([make_item("x")])
+        self._write_cache("Yesterday's news.", age_hours=3)
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.render()
+        self.assertIn("RECAP", out.getvalue())
+        self.assertIn("ago)", out.getvalue())
+
+    def test_r21_cache_older_than_24h_omitted(self):
+        self.write_items([make_item("x")])
+        self._write_cache("Old news.", age_hours=25)
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.render()
+        self.assertNotIn("RECAP", out.getvalue())
+
+    def test_r22_empty_text_cache_suppressed_and_not_retried(self):
+        self.write_items([make_item("x")])
+        self._write_cache("", age_hours=0)
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.render()
+        self.assertNotIn("RECAP", out.getvalue())
+        self._seed_recent_journal()
+        dev_status._maybe_dispatch_recap_regen()
+        self.mock_popen.assert_not_called()
+
+    def test_r22b_render_wraps_long_recap_to_section_width(self):
+        self.write_items([make_item("x")])
+        self._write_cache(("word " * 40).strip(), age_hours=0)
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.render()
+        recap_lines = [
+            line for line in out.getvalue().splitlines() if line.startswith("│")
+        ]
+        self.assertTrue(recap_lines)
+        for line in recap_lines:
+            self.assertLess(len(line), dev_status.SECTION_WIDTH + 10)
+
+    # ── backend failure ─────────────────────────────────────────────────────
+
+    def test_r23_backend_failure_leaves_prior_cache_intact(self):
+        self._write_cache("Old cached text.", age_hours=0, backend="agy")
+        self._seed_recent_journal()
+        with patch.object(llm_backends, "available_backends", return_value=["agy"]):
+            with patch.object(
+                llm_backends, "run_agy", side_effect=llm_backends.BackendError("boom")
+            ):
+                backend, text = dev_status._run_recap_regen()
+        self.assertEqual((backend, text), ("", ""))
+        cache = json.loads(self.recap_cache_file.read_text())
+        self.assertEqual(cache["text"], "Old cached text.")
+
+    def test_r23b_backend_timeout_leaves_prior_cache_intact(self):
+        self._write_cache("Old cached text.", age_hours=0, backend="agy")
+        self._seed_recent_journal()
+        with patch.object(llm_backends, "available_backends", return_value=["agy"]):
+            with patch.object(
+                llm_backends,
+                "run_agy",
+                side_effect=llm_backends.BackendError("timed out after 60s — killed"),
+            ):
+                backend, text = dev_status._run_recap_regen()
+        self.assertEqual((backend, text), ("", ""))
+        cache = json.loads(self.recap_cache_file.read_text())
+        self.assertEqual(cache["text"], "Old cached text.")
+
+    # ── synchronous `recap` subcommand ──────────────────────────────────────
+
+    def test_r25_recap_fresh_cache_prints_without_regen_call(self):
+        self._write_cache("Fresh recap.", age_hours=0)
+        out = io.StringIO()
+        with patch.object(dev_status, "_run_recap_regen") as mock_regen:
+            with patch("sys.stdout", out):
+                dev_status.cmd_recap(_args())
+        mock_regen.assert_not_called()
+        self.assertIn("Fresh recap.", out.getvalue())
+
+    def test_r26_recap_double_checked_reuses_cache_from_in_flight_child(self):
+        self._seed_recent_journal()
+
+        @contextmanager
+        def _fake_lock(*, blocking):
+            # Simulate another process finishing a regen while this call
+            # waited on the blocking lock.
+            self._write_cache("Written while we waited.", age_hours=0)
+            yield True
+
+        with patch.object(dev_status, "_regen_lock", _fake_lock):
+            with patch.object(dev_status, "_run_recap_regen") as mock_regen:
+                out = io.StringIO()
+                with patch("sys.stdout", out):
+                    dev_status.cmd_recap(_args())
+        mock_regen.assert_not_called()
+        self.assertIn("Written while we waited.", out.getvalue())
+
+    def test_r27_recap_force_always_regenerates(self):
+        self._write_cache("Fresh recap.", age_hours=0)
+        with patch.object(
+            dev_status, "_run_recap_regen", return_value=("agy", "New text")
+        ) as mock_regen:
+            out = io.StringIO()
+            with patch("sys.stdout", out):
+                dev_status.cmd_recap(_args(force=True))
+        mock_regen.assert_called_once()
+        self.assertIn("New text", out.getvalue())
+
+    def test_r28_recap_backend_override_passed_through(self):
+        self._seed_recent_journal()
+        with patch.object(
+            dev_status, "_run_recap_regen", return_value=("copilot", "text")
+        ) as mock_regen:
+            dev_status.cmd_recap(_args(backend="copilot"))
+        mock_regen.assert_called_once_with(backend_override="copilot")
+
+    # ── normalization ────────────────────────────────────────────────────────
+
+    def test_r29_normalize_strips_markdown_markers(self):
+        self.assertEqual(
+            dev_status._normalize_recap_text("**Great** work `today`!"),
+            "Great work today!",
+        )
+
+    def test_r30_normalize_strips_emoji(self):
+        self.assertEqual(
+            dev_status._normalize_recap_text("Nice job \U0001f389 today"),
+            "Nice job today",
+        )
+
+    def test_r31_normalize_truncates_long_text(self):
+        result = dev_status._normalize_recap_text("x" * 500)
+        self.assertLessEqual(len(result), dev_status.RECAP_MAX_CHARS + 1)
+        self.assertTrue(result.endswith("…"))
+
+    def test_r32_run_recap_regen_caches_empty_normalized_result(self):
+        self._seed_recent_journal()
+        with patch.object(llm_backends, "available_backends", return_value=["agy"]):
+            with patch.object(
+                llm_backends, "run_agy", return_value="*** \U0001f389 ***"
+            ):
+                backend, text = dev_status._run_recap_regen()
+        self.assertEqual(backend, "agy")
+        self.assertEqual(text, "")
+        cache = json.loads(self.recap_cache_file.read_text())
+        self.assertEqual(cache["text"], "")
+        self.assertEqual(cache["backend"], "agy")
+
+    def test_r33_run_recap_regen_no_journal_entries_short_circuits(self):
+        with patch.object(llm_backends, "available_backends") as mock_avail:
+            backend, text = dev_status._run_recap_regen()
+        self.assertEqual((backend, text), ("", ""))
+        mock_avail.assert_not_called()
+        self.assertFalse(self.recap_cache_file.exists())
+
 
 # ── arg helper ────────────────────────────────────────────────────────────────
 
@@ -2739,6 +3204,8 @@ class _args:
     if_rev = None  # default; argparse always sets --if-rev (default None)
     status = None  # default; argparse sets --status (default None) for `list`
     apply = False  # default; argparse sets --apply (default False) for backfill-gate
+    force = False  # default; argparse sets --force (default False) for `recap`
+    backend = None  # default; argparse sets --backend (default None) for `recap`
 
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)

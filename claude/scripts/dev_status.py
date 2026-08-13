@@ -17,20 +17,37 @@ import hashlib
 import json
 import os
 import re
+import secrets
+import subprocess
 import sys
 import tempfile
+import textwrap
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import NotRequired, TextIO, TypedDict, cast
+
+import llm_backends
 
 DATA_DIR = Path.home() / ".claude" / "data" / "backlog"
 ITEMS_FILE = DATA_DIR / "items.json"
 PENDING_FILE = DATA_DIR / "pending_items.json"
 META_FILE = DATA_DIR / "_meta.json"
 LOCK_FILE = DATA_DIR / ".backlog.lock"
+JOURNAL_FILE = DATA_DIR / "journal.jsonl"
+MACHINE_ID_FILE = DATA_DIR / "_machine_id"
+RECAP_CACHE_FILE = DATA_DIR / "recap-cache.json"
+RECAP_REGEN_LOCK_FILE = DATA_DIR / "recap-regen.lock"
+
+# ── recap tuning knobs ──────────────────────────────────────────────────────
+RECAP_TTL_SECONDS = 30 * 60
+RECAP_STALE_MAX_HOURS = 24
+RECAP_DISPATCH_WINDOW_HOURS = 48
+RECAP_MAX_CHARS = 400
+RECAP_TIMEOUT_SECONDS = float(os.environ.get("DEVSTATUS_RECAP_TIMEOUT_SECONDS", "60"))
+RECAP_AGY_MODEL = os.environ.get("DEVSTATUS_RECAP_AGY_MODEL", "Gemini 3.6 Flash (High)")
 
 VALID_STATUSES = {"open", "in-progress", "in-review", "done"}
 VALID_PRIORITIES = {"high", "normal", "low"}
@@ -96,6 +113,7 @@ SUBCOMMANDS = (
     "block",
     "unblock",
     "prune",
+    "recap",
 )
 RESERVED_SLUGS = set(SUBCOMMANDS) | {"pending", "all", "help", "new"}
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)+$")
@@ -1132,11 +1150,14 @@ def render(
     out: TextIO | None = None,
     err: TextIO | None = None,
     rev: int | None = None,
+    dispatch: bool = False,
 ) -> None:
     """Render the full dashboard: pending items, then the five backlog sections.
 
-    Pure render — no writes, no other side effects. Loads current state
-    from disk for any of ``items``/``pending_items``/``rev`` left as
+    Pure render — no writes, no other side effects — with one exception:
+    when ``dispatch`` is true, a recap-regen child may be spawned (fully
+    detached; never blocks) after everything has printed. Loads current
+    state from disk for any of ``items``/``pending_items``/``rev`` left as
     ``None``, so callers that already hold the data in memory (e.g. inside
     a lock) can pass it through instead of re-reading.
 
@@ -1149,6 +1170,10 @@ def render(
             ``sys.stderr``.
         rev: Revision to report in the ``item-map:`` line, or ``None`` to
             load the current one from disk.
+        dispatch: Whether to check for and spawn a detached recap-regen
+            child after rendering. Callers still holding :func:`backlog_lock`
+            must leave this ``False`` (the default) and run the check
+            themselves after releasing it — see :func:`_maybe_dispatch_recap_regen`.
     """
     if out is None:
         out = sys.stdout
@@ -1170,7 +1195,11 @@ def render(
 
     if not ordered:
         print("(backlog is empty)", file=out)
+        for line in _recap_section_lines(_use_color(out)) or []:
+            print(line, file=out)
         print(f"item-map: rev={rev}", file=err)
+        if dispatch:
+            _maybe_dispatch_recap_regen()
         return
 
     color = _use_color(out)
@@ -1291,6 +1320,10 @@ def render(
     )
     add_section("DONE", done, color_code="done")
 
+    recap_lines = _recap_section_lines(color)
+    if recap_lines:
+        sections.append(recap_lines)
+
     for i, section_lines in enumerate(sections):
         if i > 0:
             print("", file=out)
@@ -1299,6 +1332,522 @@ def render(
 
     map_str = ",".join(f"{n}={tag}" for n, tag in item_map.items())
     print(f"item-map: rev={rev} {map_str}", file=err)
+
+    if dispatch:
+        _maybe_dispatch_recap_regen()
+
+
+# ── recap: event journal ────────────────────────────────────────────────────
+
+
+def machine_id() -> str:
+    """Return this machine's stable short id, creating it on first use.
+
+    Not hostname — hostnames change/collide across machines this store is
+    shared between. Matches the ``_meta.json``/``_sync-base.json`` aux-file
+    convention: a small file alongside the data files, not part of the
+    schema itself.
+    """
+    try:
+        existing = MACHINE_ID_FILE.read_text().strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+    new_id = secrets.token_hex(4)
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        MACHINE_ID_FILE.write_text(new_id)
+    except OSError:
+        pass
+    return new_id
+
+
+def _journal_entry(
+    cmd: str,
+    kind: str,
+    rev: int,
+    *,
+    slug: str | None = None,
+    summary: str | None = None,
+    from_status: str | None = None,
+    to_status: str | None = None,
+    fields: list[str] | None = None,
+    feedback: str | None = None,
+    count: int | None = None,
+) -> dict[str, object]:
+    """Build one journal entry: a fixed envelope plus structured optionals.
+
+    Optional fields are omitted entirely (not written as ``null``) when not
+    given, keeping entries compact and letting :func:`_render_changelog`
+    branch on plain ``dict.get`` presence checks.
+    """
+    entry: dict[str, object] = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "rev": rev,
+        "machine": machine_id(),
+        "cmd": cmd,
+        "kind": kind,
+    }
+    if slug is not None:
+        entry["slug"] = slug
+    if summary is not None:
+        entry["summary"] = summary
+    if from_status is not None:
+        entry["from_status"] = from_status
+    if to_status is not None:
+        entry["to_status"] = to_status
+    if fields is not None:
+        entry["fields"] = fields
+    if feedback is not None:
+        entry["feedback"] = feedback
+    if count is not None:
+        entry["count"] = count
+    return entry
+
+
+def append_journal_event(entry: dict[str, object]) -> None:
+    """Append one event to the journal, best-effort.
+
+    The JSON store (``items.json``/``pending_items.json``) is authoritative
+    and has already been written by the time this is called — a failed
+    journal append (disk full, permissions) must never fail or crash a
+    mutation that already succeeded, so failures are swallowed with a
+    one-line stderr warning instead of raised.
+    """
+    line = json.dumps(entry, sort_keys=True)
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with open(JOURNAL_FILE, "a") as f:
+            f.write(line + "\n")
+    except OSError as e:
+        print(f"[journal] append failed (non-fatal): {e}", file=sys.stderr)
+
+
+def _parse_journal_ts(raw: object) -> datetime | None:
+    """Parse a journal entry's ``ts`` field into an aware UTC ``datetime``."""
+    if not isinstance(raw, str):
+        return None
+    try:
+        ts = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts
+
+
+def read_journal_entries(within_hours: float | None = None) -> list[dict[str, object]]:
+    """Read journal entries, optionally filtered to the last ``within_hours``.
+
+    Read without holding :func:`backlog_lock` — appends are serialized
+    elsewhere (under the lock, or under a briefly-acquired one from
+    ``dev_status_sync.py``), but a concurrent append can still expose a
+    trailing partial line on the final read. A ``JSONDecodeError`` on that
+    last line is silently skipped (the writer just hasn't finished); the
+    same failure on any earlier line is real corruption and is surfaced as
+    a stderr warning rather than silently dropped.
+    """
+    if not JOURNAL_FILE.exists():
+        return []
+    try:
+        raw_lines = JOURNAL_FILE.read_text().splitlines()
+    except OSError:
+        return []
+
+    non_blank = [line for line in raw_lines if line.strip()]
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(hours=within_hours)
+        if within_hours is not None
+        else None
+    )
+
+    entries: list[dict[str, object]] = []
+    last_index = len(non_blank) - 1
+    for i, line in enumerate(non_blank):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            if i != last_index:
+                print(
+                    f"[journal] corrupt line {i + 1} in {JOURNAL_FILE}",
+                    file=sys.stderr,
+                )
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if cutoff is not None:
+            ts = _parse_journal_ts(entry.get("ts"))
+            if ts is None or ts < cutoff:
+                continue
+        entries.append(entry)
+    return entries
+
+
+def _journal_last_entry_within(hours: float) -> bool:
+    """Cheap pre-spawn check: does the journal's last entry fall within ``hours``?
+
+    A bare "file non-empty" check would spawn a regen forever on a journal
+    that's gone quiet (the child caches an empty result, it ages out in
+    :data:`RECAP_TTL_SECONDS`, the next render spawns again) — this looks at
+    the actual last timestamp instead.
+    """
+    if not JOURNAL_FILE.exists():
+        return False
+    try:
+        non_blank = [
+            line for line in JOURNAL_FILE.read_text().splitlines() if line.strip()
+        ]
+    except OSError:
+        return False
+    for line in reversed(non_blank):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # trailing partial line (or, for an earlier one, corrupt) — skip
+        ts = _parse_journal_ts(entry.get("ts") if isinstance(entry, dict) else None)
+        if ts is None:
+            return False
+        return (datetime.now(timezone.utc) - ts) <= timedelta(hours=hours)
+    return False
+
+
+# ── recap: cache + dispatch ─────────────────────────────────────────────────
+
+
+def _recap_disabled() -> bool:
+    """Kill-switch: checked both before dispatching a regen and at display time."""
+    return os.environ.get("DEVSTATUS_RECAP_DISABLE") == "1"
+
+
+def _load_recap_cache() -> dict[str, object] | None:
+    """Load ``recap-cache.json``, or ``None`` if missing/corrupt/malformed."""
+    if not RECAP_CACHE_FILE.exists():
+        return None
+    try:
+        data = json.loads(RECAP_CACHE_FILE.read_text())
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _save_recap_cache(backend: str, text: str) -> None:
+    """Atomically persist a recap result. ``text`` may legitimately be empty.
+
+    Caching an empty result (with a fresh timestamp) is deliberate: it's
+    what bounds retries to :data:`RECAP_TTL_SECONDS` instead of re-triggering
+    a backend call on every render forever (see module plan, Part 3).
+    """
+    payload = json.dumps(
+        {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "backend": backend,
+            "text": text,
+        }
+    )
+    _atomic_write_json(RECAP_CACHE_FILE, payload, ".recap_tmp_")
+
+
+def _recap_cache_age_seconds(cache: dict[str, object]) -> float | None:
+    """Seconds since ``cache`` was generated, or ``None`` if its timestamp is unusable."""
+    ts = _parse_journal_ts(cache.get("generated_at"))
+    if ts is None:
+        return None
+    return (datetime.now(timezone.utc) - ts).total_seconds()
+
+
+def _format_age(seconds: float) -> str:
+    """Render an age in seconds as a short marker: ``"45m"`` or ``"3h"``."""
+    hours = seconds / 3600
+    if hours < 1:
+        return f"{max(1, int(seconds / 60))}m"
+    return f"{int(hours)}h"
+
+
+@contextmanager
+def _regen_lock(*, blocking: bool) -> Iterator[bool]:
+    """Hold :data:`RECAP_REGEN_LOCK_FILE`, yielding whether it was acquired.
+
+    Non-blocking mode (used by the detached regen child) yields ``False``
+    immediately if another regen is already in flight instead of waiting —
+    flock releases on process death, so a killed regen never leaves a stuck
+    lock. Blocking mode (used by the synchronous ``recap`` subcommand) waits
+    for that in-flight regen to finish and always yields ``True``.
+    """
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with open(RECAP_REGEN_LOCK_FILE, "w") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def _maybe_dispatch_recap_regen() -> None:
+    """Spawn a detached recap-regen child if it looks worth refreshing.
+
+    Never blocks and never calls a backend itself — this only decides
+    whether to spawn ``_internal-regen`` as a fully detached child process.
+    Must be called *after* releasing :func:`backlog_lock`; a 60s backend
+    call made while holding it would stall every concurrent mutation and
+    the agent ``render``-before-``--if-rev`` flow.
+    """
+    if _recap_disabled():
+        return
+    cache = _load_recap_cache()
+    if cache is not None:
+        age = _recap_cache_age_seconds(cache)
+        if age is not None and age <= RECAP_TTL_SECONDS:
+            return  # fresh -- nothing to refresh
+    if not _journal_last_entry_within(RECAP_DISPATCH_WINDOW_HOURS):
+        return  # quiet journal -- a spawn now would just cache emptiness
+    subprocess.Popen(
+        [sys.executable, str(Path(__file__).resolve()), "_internal-regen"],
+        start_new_session=True,
+        close_fds=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _recap_section_lines(color: bool) -> list[str] | None:
+    """Build the dim RECAP frame's lines for :func:`render`, or ``None`` to omit it.
+
+    Display rules, checked in order: kill-switch -> no cache/empty text ->
+    fresh (< :data:`RECAP_TTL_SECONDS`, shown plain) -> stale (<=
+    :data:`RECAP_STALE_MAX_HOURS`, shown with an age marker) -> older still
+    (omitted).
+    """
+    if _recap_disabled():
+        return None
+    cache = _load_recap_cache()
+    if cache is None:
+        return None
+    text = cache.get("text")
+    if not isinstance(text, str) or not text:
+        return None
+    age = _recap_cache_age_seconds(cache)
+    if age is None:
+        return None
+    if age <= RECAP_TTL_SECONDS:
+        marker = ""
+    elif age <= RECAP_STALE_MAX_HOURS * 3600:
+        marker = f" (recap from {_format_age(age)} ago)"
+    else:
+        return None
+
+    frame_code = _COLORS.get("done")
+    top = _colorize(_section_top("RECAP"), frame_code, color)
+    bottom = _colorize(_section_bottom(), frame_code, color)
+    wrapped = textwrap.wrap(text, width=SECTION_WIDTH - 3) or [text]
+    lines = [top]
+    for i, wline in enumerate(wrapped):
+        suffix = marker if i == len(wrapped) - 1 else ""
+        lines.append(f"│  {wline}{suffix}")
+    lines.append(bottom)
+    return lines
+
+
+# ── recap: prompt + normalization ───────────────────────────────────────────
+
+RECAP_PROMPT = """\
+You are writing a short "welcome back" recap for a personal task dashboard, \
+in the style of an away-summary: second person, warm, plain text, no emoji, \
+1-3 sentences. Use ONLY the facts below -- never invent items, people, or \
+events not listed.
+
+Recent activity (last 48h):
+{changelog}
+
+Current board: {buckets}
+"""
+
+
+def _render_changelog(entries: list[dict[str, object]]) -> str:
+    """Pre-render journal entries into dense changelog lines for the prompt.
+
+    Raw JSON envelopes waste tokens on structural syntax and degrade a
+    fast/cheap model's comprehension -- this does the structuring in Python
+    instead so the prompt only spends tokens on the facts.
+    """
+    lines = []
+    for e in entries:
+        ts = _parse_journal_ts(e.get("ts"))
+        time_str = ts.strftime("%H:%M") if ts else "??:??"
+        line = f"[{time_str}] {e.get('cmd', '?')}"
+        slug = e.get("slug")
+        if slug:
+            line += f" {slug}"
+        summary = e.get("summary")
+        if summary:
+            line += f" — {summary}"
+        detail = []
+        if e.get("from_status") and e.get("to_status"):
+            detail.append(f"{e['from_status']}→{e['to_status']}")
+        if e.get("fields"):
+            detail.append(f"changed: {', '.join(cast(list[str], e['fields']))}")
+        if e.get("feedback"):
+            detail.append(f"feedback: {e['feedback']}")
+        if e.get("count") is not None:
+            detail.append(f"{e['count']} item(s)")
+        if detail:
+            line += f" ({'; '.join(detail)})"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _current_bucket_summary() -> str:
+    """Summarize the current board's section counts for the recap prompt."""
+    items = load_items()
+    pending_items = load_pending()
+    in_progress, ready, blocked, in_review, done = _render_order(items)
+    parts = [
+        f"in progress: {len(in_progress)}",
+        f"ready: {len(ready)}",
+        f"blocked: {len(blocked)}",
+        f"in review: {len(in_review)}",
+        f"done (recent): {len(done)}",
+        f"pending: {len(pending_items)}",
+    ]
+    return ", ".join(parts)
+
+
+def _build_recap_prompt(changelog: str, buckets: str) -> str:
+    """Build the recap generation prompt from a changelog and bucket summary."""
+    return RECAP_PROMPT.format(changelog=changelog or "(none)", buckets=buckets)
+
+
+_RECAP_MARKDOWN_RE = re.compile(r"[*_`#>~]")
+_RECAP_EMOJI_RE = re.compile(
+    "[\U0001f300-\U0001faff\U00002600-\U000027bf\U0001f1e6-\U0001f1ff]+"
+)
+
+
+def _normalize_recap_text(raw: str) -> str:
+    """Defensively normalize a backend's raw recap output.
+
+    No rejection path -- strips markdown markers and emoji, collapses
+    whitespace, and truncates to :data:`RECAP_MAX_CHARS`. An empty result
+    after normalization is a legitimate outcome, cached by the caller (see
+    :func:`_save_recap_cache`), not an error.
+    """
+    text = _RECAP_EMOJI_RE.sub("", raw)
+    text = _RECAP_MARKDOWN_RE.sub("", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > RECAP_MAX_CHARS:
+        text = text[:RECAP_MAX_CHARS].rstrip() + "…"
+    return text
+
+
+# ── recap: generation + subcommands ─────────────────────────────────────────
+
+
+def _run_recap_regen(backend_override: str | None = None) -> tuple[str, str]:
+    """Generate fresh recap prose and cache it.
+
+    Returns ``(backend, text)`` on success -- including a successful call
+    that normalizes to an empty string, which is still cached (see
+    :func:`_save_recap_cache`). Returns ``("", "")`` without touching the
+    cache if there's nothing to summarize, or every candidate backend
+    fails/times out -- the prior cache (if any) is left exactly as it was.
+    """
+    entries = read_journal_entries(within_hours=RECAP_DISPATCH_WINDOW_HOURS)
+    if not entries:
+        return "", ""
+
+    prompt = _build_recap_prompt(_render_changelog(entries), _current_bucket_summary())
+
+    candidates = (
+        [backend_override] if backend_override else llm_backends.available_backends()
+    )
+    for backend in candidates:
+        try:
+            if backend == "agy":
+                raw = llm_backends.run_agy(
+                    prompt, model=RECAP_AGY_MODEL, timeout=RECAP_TIMEOUT_SECONDS
+                )
+            elif backend == "opencode":
+                raw = llm_backends.run_opencode(
+                    prompt, model=None, timeout=RECAP_TIMEOUT_SECONDS
+                )
+            elif backend == "copilot":
+                raw = llm_backends.run_copilot(
+                    prompt, model=None, timeout=RECAP_TIMEOUT_SECONDS
+                )
+            else:
+                continue
+        except llm_backends.BackendError:
+            continue
+        text = _normalize_recap_text(raw)
+        _save_recap_cache(cast(str, backend), text)
+        return cast(str, backend), text
+    return "", ""
+
+
+def cmd_internal_regen() -> None:
+    """Hidden re-exec entrypoint spawned by :func:`_maybe_dispatch_recap_regen`.
+
+    Not registered as a normal subcommand (not in :data:`SUBCOMMANDS`) --
+    ``main`` dispatches to this directly off a raw argv check, before
+    argparse, so it never appears in ``--help``. Exits immediately without
+    calling any backend if another regen is already in flight.
+    """
+    with _regen_lock(blocking=False) as acquired:
+        if acquired:
+            _run_recap_regen()
+
+
+def _print_recap(cache: dict[str, object]) -> None:
+    """Print a cached recap's text, or a "nothing available" note if empty."""
+    text = cache.get("text")
+    if text:
+        print(cast(str, text))
+    else:
+        print("[recap] no recap available", file=sys.stderr)
+
+
+def cmd_recap(args: argparse.Namespace) -> None:
+    """Handle ``recap``: the only synchronous regen path (explicit user intent).
+
+    Bare: prints the cache if fresh, otherwise blocks on the regen lock and
+    regenerates (double-checking freshness after acquiring, in case an
+    in-flight detached child just refreshed it). ``--force`` bypasses the
+    freshness check entirely and always regenerates.
+    """
+
+    def _fresh_enough(cache: dict[str, object] | None) -> bool:
+        if cache is None:
+            return False
+        age = _recap_cache_age_seconds(cache)
+        return age is not None and age <= RECAP_TTL_SECONDS
+
+    cache = _load_recap_cache()
+    if not args.force and _fresh_enough(cache):
+        _print_recap(cast(dict[str, object], cache))
+        return
+
+    text = ""
+    with _regen_lock(blocking=True):
+        # Double-checked: an in-flight detached child may have just
+        # refreshed the cache while this call waited on the lock -- reuse
+        # it instead of burning a redundant backend call.
+        cache = _load_recap_cache()
+        if not args.force and _fresh_enough(cache):
+            _print_recap(cast(dict[str, object], cache))
+            return
+        _backend, text = _run_recap_regen(backend_override=args.backend)
+
+    if text:
+        print(text)
+    else:
+        print("[recap] no recap available", file=sys.stderr)
 
 
 # ── mutation infrastructure ───────────────────────────────────────────────────
@@ -1331,6 +1880,12 @@ class _MutationResult:
     ``pending_items`` is exposed so mutators can render with the in-memory
     pending set instead of re-reading it unlocked post-lock (mixed-snapshot
     fix — the render call now belongs inside the lock).
+
+    ``journal_extra`` lets a caller's block stuff command-specific journal
+    fields (e.g. ``update``'s patched ``fields``, ``reject``'s ``feedback``)
+    that :func:`_backlog_mutation`'s generic cleanup can't otherwise infer —
+    it only auto-detects ``from_status``/``to_status`` by diffing status
+    before/after the block runs.
     """
 
     item: BacklogItem
@@ -1338,25 +1893,32 @@ class _MutationResult:
     pending_items: list[PendingItem]
     slug: str
     new_rev: int | None = None
+    journal_extra: dict[str, object] = field(default_factory=dict)
 
 
 @contextmanager
 def _backlog_mutation(
     cmd: str, id_arg: str, if_rev_arg: int | None, announce: bool = False
 ) -> Iterator[_MutationResult]:
-    """Run the shared skeleton for update/start/done/block/unblock/remove.
+    """Run the shared skeleton for update/start/done/block/unblock/remove
+    (also review/approve/reject/gate-set/gate-pass — every command sharing
+    this shape).
 
     Acquires the lock, enforces the rev guard, resolves the target id, and
     refuses if it isn't a backlog item. Yields a :class:`_MutationResult`
     for the caller to mutate in place (or, for ``remove``, to reassign
     ``items`` to a filtered list). After the caller's block completes,
-    saves ``items`` while still holding the lock, then renders — matching
-    the bump-then-write-then-optionally-announce-then-render order every
-    extracted command used before this helper existed. ``announce=True``
+    saves ``items`` while still holding the lock, appends one journal event
+    (status transition auto-detected; command-specific extras come from
+    ``result.journal_extra``), then renders — matching the
+    bump-then-write-then-journal-then-optionally-announce-then-render order
+    every extracted command used before this helper existed. ``announce=True``
     calls :func:`confirm_resolution` (still inside the lock) for the
     update/start/done shape; ``block``/``unblock`` stay silent and
     ``remove`` announces its own message inside the caller's block, before
-    this cleanup runs, using the pre-removal item.
+    this cleanup runs, using the pre-removal item. Once the lock is
+    released, :func:`_maybe_dispatch_recap_regen` runs once for every
+    caller of this helper — the single hook site covers all of them.
 
     The rev is bumped *before* yielding — ahead of every write, including
     ones a caller's block makes itself (e.g. ``remove``'s extra
@@ -1410,6 +1972,7 @@ def _backlog_mutation(
             print(f"[{cmd}] not found: {slug}", file=sys.stderr)
             sys.exit(1)
 
+        old_status = item.get("status")
         new_rev = bump_rev()
         result = _MutationResult(
             item=item,
@@ -1422,9 +1985,25 @@ def _backlog_mutation(
         yield result
 
         save_items(result.items)
+        new_status = result.item.get("status")
+        append_journal_event(
+            _journal_entry(
+                cmd,
+                "backlog",
+                cast(int, result.new_rev),
+                slug=result.slug,
+                summary=cast(str, result.item.get("summary", "")),
+                from_status=old_status if old_status != new_status else None,
+                to_status=new_status if old_status != new_status else None,
+                fields=cast(list[str] | None, result.journal_extra.get("fields")),
+                feedback=cast(str | None, result.journal_extra.get("feedback")),
+                count=cast(int | None, result.journal_extra.get("count")),
+            )
+        )
         if announce:
             confirm_resolution(cmd, id_arg, result.item)
         render(result.items, result.pending_items, rev=result.new_rev)
+    _maybe_dispatch_recap_regen()
 
 
 # ── subcommand handlers ───────────────────────────────────────────────────────
@@ -1436,10 +2015,17 @@ def cmd_render(args: argparse.Namespace) -> None:
     Reads items + pending + rev atomically under :func:`backlog_lock` so the
     printed (items, rev) pair is self-consistent — a writer committing between
     the item read and the rev read would otherwise pair a stale item-map with a
-    fresh rev, defeating a downstream numeric ``--if-rev`` guard.
+    fresh rev, defeating a downstream numeric ``--if-rev`` guard. The actual
+    ``render`` call (and its recap dispatch check) happens after the lock is
+    released — agents run a bare ``render`` before every numeric mutation to
+    fetch the rev for ``--if-rev``, so this path must stay instant and never
+    hold the lock across a possible recap-regen spawn.
     """
     with backlog_lock():
-        render()
+        items = load_items()
+        pending_items = load_pending()
+        rev = load_rev()
+    render(items, pending_items, rev=rev, dispatch=True)
 
 
 def cmd_list(args: argparse.Namespace) -> None:
@@ -1571,7 +2157,13 @@ def cmd_add(args: argparse.Namespace) -> None:
         # silently pass the guard.
         new_rev = bump_rev()
         save_items(items)
+        append_journal_event(
+            _journal_entry(
+                "add", "backlog", new_rev, slug=slug, summary=item["summary"]
+            )
+        )
         render(items, pending_items, rev=new_rev)
+    _maybe_dispatch_recap_regen()
     _blocker_check_reminder(items, slug, cmd="add")
 
 
@@ -1664,6 +2256,7 @@ def cmd_update(args: argparse.Namespace) -> None:
     )
 
     with _backlog_mutation("update", args.id, args.if_rev, announce=True) as m:
+        m.journal_extra["fields"] = sorted(patch)
         if "status" in patch:
             _apply_status_transition(
                 cast(dict[str, object], m.item),
@@ -1788,6 +2381,7 @@ def cmd_reject(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        m.journal_extra["feedback"] = feedback
         _apply_status_transition(
             cast(dict[str, object], m.item), "in-progress", "completed_at", "done"
         )
@@ -1887,8 +2481,12 @@ def cmd_backfill_gate(args: argparse.Namespace) -> None:
             }
         new_rev = bump_rev()
         save_items(items)
+        append_journal_event(
+            _journal_entry("backfill-gate", "backlog", new_rev, count=len(missing))
+        )
         print(f"[backfill-gate] stamped {len(missing)} item(s)")
         render(items, load_pending(), rev=new_rev)
+    _maybe_dispatch_recap_regen()
 
 
 def cmd_rename(args: argparse.Namespace) -> None:
@@ -1981,8 +2579,18 @@ def cmd_rename(args: argparse.Namespace) -> None:
         new_rev = bump_rev()
         save_items(items)
         save_pending(pending_items)
+        append_journal_event(
+            _journal_entry(
+                "rename",
+                "backlog",
+                new_rev,
+                slug=new_slug,
+                summary=f"renamed from {old_slug} to {new_slug}",
+            )
+        )
         print(f"[rename] {old_slug} → {new_slug}", file=sys.stderr)
         render(items, pending_items, rev=new_rev)
+    _maybe_dispatch_recap_regen()
 
 
 def cmd_block(args: argparse.Namespace) -> None:
@@ -2100,8 +2708,12 @@ def cmd_pending_add(args: argparse.Namespace) -> None:
         )
         new_rev = bump_rev()
         save_pending(pending_items)
+        append_journal_event(
+            _journal_entry("add", "pending", new_rev, slug=slug, summary=description)
+        )
         print(f"[pending add] {slug} — {description[:60]}", file=sys.stderr)
         render(backlog_items, pending_items, rev=new_rev)
+    _maybe_dispatch_recap_regen()
     _blocker_check_reminder(backlog_items, None, cmd="pending add")
 
 
@@ -2162,6 +2774,7 @@ def cmd_pending_update(args: argparse.Namespace) -> None:
                         file=sys.stderr,
                     )
                     sys.exit(1)
+        old_status = item.get("status")
         if "status" in patch:
             _apply_status_transition(
                 cast(dict[str, object], item),
@@ -2171,10 +2784,24 @@ def cmd_pending_update(args: argparse.Namespace) -> None:
             )
         cast(dict[str, object], item).update(patch)
         item["updated"] = today()
+        new_status = item.get("status")
         new_rev = bump_rev()
         save_pending(pending_items)
+        append_journal_event(
+            _journal_entry(
+                "update",
+                "pending",
+                new_rev,
+                slug=slug,
+                summary=cast(str, item.get("description", "")),
+                from_status=old_status if old_status != new_status else None,
+                to_status=new_status if old_status != new_status else None,
+                fields=sorted(patch),
+            )
+        )
         confirm_resolution("pending update", args.id, item, summary_key="description")
         render(items, pending_items, rev=new_rev)
+    _maybe_dispatch_recap_regen()
 
 
 def cmd_pending_list(args: argparse.Namespace) -> None:
@@ -2288,6 +2915,9 @@ def cmd_prune(args: argparse.Namespace) -> None:
                 save_items(keep)
             if pruned_slugs or pending_pruned_slugs:
                 save_pending(pending_keep)
+            append_journal_event(
+                _journal_entry("prune", "backlog", new_rev, count=total_removed)
+            )
             print(
                 f"[prune] removed {len(pruned_slugs)} backlog item(s), "
                 f"{len(pending_pruned_slugs)} pending item(s) — "
@@ -2298,6 +2928,7 @@ def cmd_prune(args: argparse.Namespace) -> None:
             render(keep, pending_keep, rev=new_rev)
         else:
             print("[prune] nothing to prune")
+    _maybe_dispatch_recap_regen()
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -2339,6 +2970,7 @@ dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
     "block": cmd_block,
     "unblock": cmd_unblock,
     "prune": cmd_prune,
+    "recap": cmd_recap,
 }
 
 if __name__ == "__main__" and set(dispatch) != set(SUBCOMMANDS):
@@ -2350,7 +2982,17 @@ if __name__ == "__main__" and set(dispatch) != set(SUBCOMMANDS):
 
 
 def main() -> None:
-    """Parse argv and dispatch to the matching subcommand handler."""
+    """Parse argv and dispatch to the matching subcommand handler.
+
+    ``_internal-regen`` is handled off a raw argv check before argparse ever
+    runs — it's the hidden re-exec target :func:`_maybe_dispatch_recap_regen`
+    spawns for itself, deliberately not a real subcommand (not in
+    :data:`SUBCOMMANDS`/``dispatch``, never shown in ``--help``).
+    """
+    if len(sys.argv) > 1 and sys.argv[1] == "_internal-regen":
+        cmd_internal_regen()
+        return
+
     parser = argparse.ArgumentParser(
         description="deterministic backlog dashboard v2",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -2451,6 +3093,19 @@ def main() -> None:
         action="store_true",
         required=True,
         help="required to prevent accidental prune",
+    )
+
+    p = sub.add_parser("recap", help="print a friendly prose recap of recent activity")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="bypass the freshness cache, regenerate now",
+    )
+    p.add_argument(
+        "--backend",
+        choices=llm_backends.BACKEND_PRIORITY,
+        default=None,
+        help="force this backend instead of priority-order fallback",
     )
 
     pending = sub.add_parser("pending", help="manage pending (waiting-on-reply) items")
