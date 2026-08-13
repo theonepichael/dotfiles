@@ -299,6 +299,16 @@ src = "opencode/skills/spec/SKILL.md"
 dest = "~/.config/opencode/skills/spec/SKILL.md"
 harness = "opencode"
 
+# tool.execute.after plugin -- runs ruff format + ruff check --fix on any
+# .py file the edit/write tools touch, inside a uv/ruff project. Same
+# mechanism as the Claude Code/Copilot/agy PostToolUse hooks; opencode's
+# analog is a TypeScript plugin, not a declarative JSON hook (see
+# opencode/CLAUDE_CODE_PARITY.md §5).
+[[link]]
+src = "opencode/plugin/ruff-format-on-edit.ts"
+dest = "~/.config/opencode/plugin/ruff-format-on-edit.ts"
+harness = "opencode"
+
 # ── agy (Google Antigravity CLI, Gemini-backed) ──────────────────────────
 # agy specifically looks for ~/.gemini/GEMINI.md (no CLAUDE.md fallback
 # like opencode's), so it needs a real link of its own. Skills live under
