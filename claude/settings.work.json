@@ -41,6 +41,5 @@
     "enabled": true,
     "mode": "hold"
   },
-  "theme": "light-daltonized",
-  "voiceEnabled": true
+  "theme": "light-daltonized"
 }

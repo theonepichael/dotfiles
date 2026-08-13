@@ -20,8 +20,8 @@ the locally-installed CLI surface, except where noted.
 
 - **Global rules file (CLAUDE.md-equivalent): `~/.copilot/copilot-instructions.md`.**
   Official docs (*Adding custom instructions*): "`$HOME/.copilot/copilot-instructions.md`
-  — User-level instructions that apply across repositories." `install.sh`
-  symlinks `claude/CLAUDE.md` straight to this path (install.sh:565). Always
+  — User-level instructions that apply across repositories." `links.toml`
+  symlinks `claude/CLAUDE.md` straight to this path. Always
   active, no frontmatter.
   - The same docs page also auto-discovers `AGENTS.md`, `CLAUDE.md`, and
     `GEMINI.md` "in the standard locations" (repo root → cwd walk), so
@@ -82,9 +82,11 @@ the locally-installed CLI surface, except where noted.
   `cwd`, optional `env`, and a `timeoutSec` (default 30). `copilot help
   config` corroborates (`hooks` keyed by event name, same schema as
   `.github/hooks/*.json`; `disableAllHooks` global toggle).
-  This repo wires one at `copilot/hooks/session-start.json` (symlinked to
-  `~/.copilot/hooks/session-start.json` via install.sh:566) running
-  `dev_status.py render` + `dotfiles_sync_check.py` on session start —
+   This repo wires one at `copilot/hooks/session-start.json` (symlinked to
+   `~/.copilot/hooks/session-start.json` via two same-destination
+   `links.toml` entries gated `platform = "mac"` / `"linux"` — the handler
+   is bash-only as wired, so nothing is installed on Windows) running
+   `dev_status.py render` + `dotfiles_sync_check.py` on session start —
   the auto-render dashboard affordance that agy and opencode can't
   replicate (agy's `hooks.md` has no `SessionStart` event; opencode needs
   a TypeScript plugin). Note that `dashboard`'s Copilot version correctly
@@ -123,12 +125,16 @@ All 7 (`backlog-item`, `dashboard`, `grill-me`, `make-skill`,
 `links.toml`. `backlog-item` orchestrates `grill-me`/`second-opinion`/`spec`
 via mid-skill delegation (see the 2026-08-03 finding in section 3 below,
 verified the same day `backlog-item` was added — `spec` was added later,
-2026-08-12, and follows the same delegation shape but has not yet had its
-own live probe run). The other 5 (excluding `spec`) were verified
-2026-07-28 — `copilot skill list` listed all 6 as of 2026-08-03 under
-"Personal skills" **and** a live end-to-end invocation probe
+2026-08-12, and follows the same delegation shape). The other 5 (excluding
+`spec`) were verified 2026-07-28. Re-checked 2026-08-13 on CLI 1.0.79:
+`copilot skill list` shows all 7 under "Personal skills", a
+`copilot -p "/dashboard" --allow-all-tools` slash probe rendered the
+dashboard, and the sessionStart hook was confirmed dispatching (a marker
+hook in the same `~/.copilot/hooks/` directory with the same schema fired,
+and the real hook's `dev_status.py render` output appears in the session
+log at startup). Earlier end-to-end probe
 (`copilot -p "<activate dashboard; run dev_status.py render; show stdout
-verbatim>" --allow-all-tools`), which produced a visible `skill(dashboard)`
+verbatim>" --allow-all-tools`) produced a visible `skill(dashboard)`
 tool-call step in the run log followed by the dashboard verbatim.
 
 The `make-skill` skill's own step-3 documents the scoped manual fix for
@@ -177,9 +183,10 @@ backlog verbatim.
   hook files at `~/.copilot/hooks/*.json`, schema `{"version":1,
   "hooks":{"<event>":[...]}}`, supported events `sessionStart` /
   `sessionEnd` / `userPromptSubmitted` / `preToolUse` / `postToolUse` /
-  `errorOccurred` / `agentStop`. `copilot/hooks/session-start.json` is
-  symlinked into `~/.copilot/hooks/session-start.json` (install.sh:566)
-  and runs `dev_status.py render` + `dotfiles_sync_check.py` automatically
+   `errorOccurred` / `agentStop`. `copilot/hooks/session-start.json` is
+   symlinked into `~/.copilot/hooks/session-start.json` (via `links.toml`,
+   macOS/Linux only)
+   and runs `dev_status.py render` + `dotfiles_sync_check.py` automatically
   at session open — the auto-render dashboard affordance agy and opencode
   can't replicate (agy's `hooks.md` lists only `PreToolUse`/`PostToolUse`/
   `PreInvocation`/`PostInvocation`/`Stop` — no `SessionStart`; opencode
@@ -227,9 +234,10 @@ the `SKILL.md` level). Root cause is drift-by-rename across machines,
 `~/.copilot/skills/status/SKILL.md` to
 `~/.copilot/skills/dashboard/SKILL.md`, so a machine last provisioned
 before that commit has neither the new dashboard symlink nor its parent
-dir. install.sh's `symlink()` helper (install.sh:510) does `mkdir -p
-"$(dirname "$dst")"`, so a fresh `install.sh --harness=copilot` run
-creates the dir + symlink cleanly; no install.sh fix is warranted. The
+dir. The `symlink()` helper (in the pre-Python install.sh at the time; now
+install.py) makes the destination's parent dir as needed,
+so a fresh `install.sh --harness=copilot` run
+creates the dir + symlink cleanly; no installer fix is warranted. The
 scoped manual fix `mkdir -p ~/.copilot/skills/dashboard && ln -s
 ~/dotfiles/copilot/skills/dashboard/SKILL.md
 ~/.copilot/skills/dashboard/SKILL.md` was applied to this machine and

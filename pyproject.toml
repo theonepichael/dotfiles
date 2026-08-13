@@ -15,4 +15,7 @@ select = ["E", "F", "W", "UP", "SIM", "I", "PIE", "ISC", "FURB", "TRY"]
 ignore = ["DTZ011", "DTZ005", "PLW1510", "BLE001", "E501", "TRY003"]
 
 [dependency-groups]
-dev = ["ruff==0.16.2"]
+dev = [
+    "pytest==9.1.1",
+    "ruff==0.16.2",
+]

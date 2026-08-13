@@ -97,23 +97,27 @@ remove something.
 
 - **`claude`** — installs Claude Code (`npm i -g @anthropic-ai/claude-code`)
   and its `~/.claude/*` wiring (`CLAUDE.md`, `commands/*.md`,
-  `settings.json`, the statusline hook).
+  `settings.json` with its SessionStart hooks).
 - **`copilot`** — installs [GitHub Copilot CLI](https://github.com/github/copilot-cli)
   (`npm i -g @github/copilot`) and its wiring:
   - **Shared instructions file**: `claude/CLAUDE.md` is symlinked to *both*
     `~/.claude/CLAUDE.md` and `~/.copilot/copilot-instructions.md` — no
     separate Copilot-specific instructions file to maintain, since the
     backlog/pending-items workflow is already tool-agnostic prose.
-  - **`copilot/hooks/session-start.json`**: a `sessionStart` hook running the
-    same shell commands as Claude Code's `SessionStart` hook chain
-    (dashboard render, dotfiles-drift check).
-  - **`copilot/skills/<name>/SKILL.md`**: ports of all 5 Claude Code skills
-    (dashboard, standup, second-opinion, grill-me, make-skill). Copilot
-    skills are **description-matched, not typed-slash** — there's no
-    `/dashboard` to type; the skill fires when its `description` frontmatter
-    matches the conversation. `second-opinion` and `grill-me` also drop
-    `AskUserQuestion` (Copilot has no structured multi-choice prompt) in
-    favor of plain conversational back-and-forth.
+  - **`copilot/hooks/session-start.json`**: a `sessionStart` hook sharing a
+    subset of Claude Code's `SessionStart` work (dashboard render,
+    pending-plan consume, dotfiles-drift and seed-drift checks — not the
+    git-log/watchcommit lines). The hook schema's handler is bash-only as
+    wired here, so `links.toml` links it on macOS/Linux only; it is
+    deliberately not installed on Windows.
+  - **`copilot/skills/<name>/SKILL.md`**: ports of all 7 Claude Code commands
+    as skills (dashboard, standup, second-opinion, grill-me, make-skill,
+    backlog-item, spec). Copilot skills fire when their `description`
+    frontmatter matches the conversation, and can also be invoked by typing
+    `/<skill-name>` (e.g. `/dashboard`) — confirmed live on Copilot CLI
+    1.0.79 (see `copilot/CLAUDE_CODE_PARITY.md`). `second-opinion` and
+    `grill-me` also drop `AskUserQuestion` (Copilot has no structured
+    multi-choice prompt) in favor of plain conversational back-and-forth.
   - **`copilot/aliases.zsh`** (symlinked to `~/.copilot_aliases`, sourced by
     `.zshrc` only when present): `copilot-work` launches `copilot` with
     `python3` shell calls and read-only `git` commands pre-approved.
@@ -125,14 +129,22 @@ remove something.
   - **Deliberately excluded**: Gmail/Calendar/Drive MCP servers are not
     configured under Copilot, per the work profile's
     no-personal-data-on-work-hardware rule.
-- **`opencode`** — wires `~/.config/opencode/tui.json`, the `dashboard`/
-  `grill-me` commands, and `opencode.jsonc` (the bash permission allowlist,
-  copy-once-and-report-drift same as Claude's `settings.json`): `curl`,
-  `npx`, `node -e`, `rm -f`, `kill`, `nohup` are all pre-approved. `xargs`
-  and `awk` are removed regardless, since they're allowlist bypasses (each
-  can invoke an arbitrary other command as its own argument), not
-  individually-risky commands worth pre-approving. `opencode` is never
-  installed on a work machine at all — see "Work profile" below.
+- **`opencode`** — wires `~/.config/opencode/tui.json`, the seven
+  user-typed commands (`dashboard`, `grill-me`, `make-skill`,
+  `second-opinion`, `spec`, `standup`, `backlog-item`) plus three
+  model-invoked skills (`grill-me`, `second-opinion`, `spec`), and
+  `opencode.jsonc` (the bash permission policy, copy-once-and-report-drift
+  same as Claude's `settings.json`): the shared workflow scripts
+  (`dev_status.py`, `grill.py`, `second_opinion.py`, the drift/sync
+  checks), read-only Git inspection, and this repo's everyday `uv` commands
+  (`uv sync`, `uv run pytest`, `uv run ruff check/format`) are pre-approved;
+  everything else falls through to the catch-all ask, so commits, pushes,
+  destructive filesystem operations, network calls, and process control all
+  require explicit approval. `xargs` and `awk` are removed regardless,
+  since they're allowlist bypasses (each can invoke an arbitrary other
+  command as its own argument), not individually-risky commands worth
+  pre-approving. `opencode` is never installed on a work machine at all —
+  see "Work profile" below.
 - **`agy`** — wires config for [Antigravity CLI](https://antigravity.google/docs/cli)
   (Google's Gemini-backed CLI); the binary itself is assumed already
   installed, same as `opencode` — this script only wires its config:
@@ -140,11 +152,12 @@ remove something.
     `~/.gemini/GEMINI.md`, agy's global-rules path (no `CLAUDE.md` fallback
     like opencode has, so it needs a real link of its own).
   - **`agy/skills/<name>/SKILL.md`**: ports of the dashboard, standup,
-    second-opinion, grill-me, and make-skill skills (`backlog-item` not yet
-    ported), symlinked into `~/.gemini/antigravity-cli/skills/<name>/SKILL.md`
-    — agy's current global skills path. Like Copilot's, agy's skills are
-    description-matched, not typed-slash: there's no `/dashboard` to type,
-    and no `AskUserQuestion`-style prompt, so the ported skills use plain
+    second-opinion, grill-me, make-skill, and spec skills (`backlog-item`
+    not yet ported), symlinked into `~/.gemini/antigravity-cli/skills/<name>/SKILL.md`
+    — agy's current global skills path. agy skills fire on description match
+    and, as of agy 1.1.12, also expand typed `/<skill-name>` invocations
+    (probed live; see `agy/CLAUDE_CODE_PARITY.md`). agy has no
+    `AskUserQuestion`-style prompt, so the ported skills use plain
     conversational back-and-forth for judgment calls.
   - agy has no `SessionStart`-equivalent hook event, so there's no
     auto-render-dashboard wiring for it, unlike Claude Code and Copilot.
@@ -166,8 +179,8 @@ all four harnesses' skills/hooks call these same paths.
 - **opencode is excluded entirely, full stop** — `--profile=work
   --harness=opencode` is rejected outright at argument-parsing time, not
   just tightened. No `opencode.jsonc`, no commands, no `tui.json`.
-- Claude settings are seeded from `claude/settings.work.json` — same hooks and
-  statusline, but no `skipDangerousModePermissionPrompt` and no model pin.
+- Claude settings are seeded from `claude/settings.work.json` — same hooks,
+  but no `skipDangerousModePermissionPrompt` and no model pin.
 - `~/.secrets` is still sourced if present, for work-issued tokens only.
 - A profile marker is written (`~/.local/state/dotfiles/profile`); later runs
   with `--profile=personal` (the default) on that machine refuse unless
@@ -386,14 +399,15 @@ session, no separate config needed.
 - **Secrets**: `~/.secrets` is gitignored — create it manually on each new machine
 - **Tool state**: `~/.claude/data` (dev_status backlog, grill sessions) is
   per-machine by design and never packaged — a new machine starts fresh
-- **Tests**: live in `claude/scripts/` and run from the repo
-  (`cd claude/scripts && pytest`); they are not deployed to `~/.claude`
+- **Tests**: script tests live in `claude/scripts/test_*.py` alongside the
+  scripts; they are not deployed to `~/.claude`
 - **installer tests**, two tiers:
   - *fast* — `test/test_install.py` (pytest) covers argument validation,
     the symlink engine, the history/rollback engine, and the copy-once +
     drift logic against a throwaway `HOME` with every subprocess stubbed;
-    `test/test_lint.py` gates the pinned Ruff configuration. Run them with
-    `uv run --with pytest pytest test/test_install.py test/test_lint.py`;
+    `test/test_lint.py` gates the pinned Ruff configuration. Everything —
+    script tests and installer tests — runs from the repo root with
+    `uv run pytest` (pytest is pinned in the uv dev dependency group);
     they touch nothing real.
   - *lifecycle* — `test/run.sh` runs `test/scenarios.sh` (fresh install,
     rollback, backup-and-restore, work profile + guard, `--force`,

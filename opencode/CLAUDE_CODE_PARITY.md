@@ -23,7 +23,7 @@ directories in this repo, and get symlinked into `~/.config/opencode/` by
 | `Shift+Tab` cycles Default→AcceptEdits→Plan→Auto | `Tab` / `Shift+Tab` → `agent_cycle` / `agent_cycle_reverse`, cycles Build ↔ Plan | Same gesture, but only 2 states by default vs Claude Code's 4 — see §3 |
 | `Ctrl+G` opens external editor | `editor_open: <leader>e` (default) | Same feature, different key — rebind if wanted, see §4 |
 | `Ctrl+C` / `Ctrl+D` exit | `app_exit: ctrl+c,ctrl+d,<leader>q` (default) | Exact match |
-| `Ctrl+V` paste (incl. images) | `input_paste: ctrl+v` (default) | Works with opencode-vision (see `meta-glm-vision-opencode`, done) |
+| `Ctrl+V` paste (incl. images) | `input_paste: ctrl+v` (default) | Works with opencode-vision (installed separately as a plugin) |
 | `claude --continue` / `--resume` | `opencode run --continue` / `-c`, `--session`/`-s <id>` | Same concept, different flag names |
 | Subagent naming (Explore, general-purpose) | Built-in subagents: `general`, `explore`, `scout` | opencode's `explore` is close to Claude Code's `Explore` agent already |
 
@@ -343,10 +343,9 @@ conflicting keys), same pattern as Claude Code's `~/.claude/settings.json` +
 5. ~~Whether to pursue the hooks→plugin port at all right now, or leave
    opencode without dashboard/backlog integration for the time being.~~
    **Decided (2026-07-24): defer the port** (real TypeScript lift, not
-   config parity work) — captured as its own backlog item
-   `meta-opencode-sessionstart-plugin` so it survives independently of this
-   doc. Revisit when there's a real need or when the opencode plugin API
-   stabilizes further.
+   config parity work) — captured as its own backlog item so it survives
+   independently of this doc. Revisit when there's a real need or when the
+   opencode plugin API stabilizes further.
 6. ~~Whether `opencode.jsonc` (the bash permission allowlist, `~/.config/
    opencode/opencode.jsonc`) should be tracked in this repo~~ — **Decided
    (2026-07-24): yes.** It existed only as an untracked local file on the

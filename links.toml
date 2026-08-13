@@ -162,10 +162,21 @@ src = "claude/CLAUDE.md"
 dest = "~/.copilot/copilot-instructions.md"
 harness = "copilot"
 
+# The sessionStart hook is bash-only, so it is wired only on macOS/Linux
+# (two same-destination platform entries, the same mutually-exclusive
+# pattern as the VS Code entries below). It is deliberately not installed
+# on Windows, where the bash handler would not dispatch.
 [[link]]
 src = "copilot/hooks/session-start.json"
 dest = "~/.copilot/hooks/session-start.json"
 harness = "copilot"
+platform = "mac"
+
+[[link]]
+src = "copilot/hooks/session-start.json"
+dest = "~/.copilot/hooks/session-start.json"
+harness = "copilot"
+platform = "linux"
 
 [[link]]
 src = "copilot/skills/dashboard/SKILL.md"

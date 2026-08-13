@@ -35,7 +35,7 @@ Probe with `agy -p '<a real trigger phrase>'` (confirmed non-interactive print-m
 ## 5. Plumbing (house convention)
 
 1. File lives at `~/dotfiles/agy/skills/<name>/SKILL.md` (same for any reference files, under `~/dotfiles/agy/skills/<name>/references/`).
-2. Add a `symlink agy/skills/<name>/SKILL.md ~/.gemini/antigravity-cli/skills/<name>/SKILL.md` line in install.sh next to the existing ones.
+2. Add a `[[link]]` entry (`src = "agy/skills/<name>/SKILL.md"`, `dest = "~/.gemini/antigravity-cli/skills/<name>/SKILL.md"`, `harness = "agy"`) in `links.toml` next to the existing ones (same for any reference files).
 3. Create the live symlink now: `ln -s ~/dotfiles/agy/skills/<name>/SKILL.md ~/.gemini/antigravity-cli/skills/<name>/SKILL.md`.
 4. Conventional commit, scope `agy`: `feat` for a new skill, `refactor`/`docs` for revisions.
 

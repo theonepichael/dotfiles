@@ -39,7 +39,7 @@ step, that step needs splitting or stronger steering — not more prose.
 ## 5. Plumbing (house convention)
 
 1. File lives at `~/dotfiles/copilot/skills/<name>/SKILL.md` (same for any ref files, under `~/dotfiles/copilot/skills/<name>/ref/`).
-2. Add a `symlink copilot/skills/<name>/SKILL.md ~/.copilot/skills/<name>/SKILL.md` line in install.sh next to the existing ones.
+2. Add a `[[link]]` entry (`src = "copilot/skills/<name>/SKILL.md"`, `dest = "~/.copilot/skills/<name>/SKILL.md"`, `harness = "copilot"`) in `links.toml` next to the existing ones (same for any ref files).
 3. Create the live symlink now: `ln -s ~/dotfiles/copilot/skills/<name>/SKILL.md ~/.copilot/skills/<name>/SKILL.md`.
 4. Conventional commit, scope `copilot`: `feat` for a new skill, `refactor`/`docs` for revisions.
 

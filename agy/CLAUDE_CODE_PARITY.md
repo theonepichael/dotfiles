@@ -6,6 +6,9 @@ instructions, same skills, same backlog/pending-items/git conventions.
 Compiled 2026-07-28 by reading agy's own bundled customization docs
 (`~/.gemini/antigravity-cli/builtin/skills/agy-customizations/`) and the
 official migration docs at antigravity.google/docs/cli/gcli-migration.
+Revalidated 2026-08-13 against the installed agy 1.1.12 (see §3 and §4 —
+slash invocation of skills now exists; the §3 invocation claim from the
+1.1.8 era was rewritten).
 
 ---
 
@@ -32,7 +35,7 @@ official migration docs at antigravity.google/docs/cli/gcli-migration.
   (not `ref/`, which is this repo's `claude`/`copilot` convention) as the
   supported subdirectory for bulky per-skill documentation.
 - **Non-interactive print mode**: `agy -p '<prompt>'` (confirmed via
-  `agy --help` on the installed 1.1.8 build).
+  `agy --help` on the installed 1.1.12 build).
 - **Workspace (project-scoped) rules and skills** are a separate mechanism
   from the above — `AGENTS.md`/`GEMINI.md` files discovered by walking from
   cwd up to the repo root, and `.agents/skills/` for project-local skills.
@@ -52,8 +55,9 @@ adjustments (verified `-p` flag, `references/` vs `ref/`, Trigger section
 reflecting agy's progressive-disclosure model instead of Claude Code's
 model-invoked/user-invoked split or Copilot's pure description-match).
 `spec` was added later, 2026-08-12, following the same no-`allowed-tools`,
-plain-text-question conventions as `standup`/`second-opinion` — not yet
-covered by the 2026-07-28 verification pass below.
+plain-text-question conventions as `standup`/`second-opinion`, and is now
+covered by the 2026-08-13 revalidation in §3 (a `/spec` slash probe on
+1.1.12 produced the skill's structured spec output).
 
 **Known gap: `grill-me` is missing its "clear-and-go" step.** Claude Code's,
 Copilot's, and opencode's `grill-me` all have a step 5 in "End of session"
@@ -76,7 +80,7 @@ skill-to-skill delegation confirmed) can support `backlog-item`'s
 delegation to `grill-me`/`second-opinion` the way opencode's native `skill`
 tool does — needs investigation before porting, not a straightforward copy.
 
-## 3. Verification results (probed 2026-07-28, agy 1.1.8)
+## 3. Verification results (probed 2026-07-28, agy 1.1.8; revalidated 2026-08-13, agy 1.1.12)
 
 Resolved against `agy --help`, `agy help`, `agy agent`, agy's own bundled
 customization docs (`~/.gemini/antigravity-cli/builtin/skills/agy-customizations/
@@ -88,17 +92,30 @@ verbatim — empirically confirming agy loads skills from the new
 `~/.gemini/skills/` directory (previously moved aside as
 `~/.gemini/skills.stale-bak-20260728`) has been **permanently deleted**.
 
-- **No explicit user-typed skill invocation** (no slash-command or dedicated
-  subcommand). `agy --help`/`agy help` list only `agent`(s)/`changelog`/`help`/
-  `install`/`models`/`plugin`(s)/`update` — there is **no `skill` subcommand**
-  and no flag for invoking a skill by name. `skills.md` describes **only**
-  model-decision activation: "The primary agent reads this `description` to
-  decide whether to activate the skill for a given user prompt." So for agy
-  there is no Claude-Code-style `/dashboard` user trigger — the user-side
-  mechanism, to the extent one exists, is just naming the workflow in plain
-  language and relying on the model to match the skill's `description`. The
-  ported skills already phrase their Triggers in those terms, so no change
-  needed.
+2026-08-13 revalidation on agy 1.1.12: `agy --version` → 1.1.12;
+`agy --help` still lists only `agent`(s)/`changelog`/`help`/`install`/
+`models`/`plugin`(s)/`update` subcommands (still no `skill` subcommand);
+`agy models` listed the current model set; `agy -p` returned a successful
+text response; and — new in this version — **slash invocation of skills
+works**: `agy -p "/dashboard"` expanded the dashboard skill and rendered
+the dashboard, and `agy -p "/spec ..."` produced the spec skill's
+structured output. The `--help` surface now carries
+`--disable-slash-commands` ("Disable slash command and skill expansion in
+print mode"), i.e. slash/skill expansion is on by default. All 6 ported
+skills (including `spec`) are present at
+`~/.gemini/antigravity-cli/skills/<name>/SKILL.md`.
+
+- **Slash invocation EXISTS as of 1.1.12 — the 1.1.8-era claim below is
+  superseded.** Original 1.1.8 finding: no explicit user-typed skill
+  invocation (no slash-command or dedicated subcommand); `skills.md`
+  described only model-decision activation. On 1.1.12, typed
+  `/<skill-name>` prompts expand and run the skill in print mode (probed
+  with `/dashboard` and `/spec`; expansion can be disabled with
+  `--disable-slash-commands`). There is still no `skill` subcommand and no
+  interactive slash-command menu confirmed — treat the typed-slash path as
+  prompt expansion, not a Claude-Code-style command palette. Model-decision
+  activation also still works, so the ported skills' description-first
+  Triggers remain correct as written.
 - **No SessionStart hook event type.** `hooks.md` lists exactly five events:
   `PreToolUse`, `PostToolUse`, `PreInvocation`, `PostInvocation`, `Stop`.
   There is no `SessionStart` (or `OnSessionStart`/`Startup`) event. The
@@ -125,12 +142,13 @@ verbatim — empirically confirming agy loads skills from the new
 
 ## 4. Install state on this machine (versioning note)
 
-Locally installed `agy` is version 1.1.8 (`agy changelog`). `~/.antigravity/`
-does **not** exist on this machine — confirms the install is still on the
-legacy `~/.gemini/` layout, not a fully-migrated `~/.antigravity/` one that
-some third-party sources describe for newer installs. `agy inspect`, which a
-couple of blog posts (not official docs) claimed as a diagnostic command,
-does **not** exist in this build's `--help` output — don't trust secondhand
-descriptions of agy's CLI surface without confirming against the actual
-installed binary's `--help`/`--version`. Re-verify all of the above if/when
-this machine's `agy` migrates to the `~/.antigravity/` layout.
+Locally installed `agy` is version 1.1.12 (`agy --version`, 2026-08-13).
+`~/.antigravity/` does **not** exist on this machine — confirms the install
+is still on the legacy `~/.gemini/` layout, not a fully-migrated
+`~/.antigravity/` one that some third-party sources describe for newer
+installs. `agy inspect`, which a couple of blog posts (not official docs)
+claimed as a diagnostic command, does **not** exist in this build's
+`--help` output — don't trust secondhand descriptions of agy's CLI surface
+without confirming against the actual installed binary's
+`--help`/`--version`. Re-verify all of the above if/when this machine's
+`agy` migrates to the `~/.antigravity/` layout.

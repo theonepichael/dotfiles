@@ -147,9 +147,9 @@ python3 ~/.claude/scripts/dev_status.py pending update <new-slug> '{"blocking": 
 If nothing looks related, do nothing — this is a judgment call per add, not
 a mandatory link.
 
-Never let a backlog slug (`iron-lb-instructions-truncation`, `ilb-rederive-drift`,
-etc.) leak into a file that ships in git history — code comments, README,
-AGENTS.md, and the like. Those ids only resolve inside this personal backlog
+Never let a backlog slug leak into a file that ships in git history — code
+comments, README, AGENTS.md, and the like. Those ids only resolve inside this
+personal backlog
 store; a collaborator or anyone reading the repo without `dev_status.py`
 access hits a dangling reference to nothing. When a comment or doc needs to
 explain *why* something exists, describe the defect/rationale directly in

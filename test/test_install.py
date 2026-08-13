@@ -325,6 +325,28 @@ def test_platform_and_profile_gates(home, links):
     assert "~/.config/Code/User/settings.json" not in wsl_dests
 
 
+def test_copilot_hook_platform_split(home, links):
+    """The Copilot sessionStart hook is bash-only, so links.toml carries two
+    same-destination entries gated mac/linux (the VS Code mutually-exclusive
+    platform pattern) instead of one unqualified entry: on any given machine
+    exactly one applies, and nothing installs the hook where the bash
+    handler could not dispatch."""
+    hook = "~/.copilot/hooks/session-start.json"
+    entries = [s for s in links if s.dest == hook]
+    assert len(entries) == 2
+    assert {s.platform for s in entries} == {"mac", "linux"}
+    assert all(s.harness == "copilot" for s in entries)
+
+    for system in ("Linux", "Darwin"):
+        ctx = make_ctx(home, harnesses=("copilot",), system=system)
+        applying = [s for s in entries if install.link_applies(s, ctx)]
+        assert len(applying) == 1, system
+    # No copilot in --harness: neither entry links, on either platform.
+    for system in ("Linux", "Darwin"):
+        ctx = make_ctx(home, harnesses=("claude",), system=system)
+        assert not any(install.link_applies(s, ctx) for s in entries)
+
+
 def test_expand_dest(home):
     assert install.expand_dest("~/.vimrc", home) == home / ".vimrc"
     assert install.expand_dest("/etc/hosts", home) == Path("/etc/hosts")
