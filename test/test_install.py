@@ -57,6 +57,7 @@ def make_ctx(
     dry_run=False,
     force=False,
     wipe=False,
+    no_nvim_pin=False,
     system="Linux",
     is_wsl=False,
     dotfiles=REPO_ROOT,
@@ -68,6 +69,7 @@ def make_ctx(
         dry_run=dry_run,
         force=force,
         wipe=wipe,
+        no_nvim_pin=no_nvim_pin,
     )
     state_dir = home / ".local" / "state" / "dotfiles"
     return install.Context(
@@ -214,7 +216,12 @@ def test_rollback_wipe_dry_run_parses():
 def test_defaults():
     opts = install.parse_args(["--harness=claude"])
     assert opts.profile == "personal"
-    assert not (opts.rollback or opts.force or opts.dry_run)
+    assert not (opts.rollback or opts.force or opts.dry_run or opts.no_nvim_pin)
+
+
+def test_no_nvim_pin_flag_parses():
+    opts = install.parse_args(["--harness=claude", "--no-nvim-pin"])
+    assert opts.no_nvim_pin
 
 
 # ── links.toml ────────────────────────────────────────────────────────────────
@@ -1338,15 +1345,86 @@ def _stub_neovim_fallback(
     return calls
 
 
-def test_install_neovim_fallback_noop_when_already_good(home, monkeypatch):
-    ctx = make_ctx(home)
+def test_install_neovim_fallback_no_pin_noop_when_already_good(home, monkeypatch):
+    """--no-nvim-pin restores the old rescue-only behavior: a system nvim
+    that's already good enough (>=0.11, working runtime) is left alone,
+    even though it isn't our managed pin."""
+    ctx = make_ctx(home, no_nvim_pin=True)
     calls = _stub_neovim_fallback(
-        monkeypatch, have_nvim=True, version_output="NVIM v0.12.4", runtime_ok=True
+        monkeypatch, have_nvim=True, version_output="NVIM v0.11.6", runtime_ok=True
     )
     install._install_neovim_fallback(ctx)
     assert kinds(ctx, "package-installed") == []
     assert kinds(ctx, "symlink-created") == []
     assert not any(argv[0] in ("curl", "tar") for argv in calls)
+
+
+def test_install_neovim_fallback_pins_by_default_even_when_system_nvim_good(
+    home, monkeypatch
+):
+    """Default behavior (no --no-nvim-pin): a system nvim that's already
+    good enough still gets overridden by the pinned build, since it isn't
+    our managed symlink into ~/.local/opt/neovim."""
+    ctx = make_ctx(home)
+    _stub_neovim_fallback(
+        monkeypatch, have_nvim=True, version_output="NVIM v0.11.6", runtime_ok=True
+    )
+    install._install_neovim_fallback(ctx)
+
+    prefix = home / ".local" / "opt" / "neovim"
+    shim = home / ".local" / "bin" / "nvim"
+    assert (prefix / "bin" / "nvim").read_text() == "fake nvim binary\n"
+    assert shim.is_symlink()
+
+    packages = kinds(ctx, "package-installed")
+    assert len(packages) == 1
+    assert install.NEOVIM_FALLBACK_VERSION in packages[0]["name"]
+
+
+def test_install_neovim_fallback_noop_when_already_pinned(home, monkeypatch):
+    """Idempotent: once ~/.local/bin/nvim already resolves to our own
+    correctly-pinned install, re-running does nothing — no network calls,
+    no reinstall — under default (pin-enforcing) behavior."""
+    ctx = make_ctx(home)
+    prefix = home / ".local" / "opt" / "neovim"
+    shim = home / ".local" / "bin" / "nvim"
+    nvim_bin = prefix / "bin" / "nvim"
+    nvim_bin.parent.mkdir(parents=True)
+    nvim_bin.write_text("real fallback binary\n")
+    shim.parent.mkdir(parents=True)
+    shim.symlink_to(nvim_bin)
+
+    calls: list[list[str]] = []
+
+    def _stub(cmd, *, shell=False, capture=False):
+        argv = list(cmd)
+        calls.append(argv)
+        if argv == [str(shim), "--version"]:
+            return install.CommandResult(
+                True, f"NVIM v{install.NEOVIM_FALLBACK_VERSION}"
+            )
+        raise AssertionError(f"unexpected command: {argv!r}")
+
+    monkeypatch.setattr(install, "run_command", _stub)
+    install._install_neovim_fallback(ctx)
+
+    assert calls == [[str(shim), "--version"]]
+    assert kinds(ctx, "package-installed") == []
+    assert kinds(ctx, "symlink-created") == []
+
+
+def test_install_neovim_fallback_no_pin_still_rescues_when_broken(home, monkeypatch):
+    """--no-nvim-pin doesn't suppress genuine rescues: a missing/broken
+    system nvim still gets the fallback installed."""
+    ctx = make_ctx(home, no_nvim_pin=True)
+    _stub_neovim_fallback(
+        monkeypatch, have_nvim=True, version_output="NVIM v0.9.5", runtime_ok=False
+    )
+    install._install_neovim_fallback(ctx)
+
+    packages = kinds(ctx, "package-installed")
+    assert len(packages) == 1
+    assert install.NEOVIM_FALLBACK_VERSION in packages[0]["name"]
 
 
 def test_install_neovim_fallback_installs_when_too_old(home, monkeypatch):
