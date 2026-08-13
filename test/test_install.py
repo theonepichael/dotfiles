@@ -23,7 +23,6 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import install  # noqa: E402 — must follow sys.path.insert above
 
-
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
 
@@ -1185,11 +1184,254 @@ def test_exit_status_is_1_when_a_step_was_skipped(home, links, offline_install):
 # ── small helpers ─────────────────────────────────────────────────────────────
 
 
-def test_parse_nvim_version():
-    assert install.parse_nvim_version("NVIM v0.11.2\nBuild type: Release") == (0, 11)
-    assert install.parse_nvim_version("NVIM v0.9.5") == (0, 9)
-    assert install.parse_nvim_version("nvim: command not found") is None
-    assert install.parse_nvim_version("") is None
+def test_parse_neovim_version():
+    assert install.parse_neovim_version("NVIM v0.11.2\nBuild type: Release") == (0, 11)
+    assert install.parse_neovim_version("NVIM v0.9.5") == (0, 9)
+    assert install.parse_neovim_version("nvim: command not found") is None
+    assert install.parse_neovim_version("") is None
+
+
+def _stub_nvim(monkeypatch, *, version_output="NVIM v0.12.4", runtime_ok=True):
+    """Stub nvim --version and the headless runtime probe."""
+
+    def _stub(cmd, *, shell=False, capture=False):
+        argv = list(cmd)
+        if argv == ["nvim", "--version"]:
+            return install.CommandResult(True, version_output)
+        if argv[:2] == ["nvim", "--headless"]:
+            return install.CommandResult(runtime_ok)
+        raise AssertionError(f"unexpected command: {argv!r}")
+
+    monkeypatch.setattr(install, "have", lambda exe: exe == "nvim")
+    monkeypatch.setattr(install, "run_command", _stub)
+
+
+def test_neovim_runtime_ok_reflects_probe(monkeypatch):
+    _stub_nvim(monkeypatch, runtime_ok=True)
+    assert install.neovim_runtime_ok() is True
+
+
+def test_neovim_runtime_ok_reflects_probe_failure(monkeypatch):
+    _stub_nvim(monkeypatch, runtime_ok=False)
+    assert install.neovim_runtime_ok() is False
+
+
+def test_neovim_status_missing_binary(monkeypatch):
+    monkeypatch.setattr(install, "have", lambda exe: False)
+    assert install._neovim_status() == (None, False)
+
+
+def test_neovim_status_unparseable_version_skips_runtime_probe(monkeypatch):
+    calls = []
+
+    def _stub(cmd, *, shell=False, capture=False):
+        calls.append(list(cmd))
+        return install.CommandResult(True, "nvim: command not found")
+
+    monkeypatch.setattr(install, "have", lambda exe: True)
+    monkeypatch.setattr(install, "run_command", _stub)
+    assert install._neovim_status() == (None, False)
+    assert calls == [["nvim", "--version"]]
+
+
+def test_neovim_status_ok(monkeypatch):
+    _stub_nvim(monkeypatch, version_output="NVIM v0.12.4", runtime_ok=True)
+    assert install._neovim_status() == ((0, 12), True)
+
+
+def test_neovim_status_broken_runtime(monkeypatch):
+    _stub_nvim(monkeypatch, version_output="NVIM v0.12.4", runtime_ok=False)
+    assert install._neovim_status() == ((0, 12), False)
+
+
+def test_bootstrap_neovim_skips_when_not_installed(home, monkeypatch, capsys):
+    ctx = make_ctx(home)
+    monkeypatch.setattr(install, "have", lambda exe: False)
+    install.bootstrap_neovim(ctx)
+    assert "Neovim not installed" in capsys.readouterr().out
+
+
+def test_bootstrap_neovim_skips_when_version_too_old(home, monkeypatch, capsys):
+    ctx = make_ctx(home)
+    _stub_nvim(monkeypatch, version_output="NVIM v0.9.5")
+    install.bootstrap_neovim(ctx)
+    out = capsys.readouterr().out
+    assert "Neovim 0.9 found, config needs >=0.11" in out
+
+
+def test_bootstrap_neovim_old_version_includes_fallback_failure(
+    home, monkeypatch, capsys
+):
+    ctx = make_ctx(home)
+    ctx.neovim_fallback_failure = (
+        "download/extract failed, or archive layout unexpected"
+    )
+    _stub_nvim(monkeypatch, version_output="NVIM v0.9.5")
+    install.bootstrap_neovim(ctx)
+    out = capsys.readouterr().out
+    assert "fallback install also failed" in out
+    assert "download/extract failed, or archive layout unexpected" in out
+
+
+def test_bootstrap_neovim_skips_when_runtime_broken(home, monkeypatch, capsys):
+    ctx = make_ctx(home)
+    _stub_nvim(monkeypatch, version_output="NVIM v0.12.4", runtime_ok=False)
+    install.bootstrap_neovim(ctx)
+    out = capsys.readouterr().out
+    assert "runtime doesn't resolve" in out
+    assert "vim.uri" in out
+
+
+def test_bootstrap_neovim_proceeds_when_runtime_ok(home, monkeypatch, capsys):
+    ctx = make_ctx(home, dry_run=True)
+    _stub_nvim(monkeypatch, version_output="NVIM v0.12.4", runtime_ok=True)
+    install.bootstrap_neovim(ctx)
+    out = capsys.readouterr().out
+    assert "would run: nvim --headless" in out
+    assert "SKIPPED" not in out
+
+
+# ── neovim fallback install (Linux) ────────────────────────────────────────────
+
+
+def _stub_neovim_fallback(
+    monkeypatch,
+    *,
+    have_nvim=False,
+    version_output="",
+    runtime_ok=False,
+    download_ok=True,
+    extract_ok=True,
+    asset="nvim-linux-x86_64.tar.gz",
+    machine="x86_64",
+):
+    """Stub the whole external surface _install_neovim_fallback touches.
+
+    The ``tar`` stub fabricates the extracted directory tree a real
+    extraction would produce (bin/nvim, share/nvim/runtime), since nothing
+    here actually shells out.
+    """
+    calls: list[list[str]] = []
+
+    def _stub(cmd, *, shell=False, capture=False):
+        argv = list(cmd)
+        calls.append(argv)
+        if argv == ["nvim", "--version"]:
+            return install.CommandResult(True, version_output)
+        if argv[:2] == ["nvim", "--headless"]:
+            return install.CommandResult(runtime_ok)
+        if argv[0] == "curl":
+            return install.CommandResult(download_ok)
+        if argv[0] == "tar":
+            if extract_ok:
+                tmp_dir = Path(argv[-1])
+                extracted = tmp_dir / asset.removesuffix(".tar.gz")
+                (extracted / "bin").mkdir(parents=True)
+                (extracted / "bin" / "nvim").write_text("fake nvim binary\n")
+                (extracted / "share" / "nvim" / "runtime").mkdir(parents=True)
+            return install.CommandResult(extract_ok)
+        raise AssertionError(f"unexpected command: {argv!r}")
+
+    monkeypatch.setattr(install, "have", lambda exe: exe == "nvim" and have_nvim)
+    monkeypatch.setattr(install, "run_command", _stub)
+    monkeypatch.setattr(install.platform, "machine", lambda: machine)
+    return calls
+
+
+def test_install_neovim_fallback_noop_when_already_good(home, monkeypatch):
+    ctx = make_ctx(home)
+    calls = _stub_neovim_fallback(
+        monkeypatch, have_nvim=True, version_output="NVIM v0.12.4", runtime_ok=True
+    )
+    install._install_neovim_fallback(ctx)
+    assert kinds(ctx, "package-installed") == []
+    assert kinds(ctx, "symlink-created") == []
+    assert not any(argv[0] in ("curl", "tar") for argv in calls)
+
+
+def test_install_neovim_fallback_installs_when_too_old(home, monkeypatch):
+    ctx = make_ctx(home)
+    _stub_neovim_fallback(
+        monkeypatch, have_nvim=True, version_output="NVIM v0.9.5", runtime_ok=False
+    )
+    install._install_neovim_fallback(ctx)
+
+    prefix = home / ".local" / "opt" / "neovim"
+    shim = home / ".local" / "bin" / "nvim"
+    assert (prefix / "bin" / "nvim").read_text() == "fake nvim binary\n"
+    assert shim.is_symlink()
+    assert shim.resolve() == (prefix / "bin" / "nvim").resolve()
+
+    packages = kinds(ctx, "package-installed")
+    assert len(packages) == 1
+    assert install.NEOVIM_FALLBACK_VERSION in packages[0]["name"]
+
+    symlinks = kinds(ctx, "symlink-created")
+    assert len(symlinks) == 1
+    assert symlinks[0]["dest"] == str(shim)
+
+
+def test_install_neovim_fallback_download_failure_skips(home, monkeypatch, capsys):
+    ctx = make_ctx(home)
+    _stub_neovim_fallback(monkeypatch, have_nvim=False, download_ok=False)
+    install._install_neovim_fallback(ctx)
+
+    out = capsys.readouterr().out
+    assert "download/extract failed" in out
+    assert ctx.neovim_fallback_failure is not None
+    assert kinds(ctx, "package-installed") == []
+    assert kinds(ctx, "symlink-created") == []
+    assert not (home / ".local" / "opt" / "neovim").exists()
+
+
+def test_install_neovim_fallback_unsupported_arch_skips(home, monkeypatch, capsys):
+    ctx = make_ctx(home)
+    calls = _stub_neovim_fallback(monkeypatch, have_nvim=False, machine="riscv64")
+    install._install_neovim_fallback(ctx)
+
+    out = capsys.readouterr().out
+    assert "unsupported architecture" in out
+    assert "riscv64" in out
+    assert ctx.neovim_fallback_failure is not None
+    assert calls == []
+
+
+def test_install_neovim_fallback_replaces_stale_prefix(home, monkeypatch):
+    ctx = make_ctx(home)
+    prefix = home / ".local" / "opt" / "neovim"
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / "bin" / "nvim").write_text("stale old binary\n")
+    (prefix / "STALE_MARKER").write_text("x\n")
+
+    _stub_neovim_fallback(monkeypatch, have_nvim=False)
+    install._install_neovim_fallback(ctx)
+
+    assert (prefix / "bin" / "nvim").read_text() == "fake nvim binary\n"
+    assert not (prefix / "STALE_MARKER").exists()
+
+
+def test_install_neovim_fallback_replaces_incomplete_prefix(home, monkeypatch):
+    ctx = make_ctx(home)
+    prefix = home / ".local" / "opt" / "neovim"
+    (prefix / "bin").mkdir(parents=True)  # interrupted install: no nvim binary
+
+    _stub_neovim_fallback(monkeypatch, have_nvim=False)
+    install._install_neovim_fallback(ctx)
+
+    assert (prefix / "bin" / "nvim").read_text() == "fake nvim binary\n"
+
+
+def test_install_neovim_fallback_dry_run(home, monkeypatch, capsys):
+    ctx = make_ctx(home, dry_run=True)
+    calls = _stub_neovim_fallback(monkeypatch, have_nvim=False)
+    install._install_neovim_fallback(ctx)
+
+    out = capsys.readouterr().out
+    assert "[dry-run]" in out
+    assert install.NEOVIM_FALLBACK_VERSION in out
+    assert calls == []
+    assert not (home / ".local" / "opt" / "neovim").exists()
+    assert kinds(ctx, "package-installed") == []
 
 
 def test_color_is_off_for_non_tty(monkeypatch):

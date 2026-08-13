@@ -51,6 +51,17 @@ NERD_FONT_URL = (
     f"v{NERD_FONT_VERSION}/JetBrainsMono.zip"
 )
 
+# Pinned for the same reason as NERD_FONT_VERSION above, and matched to the
+# release already verified working (hash-identical) on the machine this
+# fallback path was first built for. Bump manually to upgrade. Only used on
+# Linux — apt/dnf's neovim is frequently years behind upstream, with no
+# in-repo mechanism to track a moving "latest".
+NEOVIM_FALLBACK_VERSION = "0.12.4"
+NEOVIM_FALLBACK_ASSETS = {
+    "x86_64": "nvim-linux-x86_64.tar.gz",
+    "aarch64": "nvim-linux-arm64.tar.gz",
+}
+
 BREW_FORMULAE = (
     "python@3.13",
     "uv",
@@ -130,10 +141,15 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=per
               pre-dotfiles files from their .bak backups, deletes the
               backups outright, so nothing dotfiles-related is left behind.
               Also sweeps untracked state the installer creates but never
-              records in its history — nvim runtime dirs
+              records in its history — Neovim's XDG state dirs
               (~/.local/share/nvim, ~/.local/state/nvim, ~/.cache/nvim) and,
               on Linux, the watchcommit systemd --user service (disabled
-              and stopped). Packages are still never touched. Excludes the
+              and stopped). These are NOT where a Neovim binary itself
+              belongs — a self-contained Neovim install (its share/nvim/
+              runtime tree) must live outside ~/.local/share/nvim (e.g.
+              ~/.local/opt/neovim, what _install_neovim_fallback uses), or
+              --wipe deletes it along with everything else here. Packages
+              are still never touched. Excludes the
               macOS watchcommit launchd agent, Rectangle preferences, and
               the Caps Lock→Escape remap — no clean filesystem-delete
               equivalent for those. Requires --rollback.
@@ -381,6 +397,7 @@ class Context:
     reporter: Reporter
     system: str
     is_wsl: bool
+    neovim_fallback_failure: str | None = None
 
     @property
     def state_dir(self) -> Path:
@@ -823,6 +840,104 @@ def _install_nerd_font(ctx: Context) -> None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def _install_neovim_fallback(ctx: Context) -> None:
+    """Fetch a modern Neovim onto Linux when apt's is too old or broken.
+
+    apt/dnf's neovim (LINUX_PACKAGES) is frequently below the 0.11 floor
+    this repo's vendored config needs, and has no upstream mechanism to fix
+    that short of a PPA. When the Neovim currently on PATH is missing, too
+    old, or has a broken runtime (this repo's own incident — see
+    _wipe_neovim_dirs), this installs a pinned upstream release into
+    ~/.local/opt/neovim (never ~/.local/share/nvim — see the warning
+    there) and points ~/.local/bin/nvim at it, self-healing exactly the
+    kind of broken install that caused that incident.
+    """
+    version, runtime_ok = _neovim_status()
+    already_good = (
+        version is not None and (version[0], version[1]) >= (0, 11) and runtime_ok
+    )
+    if already_good:
+        return
+
+    machine = platform.machine()
+    asset = NEOVIM_FALLBACK_ASSETS.get(machine)
+    if asset is None:
+        ctx.neovim_fallback_failure = f"unsupported architecture {machine!r}"
+        ctx.reporter.skip(
+            "Neovim fallback install",
+            f"unsupported architecture {machine!r} — apt's Neovim "
+            "(if usable) is what you get",
+        )
+        return
+
+    prefix = ctx.home / ".local" / "opt" / "neovim"
+    url = (
+        "https://github.com/neovim/neovim/releases/download/"
+        f"v{NEOVIM_FALLBACK_VERSION}/{asset}"
+    )
+
+    if ctx.opts.dry_run:
+        _preview(
+            f"would install Neovim v{NEOVIM_FALLBACK_VERSION} to {ctx.display(prefix)}"
+        )
+        return
+
+    _header(
+        f"==> Installing Neovim v{NEOVIM_FALLBACK_VERSION} (apt's Neovim is too old or broken)..."
+    )
+    tmp_dir = Path(tempfile.mkdtemp())
+    try:
+        archive = tmp_dir / asset
+        downloaded = run_command(["curl", "-fLo", str(archive), url]).ok
+        extracted = (
+            downloaded
+            and run_command(["tar", "xzf", str(archive), "-C", str(tmp_dir)]).ok
+        )
+        extracted_dir = tmp_dir / asset.removesuffix(".tar.gz")
+        if extracted and not extracted_dir.is_dir():
+            # Upstream's tarball top-level directory name is assumed to
+            # match the asset name minus its extension; fall back to
+            # "whatever single directory the archive actually produced" so
+            # a naming-convention change degrades to a skip instead of a
+            # wrong-but-silent path.
+            candidates = [p for p in tmp_dir.iterdir() if p.is_dir()]
+            extracted_dir = candidates[0] if len(candidates) == 1 else None
+        if extracted and extracted_dir and extracted_dir.is_dir():
+            if prefix.is_symlink() or prefix.is_file():
+                prefix.unlink()
+            elif prefix.is_dir():
+                shutil.rmtree(prefix)
+            prefix.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(extracted_dir), str(prefix))
+            ctx.manifest.record_package(
+                f"Neovim v{NEOVIM_FALLBACK_VERSION} (fallback tarball)"
+            )
+
+            nvim_bin = prefix / "bin" / "nvim"
+            shim = ctx.home / ".local" / "bin" / "nvim"
+            shim.parent.mkdir(parents=True, exist_ok=True)
+            if shim.is_symlink() or shim.exists():
+                shim.unlink()
+            shim.symlink_to(nvim_bin)
+            ctx.manifest.record_symlink(shim, nvim_bin)
+            print(
+                PALETTE.ok(
+                    f"  installed to {ctx.display(prefix)}, linked from {ctx.display(shim)}"
+                )
+            )
+        else:
+            ctx.neovim_fallback_failure = (
+                "download/extract failed, or archive layout unexpected"
+            )
+            ctx.reporter.skip(
+                "Neovim fallback install",
+                "download/extract failed, or archive layout unexpected "
+                "(network blocked, tar missing, or upstream changed the tarball layout?)",
+            )
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def install_linux_packages(ctx: Context) -> None:
     """Install everything the Linux/WSL branch owns: distro packages and extras."""
     if have("dnf"):
@@ -845,6 +960,8 @@ def install_linux_packages(ctx: Context) -> None:
                     "apt update", "apt-get update failed (offline or blocked?)"
                 )
         _install_linux_packages_one_by_one(ctx, "apt")
+
+    _install_neovim_fallback(ctx)
 
     _shim(ctx, "bat", "batcat")
     _shim(ctx, "fd", "fdfind")
@@ -1566,7 +1683,7 @@ def install_vim_plug(ctx: Context) -> None:
         ctx.reporter.skip("vim-plug", "download failed (network blocked?)")
 
 
-def parse_nvim_version(output: str) -> tuple[int, int] | None:
+def parse_neovim_version(output: str) -> tuple[int, int] | None:
     """Extract ``(major, minor)`` from ``nvim --version`` output.
 
     Returns:
@@ -1582,6 +1699,52 @@ def parse_nvim_version(output: str) -> tuple[int, int] | None:
         return None
 
 
+def neovim_runtime_ok() -> bool:
+    """Whether the Neovim binary on PATH can actually resolve its Lua runtime.
+
+    A binary installed without its accompanying share/nvim/runtime tree
+    (this repo's own incident: the tree got swept by ``--wipe`` because it
+    was nested inside ``~/.local/share/nvim`` — see the warning on
+    :func:`_wipe_neovim_dirs`) starts but can't require ``vim.uri``. This is
+    the cheapest way to catch that before ``Lazy! sync`` dumps a confusing
+    Lua traceback.
+
+    ``--clean`` is load-bearing, not cosmetic: without it this loads the
+    vendored config's own init.lua and tries to bootstrap lazy.nvim, which
+    can itself error loudly on a broken/old binary (a real smoke-test
+    finding — an unclean probe reproduced this repo's original incident's
+    own scary traceback instead of a clean pass/fail). ``vim.uri`` is a
+    core Lua module bundled in the runtime itself, not a user plugin, so
+    ``--clean`` doesn't affect what's actually being tested here.
+    """
+    return run_command(
+        [
+            "nvim",
+            "--headless",
+            "--clean",
+            "-c",
+            "lua os.exit(pcall(require, 'vim.uri') and 0 or 1)",
+        ]
+    ).ok
+
+
+def _neovim_status() -> tuple[tuple[int, int] | None, bool]:
+    """The Neovim binary on PATH's parsed ``(major, minor)`` and runtime health.
+
+    ``(None, False)`` when Neovim is missing or its version output doesn't
+    parse — there's nothing meaningful to runtime-probe in that case.
+    Callers re-run this fresh rather than caching it, since install steps
+    in between (a fallback Neovim install) can change what's on PATH.
+    """
+    if not have("nvim"):
+        return None, False
+    result = run_command(["nvim", "--version"], capture=True)
+    version = parse_neovim_version(result.stdout) if result.ok else None
+    if version is None:
+        return None, False
+    return version, neovim_runtime_ok()
+
+
 def bootstrap_neovim(ctx: Context) -> None:
     """Sync the vendored Neovim config's plugins with lazy.nvim.
 
@@ -1591,27 +1754,36 @@ def bootstrap_neovim(ctx: Context) -> None:
     ``exit 1`` — consistent with this script never aborting a run.
     """
     if not have("nvim"):
-        ctx.reporter.skip("Neovim plugin bootstrap", "nvim not installed")
+        ctx.reporter.skip("Neovim plugin bootstrap", "Neovim not installed")
         return
 
-    result = run_command(["nvim", "--version"], capture=True)
-    version = parse_nvim_version(result.stdout) if result.ok else None
+    version, runtime_ok = _neovim_status()
     if version is None:
-        ctx.reporter.skip("Neovim plugin bootstrap", "could not determine nvim version")
+        ctx.reporter.skip(
+            "Neovim plugin bootstrap", "could not determine Neovim version"
+        )
         return
 
     major, minor = version
     pretty = f"{major}.{minor}"
     if major == 0 and minor < 11:
+        reason = f"Neovim {pretty} found, config needs >=0.11"
+        if ctx.neovim_fallback_failure:
+            reason += f" (fallback install also failed: {ctx.neovim_fallback_failure})"
+        ctx.reporter.skip("Neovim plugin bootstrap", reason)
+        return
+    if not runtime_ok:
         ctx.reporter.skip(
-            "Neovim plugin bootstrap", f"nvim {pretty} found, config needs >=0.11"
+            "Neovim plugin bootstrap",
+            f"Neovim {pretty} found but its runtime doesn't resolve "
+            "(vim.uri unavailable) — broken or incomplete install",
         )
         return
     if ctx.opts.dry_run:
-        _preview(f'would run: nvim --headless "+Lazy! sync" +qa (nvim {pretty})')
+        _preview(f'would run: nvim --headless "+Lazy! sync" +qa (Neovim {pretty})')
         return
 
-    _header(f"==> Bootstrapping Neovim plugins (lazy.nvim sync, nvim {pretty})...")
+    _header(f"==> Bootstrapping Neovim plugins (lazy.nvim sync, Neovim {pretty})...")
     if run_command(["nvim", "--headless", "+Lazy! sync", "+qa"]).ok:
         print(PALETTE.ok("  plugins synced"))
     else:
@@ -1662,8 +1834,8 @@ def do_rollback(ctx: Context) -> int:
     doesn't match what was recorded is reported and the walk continues.
 
     Under ``--wipe``, backups are deleted instead of restored, and untracked
-    state the installer creates but never records in the manifest (nvim
-    runtime dirs, the Linux watchcommit service) is swept too — even when
+    state the installer creates but never records in the manifest (Neovim's
+    XDG state dirs, the Linux watchcommit service) is swept too — even when
     no manifest exists at all, e.g. a second ``--wipe`` run after the first
     already consumed it.
 
@@ -1675,7 +1847,7 @@ def do_rollback(ctx: Context) -> int:
 
     if ctx.opts.wipe:
         swept = _wipe_watchcommit(ctx, skips) or swept
-        swept = _wipe_nvim_dirs(ctx, skips) or swept
+        swept = _wipe_neovim_dirs(ctx, skips) or swept
 
     manifest = ctx.manifest
     if not manifest.path.is_file():
@@ -1699,7 +1871,7 @@ def do_rollback(ctx: Context) -> int:
     if ctx.opts.wipe:
         header_msg += (
             " — wipe mode: original configs discarded, not restored; "
-            "untracked nvim/watchcommit state swept"
+            "untracked Neovim/watchcommit state swept"
         )
     _header(header_msg)
 
@@ -1814,8 +1986,19 @@ def _wipe_watchcommit(ctx: Context, skips: Reporter) -> bool:
     return True
 
 
-def _wipe_nvim_dirs(ctx: Context, skips: Reporter) -> bool:
-    """Sweep neovim's untracked runtime directories, under --wipe.
+def _wipe_neovim_dirs(ctx: Context, skips: Reporter) -> bool:
+    """Sweep Neovim's untracked XDG state directories, under --wipe.
+
+    WARNING: these are Neovim's own data/state/cache dirs (where lazy.nvim
+    installs plugins, shada, swap files live) — NOT the same thing as
+    Neovim's *vendor* runtime tree (share/nvim/runtime: vim.uri, syntax.vim,
+    spellfiles). A self-contained Neovim install must never place that tree
+    inside ~/.local/share/nvim, since this function `shutil.rmtree`s that
+    whole directory. This confusion caused a real incident: a Neovim binary
+    installed with its runtime nested here got wiped, leaving a binary that
+    couldn't resolve `require('vim.uri')`. See _install_neovim_fallback,
+    which installs into ~/.local/opt/neovim instead — outside this sweep's
+    reach.
 
     Returns:
         Whether any of the three currently exist — "swept something" is
