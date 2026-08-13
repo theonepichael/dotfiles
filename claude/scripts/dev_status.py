@@ -52,6 +52,18 @@ RECAP_AGY_MODEL = os.environ.get("DEVSTATUS_RECAP_AGY_MODEL", "Gemini 3.6 Flash 
 VALID_STATUSES = {"open", "in-progress", "in-review", "done"}
 VALID_PRIORITIES = {"high", "normal", "low"}
 
+
+def _agent_quiet() -> bool:
+    """True when the caller asked to suppress agent-only stderr noise.
+
+    Read as a function rather than a module-level constant so it reflects
+    the environment at call time (a short-lived CLI process reads it once
+    per invocation either way; a function also lets tests toggle it
+    per-test without needing to reload the module).
+    """
+    return bool(os.environ.get("DEVSTATUS_AGENT"))
+
+
 # Recency window (in hours) for the dashboard's DONE section: only items
 # completed within this many hours appear. Keyed on `completed_at`, falling
 # back to `updated` when `completed_at` is absent (legacy items). An hours
@@ -946,6 +958,8 @@ def _blocker_check_reminder(
         cmd: Command name to prefix onto the reminder.
         err: Stream to print to; defaults to ``sys.stderr``.
     """
+    if _agent_quiet():
+        return
     if err is None:
         err = sys.stderr
     in_progress, ready, _, _, _ = _render_order(items)
@@ -1196,7 +1210,8 @@ def render(
         print("(backlog is empty)", file=out)
         for line in _recap_section_lines(_use_color(out), current_fingerprint) or []:
             print(line, file=out)
-        print(f"item-map: rev={rev}", file=err)
+        if not _agent_quiet():
+            print(f"item-map: rev={rev}", file=err)
         if dispatch:
             _maybe_dispatch_recap_regen()
         return
@@ -1329,8 +1344,9 @@ def render(
         for line in section_lines:
             print(line, file=out)
 
-    map_str = ",".join(f"{n}={tag}" for n, tag in item_map.items())
-    print(f"item-map: rev={rev} {map_str}", file=err)
+    if not _agent_quiet():
+        map_str = ",".join(f"{n}={tag}" for n, tag in item_map.items())
+        print(f"item-map: rev={rev} {map_str}", file=err)
 
     if dispatch:
         _maybe_dispatch_recap_regen()
@@ -2037,6 +2053,8 @@ def confirm_resolution(
     summary_key: str = "summary",
 ) -> None:
     """Echo what a mutating command resolved to, so misresolution is visible."""
+    if _agent_quiet():
+        return
     ref = f"{arg} → " if str(arg) != item["id"] else ""
     summary = cast(dict[str, object], item).get(summary_key, "")
     print(f"[{cmd}] {ref}{item['id']}: {summary}", file=sys.stderr)
@@ -2770,7 +2788,8 @@ def cmd_rename(args: argparse.Namespace) -> None:
                 summary=f"renamed an item ({renamed_summary})",
             )
         )
-        print(f"[rename] {old_slug} → {new_slug}", file=sys.stderr)
+        if not _agent_quiet():
+            print(f"[rename] {old_slug} → {new_slug}", file=sys.stderr)
         render(items, pending_items, rev=new_rev)
     _maybe_dispatch_recap_regen()
 
@@ -2893,7 +2912,8 @@ def cmd_pending_add(args: argparse.Namespace) -> None:
         append_journal_event(
             _journal_entry("add", "pending", new_rev, slug=slug, summary=description)
         )
-        print(f"[pending add] {slug} — {description[:60]}", file=sys.stderr)
+        if not _agent_quiet():
+            print(f"[pending add] {slug} — {description[:60]}", file=sys.stderr)
         render(backlog_items, pending_items, rev=new_rev)
     _maybe_dispatch_recap_regen()
     _blocker_check_reminder(backlog_items, None, cmd="pending add")
