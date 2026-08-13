@@ -19,7 +19,7 @@ import re
 import sys
 import tempfile
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import date, datetime
 from pathlib import Path
 from typing import NoReturn, TypedDict, cast
@@ -231,10 +231,8 @@ def save_session(session: Session) -> None:
             f.write(payload)
         os.replace(tmp_path, session_path(session["slug"]))
     except Exception:
-        try:
+        with suppress(OSError):
             os.unlink(tmp_path)
-        except OSError:
-            pass
         raise
 
 
@@ -384,8 +382,10 @@ def render_markdown(session: Session) -> str:
     lines = [
         f"# Grill status: {session['topic']}",
         "",
-        f"_{session['created'][:10]} · updated {session['updated'][:10]} · "
-        f"{len(decided)}/{len(decisions)} decided · {len(verdicts)} verified_",
+        (
+            f"_{session['created'][:10]} · updated {session['updated'][:10]} · "
+            f"{len(decided)}/{len(decisions)} decided · {len(verdicts)} verified_"
+        ),
         "",
         f"_plan: {plan_path}_" if plan_path else "_plan: not written yet_",
     ]

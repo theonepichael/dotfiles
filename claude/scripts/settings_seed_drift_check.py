@@ -160,6 +160,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 
@@ -789,10 +790,8 @@ def _atomic_write(path: Path, data: dict[str, object]) -> None:
             f.write(text)
         os.replace(tmppath, path)
     except BaseException:
-        try:
+        with suppress(OSError):
             os.unlink(tmppath)
-        except OSError:
-            pass
         raise
 
 
@@ -812,10 +811,8 @@ def _atomic_write_text(path: Path, text: str) -> None:
             f.write(text)
         os.replace(tmppath, path)
     except BaseException:
-        try:
+        with suppress(OSError):
             os.unlink(tmppath)
-        except OSError:
-            pass
         raise
 
 

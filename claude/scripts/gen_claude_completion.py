@@ -47,7 +47,7 @@ class Option:
 class Node:
     path: tuple[str, ...]
     options: list[Option] = field(default_factory=list)
-    subcommands: dict[str, "Node"] = field(default_factory=dict)
+    subcommands: dict[str, Node] = field(default_factory=dict)
     aliases: list[str] = field(default_factory=list)
 
 
@@ -60,12 +60,13 @@ def run_help(path: list[str]) -> str:
             timeout=15,
             check=False,
         )
-        return r.stdout or ""
     except Exception as e:
         print(
             f"warn: help failed for {' '.join(path) or '<root>'}: {e}", file=sys.stderr
         )
         return ""
+    else:
+        return r.stdout or ""
 
 
 def collect_sections(text: str) -> dict[str, list[str]]:
@@ -189,16 +190,11 @@ def help_matches_path(text: str, path: tuple[str, ...]) -> bool:
         # trims, but placeholders like "<name>" may still appear).
         if not tokens or tokens[0] != "claude":
             return True  # Unrecognized format — don't block.
-        usage_tokens = [
-            t for t in tokens[1:] if not (t.startswith("<") or t.startswith("["))
-        ]
+        usage_tokens = [t for t in tokens[1:] if not t.startswith(("<", "["))]
         if len(usage_tokens) != len(path):
             return False
         # Each token may carry commander aliases ("plugin|plugins"); any match counts.
-        for want, got in zip(path, usage_tokens):
-            if want not in got.split("|"):
-                return False
-        return True
+        return all(want in got.split("|") for want, got in zip(path, usage_tokens))
     return True
 
 

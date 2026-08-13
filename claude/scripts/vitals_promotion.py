@@ -21,6 +21,7 @@ import json
 import os
 import tempfile
 from collections import Counter
+from contextlib import suppress
 from datetime import date, datetime
 from pathlib import Path
 from typing import TypedDict, cast
@@ -133,10 +134,8 @@ def atomic_write_json(path: Path, payload: object) -> None:
             json.dump(payload, f, indent=2)
         os.replace(tmp_path, path)
     except Exception:
-        try:
+        with suppress(OSError):
             os.unlink(tmp_path)
-        except OSError:
-            pass
         raise
 
 

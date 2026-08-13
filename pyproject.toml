@@ -1,0 +1,18 @@
+[project]
+name = "dotfiles-tools"
+version = "0.0.0"
+requires-python = ">=3.12"
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+extend-exclude = ["**/test_*.py", "test/"]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "UP", "SIM", "I", "PIE", "ISC", "FURB", "TRY"]
+ignore = ["DTZ011", "DTZ005", "PLW1510", "BLE001", "E501", "TRY003"]
+
+[dependency-groups]
+dev = ["ruff==0.16.2"]

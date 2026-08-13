@@ -20,9 +20,9 @@ import re
 import sys
 import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import NotRequired, TextIO, TypedDict, cast
 
@@ -361,7 +361,7 @@ def _age_hours(stamp_str: str) -> float | None:
         dt = datetime.fromisoformat(stamp_str)
     except (TypeError, ValueError):
         return None
-    now = datetime.now(timezone.utc) if dt.tzinfo is not None else datetime.now()
+    now = datetime.now(UTC) if dt.tzinfo is not None else datetime.now()
     delta = now - dt
     return delta.total_seconds() / 3600.0
 
@@ -584,10 +584,8 @@ def _atomic_write_json(path: Path, payload: str, prefix: str) -> None:
             if dir_fd is not None:
                 os.close(dir_fd)
     except Exception:
-        try:
+        with suppress(OSError):
             os.unlink(tmp_path)
-        except OSError:
-            pass
         raise
 
 
@@ -1293,7 +1291,7 @@ def render(
 
     for i, section_lines in enumerate(sections):
         if i > 0:
-            print("", file=out)
+            print(file=out)
         for line in section_lines:
             print(line, file=out)
 

@@ -5,7 +5,7 @@ instead of only seeing a clean/up-to-date working tree."""
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 STATE_DIR = (
@@ -17,7 +17,7 @@ ACTIVITY_STATE_FILE = STATE_DIR / "last-activity.json"
 
 def _ago(timestamp: str) -> str:
     then = datetime.fromisoformat(timestamp)
-    seconds = int((datetime.now(timezone.utc) - then).total_seconds())
+    seconds = int((datetime.now(UTC) - then).total_seconds())
     if seconds < 60:
         return f"{seconds}s ago"
     minutes = seconds // 60

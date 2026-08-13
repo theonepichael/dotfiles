@@ -14,6 +14,7 @@ import shutil
 import signal
 import subprocess
 import sys
+from contextlib import suppress
 from pathlib import Path
 from types import FrameType
 from typing import NoReturn
@@ -137,10 +138,8 @@ def _kill_active_process() -> None:
     proc = _active_process
     if proc is None or proc.poll() is not None:
         return
-    try:
+    with suppress(ProcessLookupError):
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except ProcessLookupError:
-        pass
     proc.wait()
 
 

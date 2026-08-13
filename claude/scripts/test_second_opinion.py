@@ -29,6 +29,7 @@ import second_opinion
 
 def ns(**kwargs: object) -> argparse.Namespace:
     kwargs.setdefault("backend", None)
+    kwargs.setdefault("focus_file", None)
     return argparse.Namespace(**kwargs)
 
 

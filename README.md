@@ -391,9 +391,10 @@ session, no separate config needed.
 - **installer tests**, two tiers:
   - *fast* — `test/test_install.py` (pytest) covers argument validation,
     the symlink engine, the history/rollback engine, and the copy-once +
-    drift logic against a throwaway `HOME` with every subprocess stubbed.
-    Run it with `uv run --with pytest pytest test/test_install.py`; takes
-    under a second and touches nothing real.
+    drift logic against a throwaway `HOME` with every subprocess stubbed;
+    `test/test_lint.py` gates the pinned Ruff configuration. Run them with
+    `uv run --with pytest pytest test/test_install.py test/test_lint.py`;
+    they touch nothing real.
   - *lifecycle* — `test/run.sh` runs `test/scenarios.sh` (fresh install,
     rollback, backup-and-restore, work profile + guard, `--force`,
     argument errors) inside throwaway Docker containers, one Ubuntu (apt
