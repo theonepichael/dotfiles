@@ -275,6 +275,8 @@ Official Copilot CLI docs (`docs.github.com/copilot/how-tos/copilot-cli/`):
 - *Using hooks with GitHub Copilot CLI* — hook schema, full event list incl. `sessionStart`, user-level hook location
 - *Adding custom instructions for GitHub Copilot CLI* — rules-file discovery (incl. `AGENTS.md`/`CLAUDE.md`/`GEMINI.md` walk), `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, path-specific modular files
 - *Invoking custom agents* — built-in custom agents (`Explore`/`Task`/`General-purpose`/`Code-review`), custom-agent file locations, three invocation modes (`/agent`, natural-language mention, `--agent`)
+- *Post-tool use hook* (`docs.github.com/en/copilot/how-tos/copilot-sdk/use-hooks/post-tool-use`) — `postToolUse` input/output field reference (`timestamp`, `workingDirectory`, `toolName`, `toolArgs`, `toolResult`); example shows `toolArgs` as a plain object, which the live probe below found does not match the real payload shape
+- *GitHub Copilot hooks reference* (`docs.github.com/en/copilot/reference/hooks-reference`) — built-in tool name list (`ask_user`/`bash`/`create`/`edit`/`glob`/`grep`/`powershell`/`task`/`view`/`web_fetch`), full `postToolUse` hook JSON schema incl. `matcher` (regex, anchored `^(?:PATTERN)$`)
 
 Installed CLI surface (cross-checked against the above):
 - `copilot --help` — print mode flags, `--agent`, `--yolo`/`--allow-all`
@@ -282,3 +284,4 @@ Installed CLI surface (cross-checked against the above):
 - `copilot help config` — `hooks` config schema, `disableAllHooks` toggle
 - `copilot skill --help` / `copilot skill list` — non-interactive skill management + live skill discovery
 - Live probe: `copilot -p "<activate dashboard; run dev_status.py render; show stdout verbatim>" --allow-all-tools` → produced `skill(dashboard)` tool call + dashboard verbatim
+- Live probe (2026-08-13): a diagnostic `postToolUse` hook dumping raw stdin, wired at `~/.copilot/hooks/zz-probe.json`, fired against a real `copilot -p` edit and a real `copilot -p` create → captured payload showed `toolArgs` as a **JSON-encoded string**, not a nested object as the *Post-tool use hook* doc's example implies; correct extraction is `.toolArgs | fromjson | .path`, confirmed for both `edit` (`old_str`/`new_str` keys) and `create` (`file_text` key)
