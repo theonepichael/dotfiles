@@ -13,6 +13,7 @@ import os
 import shutil
 import signal
 import subprocess
+from contextlib import suppress
 
 BACKEND_PRIORITY = ["agy", "opencode", "copilot"]
 
@@ -64,10 +65,8 @@ def _kill_active_process() -> None:
     proc = _active_process
     if proc is None or proc.poll() is not None:
         return
-    try:
+    with suppress(ProcessLookupError):
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except ProcessLookupError:
-        pass
     proc.wait()
 
 

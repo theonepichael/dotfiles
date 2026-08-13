@@ -1001,12 +1001,12 @@ def load_links(path: Path) -> list[LinkSpec]:
 
     rows = data.get("link", [])
     if not isinstance(rows, list):
-        raise ValueError(f"{path}: expected a [[link]] array")
+        raise TypeError(f"{path}: expected a [[link]] array")
 
     specs: list[LinkSpec] = []
     for index, row in enumerate(rows, start=1):
         if not isinstance(row, dict):
-            raise ValueError(f"{path}: entry {index} is not a table")
+            raise TypeError(f"{path}: entry {index} is not a table")
         unknown = sorted(set(row) - _LINK_FIELDS)
         if unknown:
             raise ValueError(f"{path}: entry {index} has unknown key(s): {unknown}")
@@ -1052,9 +1052,7 @@ def link_applies(spec: LinkSpec, ctx: Context) -> bool:
         return False
     if spec.wsl == "only" and not ctx.is_wsl:
         return False
-    if ctx.opts.profile in spec.profile_exclude:
-        return False
-    return True
+    return ctx.opts.profile not in spec.profile_exclude
 
 
 def expand_dest(dest: str, home: Path) -> Path:

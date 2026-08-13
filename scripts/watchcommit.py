@@ -45,7 +45,8 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime, timezone
+from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
@@ -120,9 +121,10 @@ def _path_is_inside(child: Path, parent: Path) -> bool:
     already be .resolve()'d by the caller (we resolve cwd in agent_active)."""
     try:
         child.relative_to(parent)
-        return True
     except ValueError:
         return False
+    else:
+        return True
 
 
 def _environ_has(environ_bytes: bytes, key: str, val: str) -> bool:
@@ -233,7 +235,7 @@ def _record_activity(kind: str, **fields: str) -> None:
         data = json.loads(ACTIVITY_STATE_FILE.read_text())
     except (OSError, json.JSONDecodeError):
         data = {}
-    data[kind] = {"timestamp": datetime.now(timezone.utc).isoformat(), **fields}
+    data[kind] = {"timestamp": datetime.now(UTC).isoformat(), **fields}
     ACTIVITY_STATE_FILE.write_text(json.dumps(data, indent=2) + "\n")
 
 
@@ -241,10 +243,8 @@ def _clear_agent_state() -> None:
     """Remove the state file when no agent is holding. Unlink (not truncate)
     so wc-status distinguishes 'skipping-tick' from 'no recent skip' by file
     absence rather than size."""
-    try:
+    with suppress(FileNotFoundError):
         AGENTS_STATE_FILE.unlink()
-    except FileNotFoundError:
-        pass
 
 
 def build_diff(repo: Path) -> str:

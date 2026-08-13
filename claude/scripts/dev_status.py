@@ -23,9 +23,9 @@ import sys
 import tempfile
 import textwrap
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import NotRequired, TextIO, TypedDict, cast
 
@@ -379,7 +379,7 @@ def _age_hours(stamp_str: str) -> float | None:
         dt = datetime.fromisoformat(stamp_str)
     except (TypeError, ValueError):
         return None
-    now = datetime.now(timezone.utc) if dt.tzinfo is not None else datetime.now()
+    now = datetime.now(UTC) if dt.tzinfo is not None else datetime.now()
     delta = now - dt
     return delta.total_seconds() / 3600.0
 
@@ -602,10 +602,8 @@ def _atomic_write_json(path: Path, payload: str, prefix: str) -> None:
             if dir_fd is not None:
                 os.close(dir_fd)
     except Exception:
-        try:
+        with suppress(OSError):
             os.unlink(tmp_path)
-        except OSError:
-            pass
         raise
 
 
@@ -1326,7 +1324,7 @@ def render(
 
     for i, section_lines in enumerate(sections):
         if i > 0:
-            print("", file=out)
+            print(file=out)
         for line in section_lines:
             print(line, file=out)
 
@@ -1383,7 +1381,7 @@ def _journal_entry(
     branch on plain ``dict.get`` presence checks.
     """
     entry: dict[str, object] = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": datetime.now(UTC).isoformat(),
         "rev": rev,
         "machine": machine_id(),
         "cmd": cmd,
@@ -1433,7 +1431,7 @@ def _parse_journal_ts(raw: object) -> datetime | None:
     except ValueError:
         return None
     if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
+        ts = ts.replace(tzinfo=UTC)
     return ts
 
 
@@ -1457,7 +1455,7 @@ def read_journal_entries(within_hours: float | None = None) -> list[dict[str, ob
 
     non_blank = [line for line in raw_lines if line.strip()]
     cutoff = (
-        datetime.now(timezone.utc) - timedelta(hours=within_hours)
+        datetime.now(UTC) - timedelta(hours=within_hours)
         if within_hours is not None
         else None
     )
@@ -1508,7 +1506,7 @@ def _journal_last_entry_within(hours: float) -> bool:
         ts = _parse_journal_ts(entry.get("ts") if isinstance(entry, dict) else None)
         if ts is None:
             return False
-        return (datetime.now(timezone.utc) - ts) <= timedelta(hours=hours)
+        return (datetime.now(UTC) - ts) <= timedelta(hours=hours)
     return False
 
 
@@ -1542,7 +1540,7 @@ def _save_recap_cache(backend: str, text: str) -> None:
     """
     payload = json.dumps(
         {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "backend": backend,
             "text": text,
         }
@@ -1555,7 +1553,7 @@ def _recap_cache_age_seconds(cache: dict[str, object]) -> float | None:
     ts = _parse_journal_ts(cache.get("generated_at"))
     if ts is None:
         return None
-    return (datetime.now(timezone.utc) - ts).total_seconds()
+    return (datetime.now(UTC) - ts).total_seconds()
 
 
 def _format_age(seconds: float) -> str:
