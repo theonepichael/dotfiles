@@ -42,6 +42,8 @@ requests each run their own section below instead of this Q&A loop.
 **Pre-step: orient before asking.**
 Check what codebase context is already in scope from prior exploration. Do a targeted read/grep only for files directly relevant to the topic that haven't been read yet. Don't re-crawl what's already known. Never ask a question the codebase already answers.
 
+Also check the vitals store for already-settled facts on this topic before asking about it: read `~/.claude/data/grill/vitals/_global.json` (and `~/.claude/data/grill/vitals/<backlog-slug>.json` too, if this session is tied to a backlog item and that file exists) and skim `text`/`reasoning` fields for anything relevant — no keyword filter, judge relevance directly. Treat a matching record as a settled fact: don't re-ask a question it already answers, and cite it (`source_slug`/`source_decision_id`) if it informs a new decision. Skip this check entirely if the vitals directory doesn't exist yet — nothing has been promoted.
+
 Then check `grill.py list` for an existing session matching the topic. If one matches, resume it — `grill.py next` picks up at the first open question; tell the user you're resuming. Only `grill.py new` when nothing matches or the user says "start over".
 
 **Q&A loop:**
@@ -67,10 +69,11 @@ Then check `grill.py list` for an existing session matching the topic. If one ma
 **End of session** (fully decided or wrapped up — not on pause):
 
 1. Author the plan as a markdown document — a real plan someone could execute, not a decision log. The recorded decision points (`grill.py show`) inform it. Plans always live centrally at `~/.claude/data/grill/<slug>-plan.md` — never in project repos; this is personal tooling, not team-facing docs.
-2. Record it: `grill.py plan <path>`.
-3. Show the user the plan and the `grill.py render` output (decision table, any open questions, verification state).
-4. Check whether any decided item has no recorded verdict, regardless of source. Tally the no-verdict set by source — `defaulted`/`assumed` (nobody confirmed these) vs `user` (a human stated it, but the claim itself was never checked) vs `tested` (rare here, since step 3 already auto-verdicts these inline) — and offer with the breakdown visible, via the `question` tool: "N decision(s) have no recorded verdict — X defaulted/assumed, Y user-stated — want me to run --verify on them before we call this done?" Proceed into `--verify` mode only on a yes; otherwise the session ends here as-is.
-5. Once verification (if any) is settled, always offer clear-and-go, via the `question` tool — "Clear context and start executing this plan now?" with options `Yes, clear and go (recommended)` / `No, leave it for later`:
+2. Run `python3 ~/.claude/scripts/vitals_promotion.py --apply` (mechanical, no new flags needed — this re-runs the full classify/promote/supersede pass over every session, not just this one, so it also catches drift from sessions closed since the last run). Show the printed report (promoted/superseded/needs-review counts) to the user in plain text; if `promoted_count` or `superseded_count` is nonzero, this session's activity changed the vitals store the next session's pre-step will read.
+3. Record it: `grill.py plan <path>`.
+4. Show the user the plan and the `grill.py render` output (decision table, any open questions, verification state).
+5. Check whether any decided item has no recorded verdict, regardless of source. Tally the no-verdict set by source — `defaulted`/`assumed` (nobody confirmed these) vs `user` (a human stated it, but the claim itself was never checked) vs `tested` (rare here, since step 3 already auto-verdicts these inline) — and offer with the breakdown visible, via the `question` tool: "N decision(s) have no recorded verdict — X defaulted/assumed, Y user-stated — want me to run --verify on them before we call this done?" Proceed into `--verify` mode only on a yes; otherwise the session ends here as-is.
+6. Once verification (if any) is settled, always offer clear-and-go, via the `question` tool — "Clear context and start executing this plan now?" with options `Yes, clear and go (recommended)` / `No, leave it for later`:
    - **Yes** — run `grill.py mark-pending-execution` (defaults to this session), then tell the user in plain text: "Marked — start a fresh session whenever you're ready and ask me to pick the plan back up." opencode has no SessionStart hook to auto-surface the marked plan (Claude Code and Copilot do; opencode's hooks→plugin port is still deferred), so resume is manual: when a session opens with the user asking to resume/execute the marked plan, run `grill.py pending-plan --consume` and act on the printed instructions (resume if the user says go/continue, otherwise leave the cleared flag alone).
    - **No** — nothing else happens, no state change.
 
@@ -144,7 +147,7 @@ it trades interactivity for adversarial rigor instead of just guessing.
 3. Batch topics (a backlog list) run this per-item, each as its own session.
 
 4. End-of-session is otherwise identical to default mode's — author the plan,
-   record it, show it — except step 4's `--verify` offer is not optional here:
+   record it, show it — except step 5's `--verify` offer is not optional here:
    every decision in an `--auto` session is `assumed` by construction, so always
    run `--verify` immediately afterward rather than asking first, and say so
    plainly in the plan's header (topic, "resolved via adversarial critique — no

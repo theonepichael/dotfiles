@@ -150,6 +150,31 @@ def vitals_path(vitals_dir: Path, backlog_slug: str | None) -> Path:
     return vitals_dir / f"{backlog_slug or '_global'}.json"
 
 
+def latest_needs_review_file(needs_review_dir: Path) -> Path | None:
+    """Return the most recently dated needs-review file, or None if none exist.
+
+    Each run overwrites a full snapshot (not a delta) to a same-day file and
+    a fresh file on a new day — only the newest file is non-redundant.
+    """
+    if not needs_review_dir.exists():
+        return None
+    files = sorted(needs_review_dir.glob("*-needs-review.json"))
+    return files[-1] if files else None
+
+
+def summarize_needs_review(entries: list[NeedsReviewEntry]) -> str:
+    """One-line summary: count plus the earliest-dated entry, by source_slug prefix."""
+    if not entries:
+        return "needs-review: 0 entries"
+    oldest = min(entries, key=lambda e: e["source_slug"][:10])
+    question = oldest["question"]
+    snippet = question if len(question) <= 80 else question[:77] + "..."
+    return (
+        f"needs-review: {len(entries)} entries (oldest: "
+        f"{oldest['source_slug'][:10]} {oldest['source_decision_id']} — {snippet!r})"
+    )
+
+
 # ── classification ───────────────────────────────────────────────────────────
 
 
@@ -393,7 +418,21 @@ def main() -> None:
         action="store_true",
         help="write vitals/needs-review files (default: dry-run, prints only)",
     )
+    parser.add_argument(
+        "--needs-review-summary",
+        action="store_true",
+        help="print a one-line summary of the latest needs-review file and exit",
+    )
     args = parser.parse_args()
+
+    if args.needs_review_summary:
+        path = latest_needs_review_file(args.data_dir / "needs-review")
+        if path is None:
+            print("needs-review: 0 entries")
+        else:
+            entries = cast(list[NeedsReviewEntry], json.loads(path.read_text()))
+            print(summarize_needs_review(entries))
+        return
 
     report = run(args.data_dir, args.apply)
     print_report(report, args.apply)

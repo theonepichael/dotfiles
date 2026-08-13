@@ -3,6 +3,7 @@
 
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -403,6 +404,108 @@ class SupersedeTests(VitalsPromotionTestCase):
         report = vp.run(self.data_dir, apply=True)
         self.assertEqual(report["superseded_count"], 0)
         self.assertEqual(report["promoted_count"], 0)
+
+
+def make_needs_review_entry(
+    source_slug: str,
+    decision_id: str,
+    *,
+    question: str = "some question?",
+    flag_reason: str = "assumed_defaulted",
+) -> dict:
+    return {
+        "source_slug": source_slug,
+        "source_decision_id": decision_id,
+        "backlog_slug": None,
+        "question": question,
+        "decision": "some answer",
+        "reasoning": "some reasoning",
+        "source": "assumed",
+        "verdict": None,
+        "flag_reason": flag_reason,
+    }
+
+
+class LatestNeedsReviewFileTests(VitalsPromotionTestCase):
+    def test_returns_none_on_missing_directory(self) -> None:
+        self.assertIsNone(vp.latest_needs_review_file(self.data_dir / "needs-review"))
+
+    def test_returns_none_on_empty_directory(self) -> None:
+        needs_review_dir = self.data_dir / "needs-review"
+        needs_review_dir.mkdir()
+        self.assertIsNone(vp.latest_needs_review_file(needs_review_dir))
+
+    def test_returns_lexicographically_last_file(self) -> None:
+        needs_review_dir = self.data_dir / "needs-review"
+        needs_review_dir.mkdir()
+        (needs_review_dir / "2026-08-01-needs-review.json").write_text("[]")
+        (needs_review_dir / "2026-08-11-needs-review.json").write_text("[]")
+        (needs_review_dir / "2026-08-05-needs-review.json").write_text("[]")
+        result = vp.latest_needs_review_file(needs_review_dir)
+        self.assertEqual(result, needs_review_dir / "2026-08-11-needs-review.json")
+
+
+class SummarizeNeedsReviewTests(unittest.TestCase):
+    def test_empty_list(self) -> None:
+        self.assertEqual(vp.summarize_needs_review([]), "needs-review: 0 entries")
+
+    def test_mixed_list_picks_earliest_source_slug(self) -> None:
+        entries = [
+            make_needs_review_entry("2026-08-11-later-topic", "d2", question="q2"),
+            make_needs_review_entry("2026-08-01-earlier-topic", "d1", question="q1"),
+        ]
+        summary = vp.summarize_needs_review(entries)
+        self.assertIn("2 entries", summary)
+        self.assertIn("2026-08-01", summary)
+        self.assertIn("d1", summary)
+        self.assertIn("q1", summary)
+
+    def test_long_question_is_truncated(self) -> None:
+        long_question = "x" * 200
+        entries = [make_needs_review_entry("2026-08-01-slug", "d1", question=long_question)]
+        summary = vp.summarize_needs_review(entries)
+        self.assertNotIn(long_question, summary)
+        self.assertIn("...", summary)
+
+
+class NeedsReviewSummaryCliTests(VitalsPromotionTestCase):
+    def test_flag_prints_zero_entries_on_missing_dir(self) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).parent / "vitals_promotion.py"),
+                "--data-dir",
+                str(self.data_dir),
+                "--needs-review-summary",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("needs-review: 0 entries", result.stdout)
+
+    def test_flag_prints_summary_and_does_not_run_apply(self) -> None:
+        needs_review_dir = self.data_dir / "needs-review"
+        needs_review_dir.mkdir()
+        entries = [make_needs_review_entry("2026-08-01-slug", "d1", question="q1")]
+        (needs_review_dir / "2026-08-01-needs-review.json").write_text(
+            json.dumps(entries)
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).parent / "vitals_promotion.py"),
+                "--data-dir",
+                str(self.data_dir),
+                "--needs-review-summary",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("1 entries", result.stdout)
+        self.assertIn("d1", result.stdout)
+        self.assertFalse((self.data_dir / "vitals").exists())
 
 
 if __name__ == "__main__":
