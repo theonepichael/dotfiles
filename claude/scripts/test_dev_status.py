@@ -4,6 +4,7 @@
 import fcntl
 import io
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -3323,6 +3324,78 @@ class BacklogTestCase(unittest.TestCase):
         line = dev_status._render_changelog(entries)
         self.assertNotIn("new-slug-name", line)
         self.assertIn("Widen the dashboard box", line)
+
+    # ── DEVSTATUS_AGENT: suppress agent-only stderr noise on request ────────
+    # Five success-path stderr sites (never on an error path -- those stay
+    # unconditional regardless of this env var): render()'s item-map line,
+    # confirm_resolution() (shared by 10 mutating commands), cmd_rename's own
+    # echo, cmd_pending_add's own echo, and _blocker_check_reminder (shared
+    # by add/pending add).
+
+    def test_r37_render_item_map_suppressed_when_dev_status_agent_set(self):
+        self.write_items([make_item("my-item")])
+        out = io.StringIO()
+        err = io.StringIO()
+        with patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}):
+            dev_status.render(out=out, err=err)
+        self.assertNotIn("item-map:", err.getvalue())
+        self.assertIn("┌─", out.getvalue())  # dashboard body intact
+
+    def test_r38_confirm_resolution_suppressed_when_dev_status_agent_set(self):
+        err = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stderr", err),
+        ):
+            dev_status.confirm_resolution("start", "1", make_item("my-item"))
+        self.assertEqual(err.getvalue(), "")
+
+    def test_r39_start_resolution_echo_suppressed_when_dev_status_agent_set(self):
+        self.write_items([make_item("my-item")])
+        err = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stderr", err),
+        ):
+            dev_status.cmd_start(_args(id="my-item"))
+        self.assertNotIn("[start]", err.getvalue())
+        self.assertNotIn("item-map:", err.getvalue())
+
+    def test_r40_rename_echo_suppressed_when_dev_status_agent_set(self):
+        self.write_items([make_item("old-name")])
+        err = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stderr", err),
+        ):
+            dev_status.cmd_rename(_args(old_slug="old-name", new_slug="new-name"))
+        self.assertNotIn("[rename]", err.getvalue())
+
+    def test_r41_pending_add_echo_and_blocker_reminder_suppressed(self):
+        self.write_items([make_item("a")])
+        err = io.StringIO()
+        with (
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+            patch("sys.stderr", err),
+        ):
+            dev_status.cmd_pending_add(
+                _args(
+                    json='{"id": "wait-y", "description": "waiting", "kind": "email"}'
+                )
+            )
+        self.assertNotIn("[pending add]", err.getvalue())
+        self.assertNotIn("check the READY/IN PROGRESS items above", err.getvalue())
+
+    def test_r42_render_item_map_shown_without_env_var(self):
+        # Regression guard: unset (the default in a real shell/test env) must
+        # keep today's behavior -- a plain terminal user sees no change.
+        self.write_items([make_item("my-item")])
+        out = io.StringIO()
+        err = io.StringIO()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DEVSTATUS_AGENT", None)
+            dev_status.render(out=out, err=err)
+        self.assertIn("item-map:", err.getvalue())
 
 
 # ── arg helper ────────────────────────────────────────────────────────────────
