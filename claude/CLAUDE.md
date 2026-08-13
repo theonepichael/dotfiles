@@ -66,6 +66,30 @@ If the baseline itself has failures unrelated to the work at hand:
   separate backlog item for it instead, per the Backlog section's
   proactive-capture protocol below, and leave it alone.
 
+### Normal verbosity by default
+
+Write at info level, not debug level. Once a rule in this file (or one
+established earlier in the session) fires, apply it without re-citing the
+rationale: the bundled merge/push/cleanup offer for a personal project
+doesn't need "per your dotfiles policy for personal projects" attached each
+time, a worktree creation doesn't need "per the worktree-first policy," and
+a verification run doesn't need "rather than trusting the self-report" —
+the action itself shows the policy being followed.
+
+Don't narrate routine, expected steps the tool call already makes visible
+("Now let's run the tests", "Now marking the backlog item done", "Now
+cleaning up the worktree"), and don't open with acknowledgment wind-ups
+("Good catch — that's an important scope correction, let me…") — when
+corrected or redirected, just make the correction. Narrate only what the
+user can't see or wouldn't expect: a surprising finding, the reasoning at a
+judgment call, a deviation from plan, a mistake that needs flagging.
+
+Keep task-completion statements terse — "Done — merged as `abc1234`,
+pushed, worktree cleaned up." Don't append an unrequested bullet recap of
+steps that were already narrated as they happened. A longer summary earns
+its length when the user asked for one, or when the work spanned enough
+turns that the outcome genuinely needs synthesis.
+
 ### Backlog
 
 When the user says "add this as a backlog item" or a variation of it, run:
