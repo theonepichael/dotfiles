@@ -44,7 +44,7 @@ slash invocation of skills now exists; the §3 invocation claim from the
 
 ## 2. Skills — ported (`agy/skills/`)
 
-5 of 6 (`dashboard`, `grill-me`, `make-skill`, `second-opinion`, `standup`)
+5 of 7 (`dashboard`, `grill-me`, `make-skill`, `second-opinion`, `standup`)
 ported from the current `claude/commands/`/`copilot/skills/` content as of
 2026-07-28, not from the stale legacy-path copies that predated this doc.
 `standup` and `second-opinion` needed no agy-specific rewording beyond
@@ -72,13 +72,29 @@ session) instead of claiming an auto-surfacing hook that doesn't exist here.
 Not yet ported — flagging as an open item rather than silently leaving it
 missing.
 
-**Known gap: no `backlog-item`.** `agy/skills/` has 6 skills; `claude/commands`,
-`copilot/skills`, and `opencode/command` all have 7, including `backlog-item`
-(ported 2026-08-03, after this doc was last touched). Not evaluated yet
-whether agy's skill-invocation model (model-decision only, no runtime
-skill-to-skill delegation confirmed) can support `backlog-item`'s
-delegation to `grill-me`/`second-opinion` the way opencode's native `skill`
-tool does — needs investigation before porting, not a straightforward copy.
+`backlog-item` ported 2026-08-13 to `agy/skills/backlog-item/SKILL.md`,
+closing the last skill-count gap with `claude/commands`, `copilot/skills`,
+and `opencode/command` (all 7 now). The open question this port had been
+waiting on — whether agy's model-decision-only skill activation (no
+`skill` subcommand, unlike opencode's native `skill` tool) can support
+`backlog-item`'s mid-run delegation to `grill-me`/`second-opinion` — was
+resolved empirically before porting: a throwaway probe skill
+(`_delegation-probe`, deleted after use) instructed the model to "activate
+the dashboard skill... run its command for real," and `agy -p "run the
+delegation probe"` genuinely executed `dev_status.py render`, matching live
+backlog state rather than describing intent. Delegation works because the
+model, told to activate a referenced skill, reads and follows that skill's
+own SKILL.md body directly via its normal tool access — there's no discrete
+tool call involved, just prose reference (the same pattern `grill-me` and
+`spec`'s own SKILL.md files already use). The probe only validated a
+trivial single-command delegation, though — `backlog-item`'s delegation
+into `grill-me`/`second-opinion`'s much longer, stateful Q&A loops is
+mitigated with explicit suspend-and-return framing (a printed checkpoint
+marker, a `next_steps` return pointer persisted via `dev_status.py` so it
+survives context compaction, and an absolute-path re-read of the return
+step) rather than assumed to generalize untested. Full design record:
+`~/.claude/data/grill/meta-backlog-item-port-agy-spec.md` and its
+`-critique-notes.md` companion (3 rounds of second-opinion critique).
 
 ## 3. Verification results (probed 2026-07-28, agy 1.1.8; revalidated 2026-08-13, agy 1.1.12)
 

@@ -324,6 +324,11 @@ src = "agy/skills/make-skill/SKILL.md"
 dest = "~/.gemini/antigravity-cli/skills/make-skill/SKILL.md"
 harness = "agy"
 
+[[link]]
+src = "agy/skills/backlog-item/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/backlog-item/SKILL.md"
+harness = "agy"
+
 # ── watchcommit (personal machines only) ─────────────────────────────────
 # It auto-pushes to a personal remote under your personal Claude account
 # login, which has no place on work hardware.
