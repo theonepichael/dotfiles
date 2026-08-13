@@ -12,20 +12,22 @@ import json
 import os
 import shutil
 import signal
-import subprocess
 import sys
 from pathlib import Path
 from types import FrameType
 from typing import NoReturn
 
-BACKEND_PRIORITY = ["agy", "opencode", "copilot"]
+import llm_backends
+from llm_backends import (
+    BackendError,
+    _opencode_json_events,
+    _opencode_text_chunks,
+    _safe_get,
+    available_backends,
+)
+
+BACKEND_PRIORITY = llm_backends.BACKEND_PRIORITY
 BACKEND_TIMEOUT_SECONDS = int(os.environ.get("SECOND_OPINION_TIMEOUT_SECONDS", "300"))
-
-_active_process: subprocess.Popen[str] | None = None
-
-
-class BackendError(Exception):
-    """A backend was invoked but failed (timeout or nonzero exit)."""
 
 
 CRITIQUE_PROMPT = """\
@@ -77,17 +79,6 @@ def die(msg: str) -> NoReturn:
     sys.exit(1)
 
 
-def available_backends() -> list[str]:
-    """Return the backends in :data:`BACKEND_PRIORITY` that are on ``PATH``."""
-    return [b for b in BACKEND_PRIORITY if shutil.which(b)]
-
-
-def resolve_backend() -> str | None:
-    """Return the highest-priority available backend, or ``None`` if none is."""
-    backends = available_backends()
-    return backends[0] if backends else None
-
-
 def resolve_plan_text(arg: str) -> str:
     """Resolve a CLI argument to plan text: a file's contents, or the arg itself.
 
@@ -107,41 +98,9 @@ def resolve_plan_text(arg: str) -> str:
     return arg
 
 
-def _safe_get(obj: object, *keys: str) -> object | None:
-    """Walk nested dict keys, returning ``None`` at the first missing or non-dict step.
-
-    Backend subprocess output is external, loosely-specified JSON — a field
-    documented as "usually a nested object" can still show up as a bare
-    string or be absent entirely on a given event. A chained
-    ``d.get("a", {}).get("b")`` crashes with ``AttributeError`` the moment
-    any intermediate value isn't actually a dict; this never does.
-
-    Args:
-        obj: The value to walk, expected to be a dict (or nested dicts).
-        *keys: Keys to look up in sequence.
-
-    Returns:
-        The value at the end of the key path, or ``None`` if ``obj`` (or
-        any intermediate value) isn't a dict, or a key is missing.
-    """
-    current = obj
-    for key in keys:
-        if not isinstance(current, dict):
-            return None
-        current = current.get(key)
-    return current
-
-
 def _kill_active_process() -> None:
     """Kill the currently-running backend subprocess's entire process group, if any."""
-    proc = _active_process
-    if proc is None or proc.poll() is not None:
-        return
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    proc.wait()
+    llm_backends._kill_active_process()
 
 
 def _handle_termination(signum: int, frame: FrameType | None) -> NoReturn:
@@ -155,129 +114,30 @@ def _handle_termination(signum: int, frame: FrameType | None) -> NoReturn:
 
 
 def _run_command(cmd: list[str]) -> tuple[int, str, str]:
-    """Run ``cmd`` as a subprocess, capturing its output.
+    """Run ``cmd`` as a subprocess, capturing its output, at this module's timeout.
 
-    Tracks the running process in :data:`_active_process` so a termination
-    signal or a timeout can kill it (and its whole process group).
-
-    Args:
-        cmd: The command and arguments to execute.
-
-    Returns:
-        ``(returncode, stdout, stderr)``.
-
-    Raises:
-        BackendError: If ``cmd``'s executable can't be started, or the
-            process doesn't finish within :data:`BACKEND_TIMEOUT_SECONDS`
-            (it's killed before this is raised).
+    Thin wrapper around :func:`llm_backends._run_command` — kept local (rather
+    than a bare re-export) so :data:`BACKEND_TIMEOUT_SECONDS` is read from
+    *this* module's global at call time, matching pre-extraction behavior for
+    anything that patches it.
     """
-    global _active_process
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
-    except OSError as e:
-        # e.g. the backend vanished from PATH between `shutil.which` and
-        # here — without this, an unhandled OSError would crash the whole
-        # program instead of letting cmd_review's per-backend fallback run.
-        raise BackendError(f"failed to start {cmd[0]}: {e}") from e
-    _active_process = proc
-    try:
-        stdout, stderr = proc.communicate(timeout=BACKEND_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        _kill_active_process()
-        # `_kill_active_process` only reaps the process (`wait()`); the
-        # stdout/stderr pipes opened by Popen(..., stdout=PIPE, stderr=PIPE)
-        # are still open at this point. A second `communicate()` on the now-
-        # dead process drains and closes them — without it, the fds leak
-        # until the Popen object happens to get garbage-collected.
-        proc.communicate()
-        raise BackendError(f"timed out after {BACKEND_TIMEOUT_SECONDS}s — killed")
-    finally:
-        _active_process = None
-    return proc.returncode, stdout, stderr
-
-
-def run_backend_command(cmd: list[str]) -> str:
-    """Run a backend CLI command and return its critique text.
-
-    Args:
-        cmd: The command and arguments to execute.
-
-    Returns:
-        The backend's stripped stdout.
-
-    Raises:
-        BackendError: If the process exits nonzero, or exits 0 with empty
-            stdout (still a failure — see inline comment).
-    """
-    returncode, stdout, stderr = _run_command(cmd)
-    if returncode != 0:
-        raise BackendError(f"exited {returncode}: {stderr.strip()}")
-    result = stdout.strip()
-    if not result:
-        # Exit 0 with empty stdout is still a failure — e.g. agy in headless
-        # mode has its tool calls auto-denied, prints "no output produced" to
-        # stderr, and exits 0. Treating that as success would silently pass
-        # the empty critique through and skip the priority fallback.
-        detail = stderr.strip() or "(no stderr)"
-        raise BackendError(f"exited 0 but produced no output: {detail}")
-    return result
+    return llm_backends._run_command(cmd, BACKEND_TIMEOUT_SECONDS)
 
 
 def run_agy(prompt: str) -> str:
     """Run the ``agy`` backend and return its critique text."""
-    return run_backend_command(
-        ["agy", "-p", prompt, "--model", "Gemini 3.1 Pro (High)"]
+    return llm_backends.run_agy(
+        prompt, model="Gemini 3.1 Pro (High)", timeout=BACKEND_TIMEOUT_SECONDS
     )
-
-
-def _opencode_json_events(raw_output: str) -> list[dict[str, object]]:
-    """Parse opencode's ``--format json`` stdout into a list of event objects.
-
-    Each non-blank line is expected to be one JSON object. Lines that
-    aren't valid JSON, or that decode to something other than a JSON
-    object (e.g. a stray log line, or a bare string/array), are silently
-    skipped rather than raising — opencode's output stream isn't
-    guaranteed to be pure JSON-lines.
-    """
-    events = []
-    for line in raw_output.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            parsed = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            events.append(parsed)
-    return events
-
-
-def _opencode_text_chunks(events: list[dict[str, object]]) -> list[str]:
-    """Extract the critique text chunks from opencode's parsed event stream."""
-    chunks = []
-    for e in events:
-        if e.get("type") != "text":
-            continue
-        text = _safe_get(e, "part", "text")
-        if isinstance(text, str) and text:
-            chunks.append(text)
-    return chunks
 
 
 def run_opencode(prompt: str) -> str:
     """Run the ``opencode`` backend's adversary agent and return its critique text.
 
-    Not routed through :func:`run_backend_command`: opencode's
-    ``--format json`` puts both the critique text and any error detail in
-    stdout JSON events regardless of exit code, so the error message has
-    to come from parsing stdout, not from stderr or the bare exit code.
+    Not routed through :func:`llm_backends.run_opencode` (the generic
+    variant): the adversary agent is second_opinion-specific (``--agent
+    adversary``), so this builds its own command but reuses the shared
+    event-parsing helpers.
 
     Raises:
         BackendError: If the event stream has no text chunks — either
@@ -310,30 +170,15 @@ def run_opencode(prompt: str) -> str:
 def run_copilot(prompt: str) -> str:
     """Run the ``copilot`` backend and return its critique text.
 
-    No tool-permission flags are passed. Copilot CLI's permission system
-    (``copilot help permissions``) only gates ``shell``, ``write``, ``url``,
-    and MCP-server tools — its built-in file-read tool isn't gated at all,
-    confirmed empirically (a headless ``-p`` prompt asking it to read a
-    file succeeded with no ``--allow-*`` flags). A critique never needs to
-    write or run shell commands, so there's nothing to allow: unlike agy
-    (whose headless mode auto-denies even reads, see
-    ``meta-agy-headless-permission-skip``), Copilot needs no allow-rule
-    workaround here.
-
     An explicit model can be forced via the ``SECOND_OPINION_COPILOT_MODEL``
-    env var. Copilot CLI's ``--model`` flag is gated by a per-account
-    "model picker" policy — confirmed empirically that on a policy-disabled
-    account every explicit model is rejected ("... is not available") and
-    only the implicit default routing (no ``--model`` flag at all) works.
-    Leaving this unset preserves that default-routing behavior, which is
-    the only thing guaranteed to work across accounts; set it only on
-    accounts confirmed to allow explicit model selection.
+    env var (empty/unset means no ``--model`` flag — see
+    :func:`llm_backends.run_copilot` for why that's the safe default).
     """
-    cmd = ["copilot", "-p", prompt, "--silent"]
-    model = os.environ.get("SECOND_OPINION_COPILOT_MODEL")
-    if model:
-        cmd += ["--model", model]
-    return run_backend_command(cmd)
+    return llm_backends.run_copilot(
+        prompt,
+        model=os.environ.get("SECOND_OPINION_COPILOT_MODEL"),
+        timeout=BACKEND_TIMEOUT_SECONDS,
+    )
 
 
 BACKEND_RUNNERS = {"agy": run_agy, "opencode": run_opencode, "copilot": run_copilot}
