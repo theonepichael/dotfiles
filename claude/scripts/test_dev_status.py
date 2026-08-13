@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -138,9 +138,8 @@ class BacklogTestCase(unittest.TestCase):
     def test_02_add_missing_id_exits_with_suggestion(self):
         args = _args(json='{"summary": "Fix the broken widget"}')
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_add(args)
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_add(args)
         self.assertEqual(cm.exception.code, 1)
         msg = err.getvalue()
         self.assertIn("'id' is required", msg)
@@ -166,9 +165,8 @@ class BacklogTestCase(unittest.TestCase):
     def test_03d_add_reserved_slug_rejected(self):
         args = _args(json='{"id": "render", "summary": "x"}')
         err = io.StringIO()
-        with self.assertRaises(SystemExit):
-            with patch("sys.stderr", err):
-                dev_status.cmd_add(args)
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_add(args)
         self.assertIn("reserved", err.getvalue())
 
     def test_03e_add_hyphenated_reserved_prefix_accepted(self):
@@ -190,9 +188,8 @@ class BacklogTestCase(unittest.TestCase):
         self.write_items([make_item("my-feature")])
         args = _args(json='{"id": "my-feature", "summary": "Another one"}')
         err = io.StringIO()
-        with self.assertRaises(SystemExit):
-            with patch("sys.stderr", err):
-                dev_status.cmd_add(args)
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_add(args)
         self.assertIn("duplicate", err.getvalue())
 
     # ── 5: add with blocked_by referencing nonexistent slug rejected ──────────
@@ -202,9 +199,8 @@ class BacklogTestCase(unittest.TestCase):
             json='{"id": "my-feature", "summary": "x", "blocked_by": ["ghost-slug"]}'
         )
         err = io.StringIO()
-        with self.assertRaises(SystemExit):
-            with patch("sys.stderr", err):
-                dev_status.cmd_add(args)
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_add(args)
         self.assertIn("ghost-slug", err.getvalue())
 
     # ── 6: done N resolves via internal re-render ─────────────────────────────
@@ -269,9 +265,8 @@ class BacklogTestCase(unittest.TestCase):
         self.write_items([make_item("old-name"), make_item("new-name")])
         args = _args(old_slug="old-name", new_slug="new-name")
         err = io.StringIO()
-        with self.assertRaises(SystemExit):
-            with patch("sys.stderr", err):
-                dev_status.cmd_rename(args)
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_rename(args)
         self.assertIn("collision", err.getvalue())
 
     # ── 10: rename refuses nonexistent source slug ────────────────────────────
@@ -280,9 +275,8 @@ class BacklogTestCase(unittest.TestCase):
         self.write_items([make_item("existing-item")])
         args = _args(old_slug="ghost-slug", new_slug="new-name")
         err = io.StringIO()
-        with self.assertRaises(SystemExit):
-            with patch("sys.stderr", err):
-                dev_status.cmd_rename(args)
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_rename(args)
         self.assertIn("not found", err.getvalue())
 
     # ── 10b: rename accepts numeric id, guarded like other mutators ─────────
@@ -290,11 +284,8 @@ class BacklogTestCase(unittest.TestCase):
     def test_10b_rename_numeric_id_without_if_rev_refused(self):
         self.write_items([make_item("old-name")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_rename(
-                    _args(old_slug="1", new_slug="new-name", if_rev=None)
-                )
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_rename(_args(old_slug="1", new_slug="new-name", if_rev=None))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("requires --if-rev", err.getvalue())
         self.assertEqual(self.read_rev(), 0)
@@ -304,11 +295,8 @@ class BacklogTestCase(unittest.TestCase):
         self.write_items([make_item("old-name"), make_item("other-item")])
         dev_status.cmd_done(_args(id="other-item"))  # bumps rev to 1
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_rename(
-                    _args(old_slug="1", new_slug="new-name", if_rev=0)
-                )
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_rename(_args(old_slug="1", new_slug="new-name", if_rev=0))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("stale rev", err.getvalue())
         self.assertIn("old-name", {i["id"] for i in self.read_items()})
@@ -348,9 +336,8 @@ class BacklogTestCase(unittest.TestCase):
         self.write_items(items)
         args = _args(id="item-b", blocker="item-a")
         err = io.StringIO()
-        with self.assertRaises(SystemExit):
-            with patch("sys.stderr", err):
-                dev_status.cmd_block(args)
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_block(args)
         self.assertIn("cycle", err.getvalue())
 
     # ── 12: done blocker promotes BLOCKED → READY ────────────────────────────
@@ -434,9 +421,8 @@ class BacklogTestCase(unittest.TestCase):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.items_file.write_text("{not valid json")
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.load_items()
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.load_items()
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("corrupted", err.getvalue())
 
@@ -700,10 +686,9 @@ class BacklogTestCase(unittest.TestCase):
     def test_20n_list_status_invalid_rejected(self):
         # argparse rejects unknown --status values with exit code 2.
         err = io.StringIO()
-        with patch("sys.stderr", err):
-            with self.assertRaises(SystemExit) as cm:
-                with patch("sys.argv", ["dev_status", "list", "--status", "bogus"]):
-                    dev_status.main()
+        with patch("sys.stderr", err), self.assertRaises(SystemExit) as cm:
+            with patch("sys.argv", ["dev_status", "list", "--status", "bogus"]):
+                dev_status.main()
         self.assertEqual(cm.exception.code, 2)
         self.assertIn("bogus", err.getvalue())
 
@@ -722,9 +707,8 @@ class BacklogTestCase(unittest.TestCase):
     def test_21_numeric_id_without_if_rev_refused(self):
         self.write_items([make_item("item-a", status="in-progress")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_start(_args(id="1", if_rev=None))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_start(_args(id="1", if_rev=None))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("requires --if-rev", err.getvalue())
         # no write, no rev bump
@@ -747,9 +731,8 @@ class BacklogTestCase(unittest.TestCase):
         self.write_items(items)
         # caller still holds stale rev 0 and uses a numeric id — must refuse
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_start(_args(id="1", if_rev=0))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_start(_args(id="1", if_rev=0))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("stale rev", err.getvalue())
         # no write, rev unchanged
@@ -845,11 +828,10 @@ class BacklogTestCase(unittest.TestCase):
 
     def test_29_add_invalid_priority_refused(self):
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_add(
-                    _args(json='{"id": "p-bad", "summary": "x", "priority": "urgent"}')
-                )
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_add(
+                _args(json='{"id": "p-bad", "summary": "x", "priority": "urgent"}')
+            )
         self.assertEqual(cm.exception.code, 1)
         msg = err.getvalue()
         self.assertIn("invalid priority 'urgent'", msg)
@@ -1016,9 +998,8 @@ class BacklogTestCase(unittest.TestCase):
     def test_39_remove_numeric_without_if_rev_refused(self):
         self.write_items([make_item("item-a"), make_item("item-b")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_remove(_args(id="1"))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_remove(_args(id="1"))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("requires --if-rev", err.getvalue())
         # no write, no rev bump
@@ -1030,9 +1011,8 @@ class BacklogTestCase(unittest.TestCase):
     def test_40_remove_numeric_stale_if_rev_refused(self):
         self.write_items([make_item("item-a"), make_item("item-b")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_remove(_args(id="1", if_rev=99))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_remove(_args(id="1", if_rev=99))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("stale rev", err.getvalue())
         self.assertEqual(self.read_rev(), 0)
@@ -1067,9 +1047,8 @@ class BacklogTestCase(unittest.TestCase):
         # No backlog items, so the pending item sits at render position 1;
         # pass --if-rev to get past the rev-guard and reach require_kind.
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_remove(_args(id="1", if_rev=0))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_remove(_args(id="1", if_rev=0))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("is a pending item", err.getvalue())
         # pending item survives intact
@@ -1081,9 +1060,8 @@ class BacklogTestCase(unittest.TestCase):
     def test_43_remove_unknown_slug_exits(self):
         self.write_items([make_item("item-a")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_remove(_args(id="nope-item"))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_remove(_args(id="nope-item"))
         self.assertEqual(cm.exception.code, 1)
         # resolve_id surfaces not-found before _backlog_mutation's per-cmd
         # check would (so an unknown slug doesn't get mis-resolved as
@@ -1097,9 +1075,8 @@ class BacklogTestCase(unittest.TestCase):
     def test_44_remove_unknown_number_exits(self):
         self.write_items([make_item("item-a")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_remove(_args(id="9", if_rev=0))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_remove(_args(id="9", if_rev=0))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("no item at position 9", err.getvalue())
         self.assertEqual(len(self.read_items()), 1)
@@ -1186,9 +1163,8 @@ class BacklogTestCase(unittest.TestCase):
         self.write_items([make_item("a")])
         rev_before = self.read_rev()
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_update(_args(id="a", patch='{"typo_sumamry": "oops"}'))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_update(_args(id="a", patch='{"typo_sumamry": "oops"}'))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("unrecognized field(s): typo_sumamry", err.getvalue())
         self.assertNotIn("typo_sumamry", self.read_items()[0])
@@ -1230,9 +1206,8 @@ class BacklogTestCase(unittest.TestCase):
     def test_52_update_invalid_priority_rejected(self):
         self.write_items([make_item("a")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_update(_args(id="a", patch='{"priority": "urgent"}'))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_update(_args(id="a", patch='{"priority": "urgent"}'))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("invalid priority 'urgent'", err.getvalue())
         self.assertNotIn("priority", dev_status.build_index(self.read_items())["a"])
@@ -1240,14 +1215,13 @@ class BacklogTestCase(unittest.TestCase):
     def test_53_pending_add_blocking_unknown_slug_rejected(self):
         self.write_items([make_item("a")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_pending_add(
-                    _args(
-                        json='{"id": "wait-x", "description": "waiting", '
-                        '"kind": "email", "blocking": ["ghost-slug"]}'
-                    )
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_pending_add(
+                _args(
+                    json='{"id": "wait-x", "description": "waiting", '
+                    '"kind": "email", "blocking": ["ghost-slug"]}'
                 )
+            )
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("blocking references unknown slug: ghost-slug", err.getvalue())
         self.assertEqual(dev_status.load_pending(), [])
@@ -1340,18 +1314,16 @@ class BacklogTestCase(unittest.TestCase):
 
     def test_61_add_explicit_null_summary_rejected_not_crash(self):
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_add(_args(json='{"id": "my-item", "summary": null}'))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_add(_args(json='{"id": "my-item", "summary": null}'))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("'summary' is required", err.getvalue())
         self.assertEqual(self.read_items(), [])
 
     def test_61b_add_explicit_null_id_rejected_not_crash(self):
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_add(_args(json='{"id": null, "summary": "x"}'))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_add(_args(json='{"id": null, "summary": "x"}'))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("'id' is required", err.getvalue())
 
@@ -1372,9 +1344,8 @@ class BacklogTestCase(unittest.TestCase):
     def test_64_update_explicit_null_summary_rejected(self):
         self.write_items([make_item("a")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_update(_args(id="a", patch='{"summary": null}'))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_update(_args(id="a", patch='{"summary": null}'))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("cannot be null: summary", err.getvalue())
         self.assertEqual(
@@ -1389,20 +1360,18 @@ class BacklogTestCase(unittest.TestCase):
         # modify directly".
         self.write_items([make_item("a")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_update(_args(id="a", patch='{"blocked_by": null}'))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_update(_args(id="a", patch='{"blocked_by": null}'))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("cannot modify 'blocked_by'", err.getvalue())
 
     def test_64c_update_multiple_null_fields_all_named_in_error(self):
         self.write_items([make_item("a")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit):
-            with patch("sys.stderr", err):
-                dev_status.cmd_update(
-                    _args(id="a", patch='{"summary": null, "context": null}')
-                )
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_update(
+                _args(id="a", patch='{"summary": null, "context": null}')
+            )
         self.assertIn("context", err.getvalue())
         self.assertIn("summary", err.getvalue())
 
@@ -1415,11 +1384,10 @@ class BacklogTestCase(unittest.TestCase):
 
     def test_65_pending_add_explicit_null_description_rejected_not_crash(self):
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_pending_add(
-                    _args(json='{"id": "wait-x", "description": null, "kind": "email"}')
-                )
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_pending_add(
+                _args(json='{"id": "wait-x", "description": null, "kind": "email"}')
+            )
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("'description' is required", err.getvalue())
 
@@ -1447,11 +1415,10 @@ class BacklogTestCase(unittest.TestCase):
             ]
         )
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_pending_update(
-                    _args(id="pend-item", patch='{"description": null}')
-                )
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_pending_update(
+                _args(id="pend-item", patch='{"description": null}')
+            )
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("cannot be null: description", err.getvalue())
 
@@ -1514,22 +1481,18 @@ class BacklogTestCase(unittest.TestCase):
             ]
         )
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_add(_args(json='{"id": "shared-slug", "summary": "x"}'))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_add(_args(json='{"id": "shared-slug", "summary": "x"}'))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("already exists as a pending item", err.getvalue())
 
     def test_bug02_pending_add_refuses_slug_in_backlog_pool(self):
         self.write_items([make_item("shared-slug")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_pending_add(
-                    _args(
-                        json='{"id": "shared-slug", "description": "x", "kind": "email"}'
-                    )
-                )
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_pending_add(
+                _args(json='{"id": "shared-slug", "description": "x", "kind": "email"}')
+            )
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("already exists as a backlog item", err.getvalue())
 
@@ -1538,11 +1501,10 @@ class BacklogTestCase(unittest.TestCase):
     def test_bug03_update_refuses_blocked_by_patch(self):
         self.write_items([make_item("aaa-item"), make_item("bbb-item")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_update(
-                    _args(id="aaa-item", patch='{"blocked_by": ["bbb-item"]}')
-                )
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_update(
+                _args(id="aaa-item", patch='{"blocked_by": ["bbb-item"]}')
+            )
         self.assertEqual(cm.exception.code, 1)
         msg = err.getvalue()
         self.assertIn("cannot modify 'blocked_by'", msg)
@@ -1652,9 +1614,9 @@ class BacklogTestCase(unittest.TestCase):
     # ── #7: _age_hours handles timezone-aware stamps
 
     def test_bug07_age_hours_handles_tz_aware_stamp(self):
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now_iso = datetime.now(UTC).isoformat(timespec="seconds")
         age = dev_status._age_hours(now_iso)
         self.assertIsNotNone(age)
         self.assertGreaterEqual(age, 0.0)
@@ -1664,9 +1626,8 @@ class BacklogTestCase(unittest.TestCase):
 
     def test_bug08_list_field_rejects_string(self):
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status._list_field({"blocked_by": "not-a-list"}, "blocked_by")
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status._list_field({"blocked_by": "not-a-list"}, "blocked_by")
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("must be a list", err.getvalue())
 
@@ -1701,11 +1662,10 @@ class BacklogTestCase(unittest.TestCase):
             ]
         )
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_pending_update(
-                    _args(id="pend-x", patch='{"blocking": ["typo-slug"]}')
-                )
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_pending_update(
+                _args(id="pend-x", patch='{"blocking": ["typo-slug"]}')
+            )
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("blocking references unknown slug: typo-slug", err.getvalue())
 
@@ -1713,20 +1673,18 @@ class BacklogTestCase(unittest.TestCase):
 
     def test_bug11_update_unknown_slug_emits_not_found(self):
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_update(_args(id="typo-slug", patch='{"summary": "x"}'))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_update(_args(id="typo-slug", patch='{"summary": "x"}'))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("[resolve] not found: typo-slug", err.getvalue())
         self.assertNotIn("is a", err.getvalue())
 
     def test_bug11_pending_update_unknown_slug_emits_not_found(self):
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_pending_update(
-                    _args(id="typo-slug", patch='{"description": "x"}')
-                )
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_pending_update(
+                _args(id="typo-slug", patch='{"description": "x"}')
+            )
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("[resolve] not found: typo-slug", err.getvalue())
         self.assertNotIn("is a backlog item", err.getvalue())
@@ -1822,11 +1780,12 @@ class BacklogTestCase(unittest.TestCase):
             ]
         )
         out, err = io.StringIO(), io.StringIO()
-        with patch("sys.stdout", out), patch("sys.stderr", err):
-            with patch.object(
-                dev_status, "_backup_before_bulk_delete", lambda _p: None
-            ):
-                dev_status.cmd_prune(_args(force=True))
+        with (
+            patch("sys.stdout", out),
+            patch("sys.stderr", err),
+            patch.object(dev_status, "_backup_before_bulk_delete", lambda _p: None),
+        ):
+            dev_status.cmd_prune(_args(force=True))
         # Render prints the dashboard to stdout and the item-map line to stderr
         self.assertIn("backlog is empty", out.getvalue())
         self.assertIn("item-map:", err.getvalue())
@@ -2230,9 +2189,8 @@ class BacklogTestCase(unittest.TestCase):
         self.write_items([make_item("rv-item", status="in-progress")])
         dev_status.cmd_review(_args(id="rv-item"))
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_done(_args(id="rv-item"))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_done(_args(id="rv-item"))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("in-review", err.getvalue())
         self.assertIn("approve", err.getvalue())
@@ -2242,9 +2200,8 @@ class BacklogTestCase(unittest.TestCase):
         self.write_items([make_item("rv-item", status="in-progress")])
         dev_status.cmd_review(_args(id="rv-item"))
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_start(_args(id="rv-item"))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_start(_args(id="rv-item"))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("in-review", err.getvalue())
         self.assertIn("approve", err.getvalue())
@@ -2253,9 +2210,8 @@ class BacklogTestCase(unittest.TestCase):
     def test_40i_approve_refuses_on_non_in_review(self):
         self.write_items([make_item("rv-open", status="open")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_approve(_args(id="rv-open"))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_approve(_args(id="rv-open"))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("approve", err.getvalue())
         self.assertEqual(self._item_by_id("rv-open")["status"], "open")
@@ -2263,9 +2219,8 @@ class BacklogTestCase(unittest.TestCase):
     def test_40j_reject_refuses_on_non_in_review(self):
         self.write_items([make_item("rv-open", status="open")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_reject(_args(id="rv-open", feedback="x"))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_reject(_args(id="rv-open", feedback="x"))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("reject", err.getvalue())
         self.assertEqual(self._item_by_id("rv-open")["status"], "open")
@@ -2278,9 +2233,8 @@ class BacklogTestCase(unittest.TestCase):
         items[0]["summary"] = "B"
         self.write_items(items)
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_approve(_args(id="rv-item"))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_approve(_args(id="rv-item"))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("content changed", err.getvalue())
         self.assertIn("review <id>", err.getvalue())
@@ -2293,9 +2247,8 @@ class BacklogTestCase(unittest.TestCase):
         items[0]["summary"] = "B"
         self.write_items(items)
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_reject(_args(id="rv-item", feedback="x"))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_reject(_args(id="rv-item", feedback="x"))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("content changed", err.getvalue())
         self.assertEqual(self._item_by_id("rv-item")["status"], "in-review")
@@ -2304,9 +2257,8 @@ class BacklogTestCase(unittest.TestCase):
         # hand-edited store: in-review item with no review_content_hash
         self.write_items([make_item("rv-item", status="in-review")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_approve(_args(id="rv-item"))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_approve(_args(id="rv-item"))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("content changed", err.getvalue())
         self.assertEqual(self._item_by_id("rv-item")["status"], "in-review")
@@ -2421,18 +2373,16 @@ class BacklogTestCase(unittest.TestCase):
         self.write_items([make_item("rv-item", status="in-progress")])
         # missing --if-rev
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_review(_args(id="1", if_rev=None))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_review(_args(id="1", if_rev=None))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("requires --if-rev", err.getvalue())
         self.assertEqual(self._item_by_id("rv-item")["status"], "in-progress")
         # stale --if-rev
         rev = self.read_rev()
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_review(_args(id="1", if_rev=rev + 99))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_review(_args(id="1", if_rev=rev + 99))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("stale rev", err.getvalue())
 
@@ -2456,11 +2406,10 @@ class BacklogTestCase(unittest.TestCase):
     def test_41b_gate_set_required_true_needs_criteria(self):
         self.write_items([make_item("gt-item")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_gate_set(
-                    _args(id="gt-item", json='{"required": true, "criteria": []}')
-                )
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_gate_set(
+                _args(id="gt-item", json='{"required": true, "criteria": []}')
+            )
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("cannot be empty", err.getvalue())
         self.assertNotIn("gate", self._item_by_id("gt-item"))
@@ -2468,20 +2417,18 @@ class BacklogTestCase(unittest.TestCase):
     def test_41c_gate_set_missing_required_field_refused(self):
         self.write_items([make_item("gt-item")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_gate_set(_args(id="gt-item", json='{"criteria": []}'))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_gate_set(_args(id="gt-item", json='{"criteria": []}'))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("'required' (bool) is required", err.getvalue())
 
     def test_41d_gate_set_non_string_criteria_refused(self):
         self.write_items([make_item("gt-item")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_gate_set(
-                    _args(id="gt-item", json='{"required": false, "criteria": [1]}')
-                )
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_gate_set(
+                _args(id="gt-item", json='{"required": false, "criteria": [1]}')
+            )
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("list of non-empty strings", err.getvalue())
 
@@ -2547,11 +2494,10 @@ class BacklogTestCase(unittest.TestCase):
     def test_41i_update_refuses_gate_field(self):
         self.write_items([make_item("gt-item")])
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_update(
-                    _args(id="gt-item", patch='{"gate": {"required": true}}')
-                )
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_update(
+                _args(id="gt-item", patch='{"gate": {"required": true}}')
+            )
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("cannot modify 'gate'", err.getvalue())
         self.assertIn("gate-set", err.getvalue())
@@ -2571,9 +2517,8 @@ class BacklogTestCase(unittest.TestCase):
             ]
         )
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_done(_args(id="gt-item"))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_done(_args(id="gt-item"))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("unmet gate", err.getvalue())
         self.assertIn("gate-pass", err.getvalue())
@@ -2622,9 +2567,8 @@ class BacklogTestCase(unittest.TestCase):
         )
         dev_status.cmd_review(_args(id="gt-item"))
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                dev_status.cmd_approve(_args(id="gt-item"))
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_approve(_args(id="gt-item"))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("unmet gate", err.getvalue())
         self.assertEqual(self._item_by_id("gt-item")["status"], "in-review")
@@ -2750,9 +2694,8 @@ class BacklogTestCase(unittest.TestCase):
     def test_41v_add_gate_set_slug_rejected(self):
         args = _args(json='{"id": "gate-set", "summary": "x"}')
         err = io.StringIO()
-        with self.assertRaises(SystemExit):
-            with patch("sys.stderr", err):
-                dev_status.cmd_add(args)
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_add(args)
         self.assertIn("reserved", err.getvalue())
 
     # ── recap: journal, cache, dispatch, prompt/normalization, subcommand ───
@@ -2772,7 +2715,7 @@ class BacklogTestCase(unittest.TestCase):
             f.write(json.dumps(entry) + "\n")
 
     def _seed_recent_journal(self, hours_ago=0.01):
-        ts = (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
+        ts = (datetime.now(UTC) - timedelta(hours=hours_ago)).isoformat()
         self._write_journal_line(
             {
                 "ts": ts,
@@ -2785,11 +2728,20 @@ class BacklogTestCase(unittest.TestCase):
             }
         )
 
-    def _write_cache(self, text, age_hours=0, backend="agy"):
+    def _write_cache(self, text, age_hours=0, backend="agy", board_fingerprint=None):
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        ts = (datetime.now(timezone.utc) - timedelta(hours=age_hours)).isoformat()
+        ts = (datetime.now(UTC) - timedelta(hours=age_hours)).isoformat()
+        if board_fingerprint is None:
+            board_fingerprint = dev_status._current_board_fingerprint()
         self.recap_cache_file.write_text(
-            json.dumps({"generated_at": ts, "backend": backend, "text": text})
+            json.dumps(
+                {
+                    "generated_at": ts,
+                    "backend": backend,
+                    "text": text,
+                    "board_fingerprint": board_fingerprint,
+                }
+            )
         )
 
     # ── journal appends per mutation path ──────────────────────────────────
@@ -2828,14 +2780,15 @@ class BacklogTestCase(unittest.TestCase):
         self.assertEqual(entries[-1]["from_status"], "in-review")
         self.assertEqual(entries[-1]["to_status"], "in-progress")
 
-    def test_r04_rename_journals_old_and_new_slug_in_summary(self):
-        self.write_items([make_item("old-slug")])
+    def test_r04_rename_journals_item_summary_not_raw_slugs(self):
+        self.write_items([make_item("old-slug", summary="Widen the dashboard box")])
         dev_status.cmd_rename(_args(old_slug="old-slug", new_slug="new-slug"))
         entries = self._journal_lines()
         self.assertEqual(entries[-1]["cmd"], "rename")
         self.assertEqual(entries[-1]["slug"], "new-slug")
-        self.assertIn("old-slug", entries[-1]["summary"])
-        self.assertIn("new-slug", entries[-1]["summary"])
+        self.assertIn("Widen the dashboard box", entries[-1]["summary"])
+        self.assertNotIn("old-slug", entries[-1]["summary"])
+        self.assertNotIn("new-slug", entries[-1]["summary"])
 
     def test_r05_prune_journals_count(self):
         old = (date.today() - timedelta(days=30)).isoformat()
@@ -2916,7 +2869,7 @@ class BacklogTestCase(unittest.TestCase):
         self.data_dir.mkdir(parents=True, exist_ok=True)
         good = json.dumps(
             {
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": datetime.now(UTC).isoformat(),
                 "rev": 1,
                 "machine": "x",
                 "cmd": "add",
@@ -2932,7 +2885,7 @@ class BacklogTestCase(unittest.TestCase):
 
     def test_r11_reader_warns_on_middle_line_corruption(self):
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         good1 = json.dumps(
             {"ts": now, "rev": 1, "machine": "x", "cmd": "add", "kind": "backlog"}
         )
@@ -2967,6 +2920,30 @@ class BacklogTestCase(unittest.TestCase):
         self._write_cache("Fresh.", age_hours=0)
         dev_status._maybe_dispatch_recap_regen()
         self.mock_popen.assert_not_called()
+
+    def test_r13b_dispatch_fires_on_fingerprint_drift_despite_fresh_ttl(self):
+        self.write_items([make_item("x")])
+        self._write_cache(
+            "Fresh but stale-by-facts.",
+            age_hours=0,
+            board_fingerprint="deadbeefdeadbeef",
+        )
+        self._seed_recent_journal()
+        dev_status._maybe_dispatch_recap_regen()
+        self.mock_popen.assert_called_once()
+
+    def test_r13c_missing_board_fingerprint_key_dispatches_despite_fresh_ttl(self):
+        self.write_items([make_item("x")])
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(UTC).isoformat()
+        self.recap_cache_file.write_text(
+            json.dumps(
+                {"generated_at": ts, "backend": "agy", "text": "Pre-migration cache."}
+            )
+        )
+        self._seed_recent_journal()
+        dev_status._maybe_dispatch_recap_regen()
+        self.mock_popen.assert_called_once()
 
     def test_r14_journal_last_line_older_than_48h_spawns_nothing(self):
         self._seed_recent_journal(hours_ago=50)
@@ -3038,6 +3015,74 @@ class BacklogTestCase(unittest.TestCase):
         self.assertIn("Great progress today.", out.getvalue())
         self.assertNotIn("ago)", out.getvalue())
 
+    def test_r19b_fingerprint_mismatch_suppresses_display_even_when_fresh(self):
+        self.write_items([make_item("x")])
+        self._write_cache(
+            "Great progress today.",
+            age_hours=0,
+            board_fingerprint="deadbeefdeadbeef",
+        )
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.render()
+        self.assertNotIn("RECAP", out.getvalue())
+
+    def test_r19d_counts_unchanged_but_identities_swapped_still_suppresses(self):
+        # Two items, one ready and one blocked-by the other. Cache the
+        # fingerprint for that state, then swap which one is ready and
+        # which is blocked -- total counts (ready: 1, blocked: 1) are
+        # identical before and after, but the fingerprint must still catch
+        # that the *specific* items in each bucket changed.
+        self.write_items(
+            [
+                make_item("a", status="open"),
+                make_item("b", status="open", blocked_by=["a"]),
+            ]
+        )
+        self._write_cache("You have one ready and one blocked item.", age_hours=0)
+        items = self.read_items()
+        for it in items:
+            if it["id"] == "a":
+                it["blocked_by"] = ["b"]
+            elif it["id"] == "b":
+                it["blocked_by"] = []
+        dev_status.save_items(items)
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.render()
+        self.assertNotIn("RECAP", out.getvalue())
+
+    def test_r19e_summary_edit_alone_still_suppresses(self):
+        # Same status, same blocked_by, same bucket counts -- only the
+        # item's title changes. Bucket membership is untouched, but the
+        # cached prose's claim about *what* the item is would now be
+        # wrong, so the fingerprint must still catch it.
+        self.write_items([make_item("x", summary="Fix the widget")])
+        self._write_cache("You completed Fix the widget.", age_hours=0)
+        items = self.read_items()
+        for it in items:
+            if it["id"] == "x":
+                it["summary"] = "Fix the dashboard"
+        dev_status.save_items(items)
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.render()
+        self.assertNotIn("RECAP", out.getvalue())
+
+    def test_r19c_missing_board_fingerprint_key_suppresses_display(self):
+        self.write_items([make_item("x")])
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(UTC).isoformat()
+        self.recap_cache_file.write_text(
+            json.dumps(
+                {"generated_at": ts, "backend": "agy", "text": "Pre-migration cache."}
+            )
+        )
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.render()
+        self.assertNotIn("RECAP", out.getvalue())
+
     def test_r20_stale_cache_shown_with_age_marker(self):
         self.write_items([make_item("x")])
         self._write_cache("Yesterday's news.", age_hours=3)
@@ -3107,6 +3152,19 @@ class BacklogTestCase(unittest.TestCase):
         cache = json.loads(self.recap_cache_file.read_text())
         self.assertEqual(cache["text"], "Old cached text.")
 
+    def test_r23c_run_recap_regen_persists_board_fingerprint_snapshot(self):
+        self.write_items([make_item("x"), make_item("y", status="in-progress")])
+        self._seed_recent_journal()
+        with (
+            patch.object(llm_backends, "available_backends", return_value=["agy"]),
+            patch.object(llm_backends, "run_agy", return_value="Great work."),
+        ):
+            dev_status._run_recap_regen()
+        cache = json.loads(self.recap_cache_file.read_text())
+        self.assertEqual(
+            cache["board_fingerprint"], dev_status._current_board_fingerprint()
+        )
+
     # ── synchronous `recap` subcommand ──────────────────────────────────────
 
     def test_r25_recap_fresh_cache_prints_without_regen_call(self):
@@ -3117,6 +3175,23 @@ class BacklogTestCase(unittest.TestCase):
                 dev_status.cmd_recap(_args())
         mock_regen.assert_not_called()
         self.assertIn("Fresh recap.", out.getvalue())
+
+    def test_r25b_recap_fingerprint_mismatch_forces_regen_despite_fresh_ttl(self):
+        self.write_items([make_item("x")])
+        self._write_cache(
+            "Fresh but stale-by-facts.",
+            age_hours=0,
+            board_fingerprint="deadbeefdeadbeef",
+        )
+        self._seed_recent_journal()
+        with patch.object(
+            dev_status, "_run_recap_regen", return_value=("agy", "New text")
+        ) as mock_regen:
+            out = io.StringIO()
+            with patch("sys.stdout", out):
+                dev_status.cmd_recap(_args())
+        mock_regen.assert_called_once()
+        self.assertIn("New text", out.getvalue())
 
     def test_r26_recap_double_checked_reuses_cache_from_in_flight_child(self):
         self._seed_recent_journal()
@@ -3193,6 +3268,48 @@ class BacklogTestCase(unittest.TestCase):
         self.assertEqual((backend, text), ("", ""))
         mock_avail.assert_not_called()
         self.assertFalse(self.recap_cache_file.exists())
+
+    # ── changelog rendering ───────────────────────────────────────────────────
+
+    def test_r34_changelog_omits_slug_when_summary_present(self):
+        entries = [
+            {
+                "ts": "2026-01-01T12:00:00+00:00",
+                "cmd": "done",
+                "slug": "meta-example-slug",
+                "summary": "Ship the widget",
+            }
+        ]
+        line = dev_status._render_changelog(entries)
+        self.assertNotIn("meta-example-slug", line)
+        self.assertIn("Ship the widget", line)
+
+    def test_r35_changelog_keeps_slug_when_no_summary(self):
+        # This shape (slug with no summary) is a defensive fallback for
+        # legacy/hand-edited journal data -- every live `_journal_entry`
+        # call site that sets `slug` also sets a non-empty `summary`.
+        entries = [
+            {
+                "ts": "2026-01-01T12:00:00+00:00",
+                "cmd": "start",
+                "slug": "meta-example-slug",
+            }
+        ]
+        line = dev_status._render_changelog(entries)
+        self.assertIn("meta-example-slug", line)
+
+    def test_r36_changelog_rename_entry_has_no_slug_substrings(self):
+        entries = [
+            {
+                "ts": "2026-01-01T12:00:00+00:00",
+                "cmd": "rename",
+                "slug": "new-slug-name",
+                "summary": "renamed an item (Widen the dashboard box)",
+            }
+        ]
+        line = dev_status._render_changelog(entries)
+        self.assertNotIn("new-slug-name", line)
+        self.assertIn("Widen the dashboard box", line)
 
 
 # ── arg helper ────────────────────────────────────────────────────────────────
