@@ -38,5 +38,21 @@
     "key": "ctrl+k",
     "command": "search.action.focusPreviousSearchResult",
     "when": "searchViewletVisible"
+  },
+  // Terminal-first workflow: fast editor cleanup, plus two terminal
+  // launchers — Copilot CLI profile vs. the plain default shell.
+  {
+    "key": "ctrl+l ctrl+w",
+    "command": "workbench.action.closeAllEditors"
+  },
+  {
+    "key": "ctrl+alt+c",
+    "command": "workbench.action.terminal.newWithProfile",
+    "args": { "profileName": "Copilot" }
+  },
+  // Launch with default terminal (zsh)
+  {
+    "key": "ctrl+alt+t",
+    "command": "workbench.action.terminal.new"
   }
 ]

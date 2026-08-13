@@ -59,8 +59,43 @@
   "terminal.integrated.copyOnSelection": true,
   "terminal.integrated.defaultProfile.linux": "zsh",
   "terminal.integrated.defaultProfile.windows": "PowerShell",
-  "terminal.integrated.fontFamily": "CaskaydiaCove Nerd Font",
+  // Renders nerd font icons in the terminal
+  "terminal.integrated.fontFamily": "JetBrainsMonoNL Nerd Font",
   "terminal.integrated.gpuAcceleration": "off",
+  // Terminal-first workflow: terminal is the primary workspace and opens in
+  // the editor area (not the bottom panel). The list below keeps sidebar
+  // shortcuts (Explorer/Search/SCM/Debug/Extensions/toggle) working even
+  // while the terminal has focus, instead of being swallowed by the shell.
+  "workbench.startupEditor": "none",
+  "window.restoreWindows": "all",
+  "terminal.integrated.defaultLocation": "editor",
+  "terminal.integrated.commandsToSkipShell": [
+    "workbench.action.focusSideBar",
+    "workbench.action.toggleSidebarVisibility",
+    "workbench.view.debug",
+    "workbench.view.explorer",
+    "workbench.view.extensions",
+    "workbench.view.scm",
+    "workbench.view.search"
+  ],
+  "terminal.integrated.profiles.windows": {
+    "Copilot": {
+      "path": "pwsh.exe",
+      "args": ["-NoExit", "-Command", "copilot"]
+    }
+  },
+  "terminal.integrated.profiles.osx": {
+    "Copilot": {
+      "path": "zsh",
+      "args": ["-c", "copilot"]
+    }
+  },
+  "terminal.integrated.profiles.linux": {
+    "Copilot": {
+      "path": "zsh",
+      "args": ["-c", "copilot"]
+    }
+  },
   "vim.handleKeys": {
     "<C-b>": false,
     "<C-d>": true,
