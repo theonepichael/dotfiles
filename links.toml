@@ -178,6 +178,22 @@ dest = "~/.copilot/hooks/session-start.json"
 harness = "copilot"
 platform = "linux"
 
+# Same bash-only, mac/linux-only wiring as session-start.json above. Runs
+# ruff format + ruff check --fix on any .py file the create/edit tools
+# touch, inside a uv/ruff project (detected by walking up for
+# pyproject.toml) -- same mechanism as the Claude Code PostToolUse hook.
+[[link]]
+src = "copilot/hooks/post-tool-use.json"
+dest = "~/.copilot/hooks/post-tool-use.json"
+harness = "copilot"
+platform = "mac"
+
+[[link]]
+src = "copilot/hooks/post-tool-use.json"
+dest = "~/.copilot/hooks/post-tool-use.json"
+harness = "copilot"
+platform = "linux"
+
 [[link]]
 src = "copilot/skills/dashboard/SKILL.md"
 dest = "~/.copilot/skills/dashboard/SKILL.md"
