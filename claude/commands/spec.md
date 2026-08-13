@@ -31,7 +31,7 @@ A missing fact gets asked directly (step 2). A genuinely open branch — multipl
 
 Write the spec to `~/.claude/data/grill/<topic-slug>-spec.md` (the same central location grill-me/second-opinion use for plan artifacts — never a per-session scratchpad). Show it to the user. Apply CLAUDE.md's "plans and deliverables get a path on record" backlog convention if this is tracked work.
 
-Then ask, via AskUserQuestion: "Start generation against this spec now?" — `Yes (recommended)` / `No, stop here`.
+Then ask, via AskUserQuestion: "Start generation against this spec now?" — `Yes (recommended)` / `No, stop here`. If a delegating caller declined this offer up front (e.g. it owns the handoff decision itself), skip the ask and stop after saving — report the spec path back to the caller.
 
 ## 5. Generation
 

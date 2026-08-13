@@ -219,7 +219,7 @@ you're working solo and are confident it's ready), use `approve` to mark it done
 An item whose implementation plan had judgment-call steps may also carry a
 `gate` (set via `gate-set` when the plan was classified — see backlog-item.md
 step 5). Both `done` and `approve` refuse when `gate.required` is true and
-`gate.passed` isn't — `show <id>` to see the unmet criteria, verify each
+`gate.passed_at` isn't set — `show <id>` to see the unmet criteria, verify each
 against the actual work (never reflexively), then `gate-pass <id>` and retry.
 `gate` can't be set via a raw `update` patch — always `gate-set`/`gate-pass`.
 

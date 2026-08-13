@@ -41,7 +41,7 @@ the locally-installed CLI surface, except where noted.
   projects, create a `~/.copilot/skills` or `~/.agents/skills` directory in
   your local home directory." Each skill lives in its own subdirectory
   (lowercase, hyphenated), and the skill file **must** be named `SKILL.md`.
-  The `copilot/skills/*` entries in `links.toml` symlink each of the 6
+  The `copilot/skills/*` entries in `links.toml` symlink each of the 7
   `SKILL.md` files into this path; `install.py`'s symlink handling does
   `mkdir -p "$(dirname "$dst")"` and so creates the per-skill parent dir
   automatically — no separate directory-wiring step, no gap in the install
@@ -54,7 +54,7 @@ the locally-installed CLI surface, except where noted.
   tools the skill can use without per-call confirmation. Per the docs'
   security warning, `shell`/`bash` should only be pre-approved for fully
   trusted skills — this repo's skills use `allowed-tools: shell`, which is
-  appropriate because all 6 are self-authored and reviewed. This is one
+  appropriate because all 7 are self-authored and reviewed. This is one
   field richer than agy (which has no `allowed-tools` equivalent) and
   matches Claude Code's per-skill tool-grant model in spirit, though
   Copilot's value vocabulary is coarser (a tool category like `shell`, not

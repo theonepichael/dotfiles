@@ -12,7 +12,7 @@ return {
         -- FIX: lua = {} means "no formatter" in conform, NOT "use LSP".
         -- Omitting lua entirely + lsp_format = "fallback" below is what
         -- actually routes Lua formatting to lua_ls.
-        python = { "isort", "black", "ruff" },
+        python = { "ruff_organize_imports", "ruff_format" },
         xml = { "xmlformatter" },
         -- FIX: yamlfix AND yamlfmt ran sequentially; one is enough
         yaml = { "yamlfmt" },

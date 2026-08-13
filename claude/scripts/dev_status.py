@@ -19,7 +19,7 @@ import os
 import re
 import sys
 import tempfile
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -77,7 +77,7 @@ BACKLOG_MUTABLE_FIELDS = {
 # item literally named `remove`). Prefix-match refusal was considered and
 # rejected: it would forbid natural slugs like `update-deps` for no real
 # dispatch-safety gain (2026-07-25 decision).
-RESERVED_SLUGS = {
+SUBCOMMANDS = (
     "render",
     "list",
     "show",
@@ -88,16 +88,16 @@ RESERVED_SLUGS = {
     "review",
     "approve",
     "reject",
+    "gate-set",
+    "gate-pass",
+    "backfill-gate",
     "rename",
     "remove",
     "block",
     "unblock",
     "prune",
-    "pending",
-    "all",
-    "help",
-    "new",
-}
+)
+RESERVED_SLUGS = set(SUBCOMMANDS) | {"pending", "all", "help", "new"}
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)+$")
 SLUG_MIN, SLUG_MAX = 3, 40
 
@@ -127,15 +127,16 @@ class Gate(TypedDict):
     Set once via ``gate-set`` when an item's plan/spec is classified
     (mechanical steps need no gate; a plan with judgment steps gets
     ``required: True`` and ``criteria`` drawn from those steps' acceptance
-    criteria). ``passed`` stays ``None`` until ``gate-pass`` records one,
-    and every ``gate-set`` call resets ``passed``/``passed_at`` to ``None``
+    criteria). ``passed_at`` stays ``None`` until ``gate-pass`` records one,
+    and every ``gate-set`` call resets ``passed_at`` to ``None``
     — re-classifying (e.g. after a plan revision) invalidates any prior
     pass, mirroring grill.py's ``revise`` resetting a decision's verdict.
     """
 
+    # `passed: bool | None` was dropped — redundant with `passed_at`
+    # (non-None means passed); don't reintroduce it.
     required: bool
     criteria: list[str]
-    passed: bool | None
     passed_at: str | None
 
 
@@ -148,7 +149,7 @@ class BacklogItem(TypedDict):
     ``status`` is ``"done"`` (stamped and cleared by
     :func:`_apply_status_transition`). ``gate`` is likewise absent on any
     item created before its introduction or never classified — absence is
-    equivalent to an inert gate (see :func:`_gate_block_message`), the same
+    equivalent to an inert gate (see :func:`_gate_blocks`), the same
     absence-means-default convention ``priority`` already uses.
     """
 
@@ -253,6 +254,11 @@ def _apply_status_transition(
         item.pop(stamp_field, None)
 
 
+def _gate_blocks(gate: Mapping[str, object] | None) -> bool:
+    """Return True if `gate` blocks a done-transition (required, unpassed)."""
+    return bool(gate) and bool(gate.get("required")) and gate.get("passed_at") is None
+
+
 def _gate_block_message(cmd: str, item: BacklogItem) -> str | None:
     """Return a refusal message if ``item``'s gate blocks a done-transition.
 
@@ -265,7 +271,7 @@ def _gate_block_message(cmd: str, item: BacklogItem) -> str | None:
         item: The item being transitioned to done.
     """
     gate = item.get("gate")
-    if not gate or not gate.get("required") or gate.get("passed") is True:
+    if not _gate_blocks(gate):
         return None
     n = len(gate.get("criteria", []))
     return (
@@ -273,6 +279,14 @@ def _gate_block_message(cmd: str, item: BacklogItem) -> str | None:
         "unconfirmed) -- run 'gate-pass <id>' once verified, or 'show <id>' to "
         "review the criteria."
     )
+
+
+def _check_gate_or_exit(cmd: str, item: BacklogItem) -> None:
+    """Print a refusal and exit(1) if item's gate blocks `cmd`'s transition."""
+    gate_msg = _gate_block_message(cmd, item)
+    if gate_msg:
+        print(gate_msg, file=sys.stderr)
+        sys.exit(1)
 
 
 def _category_tag(category: str) -> str:
@@ -1106,7 +1120,7 @@ def _gate_suffix(item: dict[str, object], color: bool) -> str:
     runs ``approve``/``done`` and hits the refusal.
     """
     gate = cast(dict[str, object] | None, item.get("gate"))
-    if not gate or not gate.get("required") or gate.get("passed") is True:
+    if not _gate_blocks(gate):
         return ""
     return " " + _colorize("\U0001f512 gate", _COLORS["warn"], color)
 
@@ -1695,10 +1709,7 @@ def cmd_done(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        gate_msg = _gate_block_message("done", m.item)
-        if gate_msg:
-            print(gate_msg, file=sys.stderr)
-            sys.exit(1)
+        _check_gate_or_exit("done", m.item)
         _apply_status_transition(
             cast(dict[str, object], m.item), "done", "completed_at", "done"
         )
@@ -1746,10 +1757,7 @@ def cmd_approve(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        gate_msg = _gate_block_message("approve", m.item)
-        if gate_msg:
-            print(gate_msg, file=sys.stderr)
-            sys.exit(1)
+        _check_gate_or_exit("approve", m.item)
         _apply_status_transition(
             cast(dict[str, object], m.item), "done", "completed_at", "done"
         )
@@ -1792,7 +1800,7 @@ def cmd_reject(args: argparse.Namespace) -> None:
 def cmd_gate_set(args: argparse.Namespace) -> None:
     """Handle ``gate-set``: classify an item's judgment-step verification gate.
 
-    Always resets ``passed``/``passed_at`` to ``None`` — re-classifying a
+    Always resets ``passed_at`` to ``None`` — re-classifying a
     gate invalidates any prior pass (see :class:`Gate`'s docstring).
     """
     patch = _parse_json_arg(args.json, "gate-set")
@@ -1822,7 +1830,6 @@ def cmd_gate_set(args: argparse.Namespace) -> None:
         m.item["gate"] = {
             "required": required,
             "criteria": criteria,
-            "passed": None,
             "passed_at": None,
         }
         m.item["updated"] = today()
@@ -1838,7 +1845,6 @@ def cmd_gate_pass(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        gate["passed"] = True
         gate["passed_at"] = today()
         m.item["updated"] = today()
 
@@ -1847,13 +1853,16 @@ def cmd_backfill_gate(args: argparse.Namespace) -> None:
     """Handle ``backfill-gate``: stamp an explicit inert gate on legacy items.
 
     Items created before ``gate`` existed have no ``gate`` key at all —
-    code already treats that as inert (see :func:`_gate_block_message`),
-    but leaving it implicit means ``show``/the dashboard can't distinguish
-    "not yet classified" from "classified, not required". This makes it
-    explicit. There's no reliable signal in the existing schema (no
-    per-item verdict data) to infer a *required* gate from, so this never
-    sets ``required: true`` -- that only ever happens via a deliberate
-    ``gate-set`` call. Dry run by default; ``--apply`` writes.
+    code already treats that as inert (see :func:`_gate_blocks`). Leaving
+    it implicit means only ``show <id>``'s raw JSON can distinguish "not
+    yet classified" from "classified, not required" — the dashboard
+    intentionally renders both the same way (see ``_gate_suffix``, and
+    ``test_41p``). This makes the distinction explicit in storage, for
+    tooling/audits that read the JSON directly. There's no reliable
+    signal in the existing schema (no per-item verdict data) to infer a
+    *required* gate from, so this never sets ``required: true`` -- that
+    only ever happens via a deliberate ``gate-set`` call. Dry run by
+    default; ``--apply`` writes.
     """
     with backlog_lock():
         items = load_items()
@@ -1874,7 +1883,6 @@ def cmd_backfill_gate(args: argparse.Namespace) -> None:
             i["gate"] = {
                 "required": False,
                 "criteria": [],
-                "passed": None,
                 "passed_at": None,
             }
         new_rev = bump_rev()
@@ -2312,6 +2320,35 @@ def _add_if_rev_arg(parser: argparse.ArgumentParser, id_name: str = "id") -> Non
     )
 
 
+dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
+    "render": cmd_render,
+    "list": cmd_list,
+    "show": cmd_show,
+    "add": cmd_add,
+    "update": cmd_update,
+    "start": cmd_start,
+    "done": cmd_done,
+    "review": cmd_review,
+    "approve": cmd_approve,
+    "reject": cmd_reject,
+    "gate-set": cmd_gate_set,
+    "gate-pass": cmd_gate_pass,
+    "backfill-gate": cmd_backfill_gate,
+    "rename": cmd_rename,
+    "remove": cmd_remove,
+    "block": cmd_block,
+    "unblock": cmd_unblock,
+    "prune": cmd_prune,
+}
+
+if __name__ == "__main__" and set(dispatch) != set(SUBCOMMANDS):
+    print(
+        f"[dev_status] dispatch/SUBCOMMANDS drift: {set(dispatch) ^ set(SUBCOMMANDS)}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 def main() -> None:
     """Parse argv and dispatch to the matching subcommand handler."""
     parser = argparse.ArgumentParser(
@@ -2320,8 +2357,7 @@ def main() -> None:
     )
     sub = parser.add_subparsers(
         dest="cmd",
-        metavar="{render,list,show,add,update,start,done,review,approve,reject,"
-        "gate-set,gate-pass,backfill-gate,rename,remove,block,unblock,prune}",
+        metavar="{" + ",".join(SUBCOMMANDS) + "}",
     )
 
     sub.add_parser("render", help="render dashboard (pure — no side effects)")
@@ -2437,27 +2473,6 @@ def main() -> None:
     pending_sub.add_parser("list", help="list pending items as JSON lines")
 
     args = parser.parse_args()
-
-    dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
-        "render": cmd_render,
-        "list": cmd_list,
-        "show": cmd_show,
-        "add": cmd_add,
-        "update": cmd_update,
-        "start": cmd_start,
-        "done": cmd_done,
-        "review": cmd_review,
-        "approve": cmd_approve,
-        "reject": cmd_reject,
-        "gate-set": cmd_gate_set,
-        "gate-pass": cmd_gate_pass,
-        "backfill-gate": cmd_backfill_gate,
-        "rename": cmd_rename,
-        "remove": cmd_remove,
-        "block": cmd_block,
-        "unblock": cmd_unblock,
-        "prune": cmd_prune,
-    }
 
     if args.cmd == "pending":
         pending_dispatch: dict[str, Callable[[argparse.Namespace], None]] = {

@@ -109,10 +109,10 @@ opencode exposes two distinct extension surfaces that the official docs keep
 separate (see `opencode.ai/docs/commands/` vs `opencode.ai/docs/skills/`):
 
 - **Commands** (used by this repo): user-typed `/x` invocation, file body IS
-  the prompt template. The 6 commands in this repo are deliberately
+  the prompt template. The 7 commands in this repo are deliberately
   user-typed — `/dashboard`, `/grill-me`, `/standup`, `/second-opinion`,
-  `/make-skill`, `/backlog-item` — because the user explicitly initiates
-  each one in a session the same way they would in Claude Code.
+  `/make-skill`, `/backlog-item`, `/spec` — because the user explicitly
+  initiates each one in a session the same way they would in Claude Code.
 - **Skills** (used by this repo as of 2026-08-03, for `backlog-item`'s
   delegation): model-invoked via the **native `skill` tool** — agents see
   the available-skills list (name + description in a `<available_skills>`

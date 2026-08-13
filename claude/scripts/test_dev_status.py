@@ -2423,7 +2423,6 @@ class BacklogTestCase(unittest.TestCase):
             {
                 "required": True,
                 "criteria": ["check X"],
-                "passed": None,
                 "passed_at": None,
             },
         )
@@ -2476,7 +2475,6 @@ class BacklogTestCase(unittest.TestCase):
                     gate={
                         "required": True,
                         "criteria": ["old"],
-                        "passed": True,
                         "passed_at": "2026-01-01",
                     },
                 )
@@ -2486,7 +2484,6 @@ class BacklogTestCase(unittest.TestCase):
             _args(id="gt-item", json='{"required": true, "criteria": ["new"]}')
         )
         item = self._item_by_id("gt-item")
-        self.assertIsNone(item["gate"]["passed"])
         self.assertIsNone(item["gate"]["passed_at"])
         self.assertEqual(item["gate"]["criteria"], ["new"])
 
@@ -2498,7 +2495,6 @@ class BacklogTestCase(unittest.TestCase):
                     gate={
                         "required": True,
                         "criteria": ["x"],
-                        "passed": None,
                         "passed_at": None,
                     },
                 )
@@ -2506,13 +2502,13 @@ class BacklogTestCase(unittest.TestCase):
         )
         dev_status.cmd_gate_pass(_args(id="gt-item"))
         item = self._item_by_id("gt-item")
-        self.assertTrue(item["gate"]["passed"])
         self.assertIsNotNone(item["gate"]["passed_at"])
+        self.assertNotIn("passed", item["gate"])
 
     def test_41h_gate_pass_refuses_without_required_gate(self):
         for gate in (
             None,
-            {"required": False, "criteria": [], "passed": None, "passed_at": None},
+            {"required": False, "criteria": [], "passed_at": None},
         ):
             self.write_items([make_item("gt-item", gate=gate)])
             err = io.StringIO()
@@ -2543,7 +2539,6 @@ class BacklogTestCase(unittest.TestCase):
                     gate={
                         "required": True,
                         "criteria": ["x", "y"],
-                        "passed": None,
                         "passed_at": None,
                     },
                 )
@@ -2567,7 +2562,6 @@ class BacklogTestCase(unittest.TestCase):
                     gate={
                         "required": True,
                         "criteria": ["x"],
-                        "passed": None,
                         "passed_at": None,
                     },
                 )
@@ -2580,7 +2574,7 @@ class BacklogTestCase(unittest.TestCase):
     def test_41l_done_unaffected_by_absent_or_inert_gate(self):
         for gate in (
             None,
-            {"required": False, "criteria": [], "passed": None, "passed_at": None},
+            {"required": False, "criteria": [], "passed_at": None},
         ):
             self.write_items([make_item("gt-item", status="in-progress", gate=gate)])
             dev_status.cmd_done(_args(id="gt-item"))
@@ -2595,7 +2589,6 @@ class BacklogTestCase(unittest.TestCase):
                     gate={
                         "required": True,
                         "criteria": ["x"],
-                        "passed": None,
                         "passed_at": None,
                     },
                 )
@@ -2619,7 +2612,6 @@ class BacklogTestCase(unittest.TestCase):
                     gate={
                         "required": True,
                         "criteria": ["x"],
-                        "passed": None,
                         "passed_at": None,
                     },
                 )
@@ -2639,7 +2631,6 @@ class BacklogTestCase(unittest.TestCase):
                     gate={
                         "required": True,
                         "criteria": ["x"],
-                        "passed": None,
                         "passed_at": None,
                     },
                 )
@@ -2652,11 +2643,10 @@ class BacklogTestCase(unittest.TestCase):
     def test_41p_dashboard_no_gate_marker_when_passed_or_absent(self):
         for gate in (
             None,
-            {"required": False, "criteria": [], "passed": None, "passed_at": None},
+            {"required": False, "criteria": [], "passed_at": None},
             {
                 "required": True,
                 "criteria": ["x"],
-                "passed": True,
                 "passed_at": "2026-01-01",
             },
         ):
@@ -2685,7 +2675,6 @@ class BacklogTestCase(unittest.TestCase):
                 {
                     "required": False,
                     "criteria": [],
-                    "passed": None,
                     "passed_at": None,
                 },
             )
@@ -2698,7 +2687,6 @@ class BacklogTestCase(unittest.TestCase):
                     gate={
                         "required": True,
                         "criteria": ["x"],
-                        "passed": True,
                         "passed_at": "2026-01-01",
                     },
                 )
@@ -2709,8 +2697,37 @@ class BacklogTestCase(unittest.TestCase):
             dev_status.cmd_backfill_gate(_args(apply=True))
         item = self._item_by_id("bf-item")
         self.assertTrue(item["gate"]["required"])
-        self.assertTrue(item["gate"]["passed"])
+        self.assertEqual(item["gate"]["passed_at"], "2026-01-01")
         self.assertIn("nothing to do", out.getvalue())
+
+    def test_41t_done_succeeds_on_legacy_passed_gate_shape(self):
+        self.write_items(
+            [
+                make_item(
+                    "gt-item",
+                    status="in-progress",
+                    gate={
+                        "required": True,
+                        "criteria": ["x"],
+                        "passed": True,
+                        "passed_at": "2026-01-01",
+                    },
+                )
+            ]
+        )
+        dev_status.cmd_done(_args(id="gt-item"))
+        self.assertEqual(self._item_by_id("gt-item")["status"], "done")
+
+    def test_41u_dispatch_matches_subcommands(self):
+        self.assertEqual(set(dev_status.dispatch), set(dev_status.SUBCOMMANDS))
+
+    def test_41v_add_gate_set_slug_rejected(self):
+        args = _args(json='{"id": "gate-set", "summary": "x"}')
+        err = io.StringIO()
+        with self.assertRaises(SystemExit):
+            with patch("sys.stderr", err):
+                dev_status.cmd_add(args)
+        self.assertIn("reserved", err.getvalue())
 
 
 # ── arg helper ────────────────────────────────────────────────────────────────

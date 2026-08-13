@@ -197,7 +197,9 @@ class WatchcommitActivityStateTestCase(unittest.TestCase):
         # activity state should exist yet, since we bypassed push() above.
         self.assertFalse(self.activity_file.exists())
 
-        watchcommit.push(self.repo, "pushed previously-stuck commit(s)", trigger="retry")
+        watchcommit.push(
+            self.repo, "pushed previously-stuck commit(s)", trigger="retry"
+        )
 
         head_sha = sh(self.repo, "git", "rev-parse", "HEAD").stdout.strip()
         data = self._activity()
