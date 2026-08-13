@@ -228,6 +228,54 @@ def test_links_table_parses_and_sources_exist(links):
         assert spec.dest.startswith("~/")
 
 
+def test_every_claude_script_has_a_links_entry(links):
+    """Every production (non-test) script in claude/scripts/ must have a
+    links.toml entry, or ~/.claude/scripts/<name> silently never exists at
+    install time -- caught live twice already (test_dev_status.py's
+    pre-existing manual symlink papering over a missing entry, then
+    vitals_promotion.py shipping with no entry at all, found via a live
+    grill-me spot-check). Test files are excluded: they're always run
+    in-repo (``python3 test_X.py`` from claude/scripts/), never invoked via
+    the deployed ~/.claude/scripts/ path by any skill or production script.
+    """
+    linked_srcs = {spec.src for spec in links}
+    scripts = sorted((REPO_ROOT / "claude" / "scripts").glob("*.py"))
+    production_scripts = [p for p in scripts if not p.name.startswith("test_")]
+    missing = [
+        p.name
+        for p in production_scripts
+        if f"claude/scripts/{p.name}" not in linked_srcs
+    ]
+    assert not missing, f"claude/scripts scripts missing a links.toml entry: {missing}"
+
+
+def test_no_test_file_has_a_links_entry(links):
+    """The inverse of the coverage rule above: three test files
+    (test_dev_status.py, test_dev_status_sync.py, test_vitals_promotion.py)
+    had accumulated links.toml entries with no functional reason -- nothing
+    in the repo ever invokes a test via the deployed ~/.claude/scripts/
+    path, only via ``python3 test_X.py`` inside the checkout. Removed as
+    unnecessary state; this guards against the pattern creeping back."""
+    linked_test_files = [
+        spec.src
+        for spec in links
+        if spec.src.startswith("claude/scripts/test_") and spec.src.endswith(".py")
+    ]
+    assert not linked_test_files, (
+        f"unnecessary test-file links.toml entries: {linked_test_files}"
+    )
+
+
+def test_claude_script_links_use_correct_dest(links):
+    """A typo'd dest is as broken as a missing entry -- the src still
+    exists so test_links_table_parses_and_sources_exist won't catch it, but
+    ~/.claude/scripts/<name> never gets the right symlink."""
+    for spec in links:
+        if spec.src.startswith("claude/scripts/") and spec.src.endswith(".py"):
+            name = Path(spec.src).name
+            assert spec.dest == f"~/.claude/scripts/{name}", spec.src
+
+
 def test_links_reject_unknown_key(tmp_path):
     bad = tmp_path / "links.toml"
     bad.write_text('[[link]]\nsrc = "a"\ndest = "~/a"\nharnes = "claude"\n')
