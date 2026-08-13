@@ -56,32 +56,54 @@ class ResolvePlanTextTests(unittest.TestCase):
 
 
 class RunAgyWrapperTests(unittest.TestCase):
-    """second_opinion.run_agy is a thin wrapper supplying its fixed model +
+    """second_opinion.run_agy supplies a model (default or env-overridden) +
     BACKEND_TIMEOUT_SECONDS; llm_backends.run_agy's own argv-building is
     covered in test_llm_backends.py."""
 
-    def test_03_supplies_model_and_timeout(self) -> None:
-        with patch.object(
-            second_opinion.llm_backends, "run_agy", return_value="critique"
-        ) as mock_run:
-            with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 300):
+    def test_03_supplies_default_model_and_timeout(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SECOND_OPINION_AGY_MODEL", None)
+            with (
+                patch.object(
+                    second_opinion.llm_backends, "run_agy", return_value="critique"
+                ) as mock_run,
+                patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 300),
+            ):
                 result = second_opinion.run_agy("my prompt")
         self.assertEqual(result, "critique")
         mock_run.assert_called_once_with(
-            "my prompt", model="Gemini 3.1 Pro (High)", timeout=300
+            "my prompt", model=second_opinion.DEFAULT_AGY_MODEL, timeout=300
+        )
+
+    def test_03b_forwards_env_var_model(self) -> None:
+        with (
+            patch.dict(
+                os.environ, {"SECOND_OPINION_AGY_MODEL": "Gemini 3.5 Flash (Medium)"}
+            ),
+            patch.object(
+                second_opinion.llm_backends, "run_agy", return_value="critique"
+            ) as mock_run,
+            patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 300),
+        ):
+            result = second_opinion.run_agy("my prompt")
+        self.assertEqual(result, "critique")
+        mock_run.assert_called_once_with(
+            "my prompt", model="Gemini 3.5 Flash (Medium)", timeout=300
         )
 
 
 class RunCopilotWrapperTests(unittest.TestCase):
     def test_04_forwards_env_var_model(self) -> None:
-        with patch.dict(
-            os.environ, {"SECOND_OPINION_COPILOT_MODEL": "claude-sonnet-4.6"}
-        ):
-            with patch.object(
+        with (
+            patch.dict(
+                os.environ, {"SECOND_OPINION_COPILOT_MODEL": "claude-sonnet-4.6"}
+            ),
+            patch.object(
                 second_opinion.llm_backends, "run_copilot", return_value="critique"
-            ) as mock_run:
-                with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 300):
-                    result = second_opinion.run_copilot("my prompt")
+            ) as mock_run,
+            patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 300),
+        ):
+            result = second_opinion.run_copilot("my prompt")
         self.assertEqual(result, "critique")
         mock_run.assert_called_once_with(
             "my prompt", model="claude-sonnet-4.6", timeout=300
@@ -90,11 +112,13 @@ class RunCopilotWrapperTests(unittest.TestCase):
     def test_05_no_env_var_passes_none(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("SECOND_OPINION_COPILOT_MODEL", None)
-            with patch.object(
-                second_opinion.llm_backends, "run_copilot", return_value="critique"
-            ) as mock_run:
-                with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 300):
-                    second_opinion.run_copilot("my prompt")
+            with (
+                patch.object(
+                    second_opinion.llm_backends, "run_copilot", return_value="critique"
+                ) as mock_run,
+                patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 300),
+            ):
+                second_opinion.run_copilot("my prompt")
         mock_run.assert_called_once_with("my prompt", model=None, timeout=300)
 
 
@@ -127,6 +151,32 @@ class BackendLabelTests(unittest.TestCase):
             self.assertEqual(
                 second_opinion.backend_label("copilot"),
                 f"{second_opinion.BACKEND_LABELS['copilot']} (claude-sonnet-4.6)",
+            )
+
+    def test_54_agy_label_unchanged_when_env_var_unset(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SECOND_OPINION_AGY_MODEL", None)
+            self.assertEqual(
+                second_opinion.backend_label("agy"),
+                second_opinion.BACKEND_LABELS["agy"],
+            )
+
+    def test_55_agy_label_reflects_overridden_model_when_env_var_set(self) -> None:
+        with patch.dict(
+            os.environ, {"SECOND_OPINION_AGY_MODEL": "Gemini 3.5 Flash (Medium)"}
+        ):
+            self.assertEqual(
+                second_opinion.backend_label("agy"),
+                "agy (Gemini 3.5 Flash (Medium))",
+            )
+
+    def test_56_agy_label_unchanged_when_env_var_set_to_default(self) -> None:
+        with patch.dict(
+            os.environ, {"SECOND_OPINION_AGY_MODEL": second_opinion.DEFAULT_AGY_MODEL}
+        ):
+            self.assertEqual(
+                second_opinion.backend_label("agy"),
+                second_opinion.BACKEND_LABELS["agy"],
             )
 
 
@@ -191,11 +241,14 @@ class RunOpencodeTests(unittest.TestCase):
 class CmdDetectTests(unittest.TestCase):
     def test_41_detect_prints_availability_json(self) -> None:
         out = io.StringIO()
-        with patch(
-            "shutil.which", side_effect=lambda b: "/usr/bin/agy" if b == "agy" else None
+        with (
+            patch(
+                "shutil.which",
+                side_effect=lambda b: "/usr/bin/agy" if b == "agy" else None,
+            ),
+            patch("sys.stdout", out),
         ):
-            with patch("sys.stdout", out):
-                second_opinion.cmd_detect(ns())
+            second_opinion.cmd_detect(ns())
         self.assertEqual(
             json.loads(out.getvalue()),
             {"agy": True, "opencode": False, "copilot": False},
@@ -294,9 +347,8 @@ class CmdReviewTests(unittest.TestCase):
 class DieTests(unittest.TestCase):
     def test_47_die_prints_prefixed_message_and_exits_1(self) -> None:
         err = io.StringIO()
-        with self.assertRaises(SystemExit) as cm:
-            with patch("sys.stderr", err):
-                second_opinion.die("something went wrong")
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            second_opinion.die("something went wrong")
         self.assertEqual(cm.exception.code, 1)
         self.assertEqual(
             err.getvalue().strip(), "[second_opinion] something went wrong"

@@ -124,11 +124,17 @@ def _run_command(cmd: list[str]) -> tuple[int, str, str]:
     return llm_backends._run_command(cmd, BACKEND_TIMEOUT_SECONDS)
 
 
+DEFAULT_AGY_MODEL = "Gemini 3.7 Flash (High)"
+
+
 def run_agy(prompt: str) -> str:
-    """Run the ``agy`` backend and return its critique text."""
-    return llm_backends.run_agy(
-        prompt, model="Gemini 3.1 Pro (High)", timeout=BACKEND_TIMEOUT_SECONDS
-    )
+    """Run the ``agy`` backend and return its critique text.
+
+    An explicit model can be forced via the ``SECOND_OPINION_AGY_MODEL`` env
+    var; unset means :data:`DEFAULT_AGY_MODEL`.
+    """
+    model = os.environ.get("SECOND_OPINION_AGY_MODEL", DEFAULT_AGY_MODEL)
+    return llm_backends.run_agy(prompt, model=model, timeout=BACKEND_TIMEOUT_SECONDS)
 
 
 def run_opencode(prompt: str) -> str:
@@ -183,15 +189,20 @@ def run_copilot(prompt: str) -> str:
 
 BACKEND_RUNNERS = {"agy": run_agy, "opencode": run_opencode, "copilot": run_copilot}
 BACKEND_LABELS = {
-    "agy": "agy (Gemini 3.1 Pro, High)",
+    "agy": f"agy ({DEFAULT_AGY_MODEL})",
     "opencode": "opencode (adversary agent)",
     "copilot": "GitHub Copilot CLI",
 }
 
 
 def backend_label(backend: str) -> str:
-    """Return ``backend``'s display label, appending an overridden copilot model if set."""
+    """Return ``backend``'s display label, appending an overridden agy/copilot model if set."""
     label = BACKEND_LABELS[backend]
+    if backend == "agy":
+        model = os.environ.get("SECOND_OPINION_AGY_MODEL")
+        if model and model != DEFAULT_AGY_MODEL:
+            return f"agy ({model})"
+        return label
     if backend == "copilot":
         model = os.environ.get("SECOND_OPINION_COPILOT_MODEL")
         if model:
