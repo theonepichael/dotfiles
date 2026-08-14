@@ -573,3 +573,7 @@ session, no separate config needed.
     branch) and one Fedora (dnf branch), so real package managers get
     exercised without touching the real machine. Requires Docker. Drives
     the current `history.jsonl` manifest path
+    (`~/.local/state/dotfiles/history.jsonl`) through the same
+    rollback/backup engine as the fast tier, but against real installs
+    inside the container rather than a throwaway `HOME` with stubbed
+    subprocesses.
