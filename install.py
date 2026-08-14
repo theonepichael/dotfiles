@@ -34,7 +34,7 @@ import sys
 import tempfile
 import tomllib
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
@@ -117,6 +117,7 @@ CAPS_LOCK_TO_ESCAPE = [
 USAGE = """\
 usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--no-nvim-pin] [--reseed]
        ./install.sh --depart [--yes] [--dry-run]
+       ./install.sh --check-links [--harness=...] [--profile=personal|work]
 
   --harness   required unless --rollback. Comma-separated, at least one of:
               claude, copilot, opencode, agy. No default — every run must
@@ -194,6 +195,29 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=per
               recreate path for a guaranteed pristine reset.
   --yes       skip --depart's interactive confirmation prompt. Only valid
               alongside --depart.
+  --check-links
+              audit the live symlinks against links.toml and exit. Strictly
+              read-only: nothing is created, removed, or repointed, so this
+              is safe to run at any time. Reports four buckets —
+              broken-source (the link is correct but its repo file is
+              gone), wrong-target (the link points somewhere other than
+              links.toml says), not-a-symlink (a real file sits where a
+              link belongs) and orphaned (a symlink an earlier run recorded
+              in the history that no links.toml entry produces anymore,
+              e.g. the entry was deleted or its dest renamed) — none of
+              which a plain re-run surfaces, since symlink() happily
+              creates a dangling link and never revisits a dest that
+              links.toml stopped mentioning. --harness and --profile scope
+              which entries are considered; with no --harness, every
+              harness's entries are checked, which cannot produce false
+              positives because every bucket requires the destination to
+              already exist on disk. Links pointing at the same file in a
+              different checkout of this repo — the normal state of affairs
+              when auditing from a worktree — are collapsed into a single
+              informational note instead of one finding each, and do not
+              affect the exit code. No other flag may be combined with it.
+              Exits 0 when nothing is wrong, 1 when any bucket is
+              non-empty, 2 if links.toml itself cannot be read.
 
 Examples:
   ./install.sh --harness=claude
@@ -203,6 +227,7 @@ Examples:
   ./install.sh --dry-run --harness=claude
   ./install.sh --dry-run --rollback
   ./install.sh --rollback --wipe        # full rollback to a blank slate
+  ./install.sh --check-links            # read-only symlink audit
 
 Exits 0 if every step ran, 1 if any step was skipped (see summary)."""
 
@@ -439,6 +464,7 @@ class Options:
     reseed: bool = False
     depart: bool = False
     yes: bool = False
+    check_links: bool = False
 
 
 @dataclass
@@ -567,6 +593,7 @@ def parse_args(argv: Sequence[str]) -> Options:
     parser.add_argument("--reseed", action="store_true")
     parser.add_argument("--depart", action="store_true")
     parser.add_argument("--yes", action="store_true")
+    parser.add_argument("--check-links", dest="check_links", action="store_true")
     parser.add_argument("-h", "--help", dest="help", action="store_true")
 
     args, extras = parser.parse_known_args(list(argv))
@@ -622,8 +649,26 @@ def parse_args(argv: Sequence[str]) -> Options:
         or args.force
         or args.reseed
         or args.no_nvim_pin
+        or args.check_links
     ):
         _fail("--depart must be used alone, with no other flags")
+
+    # --check-links is a read-only audit, so unlike --depart/--rollback it
+    # tolerates the two flags that scope *which* links.toml entries it
+    # considers (--harness, --profile). Everything else either mutates the
+    # machine or previews a mutation, and would be silently ignored here.
+    # Checked ahead of --rollback's own alone-check so
+    # `--rollback --check-links` names the audit flag, matching how --depart
+    # takes precedence above.
+    if args.check_links and (
+        args.rollback
+        or args.wipe
+        or args.force
+        or args.reseed
+        or args.no_nvim_pin
+        or args.dry_run
+    ):
+        _fail("--check-links must be used alone, apart from --harness and --profile")
 
     if args.yes and not args.depart:
         _fail("--yes can only be used with --depart")
@@ -640,7 +685,12 @@ def parse_args(argv: Sequence[str]) -> Options:
     if args.wipe and not args.rollback:
         _fail("--wipe can only be used with --rollback")
 
-    if not args.rollback and not args.depart and not harness_set:
+    if (
+        not args.rollback
+        and not args.depart
+        and not args.check_links
+        and not harness_set
+    ):
         _fail(
             "no --harness specified — pass at least one of: "
             "claude, copilot, opencode, agy",
@@ -665,6 +715,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         reseed=args.reseed,
         depart=args.depart,
         yes=args.yes,
+        check_links=args.check_links,
     )
 
 
@@ -3491,6 +3542,239 @@ def do_depart(ctx: Context) -> int:
         depart.release_departure_lock(ctx.state_dir)
 
 
+# ── links.toml audit ──────────────────────────────────────────────────────────
+
+CHECK_BUCKET_BROKEN_SOURCE = "broken-source"
+CHECK_BUCKET_WRONG_TARGET = "wrong-target"
+CHECK_BUCKET_NOT_A_SYMLINK = "not-a-symlink"
+CHECK_BUCKET_ORPHANED = "orphaned"
+
+CHECK_BUCKETS = (
+    CHECK_BUCKET_BROKEN_SOURCE,
+    CHECK_BUCKET_WRONG_TARGET,
+    CHECK_BUCKET_NOT_A_SYMLINK,
+    CHECK_BUCKET_ORPHANED,
+)
+
+
+def _link_target(dest: Path) -> Path:
+    """Return what ``dest`` points at, as an absolute path.
+
+    ``symlink`` only ever writes absolute targets, but a link placed there
+    by hand may be relative — resolve those against the link's own
+    directory the way the kernel does, rather than against the cwd.
+    """
+    target = Path(os.readlink(dest))
+    return target if target.is_absolute() else dest.parent / target
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    """Compare two paths that may or may not exist, ignoring symlinked parents.
+
+    A plain string comparison is the common case; the ``resolve`` fallback
+    catches an installer run whose repo path reached the link through a
+    symlink (a symlinked home, ``/tmp`` → ``/private/tmp`` on macOS), which
+    would otherwise read as a wrong target.
+    """
+    if left == right:
+        return True
+    return left.resolve() == right.resolve()
+
+
+def _implied_repo_root(target: Path, relative_src: str) -> Path | None:
+    """Return the repo root ``target`` implies, if it ends with ``relative_src``.
+
+    ``/home/u/dotfiles-wt/claude/CLAUDE.md`` with a ``claude/CLAUDE.md``
+    entry implies ``/home/u/dotfiles-wt``. None if the tail doesn't match,
+    which means the link points at something unrelated rather than at the
+    same file in a different checkout.
+    """
+    tail = Path(relative_src).parts
+    parts = target.parts
+    if len(parts) <= len(tail) or parts[-len(tail) :] != tail:
+        return None
+    return Path(*parts[: -len(tail)])
+
+
+def _is_dotfiles_checkout(root: Path) -> bool:
+    """Return whether ``root`` looks like another checkout of this repo."""
+    return (root / "links.toml").is_file() and (root / "install.py").is_file()
+
+
+def _check_applicable_links(
+    ctx: Context, specs: Sequence[LinkSpec]
+) -> tuple[dict[str, list[str]], dict[Path, int]]:
+    """Classify every applicable ``links.toml`` entry that has something on disk.
+
+    Entries whose destination does not exist at all are silently fine: that
+    is simply a link this machine has not installed (yet), not a defect.
+    That is also what makes the widened-harness default safe — an entry for
+    a harness that was never provisioned has no destination to report on.
+
+    Returns:
+        The findings by bucket, and a count per *other* checkout the live
+        links point into. The second value is not a finding: this repo
+        mandates worktree-first development, so running the audit from a
+        worktree while the machine's links point at the main checkout is
+        the normal case, not a defect (see :func:`do_check_links`).
+    """
+    findings: dict[str, list[str]] = {bucket: [] for bucket in CHECK_BUCKETS}
+    foreign: dict[Path, int] = {}
+    for spec in specs:
+        if not link_applies(spec, ctx):
+            continue
+        src = ctx.dotfiles / spec.src
+        dest = expand_dest(spec.dest, ctx.home)
+        if not dest.is_symlink() and not dest.exists():
+            continue
+
+        if not dest.is_symlink():
+            # Reached through a symlinked *parent* (a directory-level entry
+            # linking the ancestor) the file is still correctly wired, even
+            # though this path is not itself a link.
+            if not _same_path(dest, src):
+                findings[CHECK_BUCKET_NOT_A_SYMLINK].append(
+                    f"{ctx.display(dest)} — a real "
+                    f"{'directory' if dest.is_dir() else 'file'} sits where a "
+                    f"symlink to {src} belongs; the next install run would "
+                    "back it up and replace it"
+                )
+            continue
+
+        target = _link_target(dest)
+        if not _same_path(target, src):
+            other_root = _implied_repo_root(target, spec.src)
+            same_file_other_checkout = (
+                other_root is not None
+                and not _same_path(other_root, ctx.dotfiles)
+                and _is_dotfiles_checkout(other_root)
+            )
+            if same_file_other_checkout:
+                # A dangling link is a real machine problem regardless of
+                # which checkout it points into, so that still gets reported.
+                if not target.exists():
+                    findings[CHECK_BUCKET_BROKEN_SOURCE].append(
+                        f"{ctx.display(dest)} — links to {target}, which no "
+                        "longer exists (dangling symlink)"
+                    )
+                else:
+                    assert other_root is not None  # narrowed by the guard above
+                    foreign[other_root] = foreign.get(other_root, 0) + 1
+                continue
+            findings[CHECK_BUCKET_WRONG_TARGET].append(
+                f"{ctx.display(dest)} — points at {target}, but links.toml says {src}"
+            )
+            continue
+
+        if not src.exists():
+            findings[CHECK_BUCKET_BROKEN_SOURCE].append(
+                f"{ctx.display(dest)} — links to {src}, which no longer "
+                "exists in the repo (dangling symlink)"
+            )
+    return findings, foreign
+
+
+def _check_orphaned_links(
+    ctx: Context, specs: Sequence[LinkSpec], findings: dict[str, list[str]]
+) -> None:
+    """Add manifest-recorded symlinks that links.toml no longer produces.
+
+    Compared against *every* entry's destination rather than only the
+    applicable ones: an entry that is merely gated off on this machine
+    (a mac-only link seen from Linux, a harness not selected this run) has
+    not been removed from links.toml, so its recorded destination is not an
+    orphan — reporting it as one would be a false positive on every
+    cross-platform machine.
+    """
+    known = {expand_dest(spec.dest, ctx.home) for spec in specs}
+    seen: set[Path] = set()
+    for entry in ctx.manifest.entries():
+        if entry.get("kind") != "symlink-created":
+            continue
+        dest = Path(str(entry.get("dest", "")))
+        if dest in known or dest in seen:
+            continue
+        seen.add(dest)
+        # A dest that no longer exists needs no report: a past --rollback,
+        # or the user, already cleaned it up.
+        if not dest.is_symlink() and not dest.exists():
+            continue
+        if dest.is_symlink():
+            detail = f"still symlinked → {_link_target(dest)}"
+        else:
+            detail = "still present as a real file"
+        findings[CHECK_BUCKET_ORPHANED].append(
+            f"{ctx.display(dest)} — recorded by a past install run, but no "
+            f"links.toml entry produces it anymore; {detail}"
+        )
+
+
+def do_check_links(ctx: Context) -> int:
+    """Audit the live symlinks against ``links.toml`` and report, changing nothing.
+
+    Fills the gap between the two existing consistency checks: ``--rollback``
+    only inspects what the history recorded and only asks whether the target
+    string still matches, while ``--depart`` compares against an install-time
+    baseline. Neither notices that a link's repo-side source was deleted or
+    renamed, and a plain re-run does not either — ``symlink`` never checks
+    ``src.exists()`` before creating the link, and stops visiting a
+    destination the moment its links.toml entry goes away.
+
+    Links pointing at the same file in a *different* checkout of this repo
+    are reported as an informational note rather than as findings, and do
+    not affect the exit code: this repo mandates worktree-first
+    development, so auditing from a worktree while the machine is wired to
+    the main checkout is routine, and burying the real findings under one
+    line per entry would make the tool useless exactly when it is most
+    likely to be reached for.
+
+    Returns:
+        Exit status — 0 if every bucket is empty, 1 if anything was found.
+    """
+    # With no --harness, audit every harness's entries. Widening cannot
+    # invent findings: each bucket below requires a destination that already
+    # exists on disk, which an unprovisioned harness's entry never has.
+    if not ctx.opts.harnesses:
+        ctx = replace(ctx, opts=replace(ctx.opts, harnesses=VALID_HARNESSES))
+
+    specs = load_links(ctx.dotfiles / "links.toml")
+    findings, foreign = _check_applicable_links(ctx, specs)
+    _check_orphaned_links(ctx, specs, findings)
+
+    _header("==> links.toml audit (read-only)")
+    for root, count in sorted(foreign.items()):
+        print(
+            PALETTE.dim(
+                f"  note: {count} link(s) point into {root} rather than this "
+                f"checkout ({ctx.dotfiles}) — you are running from a worktree, "
+                "so those entries were not audited. Re-run --check-links from "
+                "that checkout to include them."
+            )
+        )
+
+    total = sum(len(lines) for lines in findings.values())
+    if not total:
+        audited = len(specs) - sum(foreign.values())
+        print(
+            PALETTE.ok(
+                f"  {audited} of {len(specs)} entries checked — every applicable "
+                "link is present, correct, and backed by a file that exists."
+            )
+        )
+        return 0
+
+    for bucket in CHECK_BUCKETS:
+        lines = findings[bucket]
+        if not lines:
+            continue
+        print(PALETTE.header(f"  {bucket} ({len(lines)}):"))
+        for line in sorted(lines):
+            print(PALETTE.warn(f"    {line}"))
+
+    print(PALETTE.warn(f"⚠ {total} link problem(s) found — nothing was changed."))
+    return 1
+
+
 # ── entry point ───────────────────────────────────────────────────────────────
 
 
@@ -3536,11 +3820,12 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Parse arguments, then either roll back or install.
+    """Parse arguments, then roll back, depart, audit links, or install.
 
     Returns:
-        Process exit status: 0 clean, 1 something was skipped, 2 refused
-        (bad arguments, or the work-profile guard).
+        Process exit status: 0 clean, 1 something was skipped (or, under
+        ``--check-links``, something was found), 2 refused (bad arguments,
+        an unreadable links.toml, or the work-profile guard).
     """
     global PALETTE
     PALETTE = Palette(color_enabled(sys.stdout))
@@ -3553,6 +3838,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if opts.depart:
         return do_depart(ctx)
+
+    if opts.check_links:
+        try:
+            return do_check_links(ctx)
+        except ValueError as exc:
+            print(
+                PALETTE.error(f"could not read the symlink table: {exc}"),
+                file=sys.stderr,
+            )
+            return 2
 
     if work_guard_blocks(ctx):
         print(
