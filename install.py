@@ -2017,6 +2017,21 @@ def bootstrap_neovim(ctx: Context) -> None:
 # ── departure baseline capture ──────────────────────────────────────────────
 
 
+def _is_state_dir_or_its_ancestor(path: Path, ctx: Context) -> bool:
+    """Whether ``path`` is the state directory itself, or one of its own ancestors.
+
+    The state directory holds this feature's own ``baseline.json``/
+    ``history.jsonl``/``departure.jsonl``/lock — its removal (and any of
+    its ancestors that become empty as a result) is entirely
+    ``_finalize_departure_state``'s job, run *after* the generic directory
+    phase. Letting the generic phase track and act on these paths would
+    make it try to rmdir them while they (or the state directory nested
+    inside them) still hold files that haven't been cleared yet — an
+    unbreakable "not empty" that would permanently block a clean departure.
+    """
+    return path == ctx.state_dir or path in ctx.state_dir.parents
+
+
 def _departure_owned_destinations(
     ctx: Context, specs: Sequence[LinkSpec]
 ) -> list[Path]:
@@ -2057,11 +2072,10 @@ def capture_departure_baseline(ctx: Context, specs: Sequence[LinkSpec]) -> None:
 
     def _track_ancestors(path: Path) -> None:
         for ancestor in depart.ancestor_directories(path, ctx.home):
-            if ancestor not in seen_dirs:
-                seen_dirs.add(ancestor)
-                records[depart.directory_key(ancestor)] = depart.capture_directory(
-                    ancestor
-                )
+            if ancestor in seen_dirs or _is_state_dir_or_its_ancestor(ancestor, ctx):
+                continue
+            seen_dirs.add(ancestor)
+            records[depart.directory_key(ancestor)] = depart.capture_directory(ancestor)
 
     for rc_name in depart.RC_FILENAMES:
         rc_path = ctx.home / rc_name
@@ -2080,10 +2094,14 @@ def capture_departure_baseline(ctx: Context, specs: Sequence[LinkSpec]) -> None:
         ctx.home / ".local" / "bin" / "uv",
         ctx.home / ".local" / "bin" / "oh-my-posh",
         ctx.home / ".vim" / "autoload" / "plug.vim",
-        ctx.profile_marker,
     ):
         records[depart.file_key(path)] = depart.capture_file(path)
         _track_ancestors(path)
+
+    records[depart.file_key(ctx.profile_marker)] = depart.capture_file(
+        ctx.profile_marker
+    )
+    _track_ancestors(ctx.profile_marker)
 
     for path in (
         ctx.home / ".local" / "bin" / "bat",
@@ -2570,12 +2588,14 @@ def _recapture_departure_live_state(
     seen_dirs: set[Path] = set()
 
     def _track_ancestors(path: Path) -> None:
+        # See capture_departure_baseline's identical helper: the state
+        # directory (and its own ancestors) are excluded — their lifecycle
+        # is _finalize_departure_state's job, run after this phase.
         for ancestor in depart.ancestor_directories(path, ctx.home):
-            if ancestor not in seen_dirs:
-                seen_dirs.add(ancestor)
-                records[depart.directory_key(ancestor)] = depart.capture_directory(
-                    ancestor
-                )
+            if ancestor in seen_dirs or _is_state_dir_or_its_ancestor(ancestor, ctx):
+                continue
+            seen_dirs.add(ancestor)
+            records[depart.directory_key(ancestor)] = depart.capture_directory(ancestor)
 
     for dest in _departure_owned_destinations(ctx, specs):
         records[depart.file_key(dest)] = depart.capture_file(dest)
@@ -2588,10 +2608,14 @@ def _recapture_departure_live_state(
         ctx.home / ".local" / "bin" / "uv",
         ctx.home / ".local" / "bin" / "oh-my-posh",
         ctx.home / ".vim" / "autoload" / "plug.vim",
-        ctx.profile_marker,
     ):
         records[depart.file_key(path)] = depart.capture_file(path)
         _track_ancestors(path)
+
+    records[depart.file_key(ctx.profile_marker)] = depart.capture_file(
+        ctx.profile_marker
+    )
+    _track_ancestors(ctx.profile_marker)
 
     for path in (
         ctx.home / ".local" / "bin" / "bat",
@@ -2621,6 +2645,54 @@ def _recapture_departure_live_state(
     return records
 
 
+def _apply_rc_file_reclassification(
+    ctx: Context, baseline: depart.Baseline, report: dict[str, depart.Classification]
+) -> None:
+    """Override the generic result for each rc file with the append-aware rule."""
+    for rc_name in depart.RC_FILENAMES:
+        rc_path = ctx.home / rc_name
+        key = depart.file_key(rc_path)
+        recorded = baseline.value_for(key)
+        if recorded is None or recorded.get("state") != depart.STATE_PRESENT:
+            continue
+        blob_digest = recorded.get("blob")
+        baseline_content = (
+            depart.read_blob(ctx.state_dir, str(blob_digest))
+            if isinstance(blob_digest, str)
+            else None
+        )
+        try:
+            live_content: bytes | None = rc_path.read_bytes()
+        except OSError:
+            live_content = None
+        override = depart.reclassify_rc_file(recorded, baseline_content, live_content)
+        if override is not None:
+            report[key] = override
+
+
+def _apply_symlink_pair_reclassification(
+    ctx: Context,
+    specs: Sequence[LinkSpec],
+    baseline: depart.Baseline,
+    live: dict[str, dict[str, object]],
+    report: dict[str, depart.Classification],
+) -> None:
+    """Override the generic per-key results for each backed-up-then-symlinked pair."""
+    for dest in _departure_owned_destinations(ctx, specs):
+        file_key = depart.file_key(dest)
+        symlink_key = depart.symlink_key(dest)
+        if file_key not in report or symlink_key not in report:
+            continue
+        override = depart.reclassify_symlink_destination_pair(
+            baseline.value_for(file_key),
+            live.get(file_key, {"state": depart.STATE_UNKNOWN}),
+            baseline.value_for(symlink_key),
+            live.get(symlink_key, {"state": depart.STATE_UNKNOWN}),
+        )
+        if override is not None:
+            report[file_key], report[symlink_key] = override
+
+
 def build_preflight_report(
     ctx: Context, specs: Sequence[LinkSpec]
 ) -> dict[str, depart.Classification] | None:
@@ -2634,6 +2706,9 @@ def build_preflight_report(
         recorded = baseline.value_for(key)
         live_value = live.get(key, {"state": depart.STATE_UNKNOWN})
         report[key] = depart.classify_ownership_key(key, recorded, live_value)
+
+    _apply_rc_file_reclassification(ctx, baseline, report)
+    _apply_symlink_pair_reclassification(ctx, specs, baseline, live, report)
     return report
 
 
@@ -2675,18 +2750,280 @@ def _read_confirmation_token() -> str:
     return line
 
 
-def do_depart(ctx: Context) -> int:
-    """Preview — and, once Implementation Sequence step 4 lands, execute — a
-    pristine-state departure.
+def _restore_target_still_occupied(dest: Path) -> bool:
+    return dest.exists() or dest.is_symlink()
 
-    This increment implements the zero-evidence refusal, the four-bucket
-    preflight report, and the confirmation/exit-code contract from step 3.
-    The classifier is deliberately conservative (see
-    ``depart.classify_ownership_key``): only unambiguous cases land in
-    ``owned``, so a confirmed real run currently has nothing safe to act on
-    beyond what preflight already reports — the actual cleanup engine is
-    step 4 and is not implemented yet, so a confirmed run stops after
-    preflight without mutating anything.
+
+def _execute_restore(
+    ctx: Context, dest: Path, recorded: dict[str, object], *, expect_absent: bool
+) -> str:
+    """Restore ``dest``'s content from its recorded blob.
+
+    ``expect_absent`` is set only for the backed-up-then-symlinked pair
+    case, where the paired symlink was just removed in the prior phase —
+    if ``dest`` is unexpectedly occupied afterward, something else has
+    claimed the path and the restore aborts rather than overwriting it.
+    For a plain in-place restore (an appended-to rc file), ``dest`` is
+    expected to already exist and gets overwritten with the recorded
+    content directly.
+    """
+    digest = recorded.get("blob")
+    if not isinstance(digest, str):
+        return "unresolved: no blob recorded for restore"
+    content = depart.read_blob(ctx.state_dir, digest)
+    if content is None:
+        return "unresolved: recorded blob is missing or unreadable"
+    if expect_absent and _restore_target_still_occupied(dest):
+        return "unresolved: destination still occupied after symlink removal"
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(content)
+    except OSError as exc:
+        return f"unresolved: restore failed ({exc})"
+    return "ok"
+
+
+def _execute_remove_symlink(path: Path) -> str:
+    if not path.is_symlink():
+        return "ok: already absent"
+    try:
+        path.unlink()
+    except OSError as exc:
+        return f"unresolved: could not remove symlink ({exc})"
+    return "ok"
+
+
+def _execute_remove_file(path: Path) -> str:
+    if not path.is_file() or path.is_symlink():
+        return "ok: already absent"
+    try:
+        path.unlink()
+    except OSError as exc:
+        return f"unresolved: could not remove file ({exc})"
+    return "ok"
+
+
+def _maybe_consume_bak(dest: Path, baseline: depart.Baseline) -> None:
+    """Delete ``dest``'s ``.bak`` once a clean restore succeeds, if it's
+    provably departure-owned — never touch a ``.bak`` this feature can't
+    prove it created.
+
+    Only ever called after :func:`_execute_restore` has already returned
+    ``"ok"`` — its authoritative source is the content blob, so a
+    qualifying ``.bak`` is now redundant leftover, not a second restore
+    source. See depart.reclassify_symlink_destination_pair's docstring and
+    Implementation Sequence step 4's ``.bak`` provenance rule.
+    """
+    bak = dest.with_name(dest.name + ".bak")
+    file_recorded = baseline.value_for(depart.file_key(dest))
+    bak_recorded = baseline.value_for(depart.file_key(bak))
+    if not (
+        file_recorded is not None
+        and file_recorded.get("state") == depart.STATE_PRESENT
+        and bak_recorded is not None
+        and bak_recorded.get("state") == depart.STATE_ABSENT
+    ):
+        return
+    try:
+        if bak.is_file() and not bak.is_symlink():
+            bak.unlink()
+    except OSError:
+        pass  # best-effort cleanup — never fails the restore itself
+
+
+def execute_file_symlink_phase(
+    ctx: Context,
+    baseline: depart.Baseline,
+    report: dict[str, depart.Classification],
+    ledger: depart.DepartureLedger,
+) -> None:
+    """Execute every owned ``file:``/``symlink:`` action, in pinned order.
+
+    Symlink removals run before same-path file restores — the identical
+    problem ``do_rollback``'s ``restored_dests`` ordering already solves —
+    so a paired restore never finds its own soon-to-be-removed symlink
+    still occupying the path.
+    """
+    done = ledger.completed_keys()
+    owned = {
+        key: c
+        for key, c in report.items()
+        if c.bucket == depart.BUCKET_OWNED
+        and depart.key_type(key) in ("file", "symlink")
+        and key not in done
+    }
+
+    for key in sorted(owned):
+        c = owned[key]
+        if depart.key_type(key) != "symlink" or c.action != depart.ACTION_REMOVE:
+            continue
+        path = Path(key.partition(":")[2])
+        ledger.record(key, c.action, _execute_remove_symlink(path))
+
+    for key in sorted(owned):
+        c = owned[key]
+        if depart.key_type(key) != "file":
+            continue
+        path = Path(key.partition(":")[2])
+        if c.action == depart.ACTION_REMOVE:
+            ledger.record(key, c.action, _execute_remove_file(path))
+            continue
+        recorded = baseline.value_for(key) or {}
+        paired_symlink = report.get(depart.symlink_key(path))
+        expect_absent = (
+            paired_symlink is not None
+            and paired_symlink.bucket == depart.BUCKET_OWNED
+            and paired_symlink.action == depart.ACTION_REMOVE
+        )
+        outcome = _execute_restore(ctx, path, recorded, expect_absent=expect_absent)
+        if outcome == "ok":
+            _maybe_consume_bak(path, baseline)
+        ledger.record(key, c.action or "restore", outcome)
+
+
+def _wholesale_removal_directories(ctx: Context) -> set[Path]:
+    """Directories removed wholesale (bypassing the empty-only rule) when owned.
+
+    The Neovim fallback prefix and Nerd Font directory (tree-manifest
+    artifacts) plus the three shared Neovim state/cache dirs — matching
+    Implementation Sequence step 4's named exceptions to the generic
+    empty-only ``directory:`` removal rule.
+    """
+    wholesale = {
+        ctx.home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont",
+        ctx.home / ".local" / "opt" / "neovim",
+    }
+    wholesale.update(ctx.home.joinpath(*parts) for parts in depart.SHARED_NEOVIM_DIRS)
+    return wholesale
+
+
+def _execute_remove_directory(path: Path, *, wholesale: bool) -> str:
+    try:
+        if path.is_symlink() or not path.is_dir():
+            return "ok: already absent"
+        if wholesale:
+            shutil.rmtree(path)
+            return "ok"
+        if any(path.iterdir()):
+            return "unresolved: directory not empty"
+        path.rmdir()
+    except OSError as exc:
+        return f"unresolved: {exc}"
+    return "ok"
+
+
+def execute_directory_phase(
+    ctx: Context,
+    report: dict[str, depart.Classification],
+    ledger: depart.DepartureLedger,
+) -> None:
+    """Execute every owned ``directory:`` action, deepest-path-first.
+
+    Deepest-first so a parent directory is only empty-checked after its own
+    contents have already been processed this same run.
+    """
+    done = ledger.completed_keys()
+    wholesale_dirs = _wholesale_removal_directories(ctx)
+    owned_dirs = [
+        key
+        for key, c in report.items()
+        if c.bucket == depart.BUCKET_OWNED
+        and depart.key_type(key) == "directory"
+        and c.action == depart.ACTION_REMOVE
+        and key not in done
+    ]
+
+    def _depth(key: str) -> int:
+        return len(Path(key.partition(":")[2]).parts)
+
+    for key in sorted(owned_dirs, key=_depth, reverse=True):
+        path = Path(key.partition(":")[2])
+        outcome = _execute_remove_directory(path, wholesale=path in wholesale_dirs)
+        ledger.record(key, depart.ACTION_REMOVE, outcome)
+
+
+def execute_runtime_phase(
+    ctx: Context,
+    report: dict[str, depart.Classification],
+    ledger: depart.DepartureLedger,
+) -> None:
+    """Remove the NVM root wholesale, if owned and not already done."""
+    key = depart.runtime_key(ctx.home / ".nvm")
+    if key in ledger.completed_keys():
+        return
+    c = report.get(key)
+    if c is None or c.bucket != depart.BUCKET_OWNED or c.action != depart.ACTION_REMOVE:
+        return
+    outcome = _execute_remove_directory(ctx.home / ".nvm", wholesale=True)
+    ledger.record(key, depart.ACTION_REMOVE, outcome)
+
+
+def execute_departure(
+    ctx: Context,
+    baseline: depart.Baseline,
+    report: dict[str, depart.Classification],
+) -> depart.DepartureLedger:
+    """Perform every safe ``owned`` action, retry-safe via the departure ledger.
+
+    Order: file/symlink restore-or-remove, then directories deepest-first,
+    then the NVM runtime. Package removal and service/linger handling are
+    not implemented yet — no ``package:``/``service:`` ownership keys exist
+    in any baseline this version of the installer captures (see the step 2
+    live-wiring follow-up), so there is nothing yet for those phases to do.
+    """
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
+    execute_file_symlink_phase(ctx, baseline, report, ledger)
+    execute_directory_phase(ctx, report, ledger)
+    execute_runtime_phase(ctx, report, ledger)
+    return ledger
+
+
+def _finalize_departure_state(ctx: Context) -> None:
+    """After a fully successful departure: release the lock and delete state.
+
+    Deletes baseline snapshots, ``baseline.json``, ``history.jsonl``,
+    ``departure.jsonl``, the profile marker, and the state directory itself
+    if it's now empty. Only called when zero unresolved/drifted items
+    remain — a partial departure retains everything for a retry.
+
+    Also makes a best-effort (non-ledger, never-blocking) sweep of the
+    state directory's own now-possibly-empty ancestors — ``~/.local/state``
+    and ``~/.local`` — since the generic directory phase deliberately never
+    touches them (see ``_is_state_dir_or_its_ancestor``) precisely because
+    their emptiness could only ever be known *after* this cleanup runs.
+    """
+    depart.release_departure_lock(ctx.state_dir)
+    for path in _departure_state_paths(ctx.state_dir):
+        path.unlink(missing_ok=True)
+    ctx.manifest.path.unlink(missing_ok=True)
+    ctx.profile_marker.unlink(missing_ok=True)
+    if ctx.state_dir.is_dir() and not any(ctx.state_dir.iterdir()):
+        ctx.state_dir.rmdir()
+
+    ancestor = ctx.state_dir.parent
+    while ancestor != ctx.home and ctx.home in ancestor.parents:
+        try:
+            if not ancestor.is_dir() or any(ancestor.iterdir()):
+                break
+            ancestor.rmdir()
+        except OSError:
+            break
+        ancestor = ancestor.parent
+
+
+def do_depart(ctx: Context) -> int:
+    """Preview and execute a pristine-state departure.
+
+    Implements the zero-evidence refusal, the four-bucket preflight
+    report, the confirmation/exit-code contract, retryable execution via
+    the departure ledger, and advisory-lock acquisition/release from
+    Implementation Sequence steps 3 and 4. The classifier is deliberately
+    conservative (see ``depart.classify_ownership_key`` and its two named
+    reclassification overrides) — anything it can't classify with
+    confidence lands in ``unresolved`` rather than being guessed at, so
+    this only ever mutates what preflight already reported as ``owned``.
+    Package removal and service/linger handling are not implemented yet
+    (see ``execute_departure``'s docstring).
     """
     baseline_file = depart.baseline_path(ctx.state_dir)
     if not baseline_file.is_file():
@@ -2740,13 +3077,60 @@ def do_depart(ctx: Context) -> int:
             )
             return 2
 
-    print(
-        PALETTE.warn(
-            "Departure cleanup (Implementation Sequence step 4) is not yet "
-            "implemented — no changes were made."
+    acquired, stale = depart.acquire_departure_lock(ctx.state_dir)
+    if not acquired:
+        print(
+            PALETTE.error("another --depart is already running on this machine"),
+            file=sys.stderr,
         )
-    )
-    return 1
+        return 2
+    if stale is not None:
+        print(
+            PALETTE.warn(
+                f"reclaimed a stale departure lock (was held by pid {stale.pid})"
+            )
+        )
+
+    try:
+        baseline = depart.load_baseline(ctx.state_dir)
+        if baseline is None:
+            print(
+                PALETTE.error(
+                    f"no baseline at {baseline_file} — nothing to depart from"
+                ),
+                file=sys.stderr,
+            )
+            return 2
+
+        ledger = execute_departure(ctx, baseline, report)
+        failed = [
+            e
+            for e in ledger.entries()
+            if str(e.get("outcome", "")).startswith("unresolved")
+        ]
+        unresolved_keys = [
+            key
+            for key, c in report.items()
+            if c.bucket in (depart.BUCKET_UNRESOLVED, depart.BUCKET_DRIFTED)
+        ]
+
+        if not failed and not unresolved_keys:
+            _finalize_departure_state(ctx)
+            print(
+                PALETTE.header("Departure complete — no installer footprint remains.")
+            )
+            return 0
+
+        print(
+            PALETTE.warn(
+                f"⚠ departure incomplete — {len(failed) + len(unresolved_keys)} "
+                "item(s) remain unresolved (see the preflight report above); "
+                "re-run --depart to retry"
+            )
+        )
+        return 1
+    finally:
+        depart.release_departure_lock(ctx.state_dir)
 
 
 # ── entry point ───────────────────────────────────────────────────────────────

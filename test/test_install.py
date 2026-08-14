@@ -14,6 +14,7 @@ Requires Python 3.12+.
 
 import io
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -2052,6 +2053,72 @@ def test_capture_departure_baseline_runs_via_run_install(home, links, offline_in
     assert depart.baseline_path(ctx.state_dir).is_file()
 
 
+# ── build_preflight_report: the two named restore reclassifications ────────
+
+
+def test_preflight_reclassifies_appended_rc_file_as_owned_restore(
+    home, links, offline_install
+):
+    (home / ".zshrc").write_text("original zshrc content\n")
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)  # captures baseline with original content
+
+    # links.toml itself symlinks ~/.zshrc into the repo, so writing through
+    # the live symlink would edit the repo's own tracked file — unlink it
+    # first and replace it with a plain file simulating NVM/_install_uv/
+    # oh-my-posh appending to the rc file, without touching the checkout.
+    zshrc = home / ".zshrc"
+    assert zshrc.is_symlink()
+    zshrc.unlink()
+    zshrc.write_text("original zshrc content\nexport NVM_DIR=...\n")
+
+    report = install.build_preflight_report(make_ctx(home), links)
+    c = report[depart.file_key(zshrc)]
+    assert c.bucket == "owned"
+    assert c.action == "restore"
+
+
+def test_preflight_leaves_edited_rc_file_unresolved(home, links, offline_install):
+    (home / ".zshrc").write_text("original zshrc content\n")
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    # links.toml itself symlinks ~/.zshrc into the repo, so writing through
+    # the live symlink would edit the repo's own tracked file — unlink it
+    # first and replace it with a plain file to simulate an edited/replaced
+    # rc file without touching the checkout.
+    zshrc = home / ".zshrc"
+    assert zshrc.is_symlink()
+    zshrc.unlink()
+    zshrc.write_text("completely different content\n")
+
+    report = install.build_preflight_report(make_ctx(home), links)
+    c = report[depart.file_key(zshrc)]
+    assert c.bucket == "unresolved"
+
+
+def test_preflight_reclassifies_backed_up_then_symlinked_pair(
+    home, links, offline_install
+):
+    dest = home / ".vimrc"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("my own vimrc\n")
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)  # backs dest up to .vimrc.bak, symlinks over it
+
+    assert dest.is_symlink()
+    backup = dest.with_name(dest.name + ".bak")
+    assert backup.read_text() == "my own vimrc\n"
+
+    report = install.build_preflight_report(make_ctx(home), links)
+    file_c = report[depart.file_key(dest)]
+    symlink_c = report[depart.symlink_key(dest)]
+    assert file_c.bucket == "owned"
+    assert file_c.action == "restore"
+    assert symlink_c.bucket == "owned"
+    assert symlink_c.action == "remove"
+
+
 # ── rollback deletes departure state ────────────────────────────────────────
 
 
@@ -2165,8 +2232,11 @@ def test_do_depart_yes_bypasses_prompt_entirely(
     monkeypatch.setattr(sys.stdin, "isatty", _boom)
     code = install.do_depart(make_ctx(home, yes=True))
     out = capsys.readouterr().out
-    assert code == 1  # cleanup engine (step 4) not implemented yet
-    assert "not yet" in out
+    # Everything this fresh install created is absent-at-baseline, so a
+    # full departure succeeds and leaves no trace.
+    assert code == 0
+    assert "Departure complete" in out
+    assert not any(home.iterdir())
 
 
 def test_do_depart_correct_token_proceeds_past_confirmation(
@@ -2178,8 +2248,9 @@ def test_do_depart_correct_token_proceeds_past_confirmation(
     monkeypatch.setattr(sys, "stdin", _FakeStdin(True, "DEPART\n"))
     code = install.do_depart(make_ctx(home))
     out = capsys.readouterr().out
-    assert code == 1
-    assert "not yet" in out
+    assert code == 0
+    assert "Departure complete" in out
+    assert not any(home.iterdir())
 
 
 @pytest.mark.parametrize("token", ["nope\n", " DEPART \n", "depart\n", ""])
@@ -2205,4 +2276,99 @@ def test_do_depart_token_without_trailing_newline_still_matches(
 
     monkeypatch.setattr(sys, "stdin", _FakeStdin(True, "DEPART"))
     code = install.do_depart(make_ctx(home))
-    assert code == 1
+    assert code == 0
+
+
+# ── do_depart execution: the two named restore cases, end to end ──────────
+
+
+def test_depart_restores_backed_up_then_symlinked_destination(
+    home, links, offline_install
+):
+    dest = home / ".vimrc"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("my own vimrc\n")
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+    assert dest.is_symlink()
+
+    code = install.do_depart(make_ctx(home, yes=True))
+
+    assert code == 0
+    assert dest.is_file() and not dest.is_symlink()
+    assert dest.read_text() == "my own vimrc\n"
+    assert not dest.with_name(dest.name + ".bak").exists()
+
+
+def test_depart_restores_appended_rc_file(home, links, offline_install):
+    zshrc = home / ".zshrc"
+    zshrc.write_text("original zshrc content\n")
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)  # baseline blob captures the original content
+
+    # links.toml symlinks ~/.zshrc into the repo; unlink first so writing
+    # the "appended" simulation doesn't touch the checkout (see the
+    # preflight reclassification tests' identical caveat).
+    assert zshrc.is_symlink()
+    zshrc.unlink()
+    zshrc.write_text("original zshrc content\nexport NVM_DIR=...\n")
+
+    code = install.do_depart(make_ctx(home, yes=True))
+
+    assert code == 0
+    assert zshrc.read_text() == "original zshrc content\n"
+
+
+def test_depart_leaves_unrelated_files_untouched(home, links, offline_install):
+    unrelated = home / "my-notes.txt"
+    unrelated.write_text("keep me\n")
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    code = install.do_depart(make_ctx(home, yes=True))
+
+    assert code == 0
+    assert unrelated.read_text() == "keep me\n"
+
+
+def test_depart_retry_skips_already_ledger_completed_actions(
+    home, links, offline_install, monkeypatch
+):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    baseline = depart.load_baseline(ctx.state_dir)
+    report = install.build_preflight_report(make_ctx(home), links)
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
+    install.execute_file_symlink_phase(make_ctx(home), baseline, report, ledger)
+    completed_after_first_pass = ledger.completed_keys()
+    assert completed_after_first_pass  # the fresh install created plenty to remove
+
+    calls = []
+    real_remove = install._execute_remove_file
+
+    def _tracking_remove(path):
+        calls.append(path)
+        return real_remove(path)
+
+    monkeypatch.setattr(install, "_execute_remove_file", _tracking_remove)
+    install.execute_file_symlink_phase(make_ctx(home), baseline, report, ledger)
+
+    assert calls == []  # nothing already in the ledger was re-attempted
+
+
+def test_depart_second_lock_acquisition_refuses_while_first_is_live(
+    home, links, offline_install, monkeypatch
+):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    acquired, _ = depart.acquire_departure_lock(
+        ctx.state_dir, pid=os.getpid(), start_time_fn=depart.process_start_time
+    )
+    assert acquired is True
+    try:
+        code = install.do_depart(make_ctx(home, yes=True))
+        assert code == 2
+    finally:
+        depart.release_departure_lock(ctx.state_dir, pid=os.getpid())
