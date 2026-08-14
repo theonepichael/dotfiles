@@ -321,6 +321,42 @@ class RunOpencodeTests(unittest.TestCase):
             second_opinion.run_opencode("my prompt")
         self.assertNotIn("-m", box["cmd"])
 
+    def test_60_tool_use_event_raises_backend_error(self) -> None:
+        # Regression: the adversary agent must be stateless and text-only; a
+        # tool_use event means a swapped-in model took a real shell/file
+        # action instead of critiquing, so fail loud rather than swallow it.
+        stdout = (
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {"tool": "bash", "state": {"status": "completed"}},
+                }
+            )
+            + "\n"
+        )
+        with self._run_command_returning(stdout):
+            with self.assertRaises(second_opinion.BackendError) as cm:
+                second_opinion.run_opencode("prompt")
+        self.assertIn("bash", str(cm.exception))
+        self.assertIn("instead of returning", str(cm.exception))
+
+    def test_61_tool_use_raises_even_with_text_chunks(self) -> None:
+        stdout = (
+            json.dumps({"type": "text", "part": {"text": "the plan looks fine"}})
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {"tool": "read", "state": {"status": "completed"}},
+                }
+            )
+            + "\n"
+        )
+        with self._run_command_returning(stdout):
+            with self.assertRaises(second_opinion.BackendError) as cm:
+                second_opinion.run_opencode("prompt")
+        self.assertIn("read", str(cm.exception))
+
 
 class CmdDetectTests(unittest.TestCase):
     def test_41_detect_prints_availability_json(self) -> None:

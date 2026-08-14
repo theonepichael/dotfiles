@@ -12,3 +12,8 @@ harness CLIs, flags, or behavior get an entry going forward.
   `--force` previously bypassed the recap freshness cache with no destructive
   semantics; the new flag name matches that intent. `prune --force` is
   unchanged.
+- `second_opinion.py`'s opencode backend now fails hard if the adversary
+  agent emits a `tool_use` event, instead of silently returning whatever text
+  also appeared; the `adversary` agent is now text-only by construction
+  (`"permission": "deny"`). Closes the gap where a swapped-in model could
+  take real shell/file actions rather than returning a stateless critique.

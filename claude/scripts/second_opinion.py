@@ -38,6 +38,7 @@ from llm_backends import (
     BackendError,
     _opencode_json_events,
     _opencode_text_chunks,
+    _raise_on_tool_use,
     _safe_get,
     available_backends,
 )
@@ -165,9 +166,12 @@ def run_opencode(prompt: str) -> str:
     env var; unset/empty means the live opencode config's model.
 
     Raises:
-        BackendError: If the event stream has no text chunks — either
-            because an explicit error event was emitted, or because
-            nothing recognizable was produced at all.
+        BackendError: If the event stream contains a ``tool_use`` event — the
+            adversary agent must be stateless and text-only, so a swapped-in
+            model taking real shell/file actions is a hard failure, not a
+            silently swallowed event — or if it has no text chunks: either an
+            explicit error event was emitted, or nothing recognizable was
+            produced at all.
     """
     cmd = [
         "opencode",
@@ -184,6 +188,7 @@ def run_opencode(prompt: str) -> str:
     cmd.append(prompt)
     _, stdout, stderr = _run_command(cmd)
     events = _opencode_json_events(stdout)
+    _raise_on_tool_use(events, context="adversary agent")
     chunks = _opencode_text_chunks(events)
     if chunks:
         return "".join(chunks).strip()

@@ -209,6 +209,45 @@ def _opencode_text_chunks(events: list[dict[str, object]]) -> list[str]:
     return chunks
 
 
+def _opencode_tool_use_events(
+    events: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Return the subset of opencode events that represent a tool invocation.
+
+    opencode's ``--format json`` stream emits one ``tool_use`` event per
+    completed or failed tool call. A text-only caller (an adversarial
+    critique, a recap) must never see one: its presence means the agent took
+    a real shell/file action instead of replying with prose.
+    """
+    return [e for e in events if e.get("type") == "tool_use"]
+
+
+def _raise_on_tool_use(events: list[dict[str, object]], *, context: str) -> None:
+    """Raise :class:`BackendError` if any opencode event is a tool invocation.
+
+    Defense in depth on top of per-agent permission config: a future agent
+    or config could reintroduce the gap a permission deny closes today, and
+    silently ignoring a tool_use event (the pre-fix behavior) is exactly how
+    a swapped-in model's real shell/file actions went unnoticed.
+
+    Args:
+        events: Parsed opencode ``--format json`` events.
+        context: Label for the failing caller, used in the error message.
+
+    Raises:
+        BackendError: If any event in ``events`` has ``type == "tool_use"``,
+            naming the tools that were invoked.
+    """
+    tool_uses = _opencode_tool_use_events(events)
+    if not tool_uses:
+        return
+    tools = sorted(
+        {str(tool) for e in tool_uses if (tool := _safe_get(e, "part", "tool"))}
+    )
+    names = ", ".join(tools) if tools else "unknown tools"
+    raise BackendError(f"{context} used tools instead of returning text: {names}")
+
+
 def run_opencode(prompt: str, *, model: str | None, timeout: float) -> str:
     """Run opencode's default agent (no ``--agent`` override) and return its text output.
 
@@ -218,9 +257,11 @@ def run_opencode(prompt: str, *, model: str | None, timeout: float) -> str:
     same ``_run_command``/event-parsing helpers this module exports.
 
     Raises:
-        BackendError: If the event stream has no text chunks — either
-            because an explicit error event was emitted, or because
-            nothing recognizable was produced at all.
+        BackendError: If the event stream contains a ``tool_use`` event (the
+            agent took a real shell/file action instead of returning text),
+            or if it has no text chunks — either because an explicit error
+            event was emitted, or because nothing recognizable was produced
+            at all.
     """
     cmd = ["opencode", "run", "--auto", "--format", "json"]
     if model:
@@ -228,6 +269,7 @@ def run_opencode(prompt: str, *, model: str | None, timeout: float) -> str:
     cmd.append(prompt)
     _, stdout, stderr = _run_command(cmd, timeout)
     events = _opencode_json_events(stdout)
+    _raise_on_tool_use(events, context="opencode")
     chunks = _opencode_text_chunks(events)
     if chunks:
         return "".join(chunks).strip()

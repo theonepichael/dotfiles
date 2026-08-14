@@ -362,6 +362,65 @@ class RunOpencodeTests(unittest.TestCase):
                 llm_backends.run_opencode("prompt", model=None, timeout=60)
         self.assertIn("not json at all", str(cm.exception))
 
+    def test_44_tool_use_event_raises_backend_error(self) -> None:
+        stdout = (
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {"tool": "bash", "state": {"status": "completed"}},
+                }
+            )
+            + "\n"
+        )
+        with self._run_command_returning(stdout):
+            with self.assertRaises(llm_backends.BackendError) as cm:
+                llm_backends.run_opencode("prompt", model=None, timeout=60)
+        self.assertIn("bash", str(cm.exception))
+        self.assertIn("tools instead of returning text", str(cm.exception))
+
+    def test_45_tool_use_raises_even_with_text_chunks(self) -> None:
+        # Regression: a text-only caller (a recap) must fail loud if the run
+        # also performed real tool actions, not silently return the prose.
+        stdout = (
+            json.dumps({"type": "text", "part": {"text": "a recap"}})
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {"tool": "read", "state": {"status": "completed"}},
+                }
+            )
+            + "\n"
+        )
+        with self._run_command_returning(stdout):
+            with self.assertRaises(llm_backends.BackendError) as cm:
+                llm_backends.run_opencode("prompt", model=None, timeout=60)
+        self.assertIn("read", str(cm.exception))
+
+
+class OpencodeToolUseEventsTests(unittest.TestCase):
+    def test_46_filters_only_tool_use_events(self) -> None:
+        events: list[dict[str, object]] = [
+            {"type": "text", "part": {"text": "hi"}},
+            {"type": "tool_use", "part": {"tool": "bash"}},
+            {"type": "step_start"},
+            {"type": "tool_use", "part": {"tool": "read"}},
+        ]
+        self.assertEqual(
+            [
+                e["part"]["tool"]  # type: ignore[index]
+                for e in llm_backends._opencode_tool_use_events(events)
+            ],
+            ["bash", "read"],
+        )
+
+    def test_47_no_tool_use_returns_empty(self) -> None:
+        events: list[dict[str, object]] = [
+            {"type": "text", "part": {"text": "hi"}},
+            {"type": "step_finish"},
+        ]
+        self.assertEqual(llm_backends._opencode_tool_use_events(events), [])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)
