@@ -29,7 +29,7 @@ first session after the schema change rather than silently ignored —
 forcing a human to either silence it (add to cosmetics) or investigate.
 
     settings.json   cosmetic: theme, model, voice, voiceEnabled, agent,
-                    tui, statusLine
+                    tui, statusLine, autoMode
                     reported: everything else (permissions, hooks, and any
                     unknown future top-level key)
     opencode.jsonc  cosmetic: $schema, agent
@@ -68,20 +68,19 @@ Subcommands
             ``//`` comment that ``json.loads`` can't read. Never pretends
             "no drift" on a parse failure. VS Code drift never loud-fails
             this way (there's no strict JSON loader for it — see above);
-            its message explicitly calls out that only ``sync-to-seed``
-            applies to it, not ``fix``.
+            its message is direction-neutral — ``check`` can't know
+            algorithmically which side of a whole-file VS Code diff is
+            "correct", so it names both ``push-vscode`` (repo->live) and
+            ``sync-to-seed`` (live->repo) rather than recommending one by
+            default.
     fix     additively merge drifted keys from the seed into the live
             file, preserving all live-only entries (which are almost
-            certainly live approvals). Does NOT cover VS Code — the
-            reported VS Code drift problem only ever runs in the
-            live->seed direction (a Windows Settings-UI edit not making it
-            back into the repo), and shipping the reverse direction here
-            would mean an unenforced clobber risk: a native Windows VS
-            Code window open at fix-time could silently overwrite the fix
-            on its own next save, and detecting a running native Windows
-            process from WSL is out of scope. Push a repo-side VS Code
-            edit to Windows via install.py's existing copy-once
-            ``seed_file`` instead, once the live file is deleted:
+            certainly live approvals). Does NOT cover VS Code — VS Code
+            drift is a whole-file text diff (see "What counts as drift"
+            above), not a per-key JSON merge, so it isn't a fit for this
+            additive-merge model in either direction. See ``push-vscode``
+            below for the repo->live direction and ``sync-to-seed`` for
+            live->repo:
 
             * ``permissions.allow``: union — append seed entries not in
               live; never remove live entries.
@@ -122,11 +121,12 @@ Subcommands
               written, only reported — live approvals are often
               profile-specific, so a live-only entry isn't necessarily
               drift to repair.
-            * VS Code's ``settings.json`` / ``keybindings.json``: this is
-              where VS Code drift actually gets repaired (``fix`` doesn't
-              cover it — see above). Whole-file text copy, not a JSON
-              round-trip, so it can't fail on native JSONC and can't
-              silently reformat the user's file.
+            * VS Code's ``settings.json`` / ``keybindings.json``: the
+              live->repo direction of VS Code drift repair (``push-vscode``
+              below is the repo->live direction; ``fix`` covers neither —
+              see above). Whole-file text copy, not a JSON round-trip, so
+              it can't fail on native JSONC and can't silently reformat
+              the user's file.
 
             No active-session guard needed (unlike ``fix``) — this only
             writes the seed file, never the live files Claude Code/
@@ -135,6 +135,31 @@ Subcommands
             worktree instead of ``~/dotfiles`` (the default) — point it at
             a fresh worktree per the dotfiles-first git policy rather than
             writing directly into the main checkout.
+    push-vscode
+            the repo->live direction for VS Code: push the dotfiles seed's
+            ``settings.json`` / ``keybindings.json`` out to the live
+            Windows user directory. WSL-only (see ``_vscode_wsl_user_dir``);
+            refuses with an explicit error off WSL rather than a silent
+            no-op, since this is a single-purpose command, not a multi-file
+            "check everything" command like ``sync-to-seed`` where skipping
+            VS Code off-WSL is normal.
+
+            For each file with a diff, prints it and asks for confirmation
+            (``--yes``/``-y`` to skip the prompt; refuses on non-interactive
+            stdin without ``--yes``). Confirmations for both files are
+            collected before anything is written. Only once something is
+            confirmed does it check whether native Windows VS Code
+            (``Code.exe``) is currently running, via ``tasklist.exe`` —
+            checked as late as possible, immediately before the write, to
+            keep the human-response pause during confirmation out of the
+            TOCTOU window. If VS Code is detected, refuses the whole push
+            (no partial writes — safe because nothing was written before
+            this check). The process check is best-effort (assumes "not
+            running" if ``tasklist.exe`` is missing, times out, or errors)
+            and backup-protected, not a guarantee: each live file gets a
+            timestamped ``.bak`` before being overwritten, same convention
+            as ``fix``/``sync-to-seed``. Accepts ``--dotfiles-root PATH``,
+            same as ``sync-to-seed``.
 
 Usage
 -----
@@ -142,13 +167,17 @@ Usage
     settings_seed_drift_check.py check
     settings_seed_drift_check.py fix
     settings_seed_drift_check.py sync-to-seed [--dotfiles-root PATH]
+    settings_seed_drift_check.py push-vscode [--dotfiles-root PATH] [--yes]
 
 Exits 0 from ``check`` when there is no drift and no parse failure;
 exits nonzero from ``check`` on a parse failure (so the user notices),
 but never blocks the session otherwise. ``fix`` exits 1 when it refused
 to run (active sessions) or hit a parse failure, 0 otherwise.
 ``sync-to-seed`` exits 1 on a parse failure or a ``--dotfiles-root`` that
-doesn't exist, 0 otherwise.
+doesn't exist, 0 otherwise. ``push-vscode`` exits 1 when it refused to run
+(off WSL, VS Code detected as running, or confirmation required on
+non-interactive stdin without ``--yes``), 0 otherwise (including "nothing
+to push").
 
 Flags
   --quiet, -q    suppress non-essential output
@@ -158,8 +187,10 @@ Flags
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -191,6 +222,7 @@ SETTINGS_COSMETIC_KEYS: frozenset[str] = frozenset(
         "agentPushNotifEnabled",
         "effortLevel",
         "enabledPlugins",
+        "autoMode",
     }
 )
 OPENCODE_COSMETIC_KEYS: frozenset[str] = frozenset({"$schema", "agent"})
@@ -516,9 +548,10 @@ def cmd_check(quiet: bool = False) -> int:
             if drift:
                 messages.append(
                     f"{name} (VS Code) drifted from seed ({seed.name}): {drift} — "
-                    "only `sync-to-seed` applies to VS Code drift (not `fix`); run "
-                    "`python3 ~/.claude/scripts/settings_seed_drift_check.py "
-                    "sync-to-seed` to pull the live edit into the repo"
+                    "run `python3 ~/.claude/scripts/settings_seed_drift_check.py "
+                    "push-vscode` to push the repo's version to Windows, or "
+                    "`sync-to-seed` to pull the Windows version into the repo, "
+                    "depending on which side has the change you want to keep"
                 )
 
     if messages:
@@ -1088,6 +1121,70 @@ def _sync_vscode_to_seed(live_path: Path, seed_path: Path, quiet: bool = False) 
     return 0
 
 
+# ── push-vscode: repo -> live (guarded) ──────────────────────────────────────
+
+
+def _vscode_process_running() -> bool:
+    """Best-effort check whether native Windows VS Code (``Code.exe``) is
+    currently running, via ``tasklist.exe`` from WSL.
+
+    Matches the image name directly with a word-boundary regex, not a
+    substring of the "no tasks found" message — that informational string
+    is localized per-language on Windows, so substring matching on it
+    would be unreliable across locales.
+
+    Returns ``False`` (assume not running) if ``tasklist.exe`` isn't found,
+    the call times out, or it errors — this is backup-protected, not a
+    guarantee: :func:`cmd_push_vscode` still writes a timestamped ``.bak``
+    before every live overwrite.
+    """
+    try:
+        result = subprocess.run(
+            ["tasklist.exe", "/FI", "IMAGENAME eq Code.exe"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return bool(re.search(r"\bCode\.exe\b", result.stdout, re.IGNORECASE))
+
+
+def _push_vscode_to_live(seed_path: Path, live_path: Path) -> tuple[bool, str] | None:
+    """Pure diff-and-plan logic for pushing one VS Code file from the repo
+    seed to the live Windows path. No process check, no prompt, no write —
+    those live in :func:`cmd_push_vscode`, so the same confirm-then-check-
+    then-write sequence covers both files exactly once.
+
+    ``seed_path`` must exist (it's the dotfiles repo's own seed). A missing
+    ``live_path`` is treated as empty content — meaning this push will
+    create the file.
+
+    Return ``None`` if ``seed_path`` and ``live_path`` already have
+    identical content (nothing to do for this file). Python's
+    ``Path.read_text()`` universal-newline translation already normalizes a
+    Windows-saved CRLF to LF on read, so this equality check isn't
+    dominated by line-ending noise. Otherwise return ``(live_exists,
+    diff)``: ``live_exists`` tells the caller whether a ``.bak`` backup
+    applies; ``diff`` is a unified diff from live to seed.
+    """
+    seed_text = seed_path.read_text(encoding="utf-8")
+    live_exists = live_path.is_file()
+    live_text = live_path.read_text(encoding="utf-8") if live_exists else ""
+    if seed_text == live_text:
+        return None
+    diff = "".join(
+        difflib.unified_diff(
+            live_text.splitlines(keepends=True),
+            seed_text.splitlines(keepends=True),
+            fromfile=str(live_path),
+            tofile=str(seed_path),
+        )
+    )
+    return live_exists, diff
+
+
 # ── active-session detection ─────────────────────────────────────────────────
 
 
@@ -1245,6 +1342,99 @@ def cmd_sync_to_seed(dotfiles_root: Path, quiet: bool = False) -> int:
     return exit_code
 
 
+def _diff_summary(diff: str) -> str:
+    """Return a one-line "N lines added, M removed" summary of a unified
+    diff string, for orienting a large diff. Not required for correctness
+    — the diff itself, printed alongside this, is the actual record."""
+    added = sum(
+        1
+        for line in diff.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    )
+    removed = sum(
+        1
+        for line in diff.splitlines()
+        if line.startswith("-") and not line.startswith("---")
+    )
+    return f"{added} lines added, {removed} removed"
+
+
+def cmd_push_vscode(dotfiles_root: Path, quiet: bool = False, yes: bool = False) -> int:
+    """Push the dotfiles seed's VS Code settings.json/keybindings.json out
+    to the live Windows user directory (the repo->live direction; see the
+    module docstring's ``push-vscode`` section for the full guard
+    rationale).
+
+    Confirms each file's diff before writing, then checks for a running
+    native Windows VS Code process immediately before writing — deliberately
+    last, not first, so the (unbounded) human-response pause during
+    confirmation isn't inside the TOCTOU window. No partial writes: nothing
+    is written until every file needing confirmation has been confirmed
+    and the process check has passed.
+    """
+    vscode_user_dir = _vscode_wsl_user_dir()
+    if vscode_user_dir is None:
+        _print_loud(
+            "[settings_seed_drift_check] push-vscode only applies under WSL "
+            "with a Windows-side `code` CLI on PATH."
+        )
+        return 1
+
+    to_write: list[tuple[Path, Path, bool]] = []  # (seed, live, live_exists)
+    for name in ("settings.json", "keybindings.json"):
+        seed = vscode_seed_path(name, dotfiles_root)
+        live = vscode_user_dir / name
+        result = _push_vscode_to_live(seed, live)
+        if result is None:
+            continue
+        live_exists, diff = result
+        cli_common.qprint(f"{name}: {_diff_summary(diff)}", quiet=quiet)
+        print(diff)  # always printed regardless of --quiet — the record of
+        # what a destructive command is about to overwrite isn't chatter.
+
+        if yes:
+            confirmed = True
+        elif not sys.stdin.isatty():
+            _print_loud(
+                "[settings_seed_drift_check] refusing: confirmation required, "
+                "stdin is not interactive — pass --yes"
+            )
+            return 1
+        else:
+            answer = input(f"Push {name} to the live Windows VS Code config? [y/N] ")
+            confirmed = answer.strip().lower() == "y"
+
+        if confirmed:
+            to_write.append((seed, live, live_exists))
+
+    if not to_write:
+        cli_common.qprint("settings_seed_drift_check: nothing to push.", quiet=quiet)
+        return 0
+
+    if _vscode_process_running():
+        _print_loud(
+            "[settings_seed_drift_check] refusing to push: VS Code appears to "
+            "be running on Windows — close it first, then re-run push-vscode "
+            "(it could clobber this write on its next save)."
+        )
+        return 1
+
+    pushed: list[str] = []
+    for seed, live, live_exists in to_write:
+        if live_exists:
+            stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+            backup = live.with_suffix(live.suffix + f".bak.{stamp}")
+            shutil.copy2(live, backup)
+        _atomic_write_text(live, seed.read_text(encoding="utf-8"))
+        pushed.append(live.name)
+
+    cli_common.qprint(
+        f"settings_seed_drift_check: pushed {', '.join(pushed)} to {vscode_user_dir}",
+        quiet=quiet,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="settings_seed_drift_check")
     # --quiet/-v are defined once, on every leaf subcommand parser only
@@ -1259,6 +1449,11 @@ def main(argv: list[str] | None = None) -> int:
     sync_parser.add_argument(
         "--dotfiles-root", type=Path, default=DOTFILES, dest="dotfiles_root"
     )
+    push_parser = subparsers.add_parser("push-vscode", parents=[verbosity_parent])
+    push_parser.add_argument(
+        "--dotfiles-root", type=Path, default=DOTFILES, dest="dotfiles_root"
+    )
+    push_parser.add_argument("--yes", "-y", action="store_true")
 
     args = parser.parse_args(argv)
     quiet = getattr(args, "quiet", False)
@@ -1267,6 +1462,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_check(quiet=quiet)
     if subcommand == "fix":
         return cmd_fix(quiet=quiet)
+    if subcommand == "push-vscode":
+        return cmd_push_vscode(args.dotfiles_root, quiet=quiet, yes=args.yes)
     return cmd_sync_to_seed(args.dotfiles_root, quiet=quiet)
 
 
