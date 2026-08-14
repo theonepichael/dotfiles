@@ -45,6 +45,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`settings_seed_drift_check.py`](#claudescriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo. |
 | [`standup.py`](#claudescriptsstanduppy) | standup.py — /standup skill CLI: local data gathering. |
 | [`standup_adapters.py`](#claudescriptsstandupadapterspy) | standup_adapters.py — provider-agnostic adapter interfaces for /standup. |
+| [`statusline.py`](#claudescriptsstatuslinepy) | Claude Code status line: render the model name and a color-coded context window usage bar with the used percentage, from the JSON session payload Claude Code pipes to this script on stdin. |
 | [`vitals_promotion.py`](#claudescriptsvitalspromotionpy) | vitals-promotion.py — mechanical vitals-promotion pass over grill session data. |
 | [`watchcommit_activity.py`](#claudescriptswatchcommitactivitypy) | Print watchcommit's last known background pull/commit/push, so a session (or wc-status) can tell daemon-driven git state changes from manual ones instead of only seeing a clean/up-to-date working tree. |
 
@@ -522,6 +523,16 @@ standup_adapters.py — provider-agnostic adapter interfaces for /standup.
   - `class StubEmailAdapter`
   - `class StubCalendarAdapter`
 - Tested by: `claude/scripts/test_gen_interfaces.py`
+
+### `claude/scripts/statusline.py`
+
+Claude Code status line: render the model name and a color-coded context window usage bar with the used percentage, from the JSON session payload Claude Code pipes to this script on stdin.
+
+- Installed at: `~/.claude/scripts/statusline.py` (all harnesses)
+- Entrypoint: executable, `#!/usr/bin/env python3`
+- CLI: none (library module).
+- Explicit exit codes: `0`
+- Tested by: `claude/scripts/test_statusline.py`
 
 ### `claude/scripts/vitals_promotion.py`
 

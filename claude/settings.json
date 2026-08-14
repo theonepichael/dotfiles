@@ -63,5 +63,9 @@
   },
   "skipDangerousModePermissionPrompt": true,
   "theme": "light-daltonized",
+  "statusLine": {
+    "type": "command",
+    "command": "python3 ~/.claude/scripts/statusline.py"
+  },
   "model": "claude-sonnet-5"
 }

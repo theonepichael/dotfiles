@@ -404,6 +404,10 @@ src = "claude/scripts/watchcommit_activity.py"
 dest = "~/.claude/scripts/watchcommit_activity.py"
 profile_exclude = ["work"]
 
+[[link]]
+src = "claude/scripts/statusline.py"
+dest = "~/.claude/scripts/statusline.py"
+
 # ── macOS-only configs ───────────────────────────────────────────────────
 # .zprofile carries the Homebrew shellenv; on Linux, secrets and NVM are
 # sourced from .zshrc instead.

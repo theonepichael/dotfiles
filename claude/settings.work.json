@@ -41,5 +41,9 @@
     "enabled": true,
     "mode": "hold"
   },
-  "theme": "light-daltonized"
+  "theme": "light-daltonized",
+  "statusLine": {
+    "type": "command",
+    "command": "python3 ~/.claude/scripts/statusline.py"
+  }
 }
