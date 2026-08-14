@@ -11,7 +11,7 @@ extend-exclude = ["**/test_*.py", "test/"]
 line-length = 88
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "UP", "SIM", "I", "PIE", "ISC", "FURB", "TRY"]
+select = ["E", "F", "W", "UP", "SIM", "I", "PIE", "ISC", "FURB", "TRY", "ANN"]
 ignore = ["DTZ011", "DTZ005", "PLW1510", "BLE001", "E501", "TRY003"]
 
 [dependency-groups]

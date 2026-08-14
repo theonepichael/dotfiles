@@ -11,7 +11,7 @@ Python
 - Target: Python 3.12+ for all non-trivial scripts.
 - Shebangs: use #!/usr/bin/env python3 for Python entrypoints.
 - Use the standard library for CLIs: argparse or getopt only (no external CLI libs). Prefer argparse for new CLIs.
-- Type hints encouraged; keep runtime behavior compatible with 3.12+.
+- Type hints are required on every function/method signature (all parameters and the return type), using modern 3.12+ syntax: built-in generics (`list[str]`, `dict[str, int]`), not `typing.List`/`typing.Dict`; `X | None`, not `Optional[X]`; `X | Y`, not `Union[X, Y]`. Avoid `Any` unless genuinely unavoidable; prefer `object` or a narrower union. Enforced by ruff's ANN rules (see Formatting & linting).
 - Keep modules importable from repository root (tests may insert repo root on sys.path).
 
 Shell
@@ -46,7 +46,8 @@ Tests & CI
 - test/run.sh drives the containerized install.sh scenario suite (test/scenarios.sh) against Ubuntu and Fedora images. It needs Docker/Podman and is run locally, not in CI.
 
 Formatting & linting
-- Ruff is the enforced formatter and linter, configured under [tool.ruff] and [tool.ruff.lint] in pyproject.toml (88-char lines; E, F, W, UP, SIM, I, PIE, ISC, FURB, TRY selected). No black, no isort.
+- Ruff is the enforced formatter and linter, configured under [tool.ruff] and [tool.ruff.lint] in pyproject.toml (88-char lines; E, F, W, UP, SIM, I, PIE, ISC, FURB, TRY, ANN selected). No black, no isort.
+- ANN (flake8-annotations) enforces the type-hint requirement above on every function, new or existing.
 - Run `uv run ruff format .` and `uv run ruff check --fix .` before committing Python changes. CI fails on either check, and test/test_lint.py fails the suite as well.
 - Ruff excludes test files (`**/test_*.py`, `test/`). They are lint-exempt, but should still follow the same conventions.
 - Shell has no enforced formatter. Prefer readable code and run local linters if available (shellcheck/shfmt).

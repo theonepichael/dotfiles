@@ -15,6 +15,7 @@ import argparse
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -90,7 +91,7 @@ def collect_sections(text: str) -> dict[str, list[str]]:
     return sections
 
 
-def _group_indented(lines: list[str], is_new_entry) -> list[str]:
+def _group_indented(lines: list[str], is_new_entry: Callable[[str], bool]) -> list[str]:
     """Join wrapped continuation lines into single entries."""
     entries: list[str] = []
     cur: str | None = None

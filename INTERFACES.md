@@ -190,7 +190,11 @@ SessionStart hook: flag when the dotfiles repo has drifted from the last commit 
 
 - Installed at: `~/.claude/scripts/dotfiles_sync_check.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
-- CLI: hand-rolled `sys.argv` dispatch — not statically enumerable; see the module docstring above.
+- CLI (`argparse`): Flag when the dotfiles repo has drifted from the last commit bundled over to a GitHub-blocked work machine.
+- Subcommands:
+  - `check` — print a drift note if HEAD is ahead of the marker (default)
+  - `mark [<sha>]` — record the given (or current HEAD) commit as last-bundled
+    - `sha` — commit to record (defaults to HEAD) (nargs: ?)
 - Filesystem constants:
   - `REPO = Path.home() / 'dotfiles'`
   - `STATE_DIR = Path.home() / '.local' / 'state' / 'dotfiles'`
@@ -198,8 +202,8 @@ SessionStart hook: flag when the dotfiles repo has drifted from the last commit 
 - Explicit exit codes: `1`
 - Public functions:
   - `git(*args: str) -> str | None`
-  - `cmd_check() -> None`
-  - `cmd_mark(sha: str | None) -> None`
+  - `build_parser() -> argparse.ArgumentParser`
+- Subcommand handlers: `cmd_check`, `cmd_mark`
 - Tested by: `claude/scripts/test_dotfiles_sync_check.py`
 
 ### `claude/scripts/gen_claude_completion.py`
