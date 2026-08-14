@@ -2383,6 +2383,101 @@ def test_depart_leaves_unrelated_files_untouched(home, links, offline_install):
     assert unrelated.read_text() == "keep me\n"
 
 
+# ── wholesale tree removal is gated on the post-install manifest ──────────
+
+
+def _seed_installed_font_tree(home, *, record: bool):
+    """Put an installer-shaped font tree in place, optionally snapshotting it.
+
+    Mirrors what _install_nerd_font leaves behind, without downloading
+    anything. ``record=False`` reproduces a baseline captured before
+    post-install snapshotting existed.
+    """
+    font_dir = home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont"
+    font_dir.mkdir(parents=True)
+    (font_dir / "JetBrainsMono-Regular.ttf").write_bytes(b"installer font")
+    (font_dir / ".nerd-fonts-version").write_text("3.4.0\n")
+
+    baseline = depart.load_baseline(home / ".local" / "state" / "dotfiles") or (
+        depart.Baseline()
+    )
+    if record:
+        depart.record_installed_tree(baseline, font_dir)
+    depart.save_baseline(home / ".local" / "state" / "dotfiles", baseline)
+    return font_dir
+
+
+def test_depart_removes_an_untouched_font_tree_wholesale(home, links, offline_install):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+    font_dir = _seed_installed_font_tree(home, record=True)
+
+    code = install.do_depart(make_ctx(home, yes=True))
+
+    assert code == 0
+    assert not font_dir.exists()
+
+
+def test_depart_preserves_a_font_tree_the_user_added_to(
+    home, links, offline_install, capsys
+):
+    """The data-loss regression: a font added after install must survive."""
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+    font_dir = _seed_installed_font_tree(home, record=True)
+
+    mine = font_dir / "MyOwnFont.ttf"
+    mine.write_bytes(b"do not delete me")
+
+    code = install.do_depart(make_ctx(home, yes=True))
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert font_dir.exists()
+    assert mine.read_bytes() == b"do not delete me"
+    assert "tree changed since install" in out
+
+
+def test_depart_preserves_a_font_tree_with_no_recorded_manifest(
+    home, links, offline_install, capsys
+):
+    """An older baseline cannot prove the tree is untouched, so keep it."""
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+    font_dir = _seed_installed_font_tree(home, record=False)
+
+    code = install.do_depart(make_ctx(home, yes=True))
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert font_dir.exists()
+    assert "no post-install manifest" in out
+
+
+def test_install_records_the_font_tree_manifest(home, links, monkeypatch):
+    """_install_nerd_font must snapshot what it produced."""
+    ctx = make_ctx(home)
+    ctx.departure_baseline = depart.Baseline()
+    font_dir = home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont"
+
+    def fake_run(cmd, **kwargs):
+        if cmd and cmd[0] == "curl":
+            return install.CommandResult(True)
+        if cmd and cmd[0] == "unzip":
+            font_dir.mkdir(parents=True, exist_ok=True)
+            (font_dir / "JetBrainsMono-Regular.ttf").write_bytes(b"font")
+            return install.CommandResult(True)
+        return install.CommandResult(True)
+
+    monkeypatch.setattr(install, "run_command", fake_run)
+    install._install_nerd_font(ctx)
+
+    assert str(font_dir) in ctx.departure_baseline.installed_trees
+    assert depart.installed_tree_verdict(ctx.departure_baseline, font_dir) == (
+        depart.TREE_UNCHANGED
+    )
+
+
 def test_depart_retry_skips_already_ledger_completed_actions(
     home, links, offline_install, monkeypatch
 ):

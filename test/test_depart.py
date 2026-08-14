@@ -7,6 +7,7 @@ No subprocesses, no real HOME — everything runs against a throwaway
 Requires Python 3.12+.
 """
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -205,6 +206,99 @@ def test_tree_manifest_matches_false_when_recorded_state_is_not_present(tmp_path
     root.mkdir()
     recorded = {"state": "unknown"}
     assert depart.tree_manifest_matches(root, recorded) is False
+
+
+# ── post-install tree snapshots (what gates wholesale removal) ───────────
+
+
+def _installed_tree(tmp_path):
+    root = tmp_path / "fonts"
+    root.mkdir()
+    (root / "a.ttf").write_bytes(b"font-a")
+    (root / "sub").mkdir()
+    (root / "sub" / "b.ttf").write_bytes(b"font-b")
+    return root
+
+
+def test_verdict_unchanged_for_an_untouched_tree(tmp_path):
+    root = _installed_tree(tmp_path)
+    baseline = depart.Baseline()
+    depart.record_installed_tree(baseline, root)
+    assert depart.installed_tree_verdict(baseline, root) == depart.TREE_UNCHANGED
+
+
+def test_verdict_modified_when_a_file_is_added(tmp_path):
+    """The data-loss case: a font the user dropped in after installing."""
+    root = _installed_tree(tmp_path)
+    baseline = depart.Baseline()
+    depart.record_installed_tree(baseline, root)
+
+    (root / "my-own.ttf").write_bytes(b"mine")
+    assert depart.installed_tree_verdict(baseline, root) == depart.TREE_MODIFIED
+
+
+def test_verdict_modified_when_an_existing_file_is_edited(tmp_path):
+    root = _installed_tree(tmp_path)
+    baseline = depart.Baseline()
+    depart.record_installed_tree(baseline, root)
+
+    (root / "sub" / "b.ttf").write_bytes(b"edited")
+    assert depart.installed_tree_verdict(baseline, root) == depart.TREE_MODIFIED
+
+
+def test_verdict_modified_when_a_file_is_removed(tmp_path):
+    root = _installed_tree(tmp_path)
+    baseline = depart.Baseline()
+    depart.record_installed_tree(baseline, root)
+
+    (root / "a.ttf").unlink()
+    assert depart.installed_tree_verdict(baseline, root) == depart.TREE_MODIFIED
+
+
+def test_verdict_unrecorded_when_no_snapshot_was_ever_taken(tmp_path):
+    """Baselines captured before snapshotting existed must not be removable."""
+    root = _installed_tree(tmp_path)
+    assert depart.installed_tree_verdict(depart.Baseline(), root) == (
+        depart.TREE_UNRECORDED
+    )
+
+
+def test_record_installed_tree_overwrites_on_reinstall(tmp_path):
+    """The most recent install is what departure should expect to find."""
+    root = _installed_tree(tmp_path)
+    baseline = depart.Baseline()
+    depart.record_installed_tree(baseline, root)
+
+    (root / "c.ttf").write_bytes(b"added by a later install")
+    depart.record_installed_tree(baseline, root)
+    assert depart.installed_tree_verdict(baseline, root) == depart.TREE_UNCHANGED
+
+
+def test_installed_trees_survive_a_save_load_roundtrip(tmp_path):
+    root = _installed_tree(tmp_path)
+    baseline = depart.Baseline()
+    depart.record_installed_tree(baseline, root)
+
+    depart.save_baseline(tmp_path / "state", baseline)
+    loaded = depart.load_baseline(tmp_path / "state")
+
+    assert loaded is not None
+    assert depart.installed_tree_verdict(loaded, root) == depart.TREE_UNCHANGED
+    (root / "later.ttf").write_bytes(b"x")
+    assert depart.installed_tree_verdict(loaded, root) == depart.TREE_MODIFIED
+
+
+def test_baseline_without_installed_trees_key_loads_clean(tmp_path):
+    """An older baseline.json predating this field must still parse."""
+    state = tmp_path / "state"
+    state.mkdir()
+    depart.baseline_path(state).write_text(
+        json.dumps({"version": 1, "layers": [], "transactions": []}),
+        encoding="utf-8",
+    )
+    loaded = depart.load_baseline(state)
+    assert loaded is not None
+    assert loaded.installed_trees == {}
 
 
 # ── runtime:<root> (NVM) — lightweight, top-level-only divergence ───────

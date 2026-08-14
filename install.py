@@ -1031,6 +1031,13 @@ def _install_nerd_font(ctx: Context) -> None:
             marker.write_text(f"{NERD_FONT_VERSION}\n")
             ctx.manifest.record_package(f"JetBrainsMono Nerd Font v{NERD_FONT_VERSION}")
             run_command(["fc-cache", "-f", str(font_dir)], capture=True)
+            # Snapshotted after fc-cache deliberately: anything it leaves
+            # inside the font directory is still installer-produced, so it
+            # belongs in the manifest. This is departure's only evidence of
+            # what the installer put here, and the last chance to take it
+            # before the user can add fonts of their own.
+            if ctx.departure_baseline is not None:
+                depart.record_installed_tree(ctx.departure_baseline, font_dir)
             print(PALETTE.ok(f"  installed to {font_dir}"))
         else:
             ctx.reporter.skip(
@@ -1155,6 +1162,10 @@ def _install_neovim_fallback(ctx: Context) -> None:
                 shim.unlink()
             shim.symlink_to(nvim_bin)
             ctx.manifest.record_symlink(shim, nvim_bin)
+            # See the Nerd Font call site: departure will only remove this
+            # tree wholesale if it still matches this snapshot exactly.
+            if ctx.departure_baseline is not None:
+                depart.record_installed_tree(ctx.departure_baseline, prefix)
             print(
                 PALETTE.ok(
                     f"  installed to {ctx.display(prefix)}, linked from {ctx.display(shim)}"
@@ -3208,8 +3219,44 @@ def _execute_remove_directory(path: Path, *, wholesale: bool) -> str:
     return "ok"
 
 
+def _remove_tree_manifest_directory(baseline: depart.Baseline, path: Path) -> str:
+    """Remove a wholly installer-owned tree, but only if it is untouched.
+
+    The Nerd Font directory and the pinned Neovim prefix are the two trees
+    departure deletes outright rather than emptying, so they are the two
+    where a wholesale ``rmtree`` could destroy something the user added
+    after installing. Gated on the post-install manifest: an exact match is
+    the only proof that everything inside is the installer's own.
+    """
+    try:
+        if path.is_symlink() or not path.is_dir():
+            return "ok: already absent"
+    except OSError as exc:
+        return f"unresolved: {exc}"
+
+    verdict = depart.installed_tree_verdict(baseline, path)
+    if verdict == depart.TREE_MODIFIED:
+        return (
+            "unresolved: tree changed since install — something was added or "
+            "edited inside it, so it was left in place rather than removed "
+            "wholesale; remove it by hand if you are sure"
+        )
+    if verdict == depart.TREE_UNRECORDED:
+        return (
+            "unresolved: no post-install manifest recorded for this tree, so "
+            "it cannot be proven unmodified — left in place; remove it by "
+            "hand, or re-run install.sh to record one"
+        )
+    try:
+        shutil.rmtree(path)
+    except OSError as exc:
+        return f"unresolved: {exc}"
+    return "ok"
+
+
 def execute_directory_phase(
     ctx: Context,
+    baseline: depart.Baseline,
     report: dict[str, depart.Classification],
     ledger: depart.DepartureLedger,
 ) -> None:
@@ -3220,6 +3267,7 @@ def execute_directory_phase(
     """
     done = ledger.completed_keys()
     wholesale_dirs = _wholesale_removal_directories(ctx)
+    manifest_dirs = _tree_manifest_directories(ctx)
     owned_dirs = [
         key
         for key, c in report.items()
@@ -3234,7 +3282,10 @@ def execute_directory_phase(
 
     for key in sorted(owned_dirs, key=_depth, reverse=True):
         path = Path(key.partition(":")[2])
-        outcome = _execute_remove_directory(path, wholesale=path in wholesale_dirs)
+        if path in manifest_dirs:
+            outcome = _remove_tree_manifest_directory(baseline, path)
+        else:
+            outcome = _execute_remove_directory(path, wholesale=path in wholesale_dirs)
         ledger.record(key, depart.ACTION_REMOVE, outcome)
 
 
@@ -3387,7 +3438,7 @@ def execute_departure(
     ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
     execute_service_phase(ctx, baseline, ledger)
     execute_file_symlink_phase(ctx, baseline, report, ledger)
-    execute_directory_phase(ctx, report, ledger)
+    execute_directory_phase(ctx, baseline, report, ledger)
     if execute_package_phase(ctx, baseline, ledger):
         execute_runtime_phase(ctx, report, ledger)
     return ledger
@@ -3532,6 +3583,17 @@ def do_depart(ctx: Context) -> int:
                 PALETTE.header("Departure complete — no installer footprint remains.")
             )
             return 0
+
+        # Preflight explains why something was never *attempted*; these are
+        # the ones that were attempted and did not complete. Their reasons
+        # only ever reached departure.jsonl, so a run that deliberately
+        # preserved something — a tree the user added to, a package still
+        # depended on — looked identical to an unexplained failure.
+        if failed:
+            print(PALETTE.warn(f"  attempted but not completed ({len(failed)}):"))
+            for entry in failed:
+                reason = str(entry.get("outcome", "")).partition(": ")[2]
+                print(PALETTE.warn(f"    {entry.get('key', '')} — {reason}"))
 
         print(
             PALETTE.warn(

@@ -316,6 +316,13 @@ class Baseline:
 
     layers: list[Layer] = field(default_factory=list)
     transactions: list[dict[str, object]] = field(default_factory=list)
+    # Post-install tree manifests, keyed by absolute path — see
+    # record_installed_tree. Deliberately NOT a layer: layers hold
+    # pre-install values under an immutable-first-wins rule, and these
+    # trees are already recorded there as `absent`. This is the different,
+    # later fact of what the installer itself produced, so it sits beside
+    # `transactions` rather than fighting the layering model.
+    installed_trees: dict[str, dict[str, object]] = field(default_factory=dict)
 
     def value_for(self, key: str) -> dict[str, object] | None:
         """The recorded record for ``key``, from the earliest layer that has it."""
@@ -360,6 +367,46 @@ class Baseline:
             self.layers.append(Layer(captured_at=captured_at, records=to_add))
 
 
+# Verdicts from :func:`installed_tree_verdict`.
+TREE_UNCHANGED = "unchanged"
+TREE_MODIFIED = "modified"
+TREE_UNRECORDED = "unrecorded"
+
+
+def record_installed_tree(baseline: Baseline, root: Path) -> None:
+    """Snapshot ``root`` as the installer just produced it.
+
+    Called immediately after the installer creates a fully-owned tree (the
+    Nerd Font directory, the pinned Neovim prefix). Without this snapshot
+    there is nothing to compare live state against at departure: the
+    baseline layer only holds the *pre-install* ``absent`` value, which
+    proves the installer created the tree but says nothing about whether
+    the user has since added or edited anything inside it.
+
+    Re-recording on a later run is correct and intended — the tree the
+    installer most recently produced is the one departure should expect to
+    find, so this overwrites rather than preserving the first value.
+    """
+    baseline.installed_trees[str(root)] = capture_tree_manifest(root)
+
+
+def installed_tree_verdict(baseline: Baseline, root: Path) -> str:
+    """Classify a wholly installer-owned tree for safe wholesale removal.
+
+    Returns ``TREE_UNCHANGED`` only when a post-install manifest was
+    recorded and the tree on disk still matches it exactly — the sole case
+    where deleting the whole tree cannot destroy something the user added.
+    ``TREE_MODIFIED`` when a manifest exists but no longer matches.
+    ``TREE_UNRECORDED`` when none was ever recorded (a baseline captured
+    before snapshotting existed), which callers must treat as "cannot
+    prove this is safe," never as permission to remove.
+    """
+    recorded = baseline.installed_trees.get(str(root))
+    if recorded is None:
+        return TREE_UNRECORDED
+    return TREE_UNCHANGED if tree_manifest_matches(root, recorded) else TREE_MODIFIED
+
+
 # ── serialization ─────────────────────────────────────────────────────────
 
 BASELINE_VERSION = 1
@@ -377,6 +424,7 @@ def baseline_to_dict(baseline: Baseline) -> dict[str, object]:
             for layer in baseline.layers
         ],
         "transactions": baseline.transactions,
+        "installed_trees": baseline.installed_trees,
     }
 
 
@@ -390,7 +438,12 @@ def baseline_from_dict(data: dict[str, object]) -> Baseline:
         for entry in raw_layers  # type: ignore[union-attr]
     ]
     raw_transactions = data.get("transactions", [])
-    return Baseline(layers=layers, transactions=list(raw_transactions))  # type: ignore[arg-type]
+    raw_trees = data.get("installed_trees", {})
+    return Baseline(
+        layers=layers,
+        transactions=list(raw_transactions),  # type: ignore[arg-type]
+        installed_trees=dict(raw_trees),  # type: ignore[arg-type]
+    )
 
 
 def save_baseline(state_dir: Path, baseline: Baseline) -> None:
