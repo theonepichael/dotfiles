@@ -2733,79 +2733,61 @@ def print_summary(
 # ── departure preflight and CLI ─────────────────────────────────────────────
 
 
+def _tree_manifest_directories(ctx: Context) -> set[Path]:
+    """Directories tracked as full tree manifests, not plain directory: keys."""
+    return {
+        ctx.home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont",
+        ctx.home / ".local" / "opt" / "neovim",
+    }
+
+
+def _recapture_live_value(ctx: Context, key: str) -> dict[str, object]:
+    """Fresh, read-only live value for one *already-recorded* ownership key.
+
+    Dispatches purely on the key itself — deliberately never re-derives
+    "is this destination applicable" from links.toml + the current
+    invocation's ``--harness`` selection. ``--depart`` is standalone
+    (``parse_args`` rejects ``--harness`` alongside it), so at departure
+    time ``ctx.opts.harnesses`` is always empty; re-deriving applicability
+    from it would make every harness-gated links.toml entry (``~/.claude/
+    CLAUDE.md``, its commands, the copy-once seed files, ...) silently
+    invisible to preflight — the real bug this replaced (caught via a real
+    container run, not the fast unit-test suite, since every fast test
+    happened to capture and recapture with the same harness selection).
+    The baseline itself is the only source of truth for what was ever
+    installer-tracked; this function only ever answers "what's live at
+    this exact key's path right now."
+    """
+    type_, path_str = key.split(":", 1)
+    path = Path(path_str)
+    if type_ == "file":
+        return depart.capture_file(path)
+    if type_ == "symlink":
+        return depart.capture_symlink(path)
+    if type_ == "directory":
+        if path in _tree_manifest_directories(ctx):
+            return depart.capture_tree_manifest(path)
+        return depart.capture_directory(path)
+    if type_ == "runtime":
+        return depart.capture_runtime_nvm(path.parent)
+    return {"state": depart.STATE_UNKNOWN}
+
+
 def _recapture_departure_live_state(
-    ctx: Context, specs: Sequence[LinkSpec]
+    ctx: Context, baseline: depart.Baseline
 ) -> dict[str, dict[str, object]]:
     """Re-capture every tracked ownership key's *current* value, read-only.
 
-    Mirrors :func:`capture_departure_baseline` key-for-key (same paths, same
-    key set) but never writes a blob or persists anything — this only
+    Driven entirely by ``baseline.all_keys()`` — see
+    :func:`_recapture_live_value`'s docstring for why that's load-bearing,
+    not incidental. Never writes a blob or persists anything; this only
     builds the "live" half of a preflight comparison.
     """
-    records: dict[str, dict[str, object]] = {}
-
-    for rc_name in depart.RC_FILENAMES:
-        rc_path = ctx.home / rc_name
-        records[depart.file_key(rc_path)] = depart.capture_file(rc_path)
-
-    seen_dirs: set[Path] = set()
-
-    def _track_ancestors(path: Path) -> None:
-        # See capture_departure_baseline's identical helper: the state
-        # directory (and its own ancestors) are excluded — their lifecycle
-        # is _finalize_departure_state's job, run after this phase.
-        for ancestor in depart.ancestor_directories(path, ctx.home):
-            if ancestor in seen_dirs or _is_state_dir_or_its_ancestor(ancestor, ctx):
-                continue
-            seen_dirs.add(ancestor)
-            records[depart.directory_key(ancestor)] = depart.capture_directory(ancestor)
-
-    for dest in _departure_owned_destinations(ctx, specs):
-        records[depart.file_key(dest)] = depart.capture_file(dest)
-        records[depart.symlink_key(dest)] = depart.capture_symlink(dest)
-        bak = dest.with_name(dest.name + ".bak")
-        records[depart.file_key(bak)] = depart.capture_file(bak)
-        _track_ancestors(dest)
-
-    for path in (
-        ctx.home / ".local" / "bin" / "uv",
-        ctx.home / ".local" / "bin" / "oh-my-posh",
-        ctx.home / ".vim" / "autoload" / "plug.vim",
-    ):
-        records[depart.file_key(path)] = depart.capture_file(path)
-        _track_ancestors(path)
-
-    records[depart.file_key(ctx.profile_marker)] = depart.capture_file(
-        ctx.profile_marker
-    )
-    _track_ancestors(ctx.profile_marker)
-
-    for path in (
-        ctx.home / ".local" / "bin" / "bat",
-        ctx.home / ".local" / "bin" / "fd",
-    ):
-        records[depart.symlink_key(path)] = depart.capture_symlink(path)
-        _track_ancestors(path)
-
-    font_dir = ctx.home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont"
-    records[depart.directory_key(font_dir)] = depart.capture_tree_manifest(font_dir)
-    _track_ancestors(font_dir)
-
-    neovim_prefix = ctx.home / ".local" / "opt" / "neovim"
-    records[depart.directory_key(neovim_prefix)] = depart.capture_tree_manifest(
-        neovim_prefix
-    )
-    _track_ancestors(neovim_prefix)
-
-    for parts in depart.SHARED_NEOVIM_DIRS:
-        shared_dir = ctx.home.joinpath(*parts)
-        records[depart.directory_key(shared_dir)] = depart.capture_directory(shared_dir)
-
-    records[depart.runtime_key(ctx.home / ".nvm")] = depart.capture_runtime_nvm(
-        ctx.home
-    )
-
-    return records
+    return {
+        key: _recapture_live_value(ctx, key)
+        for key in baseline.all_keys()
+        if depart.key_type(key) != "service"
+    }
 
 
 def _apply_rc_file_reclassification(
@@ -2834,18 +2816,25 @@ def _apply_rc_file_reclassification(
 
 
 def _apply_symlink_pair_reclassification(
-    ctx: Context,
-    specs: Sequence[LinkSpec],
     baseline: depart.Baseline,
     live: dict[str, dict[str, object]],
     report: dict[str, depart.Classification],
 ) -> None:
-    """Override the generic per-key results for each backed-up-then-symlinked pair."""
-    for dest in _departure_owned_destinations(ctx, specs):
-        file_key = depart.file_key(dest)
-        symlink_key = depart.symlink_key(dest)
-        if file_key not in report or symlink_key not in report:
-            continue
+    """Override the generic per-key results for each backed-up-then-symlinked pair.
+
+    Candidate paths come from the report's own keys (i.e. the baseline),
+    never re-derived from links.toml — same reasoning as
+    :func:`_recapture_live_value`.
+    """
+    file_paths = {
+        Path(k.split(":", 1)[1]) for k in report if depart.key_type(k) == "file"
+    }
+    symlink_paths = {
+        Path(k.split(":", 1)[1]) for k in report if depart.key_type(k) == "symlink"
+    }
+    for path in file_paths & symlink_paths:
+        file_key = depart.file_key(path)
+        symlink_key = depart.symlink_key(path)
         override = depart.reclassify_symlink_destination_pair(
             baseline.value_for(file_key),
             live.get(file_key, {"state": depart.STATE_UNKNOWN}),
@@ -2856,14 +2845,12 @@ def _apply_symlink_pair_reclassification(
             report[file_key], report[symlink_key] = override
 
 
-def build_preflight_report(
-    ctx: Context, specs: Sequence[LinkSpec]
-) -> dict[str, depart.Classification] | None:
+def build_preflight_report(ctx: Context) -> dict[str, depart.Classification] | None:
     """Classify every tracked ownership key, or None if there's no baseline."""
     baseline = depart.load_baseline(ctx.state_dir)
     if baseline is None:
         return None
-    live = _recapture_departure_live_state(ctx, specs)
+    live = _recapture_departure_live_state(ctx, baseline)
     report: dict[str, depart.Classification] = {}
     for key in sorted(baseline.all_keys()):
         # service: keys use their own dedicated classifier (their record
@@ -2876,7 +2863,7 @@ def build_preflight_report(
         report[key] = depart.classify_ownership_key(key, recorded, live_value)
 
     _apply_rc_file_reclassification(ctx, baseline, report)
-    _apply_symlink_pair_reclassification(ctx, specs, baseline, live, report)
+    _apply_symlink_pair_reclassification(baseline, live, report)
 
     service_key = depart.service_key("systemd", "watchcommit")
     if service_key in baseline.all_keys():
@@ -3414,15 +3401,7 @@ def do_depart(ctx: Context) -> int:
         )
         return 2
 
-    try:
-        specs = load_links(ctx.dotfiles / "links.toml")
-    except ValueError as exc:
-        print(
-            PALETTE.error(f"could not read the symlink table: {exc}"), file=sys.stderr
-        )
-        return 2
-
-    report = build_preflight_report(ctx, specs)
+    report = build_preflight_report(ctx)
     if report is None:
         print(
             PALETTE.error(f"no baseline at {baseline_file} — nothing to depart from"),

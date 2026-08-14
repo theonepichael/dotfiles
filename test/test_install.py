@@ -2054,6 +2054,36 @@ def test_capture_departure_baseline_runs_via_run_install(home, links, offline_in
     assert depart.baseline_path(ctx.state_dir).is_file()
 
 
+def test_preflight_sees_harness_gated_files_despite_depart_having_no_harness(
+    home, links, offline_install
+):
+    """Regression test for a real bug caught only by a container run: --depart
+    is standalone (parse_args rejects --harness alongside it), so
+    ctx.opts.harnesses is always empty at departure time. build_preflight_report
+    must never re-derive "applicable" links.toml destinations from that empty
+    selection — every fast test happened to capture and recapture with the
+    same harness, so this was invisible until a real Ubuntu container showed
+    every claude-harness-gated file (~/.claude/CLAUDE.md, its commands,
+    settings.json) silently falling out of the preflight report entirely."""
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    # The real CLI shape: a --depart Options has no harnesses at all.
+    depart_ctx = make_ctx(home, harnesses=())
+    assert depart_ctx.opts.harnesses == ()
+
+    report = install.build_preflight_report(depart_ctx)
+    claude_md_key = depart.symlink_key(home / ".claude" / "CLAUDE.md")
+    settings_key = depart.file_key(home / ".claude" / "settings.json")
+
+    assert claude_md_key in report
+    assert report[claude_md_key].bucket == "owned"
+    assert report[claude_md_key].action == "remove"
+    assert settings_key in report
+    assert report[settings_key].bucket == "owned"
+    assert report[settings_key].action == "remove"
+
+
 # ── build_preflight_report: the two named restore reclassifications ────────
 
 
@@ -2073,7 +2103,7 @@ def test_preflight_reclassifies_appended_rc_file_as_owned_restore(
     zshrc.unlink()
     zshrc.write_text("original zshrc content\nexport NVM_DIR=...\n")
 
-    report = install.build_preflight_report(make_ctx(home), links)
+    report = install.build_preflight_report(make_ctx(home))
     c = report[depart.file_key(zshrc)]
     assert c.bucket == "owned"
     assert c.action == "restore"
@@ -2093,7 +2123,7 @@ def test_preflight_leaves_edited_rc_file_unresolved(home, links, offline_install
     zshrc.unlink()
     zshrc.write_text("completely different content\n")
 
-    report = install.build_preflight_report(make_ctx(home), links)
+    report = install.build_preflight_report(make_ctx(home))
     c = report[depart.file_key(zshrc)]
     assert c.bucket == "unresolved"
 
@@ -2111,7 +2141,7 @@ def test_preflight_reclassifies_backed_up_then_symlinked_pair(
     backup = dest.with_name(dest.name + ".bak")
     assert backup.read_text() == "my own vimrc\n"
 
-    report = install.build_preflight_report(make_ctx(home), links)
+    report = install.build_preflight_report(make_ctx(home))
     file_c = report[depart.file_key(dest)]
     symlink_c = report[depart.symlink_key(dest)]
     assert file_c.bucket == "owned"
@@ -2360,7 +2390,7 @@ def test_depart_retry_skips_already_ledger_completed_actions(
     install.run_install(ctx, links)
 
     baseline = depart.load_baseline(ctx.state_dir)
-    report = install.build_preflight_report(make_ctx(home), links)
+    report = install.build_preflight_report(make_ctx(home))
     ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
     install.execute_file_symlink_phase(make_ctx(home), baseline, report, ledger)
     completed_after_first_pass = ledger.completed_keys()

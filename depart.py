@@ -38,9 +38,9 @@ RC_FILENAMES = (".bashrc", ".zshrc", ".profile")
 # of, only whether the directory itself pre-existed — see
 # ``_wipe_neovim_dirs`` in install.py for why these three specifically.
 SHARED_NEOVIM_DIRS = (
-    ("local", "share", "nvim"),
-    ("local", "state", "nvim"),
-    ("cache", "nvim"),
+    (".local", "share", "nvim"),
+    (".local", "state", "nvim"),
+    (".cache", "nvim"),
 )
 
 
