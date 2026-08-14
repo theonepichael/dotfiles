@@ -1247,11 +1247,15 @@ def cmd_sync_to_seed(dotfiles_root: Path, quiet: bool = False) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="settings_seed_drift_check")
-    cli_common.add_verbosity_args(parser)
+    # --quiet/-v are defined once, on every leaf subcommand parser only
+    # (via this shared `parents=` parser) -- never on `parser` itself. See
+    # dev_status.py's build_parser() for the full rationale.
+    verbosity_parent = argparse.ArgumentParser(add_help=False)
+    cli_common.add_verbosity_args(verbosity_parent)
     subparsers = parser.add_subparsers(dest="subcommand")
-    subparsers.add_parser("check")
-    subparsers.add_parser("fix")
-    sync_parser = subparsers.add_parser("sync-to-seed")
+    subparsers.add_parser("check", parents=[verbosity_parent])
+    subparsers.add_parser("fix", parents=[verbosity_parent])
+    sync_parser = subparsers.add_parser("sync-to-seed", parents=[verbosity_parent])
     sync_parser.add_argument(
         "--dotfiles-root", type=Path, default=DOTFILES, dest="dotfiles_root"
     )

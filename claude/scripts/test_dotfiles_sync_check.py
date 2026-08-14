@@ -94,6 +94,13 @@ class DotfilesSyncCheckTestCase(unittest.TestCase):
         shutil.rmtree(self.repo)
         self.assertEqual(self.run_check(), "")
 
+    def test_verbosity_flags_parse_after_every_leaf_subcommand(self) -> None:
+        # A leaf added later without an entry here silently loses coverage.
+        for cmd in ("check", "mark"):
+            args = dotfiles_sync_check.build_parser().parse_args([cmd, "-q"])
+            self.assertTrue(args.quiet)
+            self.assertFalse(args.verbose)
+
 
 if __name__ == "__main__":
     unittest.main()

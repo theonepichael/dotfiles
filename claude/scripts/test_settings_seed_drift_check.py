@@ -722,6 +722,24 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
             ssdc.main(["sync-to-seed", "--dotfiles-root", str(custom_root)])
         mock_cmd.assert_called_once_with(custom_root, quiet=False)
 
+    def test_verbosity_flags_parse_after_every_leaf_subcommand(self) -> None:
+        # A leaf added later without an entry here silently loses coverage.
+        custom_root = Path(self.tmpdir) / "argparse-root-quiet"
+        cases = {
+            "check": (ssdc, "cmd_check", []),
+            "fix": (ssdc, "cmd_fix", []),
+            "sync-to-seed": (
+                ssdc,
+                "cmd_sync_to_seed",
+                ["--dotfiles-root", str(custom_root)],
+            ),
+        }
+        for cmd, (module, target, extra) in cases.items():
+            with patch.object(module, target) as mock_cmd:
+                mock_cmd.return_value = 0
+                ssdc.main([cmd, *extra, "-q"])
+            self.assertEqual(mock_cmd.call_args.kwargs.get("quiet"), True)
+
     # ── _try_parse_json ───────────────────────────────────────────────────
 
     def test_try_parse_json_returns_parsed_value(self) -> None:

@@ -500,7 +500,7 @@ standup.py — /standup skill CLI: local data gathering.
   - `git_commits(repos: list[str], since_days: int) -> tuple[list[dict[str, str]], list[dict[str, str]]]`
   - `backlog_items(prefixes: list[str], recent_done_days: int) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[dict[str, str]]]`
 - Subcommand handlers: `cmd_fetch`
-- Tested by: nothing
+- Tested by: `claude/scripts/test_standup.py`
 
 ### `claude/scripts/standup_adapters.py`
 

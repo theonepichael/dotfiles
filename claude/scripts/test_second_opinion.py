@@ -364,5 +364,22 @@ class HandleTerminationTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, 128 + 15)
 
 
+class ParserVerbosityTests(unittest.TestCase):
+    def test_flags_parse_after_every_leaf_subcommand(self) -> None:
+        # A leaf added later without an entry here silently loses coverage.
+        cases = {
+            "detect": ("cmd_detect", []),
+            "review": ("cmd_review", ["dummy-plan"]),
+        }
+        for cmd, (target, extra) in cases.items():
+            argv = ["second_opinion.py", cmd, *extra, "-q"]
+            with (
+                patch.object(second_opinion, target) as mock_cmd,
+                patch.object(sys, "argv", argv),
+            ):
+                second_opinion.main()
+            self.assertTrue(mock_cmd.call_args.args[0].quiet)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

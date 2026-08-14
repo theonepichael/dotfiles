@@ -72,13 +72,21 @@ def build_parser() -> argparse.ArgumentParser:
         description="Flag when the dotfiles repo has drifted from the last "
         "commit bundled over to a GitHub-blocked work machine."
     )
-    cli_common.add_verbosity_args(parser)
+    # --quiet/-v are defined once, on every leaf subcommand parser only
+    # (via this shared `parents=` parser) -- never on `parser` itself. See
+    # dev_status.py's build_parser() for the full rationale.
+    verbosity_parent = argparse.ArgumentParser(add_help=False)
+    cli_common.add_verbosity_args(verbosity_parent)
     subparsers = parser.add_subparsers(dest="subcommand")
     subparsers.add_parser(
-        "check", help="print a drift note if HEAD is ahead of the marker (default)"
+        "check",
+        help="print a drift note if HEAD is ahead of the marker (default)",
+        parents=[verbosity_parent],
     )
     mark_parser = subparsers.add_parser(
-        "mark", help="record the given (or current HEAD) commit as last-bundled"
+        "mark",
+        help="record the given (or current HEAD) commit as last-bundled",
+        parents=[verbosity_parent],
     )
     mark_parser.add_argument(
         "sha", nargs="?", default=None, help="commit to record (defaults to HEAD)"

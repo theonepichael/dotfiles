@@ -1129,7 +1129,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Cross-machine sync for dev_status.py's backlog/pending store."
     )
-    cli_common.add_verbosity_args(parser)
+    # --quiet/-v are defined once, on every leaf subcommand parser only
+    # (via this shared `parents=` parser) -- never on `parser` itself. See
+    # dev_status.py's build_parser() for the full rationale. Placed here,
+    # before this script's own top-level flags, to keep gen_interfaces.py's
+    # source-order-derived option list unchanged.
+    verbosity_parent = argparse.ArgumentParser(add_help=False)
+    cli_common.add_verbosity_args(verbosity_parent)
     parser.add_argument(
         "--host", default=DEFAULT_HOST, help="SSH alias for the remote machine"
     )
@@ -1148,18 +1154,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_sync = sub.add_parser("sync", help="merge against the other machine")
+    p_sync = sub.add_parser(
+        "sync", help="merge against the other machine", parents=[verbosity_parent]
+    )
     p_sync.add_argument("--dry-run", action="store_true")
     p_sync.set_defaults(func=cmd_sync)
 
-    p_status = sub.add_parser("status", help="report divergence without merging")
+    p_status = sub.add_parser(
+        "status",
+        help="report divergence without merging",
+        parents=[verbosity_parent],
+    )
     p_status.set_defaults(func=cmd_status)
 
-    p_export = sub.add_parser("export", help="internal: dump local store+rev as JSON")
+    p_export = sub.add_parser(
+        "export",
+        help="internal: dump local store+rev as JSON",
+        parents=[verbosity_parent],
+    )
     p_export.set_defaults(func=cmd_export)
 
     p_import = sub.add_parser(
-        "import", help="internal: write a merged store from stdin"
+        "import",
+        help="internal: write a merged store from stdin",
+        parents=[verbosity_parent],
     )
     p_import.add_argument("--if-rev", type=int, required=True, metavar="<N>")
     p_import.set_defaults(func=cmd_import)

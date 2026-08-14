@@ -278,10 +278,16 @@ def cmd_fetch(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="/standup skill CLI")
-    cli_common.add_verbosity_args(parser)
+    # --quiet/-v are defined once, on every leaf subcommand parser only
+    # (via this shared `parents=` parser) -- never on `parser` itself. See
+    # dev_status.py's build_parser() for the full rationale.
+    verbosity_parent = argparse.ArgumentParser(add_help=False)
+    cli_common.add_verbosity_args(verbosity_parent)
     sub = parser.add_subparsers(dest="cmd")
 
-    p = sub.add_parser("fetch", help="gather all sources as JSON")
+    p = sub.add_parser(
+        "fetch", help="gather all sources as JSON", parents=[verbosity_parent]
+    )
     p.add_argument(
         "--date",
         default=None,

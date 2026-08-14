@@ -272,13 +272,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="one-shot adversarial critique of a plan from a non-Claude backend",
     )
-    cli_common.add_verbosity_args(parser)
+    # --quiet/-v are defined once, on every leaf subcommand parser only
+    # (via this shared `parents=` parser) -- never on `parser` itself. See
+    # dev_status.py's build_parser() for the full rationale.
+    verbosity_parent = argparse.ArgumentParser(add_help=False)
+    cli_common.add_verbosity_args(verbosity_parent)
     sub = parser.add_subparsers(dest="cmd", metavar="{detect,review}")
 
-    sub.add_parser("detect", help="list available backends as JSON")
+    sub.add_parser(
+        "detect", help="list available backends as JSON", parents=[verbosity_parent]
+    )
 
     p = sub.add_parser(
-        "review", help="get one critique from the priority-selected backend"
+        "review",
+        help="get one critique from the priority-selected backend",
+        parents=[verbosity_parent],
     )
     p.add_argument("plan", metavar="<plan-file-or-text>")
     p.add_argument(
