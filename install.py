@@ -453,6 +453,10 @@ class Context:
     system: str
     is_wsl: bool
     neovim_fallback_failure: str | None = None
+    # Set by capture_departure_baseline (Linux, non-dry-run only); package/
+    # npm-harness installers record transactions onto it as they run, and
+    # run_install saves it back to baseline.json once, after every step.
+    departure_baseline: depart.Baseline | None = None
 
     @property
     def state_dir(self) -> Path:
@@ -806,7 +810,52 @@ def install_mac_packages(ctx: Context) -> None:
 # ── packages: Linux ───────────────────────────────────────────────────────────
 
 
-def _install_linux_packages_one_by_one(ctx: Context, manager: str) -> None:
+def _capture_package_snapshot(manager: str) -> dict[str, str] | None:
+    """Probe the live package/tool inventory for one manager.
+
+    Returns None on a failed/unavailable probe — callers must skip
+    recording that transaction entirely rather than record a misleading
+    empty snapshot, since nothing downstream can yet distinguish "empty"
+    from "probe failed" for transaction data (that distinction matters for
+    departure-time removal decisions, which are not implemented yet — see
+    execute_departure's docstring).
+    """
+    probes: dict[str, tuple[list[str], Callable[[str], dict[str, str]]]] = {
+        "apt": (depart.dpkg_query_command(), depart.parse_dpkg_query),
+        "dnf": (depart.rpm_qa_command(), depart.parse_rpm_qa),
+        "npm": (depart.npm_ls_global_command(), depart.parse_npm_ls_global),
+        "uv-tool": (depart.uv_tool_list_command(), depart.parse_uv_tool_list),
+    }
+    command, parse = probes[manager]
+    result = run_command(command, capture=True)
+    return parse(result.stdout) if result.ok else None
+
+
+def _record_package_transaction(
+    ctx: Context,
+    manager: str,
+    requested: list[str],
+    before: dict[str, str] | None,
+    after: dict[str, str] | None,
+    epoch: dict[str, str] | None,
+) -> None:
+    """Record one package transaction onto ctx.departure_baseline, if tracking."""
+    if ctx.departure_baseline is None or before is None or after is None:
+        return
+    depart.record_transaction(
+        ctx.departure_baseline,
+        manager=manager,
+        requested=requested,
+        before=before,
+        after=after,
+        captured_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+        epoch=epoch,
+    )
+
+
+def _install_linux_packages_one_by_one(
+    ctx: Context, manager: str, epoch: dict[str, str] | None
+) -> None:
     """Install each package with its own package-manager invocation.
 
     Deliberately not one batched install command: ``apt-get install`` fails
@@ -824,7 +873,20 @@ def _install_linux_packages_one_by_one(ctx: Context, manager: str) -> None:
     for pkg in LINUX_PACKAGES:
         if ctx.opts.dry_run:
             _preview(f"would run: {' '.join(base)} {pkg}")
-        elif run_command([*base, pkg]).ok:
+            continue
+        before = (
+            _capture_package_snapshot(manager)
+            if ctx.departure_baseline is not None
+            else None
+        )
+        outcome = run_command([*base, pkg])
+        after = (
+            _capture_package_snapshot(manager)
+            if ctx.departure_baseline is not None
+            else None
+        )
+        _record_package_transaction(ctx, manager, [pkg], before, after, epoch)
+        if outcome.ok:
             ctx.manifest.record_package(pkg)
         else:
             ctx.reporter.skip(
@@ -1057,9 +1119,45 @@ def _install_neovim_fallback(ctx: Context) -> None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def _install_ruff_uv_tool(ctx: Context) -> None:
+    """Install ruff via ``uv tool install``, recording a transaction if tracking."""
+    if not have("uv"):
+        ctx.reporter.skip("ruff", "uv unavailable")
+        return
+    if ctx.opts.dry_run:
+        _preview("would run: uv tool install ruff")
+        return
+    before = (
+        _capture_package_snapshot("uv-tool")
+        if ctx.departure_baseline is not None
+        else None
+    )
+    outcome = run_command(["uv", "tool", "install", "ruff"])
+    after = (
+        _capture_package_snapshot("uv-tool")
+        if ctx.departure_baseline is not None
+        else None
+    )
+    _record_package_transaction(ctx, "uv-tool", ["ruff"], before, after, epoch=None)
+    if outcome.ok:
+        ctx.manifest.record_package("ruff")
+    else:
+        ctx.reporter.skip("ruff", "uv tool install failed")
+
+
 def install_linux_packages(ctx: Context) -> None:
     """Install everything the Linux/WSL branch owns: distro packages and extras."""
-    if have("dnf"):
+    manager = "dnf" if have("dnf") else "apt"
+    # Captured once, immediately before any package-manager mutation this
+    # run makes — the comparand for each manager's *first* transaction in
+    # the interference-detection scheme, not re-probed per package.
+    epoch = (
+        _capture_package_snapshot(manager)
+        if ctx.departure_baseline is not None and not ctx.opts.dry_run
+        else None
+    )
+
+    if manager == "dnf":
         if ctx.opts.dry_run:
             _preview("would run: sudo dnf makecache")
         else:
@@ -1068,7 +1166,7 @@ def install_linux_packages(ctx: Context) -> None:
                 ctx.reporter.skip(
                     "dnf makecache", "dnf makecache failed (offline or blocked?)"
                 )
-        _install_linux_packages_one_by_one(ctx, "dnf")
+        _install_linux_packages_one_by_one(ctx, "dnf", epoch)
     else:
         if ctx.opts.dry_run:
             _preview("would run: sudo apt-get update")
@@ -1078,23 +1176,14 @@ def install_linux_packages(ctx: Context) -> None:
                 ctx.reporter.skip(
                     "apt update", "apt-get update failed (offline or blocked?)"
                 )
-        _install_linux_packages_one_by_one(ctx, "apt")
+        _install_linux_packages_one_by_one(ctx, "apt", epoch)
 
     _install_neovim_fallback(ctx)
 
     _shim(ctx, "bat", "batcat")
     _shim(ctx, "fd", "fdfind")
     _install_uv(ctx)
-
-    if have("uv"):
-        if ctx.opts.dry_run:
-            _preview("would run: uv tool install ruff")
-        elif run_command(["uv", "tool", "install", "ruff"]).ok:
-            ctx.manifest.record_package("ruff")
-        else:
-            ctx.reporter.skip("ruff", "uv tool install failed")
-    else:
-        ctx.reporter.skip("ruff", "uv unavailable")
+    _install_ruff_uv_tool(ctx)
 
     if not have("oh-my-posh"):
         if ctx.opts.dry_run:
@@ -1190,7 +1279,15 @@ def install_npm_harness(ctx: Context, harness: str, label: str, package: str) ->
         _preview(f"would run: npm install -g {package}")
         return
     _header(f"==> Installing {label}...")
-    if run_command(["npm", "install", "-g", package]).ok:
+    before = (
+        _capture_package_snapshot("npm") if ctx.departure_baseline is not None else None
+    )
+    outcome = run_command(["npm", "install", "-g", package])
+    after = (
+        _capture_package_snapshot("npm") if ctx.departure_baseline is not None else None
+    )
+    _record_package_transaction(ctx, "npm", [package], before, after, epoch=None)
+    if outcome.ok:
         ctx.manifest.record_package(package)
     else:
         ctx.reporter.skip(label, "npm install failed (registry blocked?)")
@@ -2131,6 +2228,7 @@ def capture_departure_baseline(ctx: Context, specs: Sequence[LinkSpec]) -> None:
     stamp = datetime.now().astimezone().isoformat(timespec="seconds")
     baseline.add_layer(stamp, records)
     depart.save_baseline(state_dir, baseline)
+    ctx.departure_baseline = baseline
 
 
 # ── profile marker ────────────────────────────────────────────────────────────
@@ -3168,6 +3266,9 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
     install_vim_plug(ctx)
     bootstrap_neovim(ctx)
     write_profile_marker(ctx)
+
+    if ctx.departure_baseline is not None:
+        depart.save_baseline(ctx.state_dir, ctx.departure_baseline)
 
     print_summary(ctx, settings_drift, opencode_drift, vscode_drift)
     return 1 if ctx.reporter.skipped else 0

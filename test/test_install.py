@@ -2372,3 +2372,118 @@ def test_depart_second_lock_acquisition_refuses_while_first_is_live(
         assert code == 2
     finally:
         depart.release_departure_lock(ctx.state_dir, pid=os.getpid())
+
+
+# ── package transaction recording (step 2 live wiring) ─────────────────────
+
+
+def test_install_linux_packages_one_by_one_records_transactions(home, monkeypatch):
+    ctx = make_ctx(home)
+    ctx.departure_baseline = depart.Baseline()
+    live_versions: dict[str, str] = {}
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "dpkg-query":
+            output = "".join(f"{n}\t{v}\n" for n, v in live_versions.items())
+            return install.CommandResult(True, output)
+        if cmd[:3] == ["sudo", "apt-get", "install"]:
+            live_versions[cmd[-1]] = "1.0-1"
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "run_command", run)
+    install._install_linux_packages_one_by_one(ctx, "apt", epoch={})
+
+    txns = ctx.departure_baseline.transactions
+    assert len(txns) == len(install.LINUX_PACKAGES)
+    first = txns[0]
+    assert first["manager"] == "apt"
+    assert first["requested"] == [install.LINUX_PACKAGES[0]]
+    assert first["after"][install.LINUX_PACKAGES[0]] == "1.0-1"
+    assert first["comparand_source"] == "epoch"
+    # Every recorded package actually landed in the manifest too.
+    assert kinds(ctx, "package-installed") == [
+        {"kind": "package-installed", "name": pkg} for pkg in install.LINUX_PACKAGES
+    ]
+
+
+def test_install_linux_packages_dry_run_records_no_transactions(home, monkeypatch):
+    ctx = make_ctx(home, dry_run=True)
+    ctx.departure_baseline = depart.Baseline()
+
+    def run(cmd, **kwargs):
+        raise AssertionError("dry-run must never shell out")
+
+    monkeypatch.setattr(install, "run_command", run)
+    install._install_linux_packages_one_by_one(ctx, "apt", epoch={})
+
+    assert ctx.departure_baseline.transactions == []
+
+
+def test_install_linux_packages_no_departure_baseline_skips_probes(home, monkeypatch):
+    """When not tracking (e.g. macOS, or dry-run upstream), no probe calls happen."""
+    ctx = make_ctx(home)
+    assert ctx.departure_baseline is None
+
+    def run(cmd, **kwargs):
+        if cmd[:3] == ["sudo", "apt-get", "install"]:
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected probe call when not tracking: {cmd!r}")
+
+    monkeypatch.setattr(install, "run_command", run)
+    install._install_linux_packages_one_by_one(ctx, "apt", epoch=None)
+
+
+def test_install_npm_harness_records_transaction(home, monkeypatch):
+    ctx = make_ctx(home, harnesses=("claude",))
+    ctx.departure_baseline = depart.Baseline()
+    live = {"npm": "10.0.0"}
+
+    def run(cmd, **kwargs):
+        if cmd[:2] == ["npm", "ls"]:
+            deps = {n: {"version": v} for n, v in live.items()}
+            return install.CommandResult(True, json.dumps({"dependencies": deps}))
+        if cmd[:3] == ["npm", "install", "-g"]:
+            live[cmd[3]] = "1.2.3"
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "have", lambda name: name == "npm")
+    monkeypatch.setattr(install, "run_command", run)
+    install.install_npm_harness(
+        ctx, "claude", "Claude Code", "@anthropic-ai/claude-code"
+    )
+
+    txns = ctx.departure_baseline.transactions
+    assert len(txns) == 1
+    assert txns[0]["manager"] == "npm"
+    assert txns[0]["requested"] == ["@anthropic-ai/claude-code"]
+    assert txns[0]["after"]["@anthropic-ai/claude-code"] == "1.2.3"
+
+
+def test_install_ruff_uv_tool_records_transaction(home, monkeypatch):
+    ctx = make_ctx(home)
+    ctx.departure_baseline = depart.Baseline()
+    live: dict[str, str] = {}
+
+    def run(cmd, **kwargs):
+        if cmd == ["uv", "tool", "list"]:
+            output = "".join(f"{n} v{v}\n" for n, v in live.items())
+            return install.CommandResult(True, output)
+        if cmd == ["uv", "tool", "install", "ruff"]:
+            live["ruff"] = "0.5.0"
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "have", lambda name: name == "uv")
+    monkeypatch.setattr(install, "run_command", run)
+    install._install_ruff_uv_tool(ctx)
+
+    txns = ctx.departure_baseline.transactions
+    assert len(txns) == 1
+    assert txns[0]["manager"] == "uv-tool"
+    assert txns[0]["requested"] == ["ruff"]
+    assert txns[0]["after"]["ruff"] == "0.5.0"
+    assert kinds(ctx, "package-installed") == [
+        {"kind": "package-installed", "name": "ruff"}
+    ]
