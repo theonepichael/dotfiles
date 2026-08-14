@@ -50,7 +50,7 @@ Formatting & linting
 - ANN (flake8-annotations) enforces the type-hint requirement above on every function, new or existing.
 - Run `uv run ruff format .` and `uv run ruff check --fix .` before committing Python changes. CI fails on either check, and test/test_lint.py fails the suite as well.
 - Ruff excludes test files (`**/test_*.py`, `test/`). They are lint-exempt, but should still follow the same conventions.
-- Shell has no enforced formatter. Prefer readable code and run local linters if available (shellcheck/shfmt).
+- Shell files are enforced by `test/lint_shell.sh`: it runs `shellcheck --severity=warning` and `shfmt -i 2 -ci -d` over the in-scope POSIX-sh / bash files (`install.sh`, `scripts/export_for_print.sh`, `scripts/export_for_print_trimmed.sh`, `test/run.sh`, `test/scenarios.sh`). CI runs this via `.github/workflows/shell-lint.yml`; run the script locally before committing shell changes.
 - .github/workflows/python-quality-autofix.yml runs on a weekly schedule and on manual dispatch: it applies safe Ruff fixes, re-verifies the tree, and opens a pull request with the result.
 
 Files & docs

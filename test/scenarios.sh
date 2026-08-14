@@ -13,12 +13,13 @@ STATE_DIR="$HOME/.local/state/dotfiles"
 MANIFEST="$STATE_DIR/history.jsonl"
 MARKER="$STATE_DIR/profile"
 
-cd "$DOTFILES"
+cd "$DOTFILES" || exit 1
 
 PASS=0
 FAIL=0
-check() {  # check <description> <command...>
-  local desc="$1"; shift
+check() { # check <description> <command...>
+  local desc="$1"
+  shift
   if "$@" >/tmp/check.out 2>&1; then
     echo "  PASS: $desc"
     PASS=$((PASS + 1))
@@ -29,7 +30,7 @@ check() {  # check <description> <command...>
   fi
 }
 
-manifest_has() {  # manifest_has <kind> <field=value> [<field=value> ...]
+manifest_has() { # manifest_has <kind> <field=value> [<field=value> ...]
   python3 - "$MANIFEST" "$@" <<'PY'
 import json, sys
 path, kind, *pairs = sys.argv[1:]
@@ -54,7 +55,7 @@ sys.exit(1)
 PY
 }
 
-manifest_run_count() {  # manifest_run_count <N>
+manifest_run_count() { # manifest_run_count <N>
   python3 - "$MANIFEST" "$1" <<'PY'
 import json, sys
 path, want = sys.argv[1], int(sys.argv[2])
@@ -84,11 +85,11 @@ cat /tmp/install.out
 check "exit code 0 or 1 (0/1 = ok-with-skips, not a hard error)" \
   bash -c "[[ $code -eq 0 || $code -eq 1 ]]"
 check "manifest recorded profile=personal" manifest_has run profile=personal
-check "~/.vimrc symlinks into repo" bash -c '[[ "$(readlink -f ~/.vimrc)" == "'"$DOTFILES"'/vim/.vimrc" ]]'
-check "~/.zshrc symlinks into repo" bash -c '[[ "$(readlink -f ~/.zshrc)" == "'"$DOTFILES"'/zsh/.zshrc" ]]'
-check "~/.claude/CLAUDE.md symlinks into repo" bash -c '[[ "$(readlink -f ~/.claude/CLAUDE.md)" == "'"$DOTFILES"'/claude/CLAUDE.md" ]]'
-check "~/.claude/settings.json copied (not symlinked)" bash -c '[[ -f ~/.claude/settings.json && ! -L ~/.claude/settings.json ]]'
-check "~/.claude/settings.json matches personal seed" diff -q ~/.claude/settings.json "$DOTFILES/claude/settings.json"
+check "$HOME/.vimrc symlinks into repo" bash -c '[[ "$(readlink -f ~/.vimrc)" == "'"$DOTFILES"'/vim/.vimrc" ]]'
+check "$HOME/.zshrc symlinks into repo" bash -c '[[ "$(readlink -f ~/.zshrc)" == "'"$DOTFILES"'/zsh/.zshrc" ]]'
+check "$HOME/.claude/CLAUDE.md symlinks into repo" bash -c '[[ "$(readlink -f ~/.claude/CLAUDE.md)" == "'"$DOTFILES"'/claude/CLAUDE.md" ]]'
+check "$HOME/.claude/settings.json copied (not symlinked)" bash -c '[[ -f ~/.claude/settings.json && ! -L ~/.claude/settings.json ]]'
+check "$HOME/.claude/settings.json matches personal seed" diff -q ~/.claude/settings.json "$DOTFILES/claude/settings.json"
 check "watchcommit symlinked on personal profile" bash -c '[[ -L ~/.local/bin/watchcommit ]]'
 check "watchcommit systemd unit symlinked on personal profile" bash -c '[[ -L ~/.config/systemd/user/watchcommit.service ]]'
 check "no profile marker written on personal run" bash -c '[[ ! -f "'"$MARKER"'" ]]'
@@ -125,8 +126,8 @@ echo "=== 2. Rollback undoes the personal install ==="
 ./install.sh --rollback >/tmp/rollback.out 2>&1
 cat /tmp/rollback.out
 check "manifest removed after rollback" bash -c '[[ ! -f "'"$MANIFEST"'" ]]'
-check "~/.vimrc symlink removed" bash -c '[[ ! -e ~/.vimrc ]]'
-check "~/.claude/settings.json removed" bash -c '[[ ! -e ~/.claude/settings.json ]]'
+check "$HOME/.vimrc symlink removed" bash -c '[[ ! -e ~/.vimrc ]]'
+check "$HOME/.claude/settings.json removed" bash -c '[[ ! -e ~/.claude/settings.json ]]'
 check "watchcommit symlink removed" bash -c '[[ ! -e ~/.local/bin/watchcommit ]]'
 check "watchcommit systemd unit symlink removed" bash -c '[[ ! -e ~/.config/systemd/user/watchcommit.service ]]'
 check "Nerd Font NOT removed by rollback (packages aren't rolled back)" bash -c \
@@ -134,11 +135,11 @@ check "Nerd Font NOT removed by rollback (packages aren't rolled back)" bash -c 
 
 echo ""
 echo "=== 3. Pre-existing file gets backed up, not clobbered ==="
-echo "sentinel-content" > ~/.vimrc
+echo "sentinel-content" >~/.vimrc
 ./install.sh --harness=claude >/tmp/install2.out 2>&1
 cat /tmp/install2.out
 check "original content preserved in .bak" bash -c '[[ "$(cat ~/.vimrc.bak)" == "sentinel-content" ]]'
-check "~/.vimrc is now the symlink" bash -c '[[ -L ~/.vimrc ]]'
+check "$HOME/.vimrc is now the symlink" bash -c '[[ -L ~/.vimrc ]]'
 check "manifest recorded file-backed-up for ~/.vimrc" manifest_has file-backed-up "dest=$HOME/.vimrc"
 check "manifest ALSO recorded symlink-created for ~/.vimrc" manifest_has symlink-created "dest=$HOME/.vimrc"
 
@@ -155,7 +156,7 @@ cat /tmp/work.out
 check "profile marker written as 'work'" bash -c '[[ "$(cat "'"$MARKER"'")" == "work" ]]'
 check "watchcommit excluded on work profile" bash -c '[[ ! -e ~/.local/bin/watchcommit ]]'
 check "watchcommit systemd unit excluded on work profile" bash -c '[[ ! -e ~/.config/systemd/user/watchcommit.service ]]'
-check "~/.claude/settings.json matches WORK seed" diff -q ~/.claude/settings.json "$DOTFILES/claude/settings.work.json"
+check "$HOME/.claude/settings.json matches WORK seed" diff -q ~/.claude/settings.json "$DOTFILES/claude/settings.work.json"
 check "Claude Code IS installed despite work profile (profile never restricts harness choice)" \
   bash -c '[[ -L ~/.claude/CLAUDE.md ]]'
 
@@ -253,7 +254,7 @@ check "Claude Code wired (combo)" bash -c '[[ -L ~/.claude/CLAUDE.md ]]'
 check "opencode wired (combo)" bash -c '[[ -f ~/.config/opencode/opencode.jsonc ]]'
 check "Copilot still NOT wired (combo omits it)" bash -c '[[ ! -e ~/.copilot/copilot-instructions.md ]]'
 check "repeated --harness flags accumulate, not overwrite" \
-  bash -c 'true'  # exercised directly below with a second invocation
+  bash -c 'true' # exercised directly below with a second invocation
 
 # --harness=claude --harness=copilot (repeated flag) must select BOTH, not
 # just the last one — the array-append fix from the redesign.
@@ -344,7 +345,7 @@ check "history.jsonl cleared after a full rollback" bash -c '[[ ! -f "'"$MANIFES
 
 echo ""
 echo "=== 12. Rollback skips and reports instead of aborting on the unexpected ==="
-echo "sentinel-content" > ~/.vimrc
+echo "sentinel-content" >~/.vimrc
 ./install.sh --harness=claude >/tmp/pre12.out 2>&1
 cat /tmp/pre12.out
 
@@ -379,10 +380,10 @@ echo "=== 13. --rollback --wipe: blank-slate rollback ==="
 # exists, which is exactly the real-world case this branch exists to cover
 # (a machine that provisioned watchcommit and no longer has systemd --user,
 # e.g. a fresh WSL distro without `enable-systemd` in /etc/wsl.conf yet).
-echo "sentinel-content" > ~/.vimrc
+echo "sentinel-content" >~/.vimrc
 ./install.sh --harness=claude >/tmp/pre-wipe.out 2>&1
 cat /tmp/pre-wipe.out
-check "~/.vimrc backed up before the wipe scenario" bash -c '[[ -f ~/.vimrc.bak ]]'
+check "$HOME/.vimrc backed up before the wipe scenario" bash -c '[[ -f ~/.vimrc.bak ]]'
 check "watchcommit unit symlinked before the wipe scenario" bash -c '[[ -L ~/.config/systemd/user/watchcommit.service ]]'
 
 mkdir -p ~/.local/share/nvim ~/.local/state/nvim ~/.cache/nvim
@@ -492,9 +493,11 @@ echo "unrelated content" >~/my-own-notes.txt
 # recorded.
 if command -v apt-get >/dev/null 2>&1; then
   UNRELATED_PKG=sl
+  # shellcheck disable=SC2024 # Redirect is to /tmp in the test container; parent shell owns the fd intentionally.
   sudo apt-get install -y -qq "$UNRELATED_PKG" >/tmp/depart-unrelated-pkg.out 2>&1
 else
   UNRELATED_PKG=cowsay
+  # shellcheck disable=SC2024 # Redirect is to /tmp in the test container; parent shell owns the fd intentionally.
   sudo dnf install -y -q "$UNRELATED_PKG" >/tmp/depart-unrelated-pkg.out 2>&1
 fi
 
