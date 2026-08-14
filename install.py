@@ -2810,7 +2810,20 @@ def build_preflight_report(
     return report
 
 
-def _print_preflight_report(report: dict[str, depart.Classification]) -> None:
+def build_package_preflight(ctx: Context) -> list[depart.PackageClassification] | None:
+    """Classify every requested/introduced package, or None if there's no baseline."""
+    baseline = depart.load_baseline(ctx.state_dir)
+    if baseline is None:
+        return None
+    return depart.classify_package_transactions(
+        baseline, live_package_snapshots(baseline)
+    )
+
+
+def _print_preflight_report(
+    report: dict[str, depart.Classification],
+    package_report: Sequence[depart.PackageClassification] = (),
+) -> None:
     """Print the full departure preflight, grouped by bucket."""
     _header("==> Departure preflight")
     for bucket in (
@@ -2820,17 +2833,20 @@ def _print_preflight_report(report: dict[str, depart.Classification]) -> None:
         depart.BUCKET_PRESERVED,
     ):
         keys = sorted(k for k, c in report.items() if c.bucket == bucket)
-        if not keys:
+        package_lines = [c for c in package_report if c.bucket == bucket]
+        if not keys and not package_lines:
             continue
-        print(PALETTE.header(f"  {bucket} ({len(keys)}):"))
+        print(PALETTE.header(f"  {bucket} ({len(keys) + len(package_lines)}):"))
+        warn = bucket in (depart.BUCKET_UNRESOLVED, depart.BUCKET_DRIFTED)
         for key in keys:
             c = report[key]
             action = f" [{c.action}]" if c.action else ""
             line = f"    {key}{action} — {c.reason}"
-            if bucket == depart.BUCKET_UNRESOLVED or bucket == depart.BUCKET_DRIFTED:
-                print(PALETTE.warn(line))
-            else:
-                print(line)
+            print(PALETTE.warn(line) if warn else line)
+        for pc in sorted(package_lines, key=lambda c: c.key):
+            action = f" [{pc.action}]" if pc.action else ""
+            line = f"    {pc.key}{action} — {pc.reason}"
+            print(PALETTE.warn(line) if warn else line)
 
 
 def _read_confirmation_token() -> str:
@@ -3056,6 +3072,124 @@ def execute_runtime_phase(
     ledger.record(key, depart.ACTION_REMOVE, outcome)
 
 
+_REMOVAL_COMMANDS: dict[str, Callable[[str], list[str]]] = {
+    "apt": depart.apt_remove_command,
+    "dnf": depart.dnf_remove_command,
+    "npm": depart.npm_uninstall_command,
+    "uv-tool": depart.uv_tool_uninstall_command,
+}
+_RDEPENDS_COMMANDS: dict[str, Callable[[str], list[str]]] = {
+    "apt": depart.apt_rdepends_command,
+    "dnf": depart.dnf_whatrequires_command,
+}
+_DOWNGRADE_COMMANDS: dict[str, Callable[[str, str], list[str]]] = {
+    "apt": depart.apt_downgrade_command,
+    "dnf": depart.dnf_downgrade_command,
+}
+
+
+def live_package_snapshots(
+    baseline: depart.Baseline,
+) -> dict[str, dict[str, str] | None]:
+    """Fresh probe results for every manager appearing in recorded transactions."""
+    managers = {t.get("manager") for t in baseline.transactions if t.get("manager")}
+    return {str(m): _capture_package_snapshot(str(m)) for m in managers}
+
+
+def _execute_package_removal(manager: str, name: str) -> str:
+    builder = _REMOVAL_COMMANDS.get(manager)
+    if builder is None:
+        return f"unresolved: no removal command for manager {manager!r}"
+    if run_command(builder(name)).ok:
+        return "ok"
+    return f"unresolved: {manager} removal failed for {name}"
+
+
+def _execute_dependency_removal(manager: str, name: str) -> str:
+    """Remove an introduced dependency, gated on an explicitly-empty rdepends probe.
+
+    Never a broad autoremove — only ever this one named package, and only
+    once its own probe proves nothing else installed still depends on it.
+    """
+    probe_builder = _RDEPENDS_COMMANDS.get(manager)
+    if probe_builder is None:
+        return f"unresolved: no reverse-dependency probe for manager {manager!r}"
+    result = run_command(probe_builder(name), capture=True)
+    verdict = depart.classify_rdepends_result(result.ok, result.stdout)
+    if verdict != "removable":
+        return f"unresolved: reverse-dependency probe {verdict}"
+    return _execute_package_removal(manager, name)
+
+
+def _execute_downgrade(baseline: depart.Baseline, manager: str, name: str) -> str:
+    """Try each downgrade candidate in order (earliest first, per the ladder).
+
+    Returns ``"halt: ..."`` only for the one named exception to this
+    installer's general no-abort convention: a downgrade command that ran
+    and left the package manager's own reported state different from both
+    the pre-attempt and target versions — state left genuinely uncertain
+    mid-operation, per the plan's "changed-state-then-failed" rule.
+    """
+    candidates = depart.downgrade_candidates(baseline, manager, name)
+    builder = _DOWNGRADE_COMMANDS.get(manager)
+    if not candidates or builder is None:
+        return "unresolved: no recorded downgrade target for this package"
+    pre = _capture_package_snapshot(manager)
+    for version in candidates:
+        if run_command(builder(name, version)).ok:
+            return "ok"
+        post = _capture_package_snapshot(manager)
+        if (
+            pre is not None
+            and post is not None
+            and post.get(name) != pre.get(name)
+            and post.get(name) != version
+        ):
+            return "halt: changed-state-then-failed downgrade"
+        pre = post
+    return "unresolved: downgrade ladder exhausted, no safe version installed"
+
+
+def execute_package_phase(
+    ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger
+) -> bool:
+    """Remove/downgrade owned packages, reverse transactions order.
+
+    Returns False only when a changed-state-then-failed downgrade halted
+    the phase — callers must skip the subsequent runtime/shared-state
+    phase too when this happens, per the plan's explicit exception to the
+    general no-abort/report-skips convention.
+    """
+    done = ledger.completed_keys()
+    pending_managers = {
+        depart.transaction_from_dict(t).manager
+        for t in baseline.transactions
+        if any(
+            depart.package_key(t.get("manager", ""), name) not in done
+            for name in (
+                *depart.transaction_from_dict(t).requested,
+                *depart.transaction_from_dict(t).introduced(),
+            )
+        )
+    }
+    snapshots = {m: _capture_package_snapshot(m) for m in pending_managers}
+    for c in depart.classify_package_transactions(baseline, snapshots):
+        if c.key in done or c.bucket != depart.BUCKET_OWNED:
+            continue
+        if c.action == depart.ACTION_DOWNGRADE:
+            outcome = _execute_downgrade(baseline, c.manager, c.name)
+            ledger.record(c.key, c.action, outcome)
+            if outcome.startswith("halt:"):
+                return False
+        elif c.reason == "introduced as a dependency by this transaction":
+            ledger.record(
+                c.key, c.action, _execute_dependency_removal(c.manager, c.name)
+            )
+        else:
+            ledger.record(c.key, c.action, _execute_package_removal(c.manager, c.name))
+    return True
+
+
 def execute_departure(
     ctx: Context,
     baseline: depart.Baseline,
@@ -3064,15 +3198,17 @@ def execute_departure(
     """Perform every safe ``owned`` action, retry-safe via the departure ledger.
 
     Order: file/symlink restore-or-remove, then directories deepest-first,
-    then the NVM runtime. Package removal and service/linger handling are
-    not implemented yet — no ``package:``/``service:`` ownership keys exist
-    in any baseline this version of the installer captures (see the step 2
-    live-wiring follow-up), so there is nothing yet for those phases to do.
+    then packages in reverse transaction order, then the NVM runtime. A
+    changed-state-then-failed downgrade halts the package phase and skips
+    the runtime phase too. Service/linger handling is not implemented yet
+    — no ``service:`` ownership keys exist in any baseline this version of
+    the installer captures.
     """
     ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
     execute_file_symlink_phase(ctx, baseline, report, ledger)
     execute_directory_phase(ctx, report, ledger)
-    execute_runtime_phase(ctx, report, ledger)
+    if execute_package_phase(ctx, baseline, ledger):
+        execute_runtime_phase(ctx, report, ledger)
     return ledger
 
 
@@ -3153,8 +3289,9 @@ def do_depart(ctx: Context) -> int:
             file=sys.stderr,
         )
         return 2
+    package_report = build_package_preflight(ctx) or []
 
-    _print_preflight_report(report)
+    _print_preflight_report(report, package_report)
 
     if ctx.opts.dry_run:
         print(PALETTE.header("Dry run complete — nothing was changed."))
@@ -3204,11 +3341,15 @@ def do_depart(ctx: Context) -> int:
         failed = [
             e
             for e in ledger.entries()
-            if str(e.get("outcome", "")).startswith("unresolved")
+            if str(e.get("outcome", "")).startswith(("unresolved", "halt"))
         ]
         unresolved_keys = [
             key
             for key, c in report.items()
+            if c.bucket in (depart.BUCKET_UNRESOLVED, depart.BUCKET_DRIFTED)
+        ] + [
+            c.key
+            for c in package_report
             if c.bucket in (depart.BUCKET_UNRESOLVED, depart.BUCKET_DRIFTED)
         ]
 

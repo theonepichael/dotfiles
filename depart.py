@@ -1090,3 +1090,103 @@ def release_departure_lock(state_dir: Path, pid: int | None = None) -> None:
     existing = read_lock(lock_path)
     if existing is not None and existing.pid == our_pid:
         lock_path.unlink(missing_ok=True)
+
+
+# ── package classification (Implementation Sequence step 4) ─────────────
+
+ACTION_DOWNGRADE = "downgrade"
+
+
+@dataclass(frozen=True)
+class PackageClassification:
+    """One requested-or-introduced package's departure classification."""
+
+    key: str
+    manager: str
+    name: str
+    bucket: str
+    action: str | None
+    reason: str
+
+
+def _classify_one_package(
+    txn: Transaction, name: str, snapshot: dict[str, str] | None, *, requested: bool
+) -> PackageClassification:
+    key = package_key(txn.manager, name)
+    if snapshot is None:
+        return PackageClassification(
+            key,
+            txn.manager,
+            name,
+            BUCKET_UNRESOLVED,
+            None,
+            "current package state could not be probed",
+        )
+    if name not in snapshot:
+        return PackageClassification(
+            key, txn.manager, name, BUCKET_PRESERVED, None, "already absent"
+        )
+    if not requested:
+        return PackageClassification(
+            key,
+            txn.manager,
+            name,
+            BUCKET_OWNED,
+            ACTION_REMOVE,
+            "introduced as a dependency by this transaction",
+        )
+    if name in txn.before:
+        return PackageClassification(
+            key,
+            txn.manager,
+            name,
+            BUCKET_OWNED,
+            ACTION_DOWNGRADE,
+            "already installed before this transaction upgraded it",
+        )
+    return PackageClassification(
+        key,
+        txn.manager,
+        name,
+        BUCKET_OWNED,
+        ACTION_REMOVE,
+        "installed fresh by this transaction",
+    )
+
+
+def classify_package_transactions(
+    baseline: Baseline, live_snapshots: dict[str, dict[str, str] | None]
+) -> list[PackageClassification]:
+    """Classify every requested/introduced package, in departure removal order.
+
+    Walks ``baseline.transactions`` in reverse (the plan's pinned removal
+    order — never "reverse ledger/installation order", since the ledger
+    starts empty and ``history.jsonl`` is off-limits to ``--depart``) and
+    yields one classification per distinct ``(manager, name)`` the first
+    time it's encountered walking backwards — a package touched by more
+    than one transaction across repeated installs is classified from its
+    *most recent* transaction only.
+
+    Args:
+        baseline: The departure baseline, with its recorded transactions.
+        live_snapshots: Fresh ``{manager: {name: version} | None}`` probe
+            results — ``None`` for a manager whose probe failed.
+    """
+    results: list[PackageClassification] = []
+    seen: set[str] = set()
+    for txn_dict in reversed(baseline.transactions):
+        txn = transaction_from_dict(txn_dict)
+        snapshot = live_snapshots.get(txn.manager)
+        for name in txn.requested:
+            key = package_key(txn.manager, name)
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(_classify_one_package(txn, name, snapshot, requested=True))
+        for name in txn.introduced():
+            key = package_key(txn.manager, name)
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(_classify_one_package(txn, name, snapshot, requested=False))
+    return results

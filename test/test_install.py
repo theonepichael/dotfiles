@@ -2487,3 +2487,309 @@ def test_install_ruff_uv_tool_records_transaction(home, monkeypatch):
     assert kinds(ctx, "package-installed") == [
         {"kind": "package-installed", "name": "ruff"}
     ]
+
+
+# ── package removal execution ───────────────────────────────────────────────
+
+
+def _package_baseline(*transactions):
+    baseline = depart.Baseline()
+    for kwargs in transactions:
+        depart.record_transaction(baseline, **kwargs)
+    return baseline
+
+
+def test_execute_package_phase_removes_freshly_installed_package(home, monkeypatch):
+    baseline = _package_baseline(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        }
+    )
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    removed = []
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "dpkg-query":
+            return install.CommandResult(True, "eza\t0.18.0-1\n")
+        if cmd == ["sudo", "apt-get", "remove", "-y", "eza"]:
+            removed.append("eza")
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "run_command", run)
+    result = install.execute_package_phase(make_ctx(home), baseline, ledger)
+
+    assert result is True
+    assert removed == ["eza"]
+    assert ledger.completed_keys() == {"package:apt/eza"}
+
+
+def test_execute_package_phase_never_touches_already_absent_package(home, monkeypatch):
+    """Already-absent (preserved) packages aren't ledger-tracked at all — nothing
+    to retry, since preflight already showed nothing needed doing."""
+    baseline = _package_baseline(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        }
+    )
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "dpkg-query":
+            return install.CommandResult(True, "")  # eza already removed by the user
+        raise AssertionError(f"unexpected command: {cmd!r} — nothing to remove")
+
+    monkeypatch.setattr(install, "run_command", run)
+    install.execute_package_phase(make_ctx(home), baseline, ledger)
+    assert ledger.entries() == []
+
+
+def test_execute_package_phase_removes_introduced_dependency_when_probe_empty(
+    home, monkeypatch
+):
+    baseline = _package_baseline(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1", "libgit2": "1.7-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        }
+    )
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[0] == "dpkg-query":
+            return install.CommandResult(True, "eza\t0.18.0-1\nlibgit2\t1.7-1\n")
+        if cmd[:3] == ["apt-cache", "rdepends", "--installed"]:
+            return install.CommandResult(True, "")  # nothing depends on it
+        if cmd[0] == "sudo":
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "run_command", run)
+    install.execute_package_phase(make_ctx(home), baseline, ledger)
+
+    assert depart.package_key("apt", "libgit2") in ledger.completed_keys()
+    libgit2_entry = next(
+        e for e in ledger.entries() if e["key"] == "package:apt/libgit2"
+    )
+    assert libgit2_entry["outcome"] == "ok"
+    assert ["apt-cache", "rdepends", "--installed", "libgit2"] in calls
+
+
+def test_execute_package_phase_blocks_introduced_dependency_when_still_needed(
+    home, monkeypatch
+):
+    baseline = _package_baseline(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1", "libgit2": "1.7-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        }
+    )
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "dpkg-query":
+            return install.CommandResult(True, "eza\t0.18.0-1\nlibgit2\t1.7-1\n")
+        if cmd[:3] == ["apt-cache", "rdepends", "--installed"]:
+            return install.CommandResult(True, "Reverse Depends:\n  other-pkg")
+        if cmd == ["sudo", "apt-get", "remove", "-y", "eza"]:
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "run_command", run)
+    install.execute_package_phase(make_ctx(home), baseline, ledger)
+
+    libgit2_entry = next(
+        e for e in ledger.entries() if e["key"] == "package:apt/libgit2"
+    )
+    assert libgit2_entry["outcome"].startswith("unresolved")
+
+
+def test_execute_package_phase_blocks_dependency_removal_on_failed_probe(
+    home, monkeypatch
+):
+    baseline = _package_baseline(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1", "libgit2": "1.7-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        }
+    )
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "dpkg-query":
+            return install.CommandResult(True, "eza\t0.18.0-1\nlibgit2\t1.7-1\n")
+        if cmd[:3] == ["apt-cache", "rdepends", "--installed"]:
+            return install.CommandResult(False, "")  # probe unavailable/failed
+        if cmd == ["sudo", "apt-get", "remove", "-y", "eza"]:
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "run_command", run)
+    install.execute_package_phase(make_ctx(home), baseline, ledger)
+
+    libgit2_entry = next(
+        e for e in ledger.entries() if e["key"] == "package:apt/libgit2"
+    )
+    assert libgit2_entry["outcome"].startswith("unresolved")
+
+
+def test_execute_package_phase_downgrades_an_upgraded_package(home, monkeypatch):
+    baseline = _package_baseline(
+        {
+            "manager": "apt",
+            "requested": ["neovim"],
+            "before": {"neovim": "0.9.0-1"},
+            "after": {"neovim": "0.10.0-1"},
+            "captured_at": "t1",
+            "epoch": {"neovim": "0.9.0-1"},
+        }
+    )
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    live = {"neovim": "0.10.0-1"}
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "dpkg-query":
+            return install.CommandResult(True, f"neovim\t{live['neovim']}\n")
+        if cmd[:4] == ["sudo", "apt-get", "install", "-y"]:
+            live["neovim"] = "0.9.0-1"
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "run_command", run)
+    result = install.execute_package_phase(make_ctx(home), baseline, ledger)
+
+    assert result is True
+    entry = next(e for e in ledger.entries() if e["key"] == "package:apt/neovim")
+    assert entry["outcome"] == "ok"
+    assert entry["action"] == "downgrade"
+
+
+def test_execute_package_phase_halts_on_changed_state_then_failed_downgrade(
+    home, monkeypatch
+):
+    """tmux (t1, earlier) precedes neovim (t2, later); reverse order means
+    neovim is processed *first* and its halt must stop tmux from ever
+    being reached."""
+    baseline = _package_baseline(
+        {
+            "manager": "apt",
+            "requested": ["tmux"],
+            "before": {},
+            "after": {"tmux": "3.4-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        },
+        {
+            "manager": "apt",
+            "requested": ["neovim"],
+            "before": {"neovim": "0.9.0-1"},
+            "after": {"neovim": "0.10.0-1"},
+            "captured_at": "t2",
+        },
+    )
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    live = {"neovim": "0.10.0-1", "tmux": "3.4-1"}
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "dpkg-query":
+            output = "".join(f"{n}\t{v}\n" for n, v in live.items())
+            return install.CommandResult(True, output)
+        if cmd[:4] == ["sudo", "apt-get", "install", "-y"]:
+            # The downgrade command "partially" changes live state, then fails.
+            live["neovim"] = "0.9.5-1"
+            return install.CommandResult(False)
+        raise AssertionError(
+            f"unexpected command: {cmd!r} — tmux should never be reached"
+        )
+
+    monkeypatch.setattr(install, "run_command", run)
+    result = install.execute_package_phase(make_ctx(home), baseline, ledger)
+
+    assert result is False  # halted -> caller must skip the runtime phase too
+    entry = next(e for e in ledger.entries() if e["key"] == "package:apt/neovim")
+    assert entry["outcome"] == "halt: changed-state-then-failed downgrade"
+    # tmux (the earlier transaction, processed after neovim in reverse
+    # order) was never reached because the phase halted first.
+    assert not any(e["key"] == "package:apt/tmux" for e in ledger.entries())
+
+
+def test_execute_package_phase_skips_already_ledger_completed(home, monkeypatch):
+    baseline = _package_baseline(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        }
+    )
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    ledger.record("package:apt/eza", "remove", "ok")
+
+    def run(cmd, **kwargs):
+        raise AssertionError("a ledger-complete package must never be re-probed")
+
+    monkeypatch.setattr(install, "run_command", run)
+    install.execute_package_phase(make_ctx(home), baseline, ledger)
+
+
+def test_execute_departure_skips_runtime_phase_after_package_halt(home, monkeypatch):
+    baseline = _package_baseline(
+        {
+            "manager": "apt",
+            "requested": ["neovim"],
+            "before": {"neovim": "0.9.0-1"},
+            "after": {"neovim": "0.10.0-1"},
+            "captured_at": "t1",
+            "epoch": {"neovim": "0.9.0-1"},
+        }
+    )
+    ctx = make_ctx(home)
+    runtime_key = depart.runtime_key(ctx.home / ".nvm")
+    report = {
+        runtime_key: depart.Classification(
+            depart.BUCKET_OWNED, depart.ACTION_REMOVE, "absent at baseline, now present"
+        )
+    }
+
+    live = {"neovim": "0.10.0-1"}
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "dpkg-query":
+            return install.CommandResult(True, f"neovim\t{live['neovim']}\n")
+        if cmd[:4] == ["sudo", "apt-get", "install", "-y"]:
+            live["neovim"] = "0.9.5-1"  # partially changed, then fails
+            return install.CommandResult(False)
+        raise AssertionError(
+            f"unexpected command: {cmd!r} — runtime phase must be skipped"
+        )
+
+    monkeypatch.setattr(install, "run_command", run)
+    ledger = install.execute_departure(ctx, baseline, report)
+
+    assert runtime_key not in ledger.completed_keys()

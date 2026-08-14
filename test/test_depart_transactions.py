@@ -414,3 +414,155 @@ def test_downgrade_candidates_deduplicates_repeated_versions():
         epoch={"neovim": "0.9.0-1"},
     )
     assert depart.downgrade_candidates(baseline, "apt", "neovim") == ["0.9.0-1"]
+
+
+# ── package classification ────────────────────────────────────────────────
+
+
+def _baseline_with(*transactions):
+    baseline = depart.Baseline()
+    for kwargs in transactions:
+        depart.record_transaction(baseline, **kwargs)
+    return baseline
+
+
+def test_classify_fresh_install_is_owned_remove():
+    baseline = _baseline_with(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        }
+    )
+    results = depart.classify_package_transactions(
+        baseline, {"apt": {"eza": "0.18.0-1"}}
+    )
+    assert len(results) == 1
+    c = results[0]
+    assert c.bucket == "owned"
+    assert c.action == "remove"
+    assert c.name == "eza"
+
+
+def test_classify_upgraded_preexisting_package_is_owned_downgrade():
+    baseline = _baseline_with(
+        {
+            "manager": "apt",
+            "requested": ["neovim"],
+            "before": {"neovim": "0.9.0-1"},
+            "after": {"neovim": "0.10.0-1"},
+            "captured_at": "t1",
+            "epoch": {"neovim": "0.9.0-1"},
+        }
+    )
+    results = depart.classify_package_transactions(
+        baseline, {"apt": {"neovim": "0.10.0-1"}}
+    )
+    assert len(results) == 1
+    assert results[0].bucket == "owned"
+    assert results[0].action == "downgrade"
+
+
+def test_classify_introduced_dependency_is_owned_remove():
+    baseline = _baseline_with(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1", "libgit2": "1.7-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        }
+    )
+    results = depart.classify_package_transactions(
+        baseline, {"apt": {"eza": "0.18.0-1", "libgit2": "1.7-1"}}
+    )
+    names = {c.name: c for c in results}
+    assert names["libgit2"].bucket == "owned"
+    assert names["libgit2"].action == "remove"
+    assert names["libgit2"].reason == "introduced as a dependency by this transaction"
+
+
+def test_classify_already_removed_package_is_preserved():
+    baseline = _baseline_with(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        }
+    )
+    results = depart.classify_package_transactions(baseline, {"apt": {}})
+    assert results[0].bucket == "preserved"
+
+
+def test_classify_failed_probe_is_unresolved():
+    baseline = _baseline_with(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        }
+    )
+    results = depart.classify_package_transactions(baseline, {"apt": None})
+    assert results[0].bucket == "unresolved"
+
+
+def test_classify_walks_transactions_in_reverse_order():
+    baseline = _baseline_with(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        },
+        {
+            "manager": "apt",
+            "requested": ["tmux"],
+            "before": {"eza": "0.18.0-1"},
+            "after": {"eza": "0.18.0-1", "tmux": "3.4-1"},
+            "captured_at": "t2",
+        },
+    )
+    results = depart.classify_package_transactions(
+        baseline, {"apt": {"eza": "0.18.0-1", "tmux": "3.4-1"}}
+    )
+    assert [c.name for c in results] == ["tmux", "eza"]
+
+
+def test_classify_deduplicates_a_package_touched_by_multiple_transactions():
+    """Classified from its most-recently-touched transaction only."""
+    baseline = _baseline_with(
+        {
+            "manager": "apt",
+            "requested": ["neovim"],
+            "before": {"neovim": "0.9.0-1"},
+            "after": {"neovim": "0.10.0-1"},
+            "captured_at": "t1",
+            "epoch": {"neovim": "0.9.0-1"},
+        },
+        {
+            "manager": "apt",
+            "requested": ["neovim"],
+            "before": {"neovim": "0.10.0-1"},
+            "after": {"neovim": "0.11.0-1"},
+            "captured_at": "t2",
+        },
+    )
+    results = depart.classify_package_transactions(
+        baseline, {"apt": {"neovim": "0.11.0-1"}}
+    )
+    assert len(results) == 1
+    # Most recent transaction's `before` (0.10.0-1) was already installed,
+    # so this is still classified as an upgrade — downgrade, not remove.
+    assert results[0].action == "downgrade"
