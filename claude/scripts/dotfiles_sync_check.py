@@ -3,10 +3,11 @@
 commit bundled over to a GitHub-blocked work machine.
 
 Usage:
-    dotfiles_sync_check.py [check]   print a drift note if HEAD is ahead of the marker (default)
+    dotfiles_sync_check.py check       print a drift note if HEAD is ahead of the marker (default)
     dotfiles_sync_check.py mark [sha]  record the given (or current HEAD) commit as last-bundled
 """
 
+import argparse
 import subprocess
 import sys
 from pathlib import Path
@@ -56,18 +57,32 @@ def cmd_mark(sha: str | None) -> None:
     print(f"dotfiles: marked {target[:7]} as last-bundled commit")
 
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Flag when the dotfiles repo has drifted from the last "
+        "commit bundled over to a GitHub-blocked work machine."
+    )
+    subparsers = parser.add_subparsers(dest="subcommand")
+    subparsers.add_parser(
+        "check", help="print a drift note if HEAD is ahead of the marker (default)"
+    )
+    mark_parser = subparsers.add_parser(
+        "mark", help="record the given (or current HEAD) commit as last-bundled"
+    )
+    mark_parser.add_argument(
+        "sha", nargs="?", default=None, help="commit to record (defaults to HEAD)"
+    )
+    return parser
+
+
 def main() -> None:
-    args = sys.argv[1:]
-    subcommand = args[0] if args else "check"
+    parser = build_parser()
+    args = parser.parse_args()
+    subcommand = args.subcommand or "check"
     if subcommand == "check":
         cmd_check()
-    elif subcommand == "mark":
-        cmd_mark(args[1] if len(args) > 1 else None)
     else:
-        print(
-            f"dotfiles_sync_check: unknown subcommand {subcommand!r}", file=sys.stderr
-        )
-        sys.exit(1)
+        cmd_mark(args.sha)
 
 
 if __name__ == "__main__":
