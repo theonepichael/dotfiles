@@ -8,6 +8,12 @@ Flags
   --quiet, -q    suppress non-essential output
   --verbose, -v  emit extra diagnostic messages to stderr
 
+Environment
+  SECOND_OPINION_AGY_MODEL           force the agy backend model
+  SECOND_OPINION_COPILOT_MODEL       force the copilot backend model
+  SECOND_OPINION_OPENCODE_MODEL      force the opencode adversary-agent model
+  SECOND_OPINION_TIMEOUT_SECONDS     backend subprocess timeout (default 300)
+
 Requires Python 3.12+.
 """
 
@@ -150,23 +156,28 @@ def run_opencode(prompt: str) -> str:
     adversary``), so this builds its own command but reuses the shared
     event-parsing helpers.
 
+    An explicit model can be forced via the ``SECOND_OPINION_OPENCODE_MODEL``
+    env var; unset/empty means the live opencode config's model.
+
     Raises:
         BackendError: If the event stream has no text chunks — either
             because an explicit error event was emitted, or because
             nothing recognizable was produced at all.
     """
-    _, stdout, stderr = _run_command(
-        [
-            "opencode",
-            "run",
-            "--agent",
-            "adversary",
-            "--auto",
-            "--format",
-            "json",
-            prompt,
-        ]
-    )
+    cmd = [
+        "opencode",
+        "run",
+        "--agent",
+        "adversary",
+        "--auto",
+        "--format",
+        "json",
+    ]
+    model = os.environ.get("SECOND_OPINION_OPENCODE_MODEL")
+    if model:
+        cmd += ["-m", model]
+    cmd.append(prompt)
+    _, stdout, stderr = _run_command(cmd)
     events = _opencode_json_events(stdout)
     chunks = _opencode_text_chunks(events)
     if chunks:
@@ -201,7 +212,7 @@ BACKEND_LABELS = {
 
 
 def backend_label(backend: str) -> str:
-    """Return ``backend``'s display label, appending an overridden agy/copilot model if set."""
+    """Return ``backend``'s display label, appending an overridden agy/copilot/opencode model if set."""
     label = BACKEND_LABELS[backend]
     if backend == "agy":
         model = os.environ.get("SECOND_OPINION_AGY_MODEL")
@@ -210,6 +221,10 @@ def backend_label(backend: str) -> str:
         return label
     if backend == "copilot":
         model = os.environ.get("SECOND_OPINION_COPILOT_MODEL")
+        if model:
+            return f"{label} ({model})"
+    if backend == "opencode":
+        model = os.environ.get("SECOND_OPINION_OPENCODE_MODEL")
         if model:
             return f"{label} ({model})"
     return label

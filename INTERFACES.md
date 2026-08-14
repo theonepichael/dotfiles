@@ -425,7 +425,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `review <plan-file-or-text> [--backend <BACKEND>] [--focus-file <FOCUS_FILE>]` — get one critique from the priority-selected backend
     - `--backend` — force this backend instead of priority-order fallback (choices computed at runtime)
     - `--focus-file` — path to a file of plan-specific risk hints, appended to the critique prompt as areas to scrutinize (supplements, not replaces, the generic adversarial mandate)
-- Environment: `SECOND_OPINION_AGY_MODEL`, `SECOND_OPINION_COPILOT_MODEL`, `SECOND_OPINION_TIMEOUT_SECONDS`
+- Environment: `SECOND_OPINION_AGY_MODEL`, `SECOND_OPINION_COPILOT_MODEL`, `SECOND_OPINION_OPENCODE_MODEL`, `SECOND_OPINION_TIMEOUT_SECONDS`
 - Explicit exit codes: `1`
 - Depends on: `cli_common.py`, `llm_backends.py`
 - Public functions:
@@ -435,7 +435,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `run_agy(prompt: str) -> str` — Run the ``agy`` backend and return its critique text.
   - `run_opencode(prompt: str) -> str` — Run the ``opencode`` backend's adversary agent and return its critique text.
   - `run_copilot(prompt: str) -> str` — Run the ``copilot`` backend and return its critique text.
-  - `backend_label(backend: str) -> str` — Return ``backend``'s display label, appending an overridden agy/copilot model if set.
+  - `backend_label(backend: str) -> str` — Return ``backend``'s display label, appending an overridden agy/copilot/opencode model if set.
 - Subcommand handlers: `cmd_detect`, `cmd_review`
 - Tested by: `claude/scripts/test_second_opinion.py`
 

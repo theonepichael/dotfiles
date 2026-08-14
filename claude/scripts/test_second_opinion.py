@@ -127,6 +127,7 @@ class BackendLabelTests(unittest.TestCase):
         with patch.dict(
             os.environ, {"SECOND_OPINION_COPILOT_MODEL": "claude-sonnet-4.6"}
         ):
+            os.environ.pop("SECOND_OPINION_OPENCODE_MODEL", None)
             self.assertEqual(
                 second_opinion.backend_label("agy"),
                 second_opinion.BACKEND_LABELS["agy"],
@@ -177,6 +178,45 @@ class BackendLabelTests(unittest.TestCase):
             self.assertEqual(
                 second_opinion.backend_label("agy"),
                 second_opinion.BACKEND_LABELS["agy"],
+            )
+
+    def test_57_opencode_label_includes_model_when_env_var_set(self) -> None:
+        with patch.dict(
+            os.environ, {"SECOND_OPINION_OPENCODE_MODEL": "claude-sonnet-4.6"}
+        ):
+            self.assertEqual(
+                second_opinion.backend_label("opencode"),
+                f"{second_opinion.BACKEND_LABELS['opencode']} (claude-sonnet-4.6)",
+            )
+
+    def test_58_opencode_label_unchanged_when_env_var_unset(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SECOND_OPINION_OPENCODE_MODEL", None)
+            self.assertEqual(
+                second_opinion.backend_label("opencode"),
+                second_opinion.BACKEND_LABELS["opencode"],
+            )
+
+    def test_59_opencode_label_unchanged_when_env_var_empty(self) -> None:
+        with patch.dict(os.environ, {"SECOND_OPINION_OPENCODE_MODEL": ""}):
+            self.assertEqual(
+                second_opinion.backend_label("opencode"),
+                second_opinion.BACKEND_LABELS["opencode"],
+            )
+
+    def test_60_opencode_var_does_not_affect_agy_or_copilot_labels(self) -> None:
+        with patch.dict(
+            os.environ, {"SECOND_OPINION_OPENCODE_MODEL": "claude-sonnet-4.6"}
+        ):
+            os.environ.pop("SECOND_OPINION_AGY_MODEL", None)
+            os.environ.pop("SECOND_OPINION_COPILOT_MODEL", None)
+            self.assertEqual(
+                second_opinion.backend_label("agy"),
+                second_opinion.BACKEND_LABELS["agy"],
+            )
+            self.assertEqual(
+                second_opinion.backend_label("copilot"),
+                second_opinion.BACKEND_LABELS["copilot"],
             )
 
 
@@ -236,6 +276,50 @@ class RunOpencodeTests(unittest.TestCase):
             with self.assertRaises(second_opinion.BackendError) as cm:
                 second_opinion.run_opencode("prompt")
         self.assertIn("not json at all", str(cm.exception))
+
+    def _capture_cmd(self) -> tuple[list[str], dict[str, list[str]]]:
+        """Return a `_run_command` side-effect capturing its argv, plus the box."""
+        box: dict[str, list[str]] = {}
+
+        def capture(cmd: list[str]) -> tuple[int, str, str]:
+            box["cmd"] = cmd
+            return (
+                0,
+                json.dumps({"type": "text", "part": {"text": "critique"}}) + "\n",
+                "",
+            )
+
+        return capture, box
+
+    def test_40b_model_flag_added_when_env_var_set(self) -> None:
+        capture, box = self._capture_cmd()
+        with (
+            patch.dict(
+                os.environ, {"SECOND_OPINION_OPENCODE_MODEL": "claude-sonnet-4.6"}
+            ),
+            patch.object(second_opinion, "_run_command", side_effect=capture),
+        ):
+            result = second_opinion.run_opencode("my prompt")
+        self.assertEqual(result, "critique")
+        self.assertEqual(box["cmd"][-3:-1], ["-m", "claude-sonnet-4.6"])
+        self.assertEqual(box["cmd"].count("-m"), 1)
+
+    def test_40c_no_model_flag_when_env_var_unset(self) -> None:
+        capture, box = self._capture_cmd()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SECOND_OPINION_OPENCODE_MODEL", None)
+            with patch.object(second_opinion, "_run_command", side_effect=capture):
+                second_opinion.run_opencode("my prompt")
+        self.assertNotIn("-m", box["cmd"])
+
+    def test_40d_no_model_flag_when_env_var_empty(self) -> None:
+        capture, box = self._capture_cmd()
+        with (
+            patch.dict(os.environ, {"SECOND_OPINION_OPENCODE_MODEL": ""}),
+            patch.object(second_opinion, "_run_command", side_effect=capture),
+        ):
+            second_opinion.run_opencode("my prompt")
+        self.assertNotIn("-m", box["cmd"])
 
 
 class CmdDetectTests(unittest.TestCase):
