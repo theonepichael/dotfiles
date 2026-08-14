@@ -3225,16 +3225,42 @@ class BacklogTestCase(unittest.TestCase):
         mock_regen.assert_not_called()
         self.assertIn("Written while we waited.", out.getvalue())
 
-    def test_r27_recap_force_always_regenerates(self):
+    def test_r27_recap_refresh_always_regenerates(self):
         self._write_cache("Fresh recap.", age_hours=0)
         with patch.object(
             dev_status, "_run_recap_regen", return_value=("agy", "New text")
         ) as mock_regen:
             out = io.StringIO()
             with patch("sys.stdout", out):
-                dev_status.cmd_recap(_args(force=True))
+                dev_status.cmd_recap(_args(refresh=True))
         mock_regen.assert_called_once()
         self.assertIn("New text", out.getvalue())
+
+    def test_r27b_recap_cache_bypass_flag_is_refresh_not_force(self):
+        # `recap`'s cache-bypass flag is --refresh. --force is reserved for
+        # destructive-confirmation gates (`prune`), so recap must reject it.
+        seen = []
+        with (
+            patch.dict(dev_status.dispatch, {"recap": seen.append}),
+            patch("sys.argv", ["dev_status", "recap", "--refresh"]),
+            patch("sys.stdout", io.StringIO()),
+            patch("sys.stderr", io.StringIO()),
+        ):
+            dev_status.main()
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(seen[0].refresh)
+        self.assertFalse(hasattr(seen[0], "force"))
+
+        # --force is not a registered argument of the recap subparser.
+        with (
+            self.assertRaises(SystemExit),
+            patch.dict(dev_status.dispatch, {"recap": seen.append}),
+            patch("sys.argv", ["dev_status", "recap", "--force"]),
+            patch("sys.stdout", io.StringIO()),
+            patch("sys.stderr", io.StringIO()),
+        ):
+            dev_status.main()
+        self.assertEqual(len(seen), 1)
 
     def test_r28_recap_backend_override_passed_through(self):
         self._seed_recent_journal()
@@ -3407,7 +3433,8 @@ class _args:
     if_rev = None  # default; argparse always sets --if-rev (default None)
     status = None  # default; argparse sets --status (default None) for `list`
     apply = False  # default; argparse sets --apply (default False) for backfill-gate
-    force = False  # default; argparse sets --force (default False) for `recap`
+    force = False  # default; argparse sets --force (required) for `prune`
+    refresh = False  # default; argparse sets --refresh (default False) for `recap`
     backend = None  # default; argparse sets --backend (default None) for `recap`
 
     def __init__(self, **kwargs):
