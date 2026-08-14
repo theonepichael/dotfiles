@@ -8,6 +8,16 @@ Flags
   --quiet, -q    suppress non-essential output
   --verbose, -v  emit extra diagnostic messages to stderr
 
+Env vars
+  SECOND_OPINION_TIMEOUT_SECONDS  per-backend timeout in seconds (default 300)
+  SECOND_OPINION_AGY_MODEL        force the agy model (default "Gemini 3.7 Flash (High)")
+  SECOND_OPINION_COPILOT_MODEL    force the Copilot model (default: unset)
+
+Files read: <plan-file-or-text> (if a path), --focus-file. Nothing written.
+
+Exit codes: 0 success; 1 any failure (no backend available, all backends failed,
+bad --focus-file, unknown subcommand).
+
 Requires Python 3.12+.
 """
 
