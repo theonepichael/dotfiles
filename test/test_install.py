@@ -2136,6 +2136,27 @@ def test_real_rollback_deletes_baseline_and_blobs(home, links, offline_install):
     assert not list(ctx.state_dir.glob("baseline-snapshot-*.blob"))
 
 
+def test_real_rollback_deletes_blobs_even_with_unparseable_baseline_json(
+    home, links, offline_install
+):
+    """The pinned glob fallback: baseline.json missing/empty/unparseable at
+    rollback time still deletes exactly baseline.json + baseline-snapshot-*.blob
+    — nothing else, since blob filenames are content-addressed and never
+    created by anything but this feature."""
+    (home / ".zshrc").write_text("x")
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+    assert list(ctx.state_dir.glob("baseline-snapshot-*.blob"))
+
+    depart.baseline_path(ctx.state_dir).write_text("not valid json{")
+    assert depart.load_baseline(ctx.state_dir) is None  # confirms it's unparseable
+
+    install.do_rollback(make_ctx(home))
+
+    assert not depart.baseline_path(ctx.state_dir).exists()
+    assert not list(ctx.state_dir.glob("baseline-snapshot-*.blob"))
+
+
 def test_rollback_wipe_dry_run_preview_excludes_departure_state(
     home, links, offline_install, monkeypatch, capsys
 ):
