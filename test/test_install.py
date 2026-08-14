@@ -12,7 +12,9 @@ still owns the slow tier: real package managers, real service enablement.
 Requires Python 3.12+.
 """
 
+import io
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -21,6 +23,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+import depart  # noqa: E402 — must follow sys.path.insert above
 import install  # noqa: E402 — must follow sys.path.insert above
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -59,6 +62,8 @@ def make_ctx(
     wipe=False,
     no_nvim_pin=False,
     reseed=False,
+    depart=False,
+    yes=False,
     system="Linux",
     is_wsl=False,
     dotfiles=REPO_ROOT,
@@ -72,6 +77,8 @@ def make_ctx(
         wipe=wipe,
         no_nvim_pin=no_nvim_pin,
         reseed=reseed,
+        depart=depart,
+        yes=yes,
     )
     state_dir = home / ".local" / "state" / "dotfiles"
     return install.Context(
@@ -108,6 +115,7 @@ def offline_install(monkeypatch):
         "install_mac_packages",
         "install_linux_packages",
         "install_node",
+        "capture_service_baseline",
         "enable_watchcommit_service",
         "load_watchcommit_agent",
         "import_rectangle_prefs",
@@ -165,6 +173,18 @@ def parse_error(argv, capsys):
         # parse_args ordering fix (the --wipe-without-rollback check must
         # fire before the missing-harness check, not after).
         (["--wipe"], "--wipe can only be used with --rollback"),
+        (["--depart", "--harness=claude"], "--depart must be used alone"),
+        (["--depart", "--rollback"], "--depart must be used alone"),
+        (["--depart", "--wipe"], "--depart must be used alone"),
+        (["--depart", "--profile=work"], "--depart must be used alone"),
+        (["--depart", "--force"], "--depart must be used alone"),
+        (["--depart", "--reseed"], "--depart must be used alone"),
+        (["--depart", "--no-nvim-pin"], "--depart must be used alone"),
+        # --depart --rollback names the --depart conflict, not rollback's —
+        # the --depart-alone check runs first.
+        (["--rollback", "--depart"], "--depart must be used alone"),
+        (["--yes"], "--yes can only be used with --depart"),
+        (["--yes", "--harness=claude"], "--yes can only be used with --depart"),
     ],
 )
 def test_argument_errors_exit_2(argv, expected, capsys):
@@ -195,6 +215,25 @@ def test_repeated_harness_flags_accumulate():
 def test_comma_separated_harnesses():
     opts = install.parse_args(["--harness=claude,opencode,agy"])
     assert opts.harnesses == ("claude", "opencode", "agy")
+
+
+def test_depart_alone_parses():
+    opts = install.parse_args(["--depart"])
+    assert opts.depart is True
+    assert opts.yes is False
+
+
+def test_depart_with_yes_and_dry_run_parses():
+    opts = install.parse_args(["--depart", "--yes", "--dry-run"])
+    assert opts.depart is True
+    assert opts.yes is True
+    assert opts.dry_run is True
+
+
+def test_usage_documents_depart(capsys):
+    with pytest.raises(SystemExit):
+        install.parse_args(["--help"])
+    assert "--depart" in capsys.readouterr().out
 
 
 def test_duplicate_harness_is_collapsed():
@@ -1893,3 +1932,1031 @@ def test_context_display_shortens_home(home):
     ctx = make_ctx(home)
     assert ctx.display(home / ".claude" / "settings.json") == "~/.claude/settings.json"
     assert ctx.display(Path("/etc/hosts")) == "/etc/hosts"
+
+
+# ── departure baseline capture ──────────────────────────────────────────────
+
+
+def test_capture_departure_baseline_noop_on_mac(home, links):
+    ctx = make_ctx(home, system="Darwin")
+    install.capture_departure_baseline(ctx, links)
+    assert not depart.baseline_path(ctx.state_dir).exists()
+
+
+def test_capture_departure_baseline_noop_on_dry_run(home, links):
+    ctx = make_ctx(home, dry_run=True)
+    install.capture_departure_baseline(ctx, links)
+    assert not depart.baseline_path(ctx.state_dir).exists()
+
+
+def test_capture_departure_baseline_captures_rc_files_with_blobs(home, links):
+    (home / ".zshrc").write_text("original zshrc\n")
+    ctx = make_ctx(home)
+    install.capture_departure_baseline(ctx, links)
+
+    baseline = depart.load_baseline(ctx.state_dir)
+    assert baseline is not None
+    record = baseline.value_for(depart.file_key(home / ".zshrc"))
+    assert record["state"] == "present"
+    assert depart.read_blob(ctx.state_dir, record["blob"]) == b"original zshrc\n"
+
+    assert baseline.value_for(depart.file_key(home / ".bashrc")) == {"state": "absent"}
+
+
+def test_capture_departure_baseline_captures_link_destination_and_bak(home, links):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.capture_departure_baseline(ctx, links)
+    baseline = depart.load_baseline(ctx.state_dir)
+
+    dest = home / ".vimrc"
+    assert baseline.value_for(depart.file_key(dest)) == {"state": "absent"}
+    assert baseline.value_for(depart.symlink_key(dest)) == {"state": "absent"}
+    assert baseline.value_for(depart.file_key(dest.with_name(dest.name + ".bak"))) == {
+        "state": "absent"
+    }
+
+
+def test_capture_departure_baseline_captures_ancestor_directories(home, links):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.capture_departure_baseline(ctx, links)
+    baseline = depart.load_baseline(ctx.state_dir)
+    # ~/.local/bin is an ancestor of the uv/oh-my-posh/shim destinations.
+    assert baseline.value_for(depart.directory_key(home / ".local" / "bin")) == {
+        "state": "absent"
+    }
+
+
+def test_capture_departure_baseline_captures_seed_destination_when_harness_selected(
+    home, links
+):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.capture_departure_baseline(ctx, links)
+    baseline = depart.load_baseline(ctx.state_dir)
+    dest = home / ".claude" / "settings.json"
+    assert baseline.value_for(depart.file_key(dest)) is not None
+
+
+def test_capture_departure_baseline_skips_seed_destination_when_harness_not_selected(
+    home, links
+):
+    ctx = make_ctx(home, harnesses=("opencode",))
+    install.capture_departure_baseline(ctx, links)
+    baseline = depart.load_baseline(ctx.state_dir)
+    dest = home / ".claude" / "settings.json"
+    assert baseline.value_for(depart.file_key(dest)) is None
+
+
+def test_capture_departure_baseline_tree_manifests_font_and_neovim_prefix(home, links):
+    ctx = make_ctx(home)
+    install.capture_departure_baseline(ctx, links)
+    baseline = depart.load_baseline(ctx.state_dir)
+    font_dir = home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont"
+    neovim_prefix = home / ".local" / "opt" / "neovim"
+    assert baseline.value_for(depart.directory_key(font_dir)) == {"state": "absent"}
+    assert baseline.value_for(depart.directory_key(neovim_prefix)) == {
+        "state": "absent"
+    }
+
+
+def test_capture_departure_baseline_captures_shared_nvim_dirs(home, links):
+    ctx = make_ctx(home)
+    install.capture_departure_baseline(ctx, links)
+    baseline = depart.load_baseline(ctx.state_dir)
+    for parts in depart.SHARED_NEOVIM_DIRS:
+        key = depart.directory_key(home.joinpath(*parts))
+        assert baseline.value_for(key) == {"state": "absent"}
+
+
+def test_capture_departure_baseline_captures_runtime_nvm(home, links):
+    ctx = make_ctx(home)
+    install.capture_departure_baseline(ctx, links)
+    baseline = depart.load_baseline(ctx.state_dir)
+    assert baseline.value_for(depart.runtime_key(home / ".nvm")) == {"state": "absent"}
+
+
+def test_capture_departure_baseline_first_layer_is_immutable_across_runs(home, links):
+    ctx = make_ctx(home)
+    install.capture_departure_baseline(ctx, links)  # first run: rc absent
+
+    (home / ".zshrc").write_text("added after baseline was captured")
+    install.capture_departure_baseline(ctx, links)  # second run
+
+    baseline = depart.load_baseline(ctx.state_dir)
+    # Still recorded as absent from the first (immutable) layer — a
+    # later-observed present value must never overwrite it.
+    assert baseline.value_for(depart.file_key(home / ".zshrc")) == {"state": "absent"}
+    assert len(baseline.layers) == 1  # nothing genuinely unrecorded to add
+
+
+def test_capture_departure_baseline_runs_via_run_install(home, links, offline_install):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+    assert depart.baseline_path(ctx.state_dir).is_file()
+
+
+def test_preflight_sees_harness_gated_files_despite_depart_having_no_harness(
+    home, links, offline_install
+):
+    """Regression test for a real bug caught only by a container run: --depart
+    is standalone (parse_args rejects --harness alongside it), so
+    ctx.opts.harnesses is always empty at departure time. build_preflight_report
+    must never re-derive "applicable" links.toml destinations from that empty
+    selection — every fast test happened to capture and recapture with the
+    same harness, so this was invisible until a real Ubuntu container showed
+    every claude-harness-gated file (~/.claude/CLAUDE.md, its commands,
+    settings.json) silently falling out of the preflight report entirely."""
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    # The real CLI shape: a --depart Options has no harnesses at all.
+    depart_ctx = make_ctx(home, harnesses=())
+    assert depart_ctx.opts.harnesses == ()
+
+    report = install.build_preflight_report(depart_ctx)
+    claude_md_key = depart.symlink_key(home / ".claude" / "CLAUDE.md")
+    settings_key = depart.file_key(home / ".claude" / "settings.json")
+
+    assert claude_md_key in report
+    assert report[claude_md_key].bucket == "owned"
+    assert report[claude_md_key].action == "remove"
+    assert settings_key in report
+    assert report[settings_key].bucket == "owned"
+    assert report[settings_key].action == "remove"
+
+
+# ── build_preflight_report: the two named restore reclassifications ────────
+
+
+def test_preflight_reclassifies_appended_rc_file_as_owned_restore(
+    home, links, offline_install
+):
+    (home / ".zshrc").write_text("original zshrc content\n")
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)  # captures baseline with original content
+
+    # links.toml itself symlinks ~/.zshrc into the repo, so writing through
+    # the live symlink would edit the repo's own tracked file — unlink it
+    # first and replace it with a plain file simulating NVM/_install_uv/
+    # oh-my-posh appending to the rc file, without touching the checkout.
+    zshrc = home / ".zshrc"
+    assert zshrc.is_symlink()
+    zshrc.unlink()
+    zshrc.write_text("original zshrc content\nexport NVM_DIR=...\n")
+
+    report = install.build_preflight_report(make_ctx(home))
+    c = report[depart.file_key(zshrc)]
+    assert c.bucket == "owned"
+    assert c.action == "restore"
+
+
+def test_preflight_leaves_edited_rc_file_unresolved(home, links, offline_install):
+    (home / ".zshrc").write_text("original zshrc content\n")
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    # links.toml itself symlinks ~/.zshrc into the repo, so writing through
+    # the live symlink would edit the repo's own tracked file — unlink it
+    # first and replace it with a plain file to simulate an edited/replaced
+    # rc file without touching the checkout.
+    zshrc = home / ".zshrc"
+    assert zshrc.is_symlink()
+    zshrc.unlink()
+    zshrc.write_text("completely different content\n")
+
+    report = install.build_preflight_report(make_ctx(home))
+    c = report[depart.file_key(zshrc)]
+    assert c.bucket == "unresolved"
+
+
+def test_preflight_reclassifies_backed_up_then_symlinked_pair(
+    home, links, offline_install
+):
+    dest = home / ".vimrc"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("my own vimrc\n")
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)  # backs dest up to .vimrc.bak, symlinks over it
+
+    assert dest.is_symlink()
+    backup = dest.with_name(dest.name + ".bak")
+    assert backup.read_text() == "my own vimrc\n"
+
+    report = install.build_preflight_report(make_ctx(home))
+    file_c = report[depart.file_key(dest)]
+    symlink_c = report[depart.symlink_key(dest)]
+    assert file_c.bucket == "owned"
+    assert file_c.action == "restore"
+    assert symlink_c.bucket == "owned"
+    assert symlink_c.action == "remove"
+
+
+# ── rollback deletes departure state ────────────────────────────────────────
+
+
+def test_real_rollback_deletes_baseline_and_blobs(home, links, offline_install):
+    (home / ".zshrc").write_text("x")
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+    assert depart.baseline_path(ctx.state_dir).is_file()
+    assert list(ctx.state_dir.glob("baseline-snapshot-*.blob"))
+
+    install.do_rollback(make_ctx(home))
+
+    assert not depart.baseline_path(ctx.state_dir).exists()
+    assert not list(ctx.state_dir.glob("baseline-snapshot-*.blob"))
+
+
+def test_real_rollback_deletes_blobs_even_with_unparseable_baseline_json(
+    home, links, offline_install
+):
+    """The pinned glob fallback: baseline.json missing/empty/unparseable at
+    rollback time still deletes exactly baseline.json + baseline-snapshot-*.blob
+    — nothing else, since blob filenames are content-addressed and never
+    created by anything but this feature."""
+    (home / ".zshrc").write_text("x")
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+    assert list(ctx.state_dir.glob("baseline-snapshot-*.blob"))
+
+    depart.baseline_path(ctx.state_dir).write_text("not valid json{")
+    assert depart.load_baseline(ctx.state_dir) is None  # confirms it's unparseable
+
+    install.do_rollback(make_ctx(home))
+
+    assert not depart.baseline_path(ctx.state_dir).exists()
+    assert not list(ctx.state_dir.glob("baseline-snapshot-*.blob"))
+
+
+def test_rollback_wipe_dry_run_preview_excludes_departure_state(
+    home, links, offline_install, monkeypatch, capsys
+):
+    (home / ".zshrc").write_text("x")
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    monkeypatch.setattr(
+        install,
+        "run_command",
+        lambda cmd, **k: install.CommandResult(True, ""),
+    )
+    code = install.do_rollback(make_ctx(home, wipe=True, dry_run=True))
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert f"would remove empty state directory {ctx.state_dir}" in out
+
+
+# ── do_depart: zero-evidence refusal, preflight, confirmation ──────────────
+
+
+class _FakeStdin:
+    """A minimal stand-in for sys.stdin: isatty() plus one readline()."""
+
+    def __init__(self, isatty, text=""):
+        self._isatty = isatty
+        self._lines = io.StringIO(text)
+
+    def isatty(self):
+        return self._isatty
+
+    def readline(self):
+        return self._lines.readline()
+
+
+def test_do_depart_zero_evidence_refusal_exits_2(home, capsys):
+    code = install.do_depart(make_ctx(home))
+    assert code == 2
+    assert "no baseline" in capsys.readouterr().err
+
+
+def test_do_depart_dry_run_prints_preflight_and_exits_0(
+    home, links, offline_install, capsys
+):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    code = install.do_depart(make_ctx(home, dry_run=True))
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "Departure preflight" in out
+    assert "owned" in out
+
+
+def test_do_depart_dry_run_never_touches_stdin(
+    home, links, offline_install, monkeypatch
+):
+    """--dry-run always exits 0 regardless of TTY status and never prompts."""
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    def _boom():
+        raise AssertionError("dry-run must not check stdin")
+
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(False))
+    monkeypatch.setattr(sys.stdin, "isatty", _boom)
+    code = install.do_depart(make_ctx(home, dry_run=True))
+    assert code == 0
+
+
+def test_do_depart_non_tty_real_run_without_yes_exits_2(
+    home, links, offline_install, monkeypatch, capsys
+):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(False))
+    code = install.do_depart(make_ctx(home))
+    assert code == 2
+    assert "non-interactive" in capsys.readouterr().err
+
+
+def test_do_depart_yes_bypasses_prompt_entirely(
+    home, links, offline_install, monkeypatch, capsys
+):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    def _boom():
+        raise AssertionError("--yes must skip the confirmation prompt")
+
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(False))
+    monkeypatch.setattr(sys.stdin, "isatty", _boom)
+    code = install.do_depart(make_ctx(home, yes=True))
+    out = capsys.readouterr().out
+    # Everything this fresh install created is absent-at-baseline, so a
+    # full departure succeeds and leaves no trace.
+    assert code == 0
+    assert "Departure complete" in out
+    assert not any(home.iterdir())
+
+
+def test_do_depart_correct_token_proceeds_past_confirmation(
+    home, links, offline_install, monkeypatch, capsys
+):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(True, "DEPART\n"))
+    code = install.do_depart(make_ctx(home))
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "Departure complete" in out
+    assert not any(home.iterdir())
+
+
+@pytest.mark.parametrize("token", ["nope\n", " DEPART \n", "depart\n", ""])
+def test_do_depart_bad_token_exits_2(
+    home, links, offline_install, monkeypatch, capsys, token
+):
+    """Wrong token, surrounding whitespace, wrong case, or EOF all refuse."""
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(True, token))
+    code = install.do_depart(make_ctx(home))
+    assert code == 2
+    assert "confirmation not received" in capsys.readouterr().err
+
+
+def test_do_depart_token_without_trailing_newline_still_matches(
+    home, links, offline_install, monkeypatch, capsys
+):
+    """Nothing to strip when input has no trailing LF at all — still a match."""
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(True, "DEPART"))
+    code = install.do_depart(make_ctx(home))
+    assert code == 0
+
+
+# ── do_depart execution: the two named restore cases, end to end ──────────
+
+
+def test_depart_restores_backed_up_then_symlinked_destination(
+    home, links, offline_install
+):
+    dest = home / ".vimrc"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("my own vimrc\n")
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+    assert dest.is_symlink()
+
+    code = install.do_depart(make_ctx(home, yes=True))
+
+    assert code == 0
+    assert dest.is_file() and not dest.is_symlink()
+    assert dest.read_text() == "my own vimrc\n"
+    assert not dest.with_name(dest.name + ".bak").exists()
+
+
+def test_depart_restores_appended_rc_file(home, links, offline_install):
+    zshrc = home / ".zshrc"
+    zshrc.write_text("original zshrc content\n")
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)  # baseline blob captures the original content
+
+    # links.toml symlinks ~/.zshrc into the repo; unlink first so writing
+    # the "appended" simulation doesn't touch the checkout (see the
+    # preflight reclassification tests' identical caveat).
+    assert zshrc.is_symlink()
+    zshrc.unlink()
+    zshrc.write_text("original zshrc content\nexport NVM_DIR=...\n")
+
+    code = install.do_depart(make_ctx(home, yes=True))
+
+    assert code == 0
+    assert zshrc.read_text() == "original zshrc content\n"
+
+
+def test_depart_leaves_unrelated_files_untouched(home, links, offline_install):
+    unrelated = home / "my-notes.txt"
+    unrelated.write_text("keep me\n")
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    code = install.do_depart(make_ctx(home, yes=True))
+
+    assert code == 0
+    assert unrelated.read_text() == "keep me\n"
+
+
+def test_depart_retry_skips_already_ledger_completed_actions(
+    home, links, offline_install, monkeypatch
+):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    baseline = depart.load_baseline(ctx.state_dir)
+    report = install.build_preflight_report(make_ctx(home))
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
+    install.execute_file_symlink_phase(make_ctx(home), baseline, report, ledger)
+    completed_after_first_pass = ledger.completed_keys()
+    assert completed_after_first_pass  # the fresh install created plenty to remove
+
+    calls = []
+    real_remove = install._execute_remove_file
+
+    def _tracking_remove(path):
+        calls.append(path)
+        return real_remove(path)
+
+    monkeypatch.setattr(install, "_execute_remove_file", _tracking_remove)
+    install.execute_file_symlink_phase(make_ctx(home), baseline, report, ledger)
+
+    assert calls == []  # nothing already in the ledger was re-attempted
+
+
+def test_depart_second_lock_acquisition_refuses_while_first_is_live(
+    home, links, offline_install, monkeypatch
+):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    acquired, _ = depart.acquire_departure_lock(
+        ctx.state_dir, pid=os.getpid(), start_time_fn=depart.process_start_time
+    )
+    assert acquired is True
+    try:
+        code = install.do_depart(make_ctx(home, yes=True))
+        assert code == 2
+    finally:
+        depart.release_departure_lock(ctx.state_dir, pid=os.getpid())
+
+
+# ── package transaction recording (step 2 live wiring) ─────────────────────
+
+
+def test_install_linux_packages_one_by_one_records_transactions(home, monkeypatch):
+    ctx = make_ctx(home)
+    ctx.departure_baseline = depart.Baseline()
+    live_versions: dict[str, str] = {}
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "dpkg-query":
+            output = "".join(f"{n}\t{v}\n" for n, v in live_versions.items())
+            return install.CommandResult(True, output)
+        if cmd[:3] == ["sudo", "apt-get", "install"]:
+            live_versions[cmd[-1]] = "1.0-1"
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "run_command", run)
+    install._install_linux_packages_one_by_one(ctx, "apt", epoch={})
+
+    txns = ctx.departure_baseline.transactions
+    assert len(txns) == len(install.LINUX_PACKAGES)
+    first = txns[0]
+    assert first["manager"] == "apt"
+    assert first["requested"] == [install.LINUX_PACKAGES[0]]
+    assert first["after"][install.LINUX_PACKAGES[0]] == "1.0-1"
+    assert first["comparand_source"] == "epoch"
+    # Every recorded package actually landed in the manifest too.
+    assert kinds(ctx, "package-installed") == [
+        {"kind": "package-installed", "name": pkg} for pkg in install.LINUX_PACKAGES
+    ]
+
+
+def test_install_linux_packages_dry_run_records_no_transactions(home, monkeypatch):
+    ctx = make_ctx(home, dry_run=True)
+    ctx.departure_baseline = depart.Baseline()
+
+    def run(cmd, **kwargs):
+        raise AssertionError("dry-run must never shell out")
+
+    monkeypatch.setattr(install, "run_command", run)
+    install._install_linux_packages_one_by_one(ctx, "apt", epoch={})
+
+    assert ctx.departure_baseline.transactions == []
+
+
+def test_install_linux_packages_no_departure_baseline_skips_probes(home, monkeypatch):
+    """When not tracking (e.g. macOS, or dry-run upstream), no probe calls happen."""
+    ctx = make_ctx(home)
+    assert ctx.departure_baseline is None
+
+    def run(cmd, **kwargs):
+        if cmd[:3] == ["sudo", "apt-get", "install"]:
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected probe call when not tracking: {cmd!r}")
+
+    monkeypatch.setattr(install, "run_command", run)
+    install._install_linux_packages_one_by_one(ctx, "apt", epoch=None)
+
+
+def test_install_npm_harness_records_transaction(home, monkeypatch):
+    ctx = make_ctx(home, harnesses=("claude",))
+    ctx.departure_baseline = depart.Baseline()
+    live = {"npm": "10.0.0"}
+
+    def run(cmd, **kwargs):
+        if cmd[:2] == ["npm", "ls"]:
+            deps = {n: {"version": v} for n, v in live.items()}
+            return install.CommandResult(True, json.dumps({"dependencies": deps}))
+        if cmd[:3] == ["npm", "install", "-g"]:
+            live[cmd[3]] = "1.2.3"
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "have", lambda name: name == "npm")
+    monkeypatch.setattr(install, "run_command", run)
+    install.install_npm_harness(
+        ctx, "claude", "Claude Code", "@anthropic-ai/claude-code"
+    )
+
+    txns = ctx.departure_baseline.transactions
+    assert len(txns) == 1
+    assert txns[0]["manager"] == "npm"
+    assert txns[0]["requested"] == ["@anthropic-ai/claude-code"]
+    assert txns[0]["after"]["@anthropic-ai/claude-code"] == "1.2.3"
+
+
+def test_install_ruff_uv_tool_records_transaction(home, monkeypatch):
+    ctx = make_ctx(home)
+    ctx.departure_baseline = depart.Baseline()
+    live: dict[str, str] = {}
+
+    def run(cmd, **kwargs):
+        if cmd == ["uv", "tool", "list"]:
+            output = "".join(f"{n} v{v}\n" for n, v in live.items())
+            return install.CommandResult(True, output)
+        if cmd == ["uv", "tool", "install", "ruff"]:
+            live["ruff"] = "0.5.0"
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "have", lambda name: name == "uv")
+    monkeypatch.setattr(install, "run_command", run)
+    install._install_ruff_uv_tool(ctx)
+
+    txns = ctx.departure_baseline.transactions
+    assert len(txns) == 1
+    assert txns[0]["manager"] == "uv-tool"
+    assert txns[0]["requested"] == ["ruff"]
+    assert txns[0]["after"]["ruff"] == "0.5.0"
+    assert kinds(ctx, "package-installed") == [
+        {"kind": "package-installed", "name": "ruff"}
+    ]
+
+
+# ── package removal execution ───────────────────────────────────────────────
+
+
+def _package_baseline(*transactions):
+    baseline = depart.Baseline()
+    for kwargs in transactions:
+        depart.record_transaction(baseline, **kwargs)
+    return baseline
+
+
+def test_execute_package_phase_removes_freshly_installed_package(home, monkeypatch):
+    baseline = _package_baseline(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        }
+    )
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    removed = []
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "dpkg-query":
+            return install.CommandResult(True, "eza\t0.18.0-1\n")
+        if cmd == ["sudo", "apt-get", "remove", "-y", "eza"]:
+            removed.append("eza")
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "run_command", run)
+    result = install.execute_package_phase(make_ctx(home), baseline, ledger)
+
+    assert result is True
+    assert removed == ["eza"]
+    assert ledger.completed_keys() == {"package:apt/eza"}
+
+
+def test_execute_package_phase_never_touches_already_absent_package(home, monkeypatch):
+    """Already-absent (preserved) packages aren't ledger-tracked at all — nothing
+    to retry, since preflight already showed nothing needed doing."""
+    baseline = _package_baseline(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        }
+    )
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "dpkg-query":
+            return install.CommandResult(True, "")  # eza already removed by the user
+        raise AssertionError(f"unexpected command: {cmd!r} — nothing to remove")
+
+    monkeypatch.setattr(install, "run_command", run)
+    install.execute_package_phase(make_ctx(home), baseline, ledger)
+    assert ledger.entries() == []
+
+
+def test_execute_package_phase_removes_introduced_dependency_when_probe_empty(
+    home, monkeypatch
+):
+    baseline = _package_baseline(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1", "libgit2": "1.7-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        }
+    )
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[0] == "dpkg-query":
+            return install.CommandResult(True, "eza\t0.18.0-1\nlibgit2\t1.7-1\n")
+        if cmd[:3] == ["apt-cache", "rdepends", "--installed"]:
+            return install.CommandResult(True, "")  # nothing depends on it
+        if cmd[0] == "sudo":
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "run_command", run)
+    install.execute_package_phase(make_ctx(home), baseline, ledger)
+
+    assert depart.package_key("apt", "libgit2") in ledger.completed_keys()
+    libgit2_entry = next(
+        e for e in ledger.entries() if e["key"] == "package:apt/libgit2"
+    )
+    assert libgit2_entry["outcome"] == "ok"
+    assert ["apt-cache", "rdepends", "--installed", "libgit2"] in calls
+
+
+def test_execute_package_phase_blocks_introduced_dependency_when_still_needed(
+    home, monkeypatch
+):
+    baseline = _package_baseline(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1", "libgit2": "1.7-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        }
+    )
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "dpkg-query":
+            return install.CommandResult(True, "eza\t0.18.0-1\nlibgit2\t1.7-1\n")
+        if cmd[:3] == ["apt-cache", "rdepends", "--installed"]:
+            return install.CommandResult(True, "Reverse Depends:\n  other-pkg")
+        if cmd == ["sudo", "apt-get", "remove", "-y", "eza"]:
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "run_command", run)
+    install.execute_package_phase(make_ctx(home), baseline, ledger)
+
+    libgit2_entry = next(
+        e for e in ledger.entries() if e["key"] == "package:apt/libgit2"
+    )
+    assert libgit2_entry["outcome"].startswith("unresolved")
+
+
+def test_execute_package_phase_blocks_dependency_removal_on_failed_probe(
+    home, monkeypatch
+):
+    baseline = _package_baseline(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1", "libgit2": "1.7-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        }
+    )
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "dpkg-query":
+            return install.CommandResult(True, "eza\t0.18.0-1\nlibgit2\t1.7-1\n")
+        if cmd[:3] == ["apt-cache", "rdepends", "--installed"]:
+            return install.CommandResult(False, "")  # probe unavailable/failed
+        if cmd == ["sudo", "apt-get", "remove", "-y", "eza"]:
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "run_command", run)
+    install.execute_package_phase(make_ctx(home), baseline, ledger)
+
+    libgit2_entry = next(
+        e for e in ledger.entries() if e["key"] == "package:apt/libgit2"
+    )
+    assert libgit2_entry["outcome"].startswith("unresolved")
+
+
+def test_execute_package_phase_downgrades_an_upgraded_package(home, monkeypatch):
+    baseline = _package_baseline(
+        {
+            "manager": "apt",
+            "requested": ["neovim"],
+            "before": {"neovim": "0.9.0-1"},
+            "after": {"neovim": "0.10.0-1"},
+            "captured_at": "t1",
+            "epoch": {"neovim": "0.9.0-1"},
+        }
+    )
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    live = {"neovim": "0.10.0-1"}
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "dpkg-query":
+            return install.CommandResult(True, f"neovim\t{live['neovim']}\n")
+        if cmd[:4] == ["sudo", "apt-get", "install", "-y"]:
+            live["neovim"] = "0.9.0-1"
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "run_command", run)
+    result = install.execute_package_phase(make_ctx(home), baseline, ledger)
+
+    assert result is True
+    entry = next(e for e in ledger.entries() if e["key"] == "package:apt/neovim")
+    assert entry["outcome"] == "ok"
+    assert entry["action"] == "downgrade"
+
+
+def test_execute_package_phase_halts_on_changed_state_then_failed_downgrade(
+    home, monkeypatch
+):
+    """tmux (t1, earlier) precedes neovim (t2, later); reverse order means
+    neovim is processed *first* and its halt must stop tmux from ever
+    being reached."""
+    baseline = _package_baseline(
+        {
+            "manager": "apt",
+            "requested": ["tmux"],
+            "before": {},
+            "after": {"tmux": "3.4-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        },
+        {
+            "manager": "apt",
+            "requested": ["neovim"],
+            "before": {"neovim": "0.9.0-1"},
+            "after": {"neovim": "0.10.0-1"},
+            "captured_at": "t2",
+        },
+    )
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    live = {"neovim": "0.10.0-1", "tmux": "3.4-1"}
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "dpkg-query":
+            output = "".join(f"{n}\t{v}\n" for n, v in live.items())
+            return install.CommandResult(True, output)
+        if cmd[:4] == ["sudo", "apt-get", "install", "-y"]:
+            # The downgrade command "partially" changes live state, then fails.
+            live["neovim"] = "0.9.5-1"
+            return install.CommandResult(False)
+        raise AssertionError(
+            f"unexpected command: {cmd!r} — tmux should never be reached"
+        )
+
+    monkeypatch.setattr(install, "run_command", run)
+    result = install.execute_package_phase(make_ctx(home), baseline, ledger)
+
+    assert result is False  # halted -> caller must skip the runtime phase too
+    entry = next(e for e in ledger.entries() if e["key"] == "package:apt/neovim")
+    assert entry["outcome"] == "halt: changed-state-then-failed downgrade"
+    # tmux (the earlier transaction, processed after neovim in reverse
+    # order) was never reached because the phase halted first.
+    assert not any(e["key"] == "package:apt/tmux" for e in ledger.entries())
+
+
+def test_execute_package_phase_skips_already_ledger_completed(home, monkeypatch):
+    baseline = _package_baseline(
+        {
+            "manager": "apt",
+            "requested": ["eza"],
+            "before": {},
+            "after": {"eza": "0.18.0-1"},
+            "captured_at": "t1",
+            "epoch": {},
+        }
+    )
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    ledger.record("package:apt/eza", "remove", "ok")
+
+    def run(cmd, **kwargs):
+        raise AssertionError("a ledger-complete package must never be re-probed")
+
+    monkeypatch.setattr(install, "run_command", run)
+    install.execute_package_phase(make_ctx(home), baseline, ledger)
+
+
+def test_execute_departure_skips_runtime_phase_after_package_halt(home, monkeypatch):
+    baseline = _package_baseline(
+        {
+            "manager": "apt",
+            "requested": ["neovim"],
+            "before": {"neovim": "0.9.0-1"},
+            "after": {"neovim": "0.10.0-1"},
+            "captured_at": "t1",
+            "epoch": {"neovim": "0.9.0-1"},
+        }
+    )
+    ctx = make_ctx(home)
+    runtime_key = depart.runtime_key(ctx.home / ".nvm")
+    report = {
+        runtime_key: depart.Classification(
+            depart.BUCKET_OWNED, depart.ACTION_REMOVE, "absent at baseline, now present"
+        )
+    }
+
+    live = {"neovim": "0.10.0-1"}
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "dpkg-query":
+            return install.CommandResult(True, f"neovim\t{live['neovim']}\n")
+        if cmd[:4] == ["sudo", "apt-get", "install", "-y"]:
+            live["neovim"] = "0.9.5-1"  # partially changed, then fails
+            return install.CommandResult(False)
+        raise AssertionError(
+            f"unexpected command: {cmd!r} — runtime phase must be skipped"
+        )
+
+    monkeypatch.setattr(install, "run_command", run)
+    ledger = install.execute_departure(ctx, baseline, report)
+
+    assert runtime_key not in ledger.completed_keys()
+
+
+# ── service/linger execution, end to end through do_depart ─────────────────
+
+
+def _watchcommit_run_command(live, *, other_enabled_units=""):
+    """A run_command fake covering watchcommit's full enable/disable + linger cycle."""
+
+    def run(cmd, **kwargs):
+        if cmd == ["systemctl", "--user", "show-environment"]:
+            return install.CommandResult(True, "")
+        if cmd == ["systemctl", "--user", "is-enabled", "watchcommit.service"]:
+            return install.CommandResult(
+                live["enabled"], "enabled" if live["enabled"] else "disabled"
+            )
+        if cmd == ["systemctl", "--user", "is-active", "watchcommit.service"]:
+            return install.CommandResult(
+                live["active"], "active" if live["active"] else "inactive"
+            )
+        if cmd == ["loginctl", "show-user", "testuser", "--property=Linger"]:
+            return install.CommandResult(
+                True, "Linger=yes" if live["linger"] else "Linger=no"
+            )
+        if cmd == ["systemctl", "--user", "daemon-reload"]:
+            return install.CommandResult(True)
+        if cmd == ["systemctl", "--user", "enable", "--now", "watchcommit.service"]:
+            live["enabled"] = True
+            live["active"] = True
+            return install.CommandResult(True)
+        if cmd == ["loginctl", "enable-linger", "testuser"]:
+            live["linger"] = True
+            return install.CommandResult(True)
+        if cmd == ["systemctl", "--user", "disable", "--now", "watchcommit.service"]:
+            live["enabled"] = False
+            live["active"] = False
+            return install.CommandResult(True)
+        if cmd == [
+            "systemctl",
+            "--user",
+            "list-unit-files",
+            "--state=enabled",
+            "--no-legend",
+        ]:
+            return install.CommandResult(True, other_enabled_units)
+        if cmd == ["loginctl", "disable-linger", "testuser"]:
+            live["linger"] = False
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    return run
+
+
+def test_depart_disables_watchcommit_and_restores_linger(
+    home, links, monkeypatch, capsys
+):
+    for name in (
+        "install_mac_packages",
+        "install_linux_packages",
+        "install_node",
+        "load_watchcommit_agent",
+        "import_rectangle_prefs",
+        "set_caps_lock_to_escape",
+        "install_vim_plug",
+        "bootstrap_neovim",
+    ):
+        monkeypatch.setattr(install, name, lambda *a, **k: None)
+    monkeypatch.setattr(install, "install_npm_harness", lambda *a, **k: None)
+
+    live = {"enabled": False, "active": False, "linger": False}
+    monkeypatch.setattr(install, "run_command", _watchcommit_run_command(live))
+    monkeypatch.setattr(install, "have", lambda name: name in ("systemctl", "loginctl"))
+    monkeypatch.setattr(install, "_current_user", lambda: "testuser")
+
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+    assert live == {"enabled": True, "active": True, "linger": True}
+
+    code = install.do_depart(make_ctx(home, yes=True))
+
+    assert code == 0
+    assert live == {"enabled": False, "active": False, "linger": False}
+
+
+def test_depart_preserves_linger_when_other_units_depend_on_it(
+    home, links, monkeypatch, capsys
+):
+    for name in (
+        "install_mac_packages",
+        "install_linux_packages",
+        "install_node",
+        "load_watchcommit_agent",
+        "import_rectangle_prefs",
+        "set_caps_lock_to_escape",
+        "install_vim_plug",
+        "bootstrap_neovim",
+    ):
+        monkeypatch.setattr(install, name, lambda *a, **k: None)
+    monkeypatch.setattr(install, "install_npm_harness", lambda *a, **k: None)
+
+    live = {"enabled": False, "active": False, "linger": False}
+    run = _watchcommit_run_command(
+        live, other_enabled_units="some-other-timer.timer enabled\n"
+    )
+    monkeypatch.setattr(install, "run_command", run)
+    monkeypatch.setattr(install, "have", lambda name: name in ("systemctl", "loginctl"))
+    monkeypatch.setattr(install, "_current_user", lambda: "testuser")
+
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    code = install.do_depart(make_ctx(home, yes=True))
+
+    assert code == 1  # incomplete: linger left enabled is reported unresolved
+    assert live["enabled"] is False  # watchcommit itself was still disabled
+    assert live["linger"] is True  # but linger was correctly preserved

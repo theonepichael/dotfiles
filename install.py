@@ -39,6 +39,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
 
+import depart
+
 VALID_HARNESSES = ("claude", "copilot", "opencode", "agy")
 VALID_PROFILES = ("personal", "work")
 
@@ -114,6 +116,7 @@ CAPS_LOCK_TO_ESCAPE = [
 
 USAGE = """\
 usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--no-nvim-pin] [--reseed]
+       ./install.sh --depart [--yes] [--dry-run]
 
   --harness   required unless --rollback. Comma-separated, at least one of:
               claude, copilot, opencode, agy. No default — every run must
@@ -177,6 +180,20 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=per
               <name>.bak once, the first time a given file is reseeded;
               later reseeds of the same file reuse that backup rather than
               overwriting it again. Cannot be combined with --rollback.
+  --depart    remove or restore everything a past install run (future
+              installs only — this reasons entirely from a baseline
+              recorded at install time, not from history.jsonl) owns on
+              this machine: files, symlinks, packages, runtimes, and
+              services. Must be used alone — the only other flags allowed
+              alongside it are --yes and --dry-run. Refuses with no baseline
+              recorded (exit 2). Prints a full preflight report and, on a
+              real (non-dry-run) run, requires typing the exact token
+              DEPART to proceed unless --yes is passed. This is
+              local-footprint cleanup, not forensic erasure — see README.md
+              for the separate, genuinely destructive WSL unregister/
+              recreate path for a guaranteed pristine reset.
+  --yes       skip --depart's interactive confirmation prompt. Only valid
+              alongside --depart.
 
 Examples:
   ./install.sh --harness=claude
@@ -420,6 +437,8 @@ class Options:
     wipe: bool = False
     no_nvim_pin: bool = False
     reseed: bool = False
+    depart: bool = False
+    yes: bool = False
 
 
 @dataclass
@@ -434,6 +453,10 @@ class Context:
     system: str
     is_wsl: bool
     neovim_fallback_failure: str | None = None
+    # Set by capture_departure_baseline (Linux, non-dry-run only); package/
+    # npm-harness installers record transactions onto it as they run, and
+    # run_install saves it back to baseline.json once, after every step.
+    departure_baseline: depart.Baseline | None = None
 
     @property
     def state_dir(self) -> Path:
@@ -542,6 +565,8 @@ def parse_args(argv: Sequence[str]) -> Options:
     parser.add_argument("--dry-run", dest="dry_run", action="store_true")
     parser.add_argument("--no-nvim-pin", dest="no_nvim_pin", action="store_true")
     parser.add_argument("--reseed", action="store_true")
+    parser.add_argument("--depart", action="store_true")
+    parser.add_argument("--yes", action="store_true")
     parser.add_argument("-h", "--help", dest="help", action="store_true")
 
     args, extras = parser.parse_known_args(list(argv))
@@ -583,6 +608,26 @@ def parse_args(argv: Sequence[str]) -> Options:
     if args.profile == "work" and "opencode" in harnesses:
         _fail("--harness=opencode is not allowed with --profile=work")
 
+    # --depart is a standalone, undo-everything action, checked first (ahead
+    # of --rollback's own alone-check below) so `--rollback --depart` names
+    # the --depart conflict, not the rollback one. Written out literally
+    # rather than copied from --rollback's check — --wipe and --no-nvim-pin
+    # are deliberately included here for reasons specific to --depart that
+    # don't apply to --rollback.
+    if args.depart and (
+        args.rollback
+        or args.wipe
+        or harness_set
+        or args.profile != "personal"
+        or args.force
+        or args.reseed
+        or args.no_nvim_pin
+    ):
+        _fail("--depart must be used alone, with no other flags")
+
+    if args.yes and not args.depart:
+        _fail("--yes can only be used with --depart")
+
     # --rollback is an undo-only action. Rejecting --profile/--force
     # alongside it (not just --harness) keeps them from being silently
     # ignored, which would mislead someone into thinking they rolled back
@@ -595,7 +640,7 @@ def parse_args(argv: Sequence[str]) -> Options:
     if args.wipe and not args.rollback:
         _fail("--wipe can only be used with --rollback")
 
-    if not args.rollback and not harness_set:
+    if not args.rollback and not args.depart and not harness_set:
         _fail(
             "no --harness specified — pass at least one of: "
             "claude, copilot, opencode, agy",
@@ -618,6 +663,8 @@ def parse_args(argv: Sequence[str]) -> Options:
         wipe=args.wipe,
         no_nvim_pin=args.no_nvim_pin,
         reseed=args.reseed,
+        depart=args.depart,
+        yes=args.yes,
     )
 
 
@@ -763,7 +810,52 @@ def install_mac_packages(ctx: Context) -> None:
 # ── packages: Linux ───────────────────────────────────────────────────────────
 
 
-def _install_linux_packages_one_by_one(ctx: Context, manager: str) -> None:
+def _capture_package_snapshot(manager: str) -> dict[str, str] | None:
+    """Probe the live package/tool inventory for one manager.
+
+    Returns None on a failed/unavailable probe — callers must skip
+    recording that transaction entirely rather than record a misleading
+    empty snapshot, since nothing downstream can yet distinguish "empty"
+    from "probe failed" for transaction data (that distinction matters for
+    departure-time removal decisions, which are not implemented yet — see
+    execute_departure's docstring).
+    """
+    probes: dict[str, tuple[list[str], Callable[[str], dict[str, str]]]] = {
+        "apt": (depart.dpkg_query_command(), depart.parse_dpkg_query),
+        "dnf": (depart.rpm_qa_command(), depart.parse_rpm_qa),
+        "npm": (depart.npm_ls_global_command(), depart.parse_npm_ls_global),
+        "uv-tool": (depart.uv_tool_list_command(), depart.parse_uv_tool_list),
+    }
+    command, parse = probes[manager]
+    result = run_command(command, capture=True)
+    return parse(result.stdout) if result.ok else None
+
+
+def _record_package_transaction(
+    ctx: Context,
+    manager: str,
+    requested: list[str],
+    before: dict[str, str] | None,
+    after: dict[str, str] | None,
+    epoch: dict[str, str] | None,
+) -> None:
+    """Record one package transaction onto ctx.departure_baseline, if tracking."""
+    if ctx.departure_baseline is None or before is None or after is None:
+        return
+    depart.record_transaction(
+        ctx.departure_baseline,
+        manager=manager,
+        requested=requested,
+        before=before,
+        after=after,
+        captured_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+        epoch=epoch,
+    )
+
+
+def _install_linux_packages_one_by_one(
+    ctx: Context, manager: str, epoch: dict[str, str] | None
+) -> None:
     """Install each package with its own package-manager invocation.
 
     Deliberately not one batched install command: ``apt-get install`` fails
@@ -781,7 +873,20 @@ def _install_linux_packages_one_by_one(ctx: Context, manager: str) -> None:
     for pkg in LINUX_PACKAGES:
         if ctx.opts.dry_run:
             _preview(f"would run: {' '.join(base)} {pkg}")
-        elif run_command([*base, pkg]).ok:
+            continue
+        before = (
+            _capture_package_snapshot(manager)
+            if ctx.departure_baseline is not None
+            else None
+        )
+        outcome = run_command([*base, pkg])
+        after = (
+            _capture_package_snapshot(manager)
+            if ctx.departure_baseline is not None
+            else None
+        )
+        _record_package_transaction(ctx, manager, [pkg], before, after, epoch)
+        if outcome.ok:
             ctx.manifest.record_package(pkg)
         else:
             ctx.reporter.skip(
@@ -1014,9 +1119,45 @@ def _install_neovim_fallback(ctx: Context) -> None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def _install_ruff_uv_tool(ctx: Context) -> None:
+    """Install ruff via ``uv tool install``, recording a transaction if tracking."""
+    if not have("uv"):
+        ctx.reporter.skip("ruff", "uv unavailable")
+        return
+    if ctx.opts.dry_run:
+        _preview("would run: uv tool install ruff")
+        return
+    before = (
+        _capture_package_snapshot("uv-tool")
+        if ctx.departure_baseline is not None
+        else None
+    )
+    outcome = run_command(["uv", "tool", "install", "ruff"])
+    after = (
+        _capture_package_snapshot("uv-tool")
+        if ctx.departure_baseline is not None
+        else None
+    )
+    _record_package_transaction(ctx, "uv-tool", ["ruff"], before, after, epoch=None)
+    if outcome.ok:
+        ctx.manifest.record_package("ruff")
+    else:
+        ctx.reporter.skip("ruff", "uv tool install failed")
+
+
 def install_linux_packages(ctx: Context) -> None:
     """Install everything the Linux/WSL branch owns: distro packages and extras."""
-    if have("dnf"):
+    manager = "dnf" if have("dnf") else "apt"
+    # Captured once, immediately before any package-manager mutation this
+    # run makes — the comparand for each manager's *first* transaction in
+    # the interference-detection scheme, not re-probed per package.
+    epoch = (
+        _capture_package_snapshot(manager)
+        if ctx.departure_baseline is not None and not ctx.opts.dry_run
+        else None
+    )
+
+    if manager == "dnf":
         if ctx.opts.dry_run:
             _preview("would run: sudo dnf makecache")
         else:
@@ -1025,7 +1166,7 @@ def install_linux_packages(ctx: Context) -> None:
                 ctx.reporter.skip(
                     "dnf makecache", "dnf makecache failed (offline or blocked?)"
                 )
-        _install_linux_packages_one_by_one(ctx, "dnf")
+        _install_linux_packages_one_by_one(ctx, "dnf", epoch)
     else:
         if ctx.opts.dry_run:
             _preview("would run: sudo apt-get update")
@@ -1035,23 +1176,14 @@ def install_linux_packages(ctx: Context) -> None:
                 ctx.reporter.skip(
                     "apt update", "apt-get update failed (offline or blocked?)"
                 )
-        _install_linux_packages_one_by_one(ctx, "apt")
+        _install_linux_packages_one_by_one(ctx, "apt", epoch)
 
     _install_neovim_fallback(ctx)
 
     _shim(ctx, "bat", "batcat")
     _shim(ctx, "fd", "fdfind")
     _install_uv(ctx)
-
-    if have("uv"):
-        if ctx.opts.dry_run:
-            _preview("would run: uv tool install ruff")
-        elif run_command(["uv", "tool", "install", "ruff"]).ok:
-            ctx.manifest.record_package("ruff")
-        else:
-            ctx.reporter.skip("ruff", "uv tool install failed")
-    else:
-        ctx.reporter.skip("ruff", "uv unavailable")
+    _install_ruff_uv_tool(ctx)
 
     if not have("oh-my-posh"):
         if ctx.opts.dry_run:
@@ -1147,7 +1279,15 @@ def install_npm_harness(ctx: Context, harness: str, label: str, package: str) ->
         _preview(f"would run: npm install -g {package}")
         return
     _header(f"==> Installing {label}...")
-    if run_command(["npm", "install", "-g", package]).ok:
+    before = (
+        _capture_package_snapshot("npm") if ctx.departure_baseline is not None else None
+    )
+    outcome = run_command(["npm", "install", "-g", package])
+    after = (
+        _capture_package_snapshot("npm") if ctx.departure_baseline is not None else None
+    )
+    _record_package_transaction(ctx, "npm", [package], before, after, epoch=None)
+    if outcome.ok:
         ctx.manifest.record_package(package)
     else:
         ctx.reporter.skip(label, "npm install failed (registry blocked?)")
@@ -1731,6 +1871,71 @@ def seed_opencode_config(ctx: Context) -> tuple[str, str]:
 
 # ── services ──────────────────────────────────────────────────────────────────
 
+_WATCHCOMMIT_SERVICE_KEY = "watchcommit.service"
+
+
+def _probe_systemctl_word(word: str, cmd: list[str]) -> bool | None:
+    """Run a ``systemctl --user is-<x>``-style probe by matching its stdout word.
+
+    Exit code alone can't distinguish "answered no" from "couldn't run" —
+    ``systemctl --user is-enabled`` exits non-zero for a genuinely disabled
+    unit too. True/False for a real answer; None (unavailable/unanswerable)
+    only when there's no recognizable word at all.
+    """
+    if not have("systemctl"):
+        return None
+    text = run_command(cmd, capture=True).stdout.strip()
+    if text == word:
+        return True
+    if text:
+        return False
+    return None
+
+
+def _probe_linger(user: str) -> bool | None:
+    if not have("loginctl") or not user:
+        return None
+    text = run_command(
+        ["loginctl", "show-user", user, "--property=Linger"], capture=True
+    ).stdout.strip()
+    if text == "Linger=yes":
+        return True
+    if text == "Linger=no":
+        return False
+    return None
+
+
+def _capture_live_watchcommit_service(ctx: Context) -> dict[str, object]:
+    """Fresh is-enabled/is-active/linger probe, for capture or classification."""
+    enabled = _probe_systemctl_word(
+        "enabled", ["systemctl", "--user", "is-enabled", _WATCHCOMMIT_SERVICE_KEY]
+    )
+    active = _probe_systemctl_word(
+        "active", ["systemctl", "--user", "is-active", _WATCHCOMMIT_SERVICE_KEY]
+    )
+    linger = _probe_linger(_current_user())
+    return depart.build_service_record(enabled=enabled, active=active, linger=linger)
+
+
+def capture_service_baseline(ctx: Context) -> None:
+    """Capture watchcommit service/linger state, immediately before
+    :func:`enable_watchcommit_service` runs — capturing any later would
+    record the post-install enabled state as baseline and departure would
+    never disable anything.
+    """
+    if (
+        not ctx.is_linux
+        or ctx.opts.dry_run
+        or ctx.opts.profile == "work"
+        or ctx.departure_baseline is None
+    ):
+        return
+    key = depart.service_key("systemd", "watchcommit")
+    stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    ctx.departure_baseline.add_layer(
+        stamp, {key: _capture_live_watchcommit_service(ctx)}
+    )
+
 
 def enable_watchcommit_service(ctx: Context) -> None:
     """Enable and start watchcommit's systemd --user unit (Linux, non-work)."""
@@ -1971,6 +2176,126 @@ def bootstrap_neovim(ctx: Context) -> None:
         )
 
 
+# ── departure baseline capture ──────────────────────────────────────────────
+
+
+def _is_state_dir_or_its_ancestor(path: Path, ctx: Context) -> bool:
+    """Whether ``path`` is the state directory itself, or one of its own ancestors.
+
+    The state directory holds this feature's own ``baseline.json``/
+    ``history.jsonl``/``departure.jsonl``/lock — its removal (and any of
+    its ancestors that become empty as a result) is entirely
+    ``_finalize_departure_state``'s job, run *after* the generic directory
+    phase. Letting the generic phase track and act on these paths would
+    make it try to rmdir them while they (or the state directory nested
+    inside them) still hold files that haven't been cleared yet — an
+    unbreakable "not empty" that would permanently block a clean departure.
+    """
+    return path == ctx.state_dir or path in ctx.state_dir.parents
+
+
+def _departure_owned_destinations(
+    ctx: Context, specs: Sequence[LinkSpec]
+) -> list[Path]:
+    """Every links.toml/seed destination this run's options make applicable.
+
+    These are the only categories whose ``file:``/``symlink:`` keys can ever
+    need content restored (rc files are handled separately) — see
+    :func:`capture_departure_baseline`'s blob-writing rule.
+    """
+    destinations: list[Path] = []
+    for spec in specs:
+        if link_applies(spec, ctx):
+            destinations.append(expand_dest(spec.dest, ctx.home))
+    if ctx.has_harness("claude"):
+        destinations.append(ctx.home / ".claude" / "settings.json")
+    if ctx.has_harness("opencode"):
+        destinations.append(ctx.home / ".config" / "opencode" / "opencode.jsonc")
+    return destinations
+
+
+def capture_departure_baseline(ctx: Context, specs: Sequence[LinkSpec]) -> None:
+    """Capture this run's departure baseline layer before any install step runs.
+
+    Linux/WSL and Fedora only (Implementation Sequence step 6 — this feature
+    does not apply on macOS) and a no-op under ``--dry-run`` (step 1: a
+    dry-run install writes no ``baseline.json`` and creates no immutable
+    first layer). Must run before ``install_linux_packages`` — ``_install_uv``
+    and the oh-my-posh installer both run inside it, earlier than
+    ``install_node``/NVM, and can mutate rc files themselves.
+    """
+    if not ctx.is_linux or ctx.opts.dry_run:
+        return
+
+    state_dir = ctx.state_dir
+    baseline = depart.load_baseline(state_dir) or depart.Baseline()
+    records: dict[str, dict[str, object]] = {}
+    seen_dirs: set[Path] = set()
+
+    def _track_ancestors(path: Path) -> None:
+        for ancestor in depart.ancestor_directories(path, ctx.home):
+            if ancestor in seen_dirs or _is_state_dir_or_its_ancestor(ancestor, ctx):
+                continue
+            seen_dirs.add(ancestor)
+            records[depart.directory_key(ancestor)] = depart.capture_directory(ancestor)
+
+    for rc_name in depart.RC_FILENAMES:
+        rc_path = ctx.home / rc_name
+        records[depart.file_key(rc_path)] = depart.capture_file(
+            rc_path, blob_dir=state_dir
+        )
+
+    for dest in _departure_owned_destinations(ctx, specs):
+        records[depart.file_key(dest)] = depart.capture_file(dest, blob_dir=state_dir)
+        records[depart.symlink_key(dest)] = depart.capture_symlink(dest)
+        bak = dest.with_name(dest.name + ".bak")
+        records[depart.file_key(bak)] = depart.capture_file(bak)
+        _track_ancestors(dest)
+
+    for path in (
+        ctx.home / ".local" / "bin" / "uv",
+        ctx.home / ".local" / "bin" / "oh-my-posh",
+        ctx.home / ".vim" / "autoload" / "plug.vim",
+    ):
+        records[depart.file_key(path)] = depart.capture_file(path)
+        _track_ancestors(path)
+
+    records[depart.file_key(ctx.profile_marker)] = depart.capture_file(
+        ctx.profile_marker
+    )
+    _track_ancestors(ctx.profile_marker)
+
+    for path in (
+        ctx.home / ".local" / "bin" / "bat",
+        ctx.home / ".local" / "bin" / "fd",
+    ):
+        records[depart.symlink_key(path)] = depart.capture_symlink(path)
+        _track_ancestors(path)
+
+    font_dir = ctx.home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont"
+    records[depart.directory_key(font_dir)] = depart.capture_tree_manifest(font_dir)
+    _track_ancestors(font_dir)
+
+    neovim_prefix = ctx.home / ".local" / "opt" / "neovim"
+    records[depart.directory_key(neovim_prefix)] = depart.capture_tree_manifest(
+        neovim_prefix
+    )
+    _track_ancestors(neovim_prefix)
+
+    for parts in depart.SHARED_NEOVIM_DIRS:
+        shared_dir = ctx.home.joinpath(*parts)
+        records[depart.directory_key(shared_dir)] = depart.capture_directory(shared_dir)
+
+    records[depart.runtime_key(ctx.home / ".nvm")] = depart.capture_runtime_nvm(
+        ctx.home
+    )
+
+    stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    baseline.add_layer(stamp, records)
+    depart.save_baseline(state_dir, baseline)
+    ctx.departure_baseline = baseline
+
+
 # ── profile marker ────────────────────────────────────────────────────────────
 
 
@@ -2001,6 +2326,31 @@ def work_guard_blocks(ctx: Context) -> bool:
 
 
 # ── rollback ──────────────────────────────────────────────────────────────────
+
+
+def _departure_state_paths(state_dir: Path) -> list[Path]:
+    """This feature's own state files, if present — never anything else.
+
+    Snapshot naming is pinned (``baseline.json`` plus
+    ``baseline-snapshot-<sha256>.blob``, flat in the state directory), so a
+    glob is always exactly correct here — regardless of whether
+    ``baseline.json`` itself is missing, empty, or unparseable at rollback
+    time. Never includes ``history.jsonl``, the profile marker, or anything
+    else this feature doesn't own.
+    """
+    if not state_dir.is_dir():
+        return []
+    paths = [depart.baseline_path(state_dir)]
+    paths.extend(sorted(state_dir.glob("baseline-snapshot-*.blob")))
+    paths.append(state_dir / "departure.lock")
+    paths.append(state_dir / "departure.jsonl")
+    return paths
+
+
+def _delete_departure_state(ctx: Context) -> None:
+    """Delete this feature's own state files during a real (non-dry-run) rollback."""
+    for path in _departure_state_paths(ctx.state_dir):
+        path.unlink(missing_ok=True)
 
 
 def do_rollback(ctx: Context) -> int:
@@ -2088,8 +2438,9 @@ def do_rollback(ctx: Context) -> int:
 
     if ctx.opts.dry_run:
         if ctx.opts.wipe:
+            excluded = {manifest.path, *_departure_state_paths(ctx.state_dir)}
             remaining = (
-                [p for p in ctx.state_dir.iterdir() if p != manifest.path]
+                [p for p in ctx.state_dir.iterdir() if p not in excluded]
                 if ctx.state_dir.is_dir()
                 else []
             )
@@ -2101,6 +2452,7 @@ def do_rollback(ctx: Context) -> int:
         )
     else:
         manifest.path.unlink(missing_ok=True)
+        _delete_departure_state(ctx)
         if (
             ctx.opts.wipe
             and ctx.state_dir.is_dir()
@@ -2378,11 +2730,773 @@ def print_summary(
         print("  - Restart your shell to pick up the new config")
 
 
+# ── departure preflight and CLI ─────────────────────────────────────────────
+
+
+def _tree_manifest_directories(ctx: Context) -> set[Path]:
+    """Directories tracked as full tree manifests, not plain directory: keys."""
+    return {
+        ctx.home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont",
+        ctx.home / ".local" / "opt" / "neovim",
+    }
+
+
+def _recapture_live_value(ctx: Context, key: str) -> dict[str, object]:
+    """Fresh, read-only live value for one *already-recorded* ownership key.
+
+    Dispatches purely on the key itself — deliberately never re-derives
+    "is this destination applicable" from links.toml + the current
+    invocation's ``--harness`` selection. ``--depart`` is standalone
+    (``parse_args`` rejects ``--harness`` alongside it), so at departure
+    time ``ctx.opts.harnesses`` is always empty; re-deriving applicability
+    from it would make every harness-gated links.toml entry (``~/.claude/
+    CLAUDE.md``, its commands, the copy-once seed files, ...) silently
+    invisible to preflight — the real bug this replaced (caught via a real
+    container run, not the fast unit-test suite, since every fast test
+    happened to capture and recapture with the same harness selection).
+    The baseline itself is the only source of truth for what was ever
+    installer-tracked; this function only ever answers "what's live at
+    this exact key's path right now."
+    """
+    type_, path_str = key.split(":", 1)
+    path = Path(path_str)
+    if type_ == "file":
+        return depart.capture_file(path)
+    if type_ == "symlink":
+        return depart.capture_symlink(path)
+    if type_ == "directory":
+        if path in _tree_manifest_directories(ctx):
+            return depart.capture_tree_manifest(path)
+        return depart.capture_directory(path)
+    if type_ == "runtime":
+        return depart.capture_runtime_nvm(path.parent)
+    return {"state": depart.STATE_UNKNOWN}
+
+
+def _recapture_departure_live_state(
+    ctx: Context, baseline: depart.Baseline
+) -> dict[str, dict[str, object]]:
+    """Re-capture every tracked ownership key's *current* value, read-only.
+
+    Driven entirely by ``baseline.all_keys()`` — see
+    :func:`_recapture_live_value`'s docstring for why that's load-bearing,
+    not incidental. Never writes a blob or persists anything; this only
+    builds the "live" half of a preflight comparison.
+    """
+    return {
+        key: _recapture_live_value(ctx, key)
+        for key in baseline.all_keys()
+        if depart.key_type(key) != "service"
+    }
+
+
+def _apply_rc_file_reclassification(
+    ctx: Context, baseline: depart.Baseline, report: dict[str, depart.Classification]
+) -> None:
+    """Override the generic result for each rc file with the append-aware rule."""
+    for rc_name in depart.RC_FILENAMES:
+        rc_path = ctx.home / rc_name
+        key = depart.file_key(rc_path)
+        recorded = baseline.value_for(key)
+        if recorded is None or recorded.get("state") != depart.STATE_PRESENT:
+            continue
+        blob_digest = recorded.get("blob")
+        baseline_content = (
+            depart.read_blob(ctx.state_dir, str(blob_digest))
+            if isinstance(blob_digest, str)
+            else None
+        )
+        try:
+            live_content: bytes | None = rc_path.read_bytes()
+        except OSError:
+            live_content = None
+        override = depart.reclassify_rc_file(recorded, baseline_content, live_content)
+        if override is not None:
+            report[key] = override
+
+
+def _apply_symlink_pair_reclassification(
+    baseline: depart.Baseline,
+    live: dict[str, dict[str, object]],
+    report: dict[str, depart.Classification],
+) -> None:
+    """Override the generic per-key results for each backed-up-then-symlinked pair.
+
+    Candidate paths come from the report's own keys (i.e. the baseline),
+    never re-derived from links.toml — same reasoning as
+    :func:`_recapture_live_value`.
+    """
+    file_paths = {
+        Path(k.split(":", 1)[1]) for k in report if depart.key_type(k) == "file"
+    }
+    symlink_paths = {
+        Path(k.split(":", 1)[1]) for k in report if depart.key_type(k) == "symlink"
+    }
+    for path in file_paths & symlink_paths:
+        file_key = depart.file_key(path)
+        symlink_key = depart.symlink_key(path)
+        override = depart.reclassify_symlink_destination_pair(
+            baseline.value_for(file_key),
+            live.get(file_key, {"state": depart.STATE_UNKNOWN}),
+            baseline.value_for(symlink_key),
+            live.get(symlink_key, {"state": depart.STATE_UNKNOWN}),
+        )
+        if override is not None:
+            report[file_key], report[symlink_key] = override
+
+
+def build_preflight_report(ctx: Context) -> dict[str, depart.Classification] | None:
+    """Classify every tracked ownership key, or None if there's no baseline."""
+    baseline = depart.load_baseline(ctx.state_dir)
+    if baseline is None:
+        return None
+    live = _recapture_departure_live_state(ctx, baseline)
+    report: dict[str, depart.Classification] = {}
+    for key in sorted(baseline.all_keys()):
+        # service: keys use their own dedicated classifier (their record
+        # shape — enabled/active/linger — doesn't fit the tri-state
+        # present/absent model the generic classifier expects).
+        if depart.key_type(key) == "service":
+            continue
+        recorded = baseline.value_for(key)
+        live_value = live.get(key, {"state": depart.STATE_UNKNOWN})
+        report[key] = depart.classify_ownership_key(key, recorded, live_value)
+
+    _apply_rc_file_reclassification(ctx, baseline, report)
+    _apply_symlink_pair_reclassification(baseline, live, report)
+
+    service_key = depart.service_key("systemd", "watchcommit")
+    if service_key in baseline.all_keys():
+        report[service_key] = depart.classify_service(
+            baseline.value_for(service_key), _capture_live_watchcommit_service(ctx)
+        )
+    return report
+
+
+def build_package_preflight(ctx: Context) -> list[depart.PackageClassification] | None:
+    """Classify every requested/introduced package, or None if there's no baseline."""
+    baseline = depart.load_baseline(ctx.state_dir)
+    if baseline is None:
+        return None
+    return depart.classify_package_transactions(
+        baseline, live_package_snapshots(baseline)
+    )
+
+
+def _print_preflight_report(
+    report: dict[str, depart.Classification],
+    package_report: Sequence[depart.PackageClassification] = (),
+) -> None:
+    """Print the full departure preflight, grouped by bucket."""
+    _header("==> Departure preflight")
+    for bucket in (
+        depart.BUCKET_OWNED,
+        depart.BUCKET_DRIFTED,
+        depart.BUCKET_UNRESOLVED,
+        depart.BUCKET_PRESERVED,
+    ):
+        keys = sorted(k for k, c in report.items() if c.bucket == bucket)
+        package_lines = [c for c in package_report if c.bucket == bucket]
+        if not keys and not package_lines:
+            continue
+        print(PALETTE.header(f"  {bucket} ({len(keys) + len(package_lines)}):"))
+        warn = bucket in (depart.BUCKET_UNRESOLVED, depart.BUCKET_DRIFTED)
+        for key in keys:
+            c = report[key]
+            action = f" [{c.action}]" if c.action else ""
+            line = f"    {key}{action} — {c.reason}"
+            print(PALETTE.warn(line) if warn else line)
+        for pc in sorted(package_lines, key=lambda c: c.key):
+            action = f" [{pc.action}]" if pc.action else ""
+            line = f"    {pc.key}{action} — {pc.reason}"
+            print(PALETTE.warn(line) if warn else line)
+
+
+def _read_confirmation_token() -> str:
+    """Read one line from stdin, stripping exactly one trailing LF/CRLF.
+
+    Surrounding spaces/tabs are deliberately left in place — the caller
+    compares for an exact ``"DEPART"`` match, so ``" DEPART"`` or an EOF
+    (empty string) both correctly fail to match.
+    """
+    line = sys.stdin.readline()
+    if line.endswith("\r\n"):
+        return line[:-2]
+    if line.endswith("\n"):
+        return line[:-1]
+    return line
+
+
+def _restore_target_still_occupied(dest: Path) -> bool:
+    return dest.exists() or dest.is_symlink()
+
+
+def _execute_restore(
+    ctx: Context, dest: Path, recorded: dict[str, object], *, expect_absent: bool
+) -> str:
+    """Restore ``dest``'s content from its recorded blob.
+
+    ``expect_absent`` is set only for the backed-up-then-symlinked pair
+    case, where the paired symlink was just removed in the prior phase —
+    if ``dest`` is unexpectedly occupied afterward, something else has
+    claimed the path and the restore aborts rather than overwriting it.
+    For a plain in-place restore (an appended-to rc file), ``dest`` is
+    expected to already exist and gets overwritten with the recorded
+    content directly.
+    """
+    digest = recorded.get("blob")
+    if not isinstance(digest, str):
+        return "unresolved: no blob recorded for restore"
+    content = depart.read_blob(ctx.state_dir, digest)
+    if content is None:
+        return "unresolved: recorded blob is missing or unreadable"
+    if expect_absent and _restore_target_still_occupied(dest):
+        return "unresolved: destination still occupied after symlink removal"
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(content)
+    except OSError as exc:
+        return f"unresolved: restore failed ({exc})"
+    return "ok"
+
+
+def _execute_remove_symlink(path: Path) -> str:
+    if not path.is_symlink():
+        return "ok: already absent"
+    try:
+        path.unlink()
+    except OSError as exc:
+        return f"unresolved: could not remove symlink ({exc})"
+    return "ok"
+
+
+def _execute_remove_file(path: Path) -> str:
+    if not path.is_file() or path.is_symlink():
+        return "ok: already absent"
+    try:
+        path.unlink()
+    except OSError as exc:
+        return f"unresolved: could not remove file ({exc})"
+    return "ok"
+
+
+def _maybe_consume_bak(dest: Path, baseline: depart.Baseline) -> None:
+    """Delete ``dest``'s ``.bak`` once a clean restore succeeds, if it's
+    provably departure-owned — never touch a ``.bak`` this feature can't
+    prove it created.
+
+    Only ever called after :func:`_execute_restore` has already returned
+    ``"ok"`` — its authoritative source is the content blob, so a
+    qualifying ``.bak`` is now redundant leftover, not a second restore
+    source. See depart.reclassify_symlink_destination_pair's docstring and
+    Implementation Sequence step 4's ``.bak`` provenance rule.
+    """
+    bak = dest.with_name(dest.name + ".bak")
+    file_recorded = baseline.value_for(depart.file_key(dest))
+    bak_recorded = baseline.value_for(depart.file_key(bak))
+    if not (
+        file_recorded is not None
+        and file_recorded.get("state") == depart.STATE_PRESENT
+        and bak_recorded is not None
+        and bak_recorded.get("state") == depart.STATE_ABSENT
+    ):
+        return
+    try:
+        if bak.is_file() and not bak.is_symlink():
+            bak.unlink()
+    except OSError:
+        pass  # best-effort cleanup — never fails the restore itself
+
+
+def _other_enabled_user_units(exclude: str) -> list[str] | None:
+    """Every enabled systemd ``--user`` unit other than ``exclude``.
+
+    None if the listing probe itself failed/is unavailable — callers must
+    treat that as "can't prove it's safe," never as an empty list.
+    """
+    if not have("systemctl"):
+        return None
+    result = run_command(
+        ["systemctl", "--user", "list-unit-files", "--state=enabled", "--no-legend"],
+        capture=True,
+    )
+    if not result.ok:
+        return None
+    units = []
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if parts and parts[0] != exclude:
+            units.append(parts[0])
+    return units
+
+
+def _execute_service_disable(recorded: dict[str, object]) -> str:
+    """Disable+stop watchcommit, and restore linger unless other units need it."""
+    if not have("systemctl"):
+        return "unresolved: systemd --user unavailable"
+    if not run_command(
+        ["systemctl", "--user", "disable", "--now", _WATCHCOMMIT_SERVICE_KEY]
+    ).ok:
+        return "unresolved: systemctl --user disable --now failed"
+
+    if recorded.get("linger") is False:
+        others = _other_enabled_user_units(exclude=_WATCHCOMMIT_SERVICE_KEY)
+        if others is None:
+            return "unresolved: could not check for other enabled systemd --user units"
+        if others:
+            return (
+                "unresolved: linger left enabled — other systemd --user units "
+                f"depend on it ({', '.join(others)})"
+            )
+        if not run_command(
+            ["loginctl", "disable-linger", _current_user()], capture=True
+        ).ok:
+            return "unresolved: loginctl disable-linger failed"
+    return "ok"
+
+
+def execute_service_phase(
+    ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger
+) -> None:
+    """Disable+stop the owned watchcommit service, restoring linger if safe."""
+    key = depart.service_key("systemd", "watchcommit")
+    if key in ledger.completed_keys():
+        return
+    recorded = baseline.value_for(key)
+    if recorded is None:
+        return  # never captured (e.g. a work-profile install) — nothing to check
+    c = depart.classify_service(recorded, _capture_live_watchcommit_service(ctx))
+    if c.bucket != depart.BUCKET_OWNED:
+        return
+    ledger.record(
+        key, c.action or depart.ACTION_DISABLE, _execute_service_disable(recorded or {})
+    )
+
+
+def execute_file_symlink_phase(
+    ctx: Context,
+    baseline: depart.Baseline,
+    report: dict[str, depart.Classification],
+    ledger: depart.DepartureLedger,
+) -> None:
+    """Execute every owned ``file:``/``symlink:`` action, in pinned order.
+
+    Symlink removals run before same-path file restores — the identical
+    problem ``do_rollback``'s ``restored_dests`` ordering already solves —
+    so a paired restore never finds its own soon-to-be-removed symlink
+    still occupying the path.
+    """
+    done = ledger.completed_keys()
+    owned = {
+        key: c
+        for key, c in report.items()
+        if c.bucket == depart.BUCKET_OWNED
+        and depart.key_type(key) in ("file", "symlink")
+        and key not in done
+    }
+
+    for key in sorted(owned):
+        c = owned[key]
+        if depart.key_type(key) != "symlink" or c.action != depart.ACTION_REMOVE:
+            continue
+        path = Path(key.partition(":")[2])
+        ledger.record(key, c.action, _execute_remove_symlink(path))
+
+    for key in sorted(owned):
+        c = owned[key]
+        if depart.key_type(key) != "file":
+            continue
+        path = Path(key.partition(":")[2])
+        if c.action == depart.ACTION_REMOVE:
+            ledger.record(key, c.action, _execute_remove_file(path))
+            continue
+        recorded = baseline.value_for(key) or {}
+        paired_symlink = report.get(depart.symlink_key(path))
+        expect_absent = (
+            paired_symlink is not None
+            and paired_symlink.bucket == depart.BUCKET_OWNED
+            and paired_symlink.action == depart.ACTION_REMOVE
+        )
+        outcome = _execute_restore(ctx, path, recorded, expect_absent=expect_absent)
+        if outcome == "ok":
+            _maybe_consume_bak(path, baseline)
+        ledger.record(key, c.action or "restore", outcome)
+
+
+def _wholesale_removal_directories(ctx: Context) -> set[Path]:
+    """Directories removed wholesale (bypassing the empty-only rule) when owned.
+
+    The Neovim fallback prefix and Nerd Font directory (tree-manifest
+    artifacts) plus the three shared Neovim state/cache dirs — matching
+    Implementation Sequence step 4's named exceptions to the generic
+    empty-only ``directory:`` removal rule.
+    """
+    wholesale = {
+        ctx.home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont",
+        ctx.home / ".local" / "opt" / "neovim",
+    }
+    wholesale.update(ctx.home.joinpath(*parts) for parts in depart.SHARED_NEOVIM_DIRS)
+    return wholesale
+
+
+def _execute_remove_directory(path: Path, *, wholesale: bool) -> str:
+    try:
+        if path.is_symlink() or not path.is_dir():
+            return "ok: already absent"
+        if wholesale:
+            shutil.rmtree(path)
+            return "ok"
+        if any(path.iterdir()):
+            return "unresolved: directory not empty"
+        path.rmdir()
+    except OSError as exc:
+        return f"unresolved: {exc}"
+    return "ok"
+
+
+def execute_directory_phase(
+    ctx: Context,
+    report: dict[str, depart.Classification],
+    ledger: depart.DepartureLedger,
+) -> None:
+    """Execute every owned ``directory:`` action, deepest-path-first.
+
+    Deepest-first so a parent directory is only empty-checked after its own
+    contents have already been processed this same run.
+    """
+    done = ledger.completed_keys()
+    wholesale_dirs = _wholesale_removal_directories(ctx)
+    owned_dirs = [
+        key
+        for key, c in report.items()
+        if c.bucket == depart.BUCKET_OWNED
+        and depart.key_type(key) == "directory"
+        and c.action == depart.ACTION_REMOVE
+        and key not in done
+    ]
+
+    def _depth(key: str) -> int:
+        return len(Path(key.partition(":")[2]).parts)
+
+    for key in sorted(owned_dirs, key=_depth, reverse=True):
+        path = Path(key.partition(":")[2])
+        outcome = _execute_remove_directory(path, wholesale=path in wholesale_dirs)
+        ledger.record(key, depart.ACTION_REMOVE, outcome)
+
+
+def execute_runtime_phase(
+    ctx: Context,
+    report: dict[str, depart.Classification],
+    ledger: depart.DepartureLedger,
+) -> None:
+    """Remove the NVM root wholesale, if owned and not already done."""
+    key = depart.runtime_key(ctx.home / ".nvm")
+    if key in ledger.completed_keys():
+        return
+    c = report.get(key)
+    if c is None or c.bucket != depart.BUCKET_OWNED or c.action != depart.ACTION_REMOVE:
+        return
+    outcome = _execute_remove_directory(ctx.home / ".nvm", wholesale=True)
+    ledger.record(key, depart.ACTION_REMOVE, outcome)
+
+
+_REMOVAL_COMMANDS: dict[str, Callable[[str], list[str]]] = {
+    "apt": depart.apt_remove_command,
+    "dnf": depart.dnf_remove_command,
+    "npm": depart.npm_uninstall_command,
+    "uv-tool": depart.uv_tool_uninstall_command,
+}
+_RDEPENDS_COMMANDS: dict[str, Callable[[str], list[str]]] = {
+    "apt": depart.apt_rdepends_command,
+    "dnf": depart.dnf_whatrequires_command,
+}
+_DOWNGRADE_COMMANDS: dict[str, Callable[[str, str], list[str]]] = {
+    "apt": depart.apt_downgrade_command,
+    "dnf": depart.dnf_downgrade_command,
+}
+
+
+def live_package_snapshots(
+    baseline: depart.Baseline,
+) -> dict[str, dict[str, str] | None]:
+    """Fresh probe results for every manager appearing in recorded transactions."""
+    managers = {t.get("manager") for t in baseline.transactions if t.get("manager")}
+    return {str(m): _capture_package_snapshot(str(m)) for m in managers}
+
+
+def _execute_package_removal(manager: str, name: str) -> str:
+    builder = _REMOVAL_COMMANDS.get(manager)
+    if builder is None:
+        return f"unresolved: no removal command for manager {manager!r}"
+    if run_command(builder(name)).ok:
+        return "ok"
+    return f"unresolved: {manager} removal failed for {name}"
+
+
+def _execute_dependency_removal(manager: str, name: str) -> str:
+    """Remove an introduced dependency, gated on an explicitly-empty rdepends probe.
+
+    Never a broad autoremove — only ever this one named package, and only
+    once its own probe proves nothing else installed still depends on it.
+    """
+    probe_builder = _RDEPENDS_COMMANDS.get(manager)
+    if probe_builder is None:
+        return f"unresolved: no reverse-dependency probe for manager {manager!r}"
+    result = run_command(probe_builder(name), capture=True)
+    verdict = depart.classify_rdepends_result(result.ok, result.stdout)
+    if verdict != "removable":
+        return f"unresolved: reverse-dependency probe {verdict}"
+    return _execute_package_removal(manager, name)
+
+
+def _execute_downgrade(baseline: depart.Baseline, manager: str, name: str) -> str:
+    """Try each downgrade candidate in order (earliest first, per the ladder).
+
+    Returns ``"halt: ..."`` only for the one named exception to this
+    installer's general no-abort convention: a downgrade command that ran
+    and left the package manager's own reported state different from both
+    the pre-attempt and target versions — state left genuinely uncertain
+    mid-operation, per the plan's "changed-state-then-failed" rule.
+    """
+    candidates = depart.downgrade_candidates(baseline, manager, name)
+    builder = _DOWNGRADE_COMMANDS.get(manager)
+    if not candidates or builder is None:
+        return "unresolved: no recorded downgrade target for this package"
+    pre = _capture_package_snapshot(manager)
+    for version in candidates:
+        if run_command(builder(name, version)).ok:
+            return "ok"
+        post = _capture_package_snapshot(manager)
+        if (
+            pre is not None
+            and post is not None
+            and post.get(name) != pre.get(name)
+            and post.get(name) != version
+        ):
+            return "halt: changed-state-then-failed downgrade"
+        pre = post
+    return "unresolved: downgrade ladder exhausted, no safe version installed"
+
+
+def execute_package_phase(
+    ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger
+) -> bool:
+    """Remove/downgrade owned packages, reverse transactions order.
+
+    Returns False only when a changed-state-then-failed downgrade halted
+    the phase — callers must skip the subsequent runtime/shared-state
+    phase too when this happens, per the plan's explicit exception to the
+    general no-abort/report-skips convention.
+    """
+    done = ledger.completed_keys()
+    pending_managers = {
+        depart.transaction_from_dict(t).manager
+        for t in baseline.transactions
+        if any(
+            depart.package_key(t.get("manager", ""), name) not in done
+            for name in (
+                *depart.transaction_from_dict(t).requested,
+                *depart.transaction_from_dict(t).introduced(),
+            )
+        )
+    }
+    snapshots = {m: _capture_package_snapshot(m) for m in pending_managers}
+    for c in depart.classify_package_transactions(baseline, snapshots):
+        if c.key in done or c.bucket != depart.BUCKET_OWNED:
+            continue
+        if c.action == depart.ACTION_DOWNGRADE:
+            outcome = _execute_downgrade(baseline, c.manager, c.name)
+            ledger.record(c.key, c.action, outcome)
+            if outcome.startswith("halt:"):
+                return False
+        elif c.reason == "introduced as a dependency by this transaction":
+            ledger.record(
+                c.key, c.action, _execute_dependency_removal(c.manager, c.name)
+            )
+        else:
+            ledger.record(c.key, c.action, _execute_package_removal(c.manager, c.name))
+    return True
+
+
+def execute_departure(
+    ctx: Context,
+    baseline: depart.Baseline,
+    report: dict[str, depart.Classification],
+) -> depart.DepartureLedger:
+    """Perform every safe ``owned`` action, retry-safe via the departure ledger.
+
+    Order: services stop/disable first, then file/symlink restore-or-remove,
+    then directories deepest-first, then packages in reverse transaction
+    order, then the NVM runtime last. A changed-state-then-failed downgrade
+    halts the package phase and skips the runtime phase too.
+    """
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
+    execute_service_phase(ctx, baseline, ledger)
+    execute_file_symlink_phase(ctx, baseline, report, ledger)
+    execute_directory_phase(ctx, report, ledger)
+    if execute_package_phase(ctx, baseline, ledger):
+        execute_runtime_phase(ctx, report, ledger)
+    return ledger
+
+
+def _finalize_departure_state(ctx: Context) -> None:
+    """After a fully successful departure: release the lock and delete state.
+
+    Deletes baseline snapshots, ``baseline.json``, ``history.jsonl``,
+    ``departure.jsonl``, the profile marker, and the state directory itself
+    if it's now empty. Only called when zero unresolved/drifted items
+    remain — a partial departure retains everything for a retry.
+
+    Also makes a best-effort (non-ledger, never-blocking) sweep of the
+    state directory's own now-possibly-empty ancestors — ``~/.local/state``
+    and ``~/.local`` — since the generic directory phase deliberately never
+    touches them (see ``_is_state_dir_or_its_ancestor``) precisely because
+    their emptiness could only ever be known *after* this cleanup runs.
+    """
+    depart.release_departure_lock(ctx.state_dir)
+    for path in _departure_state_paths(ctx.state_dir):
+        path.unlink(missing_ok=True)
+    ctx.manifest.path.unlink(missing_ok=True)
+    ctx.profile_marker.unlink(missing_ok=True)
+    if ctx.state_dir.is_dir() and not any(ctx.state_dir.iterdir()):
+        ctx.state_dir.rmdir()
+
+    ancestor = ctx.state_dir.parent
+    while ancestor != ctx.home and ctx.home in ancestor.parents:
+        try:
+            if not ancestor.is_dir() or any(ancestor.iterdir()):
+                break
+            ancestor.rmdir()
+        except OSError:
+            break
+        ancestor = ancestor.parent
+
+
+def do_depart(ctx: Context) -> int:
+    """Preview and execute a pristine-state departure.
+
+    Implements the zero-evidence refusal, the four-bucket preflight
+    report, the confirmation/exit-code contract, retryable execution via
+    the departure ledger, and advisory-lock acquisition/release from
+    Implementation Sequence steps 3 and 4. The classifier is deliberately
+    conservative (see ``depart.classify_ownership_key`` and its two named
+    reclassification overrides) — anything it can't classify with
+    confidence lands in ``unresolved`` rather than being guessed at, so
+    this only ever mutates what preflight already reported as ``owned``.
+    Package removal and service/linger handling are not implemented yet
+    (see ``execute_departure``'s docstring).
+    """
+    baseline_file = depart.baseline_path(ctx.state_dir)
+    if not baseline_file.is_file():
+        print(
+            PALETTE.error(f"no baseline at {baseline_file} — nothing to depart from"),
+            file=sys.stderr,
+        )
+        print(
+            PALETTE.error(
+                "for a guaranteed pristine reset, see the WSL unregister/recreate "
+                "instructions in README.md"
+            ),
+            file=sys.stderr,
+        )
+        return 2
+
+    report = build_preflight_report(ctx)
+    if report is None:
+        print(
+            PALETTE.error(f"no baseline at {baseline_file} — nothing to depart from"),
+            file=sys.stderr,
+        )
+        return 2
+    package_report = build_package_preflight(ctx) or []
+
+    _print_preflight_report(report, package_report)
+
+    if ctx.opts.dry_run:
+        print(PALETTE.header("Dry run complete — nothing was changed."))
+        return 0
+
+    if not ctx.opts.yes:
+        if not sys.stdin.isatty():
+            print(
+                PALETTE.error("refusing a non-interactive real run without --yes"),
+                file=sys.stderr,
+            )
+            return 2
+        print()
+        print("Type DEPART to proceed: ", end="", flush=True)
+        if _read_confirmation_token() != "DEPART":
+            print(
+                PALETTE.error("confirmation not received — aborting"), file=sys.stderr
+            )
+            return 2
+
+    acquired, stale = depart.acquire_departure_lock(ctx.state_dir)
+    if not acquired:
+        print(
+            PALETTE.error("another --depart is already running on this machine"),
+            file=sys.stderr,
+        )
+        return 2
+    if stale is not None:
+        print(
+            PALETTE.warn(
+                f"reclaimed a stale departure lock (was held by pid {stale.pid})"
+            )
+        )
+
+    try:
+        baseline = depart.load_baseline(ctx.state_dir)
+        if baseline is None:
+            print(
+                PALETTE.error(
+                    f"no baseline at {baseline_file} — nothing to depart from"
+                ),
+                file=sys.stderr,
+            )
+            return 2
+
+        ledger = execute_departure(ctx, baseline, report)
+        failed = [
+            e
+            for e in ledger.entries()
+            if str(e.get("outcome", "")).startswith(("unresolved", "halt"))
+        ]
+        unresolved_keys = [
+            key
+            for key, c in report.items()
+            if c.bucket in (depart.BUCKET_UNRESOLVED, depart.BUCKET_DRIFTED)
+        ] + [
+            c.key
+            for c in package_report
+            if c.bucket in (depart.BUCKET_UNRESOLVED, depart.BUCKET_DRIFTED)
+        ]
+
+        if not failed and not unresolved_keys:
+            _finalize_departure_state(ctx)
+            print(
+                PALETTE.header("Departure complete — no installer footprint remains.")
+            )
+            return 0
+
+        print(
+            PALETTE.warn(
+                f"⚠ departure incomplete — {len(failed) + len(unresolved_keys)} "
+                "item(s) remain unresolved (see the preflight report above); "
+                "re-run --depart to retry"
+            )
+        )
+        return 1
+    finally:
+        depart.release_departure_lock(ctx.state_dir)
+
+
 # ── entry point ───────────────────────────────────────────────────────────────
 
 
 def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
     """Run every install step in order and return the process exit status."""
+    capture_departure_baseline(ctx, specs)
     ctx.manifest.init_run(ctx.opts.profile)
     if ctx.opts.dry_run:
         _header(f"==> DRY RUN — no changes will be made. Profile: {ctx.opts.profile}")
@@ -2407,11 +3521,15 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
         import_rectangle_prefs(ctx)
         set_caps_lock_to_escape(ctx)
         load_watchcommit_agent(ctx)
+    capture_service_baseline(ctx)
     enable_watchcommit_service(ctx)
 
     install_vim_plug(ctx)
     bootstrap_neovim(ctx)
     write_profile_marker(ctx)
+
+    if ctx.departure_baseline is not None:
+        depart.save_baseline(ctx.state_dir, ctx.departure_baseline)
 
     print_summary(ctx, settings_drift, opencode_drift, vscode_drift)
     return 1 if ctx.reporter.skipped else 0
@@ -2432,6 +3550,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if opts.rollback:
         return do_rollback(ctx)
+
+    if opts.depart:
+        return do_depart(ctx)
 
     if work_guard_blocks(ctx):
         print(
