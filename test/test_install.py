@@ -12,6 +12,7 @@ still owns the slow tier: real package managers, real service enablement.
 Requires Python 3.12+.
 """
 
+import io
 import json
 import sys
 from pathlib import Path
@@ -60,6 +61,8 @@ def make_ctx(
     wipe=False,
     no_nvim_pin=False,
     reseed=False,
+    depart=False,
+    yes=False,
     system="Linux",
     is_wsl=False,
     dotfiles=REPO_ROOT,
@@ -73,6 +76,8 @@ def make_ctx(
         wipe=wipe,
         no_nvim_pin=no_nvim_pin,
         reseed=reseed,
+        depart=depart,
+        yes=yes,
     )
     state_dir = home / ".local" / "state" / "dotfiles"
     return install.Context(
@@ -166,6 +171,18 @@ def parse_error(argv, capsys):
         # parse_args ordering fix (the --wipe-without-rollback check must
         # fire before the missing-harness check, not after).
         (["--wipe"], "--wipe can only be used with --rollback"),
+        (["--depart", "--harness=claude"], "--depart must be used alone"),
+        (["--depart", "--rollback"], "--depart must be used alone"),
+        (["--depart", "--wipe"], "--depart must be used alone"),
+        (["--depart", "--profile=work"], "--depart must be used alone"),
+        (["--depart", "--force"], "--depart must be used alone"),
+        (["--depart", "--reseed"], "--depart must be used alone"),
+        (["--depart", "--no-nvim-pin"], "--depart must be used alone"),
+        # --depart --rollback names the --depart conflict, not rollback's —
+        # the --depart-alone check runs first.
+        (["--rollback", "--depart"], "--depart must be used alone"),
+        (["--yes"], "--yes can only be used with --depart"),
+        (["--yes", "--harness=claude"], "--yes can only be used with --depart"),
     ],
 )
 def test_argument_errors_exit_2(argv, expected, capsys):
@@ -196,6 +213,25 @@ def test_repeated_harness_flags_accumulate():
 def test_comma_separated_harnesses():
     opts = install.parse_args(["--harness=claude,opencode,agy"])
     assert opts.harnesses == ("claude", "opencode", "agy")
+
+
+def test_depart_alone_parses():
+    opts = install.parse_args(["--depart"])
+    assert opts.depart is True
+    assert opts.yes is False
+
+
+def test_depart_with_yes_and_dry_run_parses():
+    opts = install.parse_args(["--depart", "--yes", "--dry-run"])
+    assert opts.depart is True
+    assert opts.yes is True
+    assert opts.dry_run is True
+
+
+def test_usage_documents_depart(capsys):
+    with pytest.raises(SystemExit):
+        install.parse_args(["--help"])
+    assert "--depart" in capsys.readouterr().out
 
 
 def test_duplicate_harness_is_collapsed():
@@ -2049,3 +2085,124 @@ def test_rollback_wipe_dry_run_preview_excludes_departure_state(
 
     assert code == 0
     assert f"would remove empty state directory {ctx.state_dir}" in out
+
+
+# ── do_depart: zero-evidence refusal, preflight, confirmation ──────────────
+
+
+class _FakeStdin:
+    """A minimal stand-in for sys.stdin: isatty() plus one readline()."""
+
+    def __init__(self, isatty, text=""):
+        self._isatty = isatty
+        self._lines = io.StringIO(text)
+
+    def isatty(self):
+        return self._isatty
+
+    def readline(self):
+        return self._lines.readline()
+
+
+def test_do_depart_zero_evidence_refusal_exits_2(home, capsys):
+    code = install.do_depart(make_ctx(home))
+    assert code == 2
+    assert "no baseline" in capsys.readouterr().err
+
+
+def test_do_depart_dry_run_prints_preflight_and_exits_0(
+    home, links, offline_install, capsys
+):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    code = install.do_depart(make_ctx(home, dry_run=True))
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "Departure preflight" in out
+    assert "owned" in out
+
+
+def test_do_depart_dry_run_never_touches_stdin(
+    home, links, offline_install, monkeypatch
+):
+    """--dry-run always exits 0 regardless of TTY status and never prompts."""
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    def _boom():
+        raise AssertionError("dry-run must not check stdin")
+
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(False))
+    monkeypatch.setattr(sys.stdin, "isatty", _boom)
+    code = install.do_depart(make_ctx(home, dry_run=True))
+    assert code == 0
+
+
+def test_do_depart_non_tty_real_run_without_yes_exits_2(
+    home, links, offline_install, monkeypatch, capsys
+):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(False))
+    code = install.do_depart(make_ctx(home))
+    assert code == 2
+    assert "non-interactive" in capsys.readouterr().err
+
+
+def test_do_depart_yes_bypasses_prompt_entirely(
+    home, links, offline_install, monkeypatch, capsys
+):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    def _boom():
+        raise AssertionError("--yes must skip the confirmation prompt")
+
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(False))
+    monkeypatch.setattr(sys.stdin, "isatty", _boom)
+    code = install.do_depart(make_ctx(home, yes=True))
+    out = capsys.readouterr().out
+    assert code == 1  # cleanup engine (step 4) not implemented yet
+    assert "not yet" in out
+
+
+def test_do_depart_correct_token_proceeds_past_confirmation(
+    home, links, offline_install, monkeypatch, capsys
+):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(True, "DEPART\n"))
+    code = install.do_depart(make_ctx(home))
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "not yet" in out
+
+
+@pytest.mark.parametrize("token", ["nope\n", " DEPART \n", "depart\n", ""])
+def test_do_depart_bad_token_exits_2(
+    home, links, offline_install, monkeypatch, capsys, token
+):
+    """Wrong token, surrounding whitespace, wrong case, or EOF all refuse."""
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(True, token))
+    code = install.do_depart(make_ctx(home))
+    assert code == 2
+    assert "confirmation not received" in capsys.readouterr().err
+
+
+def test_do_depart_token_without_trailing_newline_still_matches(
+    home, links, offline_install, monkeypatch, capsys
+):
+    """Nothing to strip when input has no trailing LF at all — still a match."""
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(True, "DEPART"))
+    code = install.do_depart(make_ctx(home))
+    assert code == 1

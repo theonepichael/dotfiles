@@ -116,6 +116,7 @@ CAPS_LOCK_TO_ESCAPE = [
 
 USAGE = """\
 usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--no-nvim-pin] [--reseed]
+       ./install.sh --depart [--yes] [--dry-run]
 
   --harness   required unless --rollback. Comma-separated, at least one of:
               claude, copilot, opencode, agy. No default — every run must
@@ -179,6 +180,20 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=per
               <name>.bak once, the first time a given file is reseeded;
               later reseeds of the same file reuse that backup rather than
               overwriting it again. Cannot be combined with --rollback.
+  --depart    remove or restore everything a past install run (future
+              installs only — this reasons entirely from a baseline
+              recorded at install time, not from history.jsonl) owns on
+              this machine: files, symlinks, packages, runtimes, and
+              services. Must be used alone — the only other flags allowed
+              alongside it are --yes and --dry-run. Refuses with no baseline
+              recorded (exit 2). Prints a full preflight report and, on a
+              real (non-dry-run) run, requires typing the exact token
+              DEPART to proceed unless --yes is passed. This is
+              local-footprint cleanup, not forensic erasure — see README.md
+              for the separate, genuinely destructive WSL unregister/
+              recreate path for a guaranteed pristine reset.
+  --yes       skip --depart's interactive confirmation prompt. Only valid
+              alongside --depart.
 
 Examples:
   ./install.sh --harness=claude
@@ -422,6 +437,8 @@ class Options:
     wipe: bool = False
     no_nvim_pin: bool = False
     reseed: bool = False
+    depart: bool = False
+    yes: bool = False
 
 
 @dataclass
@@ -544,6 +561,8 @@ def parse_args(argv: Sequence[str]) -> Options:
     parser.add_argument("--dry-run", dest="dry_run", action="store_true")
     parser.add_argument("--no-nvim-pin", dest="no_nvim_pin", action="store_true")
     parser.add_argument("--reseed", action="store_true")
+    parser.add_argument("--depart", action="store_true")
+    parser.add_argument("--yes", action="store_true")
     parser.add_argument("-h", "--help", dest="help", action="store_true")
 
     args, extras = parser.parse_known_args(list(argv))
@@ -585,6 +604,26 @@ def parse_args(argv: Sequence[str]) -> Options:
     if args.profile == "work" and "opencode" in harnesses:
         _fail("--harness=opencode is not allowed with --profile=work")
 
+    # --depart is a standalone, undo-everything action, checked first (ahead
+    # of --rollback's own alone-check below) so `--rollback --depart` names
+    # the --depart conflict, not the rollback one. Written out literally
+    # rather than copied from --rollback's check — --wipe and --no-nvim-pin
+    # are deliberately included here for reasons specific to --depart that
+    # don't apply to --rollback.
+    if args.depart and (
+        args.rollback
+        or args.wipe
+        or harness_set
+        or args.profile != "personal"
+        or args.force
+        or args.reseed
+        or args.no_nvim_pin
+    ):
+        _fail("--depart must be used alone, with no other flags")
+
+    if args.yes and not args.depart:
+        _fail("--yes can only be used with --depart")
+
     # --rollback is an undo-only action. Rejecting --profile/--force
     # alongside it (not just --harness) keeps them from being silently
     # ignored, which would mislead someone into thinking they rolled back
@@ -597,7 +636,7 @@ def parse_args(argv: Sequence[str]) -> Options:
     if args.wipe and not args.rollback:
         _fail("--wipe can only be used with --rollback")
 
-    if not args.rollback and not harness_set:
+    if not args.rollback and not args.depart and not harness_set:
         _fail(
             "no --harness specified — pass at least one of: "
             "claude, copilot, opencode, agy",
@@ -620,6 +659,8 @@ def parse_args(argv: Sequence[str]) -> Options:
         wipe=args.wipe,
         no_nvim_pin=args.no_nvim_pin,
         reseed=args.reseed,
+        depart=args.depart,
+        yes=args.yes,
     )
 
 
@@ -2508,6 +2549,206 @@ def print_summary(
         print("  - Restart your shell to pick up the new config")
 
 
+# ── departure preflight and CLI ─────────────────────────────────────────────
+
+
+def _recapture_departure_live_state(
+    ctx: Context, specs: Sequence[LinkSpec]
+) -> dict[str, dict[str, object]]:
+    """Re-capture every tracked ownership key's *current* value, read-only.
+
+    Mirrors :func:`capture_departure_baseline` key-for-key (same paths, same
+    key set) but never writes a blob or persists anything — this only
+    builds the "live" half of a preflight comparison.
+    """
+    records: dict[str, dict[str, object]] = {}
+
+    for rc_name in depart.RC_FILENAMES:
+        rc_path = ctx.home / rc_name
+        records[depart.file_key(rc_path)] = depart.capture_file(rc_path)
+
+    seen_dirs: set[Path] = set()
+
+    def _track_ancestors(path: Path) -> None:
+        for ancestor in depart.ancestor_directories(path, ctx.home):
+            if ancestor not in seen_dirs:
+                seen_dirs.add(ancestor)
+                records[depart.directory_key(ancestor)] = depart.capture_directory(
+                    ancestor
+                )
+
+    for dest in _departure_owned_destinations(ctx, specs):
+        records[depart.file_key(dest)] = depart.capture_file(dest)
+        records[depart.symlink_key(dest)] = depart.capture_symlink(dest)
+        bak = dest.with_name(dest.name + ".bak")
+        records[depart.file_key(bak)] = depart.capture_file(bak)
+        _track_ancestors(dest)
+
+    for path in (
+        ctx.home / ".local" / "bin" / "uv",
+        ctx.home / ".local" / "bin" / "oh-my-posh",
+        ctx.home / ".vim" / "autoload" / "plug.vim",
+        ctx.profile_marker,
+    ):
+        records[depart.file_key(path)] = depart.capture_file(path)
+        _track_ancestors(path)
+
+    for path in (
+        ctx.home / ".local" / "bin" / "bat",
+        ctx.home / ".local" / "bin" / "fd",
+    ):
+        records[depart.symlink_key(path)] = depart.capture_symlink(path)
+        _track_ancestors(path)
+
+    font_dir = ctx.home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont"
+    records[depart.directory_key(font_dir)] = depart.capture_tree_manifest(font_dir)
+    _track_ancestors(font_dir)
+
+    neovim_prefix = ctx.home / ".local" / "opt" / "neovim"
+    records[depart.directory_key(neovim_prefix)] = depart.capture_tree_manifest(
+        neovim_prefix
+    )
+    _track_ancestors(neovim_prefix)
+
+    for parts in depart.SHARED_NEOVIM_DIRS:
+        shared_dir = ctx.home.joinpath(*parts)
+        records[depart.directory_key(shared_dir)] = depart.capture_directory(shared_dir)
+
+    records[depart.runtime_key(ctx.home / ".nvm")] = depart.capture_runtime_nvm(
+        ctx.home
+    )
+
+    return records
+
+
+def build_preflight_report(
+    ctx: Context, specs: Sequence[LinkSpec]
+) -> dict[str, depart.Classification] | None:
+    """Classify every tracked ownership key, or None if there's no baseline."""
+    baseline = depart.load_baseline(ctx.state_dir)
+    if baseline is None:
+        return None
+    live = _recapture_departure_live_state(ctx, specs)
+    report: dict[str, depart.Classification] = {}
+    for key in sorted(baseline.all_keys()):
+        recorded = baseline.value_for(key)
+        live_value = live.get(key, {"state": depart.STATE_UNKNOWN})
+        report[key] = depart.classify_ownership_key(key, recorded, live_value)
+    return report
+
+
+def _print_preflight_report(report: dict[str, depart.Classification]) -> None:
+    """Print the full departure preflight, grouped by bucket."""
+    _header("==> Departure preflight")
+    for bucket in (
+        depart.BUCKET_OWNED,
+        depart.BUCKET_DRIFTED,
+        depart.BUCKET_UNRESOLVED,
+        depart.BUCKET_PRESERVED,
+    ):
+        keys = sorted(k for k, c in report.items() if c.bucket == bucket)
+        if not keys:
+            continue
+        print(PALETTE.header(f"  {bucket} ({len(keys)}):"))
+        for key in keys:
+            c = report[key]
+            action = f" [{c.action}]" if c.action else ""
+            line = f"    {key}{action} — {c.reason}"
+            if bucket == depart.BUCKET_UNRESOLVED or bucket == depart.BUCKET_DRIFTED:
+                print(PALETTE.warn(line))
+            else:
+                print(line)
+
+
+def _read_confirmation_token() -> str:
+    """Read one line from stdin, stripping exactly one trailing LF/CRLF.
+
+    Surrounding spaces/tabs are deliberately left in place — the caller
+    compares for an exact ``"DEPART"`` match, so ``" DEPART"`` or an EOF
+    (empty string) both correctly fail to match.
+    """
+    line = sys.stdin.readline()
+    if line.endswith("\r\n"):
+        return line[:-2]
+    if line.endswith("\n"):
+        return line[:-1]
+    return line
+
+
+def do_depart(ctx: Context) -> int:
+    """Preview — and, once Implementation Sequence step 4 lands, execute — a
+    pristine-state departure.
+
+    This increment implements the zero-evidence refusal, the four-bucket
+    preflight report, and the confirmation/exit-code contract from step 3.
+    The classifier is deliberately conservative (see
+    ``depart.classify_ownership_key``): only unambiguous cases land in
+    ``owned``, so a confirmed real run currently has nothing safe to act on
+    beyond what preflight already reports — the actual cleanup engine is
+    step 4 and is not implemented yet, so a confirmed run stops after
+    preflight without mutating anything.
+    """
+    baseline_file = depart.baseline_path(ctx.state_dir)
+    if not baseline_file.is_file():
+        print(
+            PALETTE.error(f"no baseline at {baseline_file} — nothing to depart from"),
+            file=sys.stderr,
+        )
+        print(
+            PALETTE.error(
+                "for a guaranteed pristine reset, see the WSL unregister/recreate "
+                "instructions in README.md"
+            ),
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        specs = load_links(ctx.dotfiles / "links.toml")
+    except ValueError as exc:
+        print(
+            PALETTE.error(f"could not read the symlink table: {exc}"), file=sys.stderr
+        )
+        return 2
+
+    report = build_preflight_report(ctx, specs)
+    if report is None:
+        print(
+            PALETTE.error(f"no baseline at {baseline_file} — nothing to depart from"),
+            file=sys.stderr,
+        )
+        return 2
+
+    _print_preflight_report(report)
+
+    if ctx.opts.dry_run:
+        print(PALETTE.header("Dry run complete — nothing was changed."))
+        return 0
+
+    if not ctx.opts.yes:
+        if not sys.stdin.isatty():
+            print(
+                PALETTE.error("refusing a non-interactive real run without --yes"),
+                file=sys.stderr,
+            )
+            return 2
+        print()
+        print("Type DEPART to proceed: ", end="", flush=True)
+        if _read_confirmation_token() != "DEPART":
+            print(
+                PALETTE.error("confirmation not received — aborting"), file=sys.stderr
+            )
+            return 2
+
+    print(
+        PALETTE.warn(
+            "Departure cleanup (Implementation Sequence step 4) is not yet "
+            "implemented — no changes were made."
+        )
+    )
+    return 1
+
+
 # ── entry point ───────────────────────────────────────────────────────────────
 
 
@@ -2563,6 +2804,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if opts.rollback:
         return do_rollback(ctx)
+
+    if opts.depart:
+        return do_depart(ctx)
 
     if work_guard_blocks(ctx):
         print(

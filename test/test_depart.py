@@ -392,3 +392,101 @@ def test_save_baseline_creates_state_dir_if_missing(tmp_path):
     state_dir = tmp_path / "does" / "not" / "exist"
     depart.save_baseline(state_dir, depart.Baseline())
     assert depart.baseline_path(state_dir).is_file()
+
+
+# ── preflight classification ─────────────────────────────────────────────
+
+ABSENT = {"state": "absent"}
+UNKNOWN = {"state": "unknown"}
+
+
+def _present_file(sha256="x", size=1):
+    return {"state": "present", "sha256": sha256, "size": size}
+
+
+def test_classify_no_baseline_record_is_unresolved():
+    c = depart.classify_ownership_key("file:/a", None, ABSENT)
+    assert c.bucket == "unresolved"
+    assert c.action is None
+
+
+def test_classify_unknown_baseline_is_unresolved():
+    c = depart.classify_ownership_key("file:/a", UNKNOWN, ABSENT)
+    assert c.bucket == "unresolved"
+
+
+def test_classify_unknown_live_is_unresolved():
+    c = depart.classify_ownership_key("file:/a", ABSENT, UNKNOWN)
+    assert c.bucket == "unresolved"
+
+
+def test_classify_absent_baseline_still_absent_is_preserved():
+    c = depart.classify_ownership_key("file:/a", ABSENT, ABSENT)
+    assert c.bucket == "preserved"
+    assert c.action is None
+
+
+def test_classify_absent_baseline_now_present_is_owned_remove():
+    c = depart.classify_ownership_key("file:/a", ABSENT, _present_file())
+    assert c.bucket == "owned"
+    assert c.action == "remove"
+
+
+def test_classify_present_baseline_unchanged_is_preserved():
+    recorded = _present_file()
+    live = _present_file()
+    c = depart.classify_ownership_key("file:/a", recorded, live)
+    assert c.bucket == "preserved"
+    assert c.action is None
+
+
+def test_classify_present_baseline_now_absent_is_drifted():
+    c = depart.classify_ownership_key("file:/a", _present_file(), ABSENT)
+    assert c.bucket == "drifted"
+    assert c.action is None
+
+
+def test_classify_present_baseline_content_changed_is_unresolved():
+    """Deliberately conservative: content changes aren't guessed at here (step 4's job)."""
+    recorded = _present_file(sha256="original")
+    live = _present_file(sha256="changed")
+    c = depart.classify_ownership_key("file:/a", recorded, live)
+    assert c.bucket == "unresolved"
+    assert c.action is None
+
+
+def test_classify_symlink_present_unchanged_is_preserved():
+    recorded = {"state": "present", "target": "/src/a"}
+    live = {"state": "present", "target": "/src/a"}
+    c = depart.classify_ownership_key("symlink:/a", recorded, live)
+    assert c.bucket == "preserved"
+
+
+def test_classify_symlink_retargeted_is_unresolved():
+    recorded = {"state": "present", "target": "/src/a"}
+    live = {"state": "present", "target": "/somewhere/else"}
+    c = depart.classify_ownership_key("symlink:/a", recorded, live)
+    assert c.bucket == "unresolved"
+
+
+def test_classify_tree_manifest_matches_is_preserved():
+    entries = {"file:bin/nvim": {"size": 1, "sha256": "x"}}
+    recorded = {"state": "present", "entries": entries}
+    live = {"state": "present", "entries": dict(entries)}
+    c = depart.classify_ownership_key("directory:/prefix", recorded, live)
+    assert c.bucket == "preserved"
+
+
+def test_classify_tree_manifest_absent_baseline_now_present_is_owned_remove():
+    entries = {"file:bin/nvim": {"size": 1, "sha256": "x"}}
+    live = {"state": "present", "entries": entries}
+    c = depart.classify_ownership_key("directory:/prefix", ABSENT, live)
+    assert c.bucket == "owned"
+    assert c.action == "remove"
+
+
+def test_classify_runtime_versions_order_independent():
+    recorded = {"state": "present", "versions": ["v18.0.0", "v20.0.0"]}
+    live = {"state": "present", "versions": ["v20.0.0", "v18.0.0"]}
+    c = depart.classify_ownership_key("runtime:/home/.nvm", recorded, live)
+    assert c.bucket == "preserved"

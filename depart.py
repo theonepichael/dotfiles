@@ -721,3 +721,89 @@ def downgrade_candidates(baseline: Baseline, manager: str, name: str) -> list[st
         if version not in candidates:
             candidates.append(version)
     return candidates
+
+
+# ── preflight classification ────────────────────────────────────────────
+#
+# Implementation Sequence step 3. Deliberately conservative: only the two
+# structurally unambiguous cases are ever classified `owned` here — a key
+# genuinely absent at baseline that now exists (safe to remove), and a key
+# whose live value is identical to its recorded baseline value (never
+# touched, `preserved`). Every other observed difference — an rc file with
+# appended content, a symlink-then-restore destination, a retargeted
+# symlink, a still-non-empty directory — is left `unresolved` rather than
+# guessed. Those per-category restore rules are step 4's job; a wrong guess
+# here would be a destructive-action bug, not a cosmetic one, so this
+# module does not attempt them ahead of that step landing.
+
+BUCKET_OWNED = "owned"
+BUCKET_PRESERVED = "preserved"
+BUCKET_DRIFTED = "drifted"
+BUCKET_UNRESOLVED = "unresolved"
+
+ACTION_REMOVE = "remove"
+ACTION_RESTORE = "restore"
+
+
+@dataclass(frozen=True)
+class Classification:
+    bucket: str
+    action: str | None
+    reason: str
+
+
+def _values_equal(a: dict[str, object], b: dict[str, object]) -> bool:
+    """Whether two capture records for the same key describe the same content."""
+    if a.get("state") != b.get("state"):
+        return False
+    if a.get("state") != STATE_PRESENT:
+        return True
+    if "sha256" in a or "sha256" in b:
+        return a.get("sha256") == b.get("sha256") and a.get("size") == b.get("size")
+    if "target" in a or "target" in b:
+        return a.get("target") == b.get("target")
+    if "entries" in a or "entries" in b:
+        return a.get("entries") == b.get("entries")
+    if "versions" in a or "versions" in b:
+        return set(a.get("versions", [])) == set(b.get("versions", []))  # type: ignore[arg-type]
+    return a == b
+
+
+def classify_ownership_key(
+    key: str, recorded: dict[str, object] | None, live: dict[str, object]
+) -> Classification:
+    """Classify one ownership key for the departure preflight report."""
+    if recorded is None:
+        return Classification(
+            BUCKET_UNRESOLVED, None, "no baseline record for this key"
+        )
+    if recorded.get("state") == STATE_UNKNOWN:
+        return Classification(
+            BUCKET_UNRESOLVED, None, "baseline capture failed for this key (unknown)"
+        )
+    if live.get("state") == STATE_UNKNOWN:
+        return Classification(
+            BUCKET_UNRESOLVED, None, "current state could not be read"
+        )
+
+    if recorded.get("state") == STATE_ABSENT:
+        if live.get("state") == STATE_ABSENT:
+            return Classification(BUCKET_PRESERVED, None, "never existed")
+        return Classification(
+            BUCKET_OWNED, ACTION_REMOVE, "absent at baseline, now present"
+        )
+
+    # recorded state is "present" from here on.
+    if _values_equal(recorded, live):
+        return Classification(BUCKET_PRESERVED, None, "unchanged since baseline")
+    if live.get("state") == STATE_ABSENT:
+        return Classification(
+            BUCKET_DRIFTED,
+            None,
+            "present at baseline, now missing — removed outside this installer",
+        )
+    return Classification(
+        BUCKET_UNRESOLVED,
+        None,
+        "changed since baseline — restore rule not yet implemented (step 4)",
+    )
