@@ -2007,7 +2007,7 @@ def cmd_recap(args: argparse.Namespace) -> None:
     Bare: prints the cache if fresh *and* its board fingerprint still
     matches the live board, otherwise blocks on the regen lock and
     regenerates (double-checking freshness after acquiring, in case an
-    in-flight detached child just refreshed it). ``--force`` bypasses the
+    in-flight detached child just refreshed it). ``--refresh`` bypasses the
     freshness check entirely and always regenerates.
     """
 
@@ -2022,7 +2022,7 @@ def cmd_recap(args: argparse.Namespace) -> None:
         return age is not None and age <= RECAP_TTL_SECONDS
 
     cache = _load_recap_cache()
-    if not args.force and _fresh_enough(cache):
+    if not args.refresh and _fresh_enough(cache):
         _print_recap(cast(dict[str, object], cache))
         return
 
@@ -2032,7 +2032,7 @@ def cmd_recap(args: argparse.Namespace) -> None:
         # refreshed the cache while this call waited on the lock -- reuse
         # it instead of burning a redundant backend call.
         cache = _load_recap_cache()
-        if not args.force and _fresh_enough(cache):
+        if not args.refresh and _fresh_enough(cache):
             _print_recap(cast(dict[str, object], cache))
             return
         _backend, text = _run_recap_regen(backend_override=args.backend)
@@ -3299,9 +3299,9 @@ def main() -> None:
 
     p = sub.add_parser("recap", help="print a friendly prose recap of recent activity")
     p.add_argument(
-        "--force",
+        "--refresh",
         action="store_true",
-        help="bypass the freshness cache, regenerate now",
+        help="bypass the freshness cache and regenerate the recap now",
     )
     p.add_argument(
         "--backend",
