@@ -285,8 +285,8 @@ check "personal opencode.jsonc has no xargs (allowlist bypass removed everywhere
   bash -c '! grep -q "xargs" ~/.config/opencode/opencode.jsonc'
 check "personal opencode.jsonc has no awk (allowlist bypass removed everywhere)" \
   bash -c '! grep -q "\"awk \*\"" ~/.config/opencode/opencode.jsonc'
-check "personal opencode.jsonc keeps curl (personal convenience)" \
-  bash -c 'grep -q "curl \*" ~/.config/opencode/opencode.jsonc'
+check "personal opencode.jsonc does not allow curl (network calls need approval)" \
+  bash -c '! grep -q "\"curl \*\"" ~/.config/opencode/opencode.jsonc'
 # backlog-item port wiring. Explicit checks matter here: install.sh exits 0
 # OR 1 (ok-with-skips) on success, so a typo'd src in links.toml would
 # otherwise surface only as a silent SKIPPED line, not a failed scenario.
