@@ -20,3 +20,4 @@ them, only points at what's specific to this repo.
   `--check` (exit 1 if stale — this is what the test suite asserts).
 - **User-facing command/behavior differences across harnesses** (Claude
   Code, Copilot, opencode, agy) — `README.md`.
+- **Changelog of breaking/internal tooling changes** — `CHANGELOG.md`.
