@@ -119,7 +119,10 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=per
        ./install.sh --depart [--yes] [--dry-run]
        ./install.sh --check-links [--harness=...] [--profile=personal|work]
 
-  --harness   required unless --rollback. Comma-separated, at least one of:
+  --harness   required for an install run; not needed by the undo/audit
+              actions (--rollback, --depart, --check-links), though
+              --check-links accepts it to scope which entries apply.
+              Comma-separated, at least one of:
               claude, copilot, opencode, agy. No default — every run must
               state its intent explicitly. Purely additive: omitting a harness
               you previously selected does NOT uninstall or clean it up,
