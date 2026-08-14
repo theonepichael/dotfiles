@@ -550,6 +550,42 @@ class AssetFilterTests(unittest.TestCase):
         self.assertTrue(gi.is_generated_artifact("claude/.DS_Store"))
         self.assertFalse(gi.is_generated_artifact("copilot/aliases.zsh"))
 
+    def test_untracked_files_are_excluded_from_the_asset_table(self) -> None:
+        """Regression: an untracked file in one checkout must not reach the doc.
+
+        A stray ``claude/settings.json.bak.<stamp>`` in one working copy once
+        got baked into the committed inventory, so ``--check`` failed in every
+        other clean checkout and in CI. The asset walk hits the filesystem, so
+        the tracked-file set is what keeps output checkout-independent.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "claude").mkdir()
+            (root / "claude" / "real.md").write_text("tracked\n", encoding="utf-8")
+            (root / "claude" / "settings.json.bak.20260806").write_text(
+                "untracked\n", encoding="utf-8"
+            )
+
+            tracked = {"claude/real.md"}
+            rendered = "\n".join(gi.render_assets(root, {}, tracked))
+            self.assertIn("claude/real.md", rendered)
+            self.assertNotIn("settings.json.bak", rendered)
+
+            # None (git unavailable) must keep the old unfiltered behavior
+            # rather than silently emptying the table.
+            unfiltered = "\n".join(gi.render_assets(root, {}, None))
+            self.assertIn("claude/real.md", unfiltered)
+            self.assertIn("settings.json.bak", unfiltered)
+
+    def test_tracked_files_returns_none_outside_a_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(gi.tracked_files(Path(tmp)))
+
+    def test_tracked_files_lists_this_repo(self) -> None:
+        tracked = gi.tracked_files(REPO_ROOT)
+        assert tracked is not None
+        self.assertIn("claude/scripts/gen_interfaces.py", tracked)
+
 
 class RealSourceTests(unittest.TestCase):
     """Parse the actual scripts — the drift these tests exist to catch."""

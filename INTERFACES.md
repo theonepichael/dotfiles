@@ -288,7 +288,8 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `render_module(module: ModuleInterface) -> list[str]` — Render one module's full section.
   - `render_command_matrix(repo_root: Path, links: LinkTable) -> list[str]` — Render the per-harness skill/command parity matrix from frontmatter.
   - `is_generated_artifact(relpath: str) -> bool` — Report whether a path is build output or a dotfile rather than a source.
-  - `render_assets(repo_root: Path, links: LinkTable) -> list[str]` — Render the non-Python, non-skill harness assets and where they install.
+  - `tracked_files(repo_root: Path) -> set[str] | None` — Return every git-tracked path under ``repo_root``, or None if unavailable.
+  - `render_assets(repo_root: Path, links: LinkTable, tracked: set[str] | None = None) -> list[str]` — Render the non-Python, non-skill harness assets and where they install.
   - `build_document(repo_root: Path) -> str` — Build the complete INTERFACES.md text for ``repo_root``.
   - `anchor(relpath: str) -> str` — Return the GitHub heading anchor for a module section.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
@@ -587,7 +588,6 @@ are copy-once seeds for exactly that reason.
 | --- | --- |
 | `claude/CLAUDE.md` | `~/.claude/CLAUDE.md` (claude), `~/.copilot/copilot-instructions.md` (copilot), `~/.gemini/GEMINI.md` (agy) |
 | `claude/settings.json` | not symlinked by `links.toml` |
-| `claude/settings.json.bak.20260806-004218` | not symlinked by `links.toml` |
 | `claude/settings.work.json` | not symlinked by `links.toml` |
 | `copilot/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
 | `copilot/aliases.zsh` | `~/.copilot_aliases` (copilot) |
