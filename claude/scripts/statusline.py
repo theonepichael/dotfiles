@@ -11,20 +11,23 @@ and stdout.
 Stdin:  JSON session payload from Claude Code's statusline contract —
         ``model.display_name`` and ``context_window.used_percentage``
         drive the left bar; ``rate_limits.five_hour.{used_percentage,
-        resets_at}`` (optional) drives a right-aligned 5-hour quota
-        countdown segment appended when present and well-formed.
+        resets_at}`` (optional) drives a 5-hour quota countdown segment
+        appended when present and well-formed.
 Stdout: One line, e.g. ``[Opus] ▓▓▓▓░░░░░░ 42%``, with ANSI color wrapping
         only the 10-cell bar (green <70, yellow 70-89, red >=90 on the
         rounded displayed percent) and a trailing reset. When a valid
         ``rate_limits.five_hour`` is present, a ``5h: <colored %> (resets
-        in <countdown>)`` segment is appended, right-aligned to the
-        terminal width when ``COLUMNS`` is set. Always emitted (including
-        0%) except when stdin is empty, not valid JSON, or parses to a
-        non-dict — those cases print nothing.
+        in <countdown>)`` segment is appended after a ``" | "`` separator.
+        Always compact, never padded to the terminal width — Claude Code's
+        reported ``COLUMNS`` reflects the raw terminal size, not the actual
+        width its own TUI renders the status-line row at (confirmed: a
+        fullscreen session with a session-name badge showing truncates a
+        COLUMNS-padded line well short of the reported width), so COLUMNS
+        is not used for layout. Always emitted (including 0%) except when
+        stdin is empty, not valid JSON, or parses to a non-dict — those
+        cases print nothing.
 Flags:  none.
-Env vars: ``COLUMNS`` (optional, used for right-alignment; falls back
-        gracefully to a ``" | "``-joined line when absent, unparseable, or
-        too narrow to fit both segments).
+Env vars: none.
 Files read/written: none.
 Exit codes: 0 (always succeeds; failures produce empty output, never a
 nonzero exit or a traceback).
@@ -32,11 +35,8 @@ nonzero exit or a traceback).
 
 import json
 import math
-import os
-import re
 import sys
 import time
-import unicodedata
 
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
@@ -46,14 +46,6 @@ RESET = "\033[0m"
 BAR_WIDTH = 10
 GREEN_MAX = 70.0
 YELLOW_MAX = 90.0
-
-# Defensive cap on a parsed COLUMNS value: a malformed/pathological value
-# (e.g. "999999999999") reaching ' ' * columns would be an uncapped-memory
-# crash risk that violates the script's never-raises invariant. No real
-# terminal legitimately exceeds a few hundred columns.
-_COLUMNS_CAP = 1024
-
-_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 
 
 def _bar(pct: float) -> tuple[str, int, int]:
@@ -76,20 +68,6 @@ def _bar(pct: float) -> tuple[str, int, int]:
         filled = min(BAR_WIDTH - 1, filled)
     filled = min(BAR_WIDTH, filled)
     return color, filled, displayed
-
-
-def _display_width(s: str) -> int:
-    """Return the visible column width of ``s``: strip the SGR color
-    sequences this file emits (``\\033[...m``), then count 2 columns for
-    each character whose East Asian width is Wide or Fullwidth, else 1.
-    For the bar glyphs (Ambiguous/Narrow) this matches plain
-    ``len(strip_ansi(s))``; the wide-character branch is defensive
-    headroom for a future CJK or double-width name, not a fix for today's
-    glyphs."""
-    stripped = _ANSI_RE.sub("", s)
-    return sum(
-        2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in stripped
-    )
 
 
 def _format_countdown(seconds_remaining: float) -> str:
@@ -157,39 +135,15 @@ def _render_rate_limit(payload: object, now: float | None = None) -> str:
     return f"5h: {color}{displayed}%{RESET} (resets in {countdown})"
 
 
-def _parse_columns(raw: str | None) -> int | None:
-    """Parse the ``COLUMNS`` environment value into a validated positive
-    int already capped at ``_COLUMNS_CAP``, or ``None`` when ``raw`` is
-    absent, empty, non-numeric, zero, or negative. Pure: no
-    ``os.environ`` access — the caller reads the env and hands the raw
-    string in."""
-    if raw is None or raw == "":
-        return None
-    try:
-        value = int(raw)
-    except ValueError:
-        return None
-    if value <= 0:
-        return None
-    return min(value, _COLUMNS_CAP)
-
-
-def _combine_segments(left: str, right: str, columns: int | None) -> str:
-    """Combine the rendered left and right segments, right-aligning the
-    right segment to ``columns`` when it fits, else falling back to a
-    ``" | "``-joined line. Strictly typed to an already-parsed ``int |
-    None`` — does no string parsing of its own. When ``right`` is empty
-    (degraded 5h segment) no padding is attempted and ``left`` is returned
-    unchanged. The absent/unparseable-``COLUMNS`` fallback (``columns is
-    None``) and the too-narrow-to-fit fallback are the same code path and
-    produce identical ``" | "``-joined output."""
+def _combine_segments(left: str, right: str) -> str:
+    """Combine the rendered left and right segments with a compact ``" | "``
+    separator, or return ``left`` unchanged when ``right`` is empty
+    (degraded 5h segment). Never pads to any terminal width: Claude Code's
+    reported terminal size is not a reliable proxy for the width its own
+    TUI actually renders the status-line row at, so attempting
+    right-alignment risks silent truncation there instead."""
     if right == "":
         return left
-    if columns is None:
-        return f"{left} | {right}"
-    padding = columns - _display_width(left) - _display_width(right)
-    if padding >= 1:
-        return f"{left}{' ' * padding}{right}"
     return f"{left} | {right}"
 
 
@@ -242,8 +196,7 @@ def main() -> None:
         sys.exit(0)
     left = _render(payload)
     right = _render_rate_limit(payload)
-    columns = _parse_columns(os.environ.get("COLUMNS"))
-    line = _combine_segments(left, right, columns)
+    line = _combine_segments(left, right)
     if line:
         sys.stdout.write(line + "\n")
     sys.exit(0)

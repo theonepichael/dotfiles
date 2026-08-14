@@ -434,77 +434,28 @@ class RateLimitDegradationTestCase(unittest.TestCase):
         )
 
 
-class DisplayWidthTestCase(unittest.TestCase):
-    """_display_width: ANSI-aware display column counting. The bar glyphs
-    are Ambiguous/Narrow (one column each); only genuinely Wide/Fullwidth
-    characters count as two."""
-
-    def test_bar_glyphs_match_plain_len(self) -> None:
-        s = f"{GREEN}▓▓▓▓░░░░░░{RESET} 42%"
-        self.assertEqual(statusline._display_width(s), len(strip_ansi(s)))
-
-    def test_cjk_character_counts_two(self) -> None:
-        self.assertEqual(statusline._display_width("漢"), 2)
-
-    def test_ansi_escape_codes_contribute_zero(self) -> None:
-        self.assertEqual(statusline._display_width(f"{RED}abc{RESET}"), 3)
-
-
-class ParseColumnsTestCase(unittest.TestCase):
-    """_parse_columns: parse and validate the COLUMNS env var — absent,
-    empty, non-numeric, zero, or negative degrade to None; a pathological
-    huge value is capped at 1024."""
-
-    def test_normal_numeric(self) -> None:
-        self.assertEqual(statusline._parse_columns("80"), 80)
-
-    def test_none(self) -> None:
-        self.assertIsNone(statusline._parse_columns(None))
-
-    def test_empty_string(self) -> None:
-        self.assertIsNone(statusline._parse_columns(""))
-
-    def test_non_numeric(self) -> None:
-        self.assertIsNone(statusline._parse_columns("not-a-number"))
-
-    def test_zero(self) -> None:
-        self.assertIsNone(statusline._parse_columns("0"))
-
-    def test_negative(self) -> None:
-        self.assertIsNone(statusline._parse_columns("-5"))
-
-    def test_pathological_value_clamped_to_1024(self) -> None:
-        self.assertEqual(statusline._parse_columns("999999999999"), 1024)
-
-
 class CombineSegmentsTestCase(unittest.TestCase):
-    """_combine_segments: right-alignment with a graceful same-code-path
-    fallback for both absent-COLUMNS and too-narrow-to-fit."""
+    """_combine_segments: always a compact ``" | "``-joined line, never
+    padded to any terminal width. Right-alignment via COLUMNS was removed
+    after a production report: Claude Code reports the true pty COLUMNS
+    (confirmed 285 in a real tmux/Windows Terminal session) but its own
+    fullscreen TUI renders the status-line row narrower than that when a
+    session-name badge is showing, silently truncating a padded line with
+    an ellipsis. COLUMNS is not a reliable proxy for the actually
+    renderable width, so this never pads."""
 
     def setUp(self) -> None:
         self.left = f"[Opus] {GREEN}▓▓▓▓░░░░░░{RESET} 42%"
         self.right = f"5h: {GREEN}23%{RESET} (resets in 2h13m)"
 
-    def test_wide_columns_pad_to_exact_width(self) -> None:
-        result = statusline._combine_segments(self.left, self.right, 100)
-        self.assertEqual(statusline._display_width(result), 100)
-
-    def test_narrow_columns_fall_back_to_separator(self) -> None:
-        result = statusline._combine_segments(self.left, self.right, 20)
-        self.assertEqual(result, f"{self.left} | {self.right}")
-
-    def test_none_columns_match_narrow_fallback(self) -> None:
+    def test_always_joins_with_separator(self) -> None:
         self.assertEqual(
-            statusline._combine_segments(self.left, self.right, None),
-            statusline._combine_segments(self.left, self.right, 20),
+            statusline._combine_segments(self.left, self.right),
+            f"{self.left} | {self.right}",
         )
 
     def test_empty_right_returns_left_unchanged(self) -> None:
-        for columns in (100, 20, None):
-            self.assertEqual(
-                statusline._combine_segments(self.left, "", columns),
-                self.left,
-            )
+        self.assertEqual(statusline._combine_segments(self.left, ""), self.left)
 
 
 class ProcessTestCase(unittest.TestCase):
@@ -560,55 +511,50 @@ class ProcessTestCase(unittest.TestCase):
             }
         )
 
-    def test_columns_wide_right_aligns_segment(self) -> None:
-        proc = subprocess.run(
-            [sys.executable, str(Path(__file__).parent / "statusline.py")],
-            input=self._five_hour_stdin(),
-            capture_output=True,
-            text=True,
-            env={**os.environ, "COLUMNS": "100"},
-        )
-        self.assertEqual(proc.returncode, 0)
-        self.assertEqual(proc.stderr, "")
-        line = proc.stdout.rstrip("\n")
-        self.assertEqual(statusline._display_width(line), 100)
-        self.assertRegex(strip_ansi(line), r"5h: .*% \(resets in \d+h\d+m\)")
+    def test_columns_has_no_effect_on_output(self) -> None:
+        """Regression test for the production truncation report: a wide,
+        narrow, unset, or garbage COLUMNS value must all produce the exact
+        same compact output — COLUMNS is read from the environment (it's
+        still a real, documented field) but never used to pad or align."""
+        outputs = {}
+        for label, columns in (
+            ("wide", "285"),
+            ("narrow", "20"),
+            ("garbage", "abc"),
+            ("zero", "0"),
+        ):
+            proc = subprocess.run(
+                [sys.executable, str(Path(__file__).parent / "statusline.py")],
+                input=self._five_hour_stdin(),
+                capture_output=True,
+                text=True,
+                env={**os.environ, "COLUMNS": columns},
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(proc.stderr, "")
+            outputs[label] = proc.stdout
 
-    def test_columns_invalid_falls_back_to_separator(self) -> None:
+        env_unset = {**os.environ}
+        env_unset.pop("COLUMNS", None)
         proc = subprocess.run(
             [sys.executable, str(Path(__file__).parent / "statusline.py")],
             input=self._five_hour_stdin(),
             capture_output=True,
             text=True,
-            env={**os.environ, "COLUMNS": "abc"},
+            env=env_unset,
         )
-        self.assertEqual(proc.returncode, 0)
-        self.assertEqual(proc.stderr, "")
-        self.assertIn(" | ", proc.stdout)
+        outputs["unset"] = proc.stdout
 
-    def test_columns_unset_falls_back_to_separator(self) -> None:
-        env = {**os.environ}
-        env.pop("COLUMNS", None)
-        proc = subprocess.run(
-            [sys.executable, str(Path(__file__).parent / "statusline.py")],
-            input=self._five_hour_stdin(),
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-        self.assertEqual(proc.returncode, 0)
-        self.assertEqual(proc.stderr, "")
-        self.assertIn(" | ", proc.stdout)
+        self.assertEqual(len(set(outputs.values())), 1, outputs)
+        self.assertIn(" | ", outputs["wide"])
+        self.assertRegex(strip_ansi(outputs["wide"]), r"5h: .*% \(resets in \d+h\d+m\)")
 
     def test_default_now_path_renders_well_formed_segment(self) -> None:
-        env = {**os.environ}
-        env.pop("COLUMNS", None)
         proc = subprocess.run(
             [sys.executable, str(Path(__file__).parent / "statusline.py")],
             input=self._five_hour_stdin(),
             capture_output=True,
             text=True,
-            env=env,
         )
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(proc.stderr, "")
