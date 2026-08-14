@@ -532,7 +532,6 @@ Claude Code status line: render the model name and a color-coded context window 
 - Installed at: `~/.claude/scripts/statusline.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI: none (library module).
-- Environment: `COLUMNS`
 - Explicit exit codes: `0`
 - Tested by: `claude/scripts/test_statusline.py`
 
