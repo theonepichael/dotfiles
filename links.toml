@@ -124,6 +124,13 @@ dest = "~/.claude/scripts/dev_status_sync.py"
 src = "claude/scripts/gen_claude_completion.py"
 dest = "~/.claude/scripts/gen_claude_completion.py"
 
+# Repo-maintenance tool rather than a harness runtime script, but it is linked
+# like the rest so it can be run as ~/.claude/scripts/gen_interfaces.py; it
+# resolves its own symlink to find the dotfiles checkout it documents.
+[[link]]
+src = "claude/scripts/gen_interfaces.py"
+dest = "~/.claude/scripts/gen_interfaces.py"
+
 [[link]]
 src = "claude/scripts/grill.py"
 dest = "~/.claude/scripts/grill.py"
