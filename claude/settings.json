@@ -65,7 +65,8 @@
   "theme": "light-daltonized",
   "statusLine": {
     "type": "command",
-    "command": "python3 ~/.claude/scripts/statusline.py"
+    "command": "python3 ~/.claude/scripts/statusline.py",
+    "refreshInterval": 60
   },
   "model": "claude-sonnet-5"
 }
