@@ -8,6 +8,7 @@ on JSONC parse errors, refusal while a Claude Code session is active).
 import io
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -126,6 +127,16 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         target_root = root if root is not None else self.dotfiles
         with patch("sys.stdout", out), patch("sys.stderr", err):
             code = ssdc.cmd_sync_to_seed(target_root)
+        return out.getvalue().strip(), code
+
+    def run_push_vscode(
+        self, root: Path | None = None, *, yes: bool = False
+    ) -> tuple[str, int]:
+        out = io.StringIO()
+        err = io.StringIO()
+        target_root = root if root is not None else self.dotfiles
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            code = ssdc.cmd_push_vscode(target_root, yes=yes)
         return out.getvalue().strip(), code
 
     def load_live_settings(self) -> dict[str, object]:
@@ -733,6 +744,11 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
                 "cmd_sync_to_seed",
                 ["--dotfiles-root", str(custom_root)],
             ),
+            "push-vscode": (
+                ssdc,
+                "cmd_push_vscode",
+                ["--dotfiles-root", str(custom_root)],
+            ),
         }
         for cmd, (module, target, extra) in cases.items():
             with patch.object(module, target) as mock_cmd:
@@ -844,15 +860,17 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         self.assertEqual(out, "")
         self.assertEqual(code, 0)
 
-    def test_check_vscode_reports_drift_with_sync_to_seed_wording(self) -> None:
-        """Callout that only sync-to-seed applies (not fix) — without it a
-        user reflexively runs `fix`, gets no feedback, and assumes it
-        silently failed."""
+    def test_check_vscode_reports_drift_with_direction_neutral_wording(self) -> None:
+        """`check` can't know which side of a whole-file VS Code diff is
+        "correct", so it must name both directions (push-vscode and
+        sync-to-seed) rather than recommending one by default — and must
+        never recommend `fix`, which doesn't cover VS Code at all."""
         self.write_vscode_seed("settings.json", '{"a": 1}')
         self.write_live_vscode("settings.json", '{"a": 2}')
         with patch.object(ssdc, "_vscode_wsl_user_dir", lambda: self.vscode_user_dir()):
             out, code = self.run_check()
         self.assertIn("settings.json", out)
+        self.assertIn("push-vscode", out)
         self.assertIn("sync-to-seed", out)
         self.assertNotRegex(out, r"run `[^`]*\bfix`")
         self.assertEqual(code, 0)
@@ -918,6 +936,212 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
             (custom_root / "vscode" / "settings.json").read_text(), '{"a": 2}\n'
         )
         self.assertFalse((self.dotfiles / "vscode" / "settings.json").exists())
+
+    # ── autoMode cosmetic key ────────────────────────────────────────────
+
+    def test_autoMode_is_cosmetic_not_reported_as_drift(self) -> None:
+        self.write_settings_seed({"permissions": {"allow": []}, "autoMode": "on"})
+        self.write_live_settings({"permissions": {"allow": []}, "autoMode": "off"})
+        out, code = self.run_check()
+        self.assertEqual(out, "")
+        self.assertEqual(code, 0)
+
+    # ── _vscode_process_running ─────────────────────────────────────────
+
+    def test_vscode_process_running_true_on_match(self) -> None:
+        # Non-English sample string confirms the regex matches the image
+        # name directly, not the (per-locale) "no tasks found" phrasing a
+        # substring check would have relied on.
+        stdout = (
+            "イメージ名                       PID セッション名\n"
+            "========================= ======== ================\n"
+            "Code.exe                     1234 Console\n"
+        )
+        with patch(
+            "subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=stdout, stderr=""
+            ),
+        ):
+            self.assertTrue(ssdc._vscode_process_running())
+
+    def test_vscode_process_running_false_on_no_match(self) -> None:
+        stdout = "INFO: No tasks are running which match the specified criteria.\n"
+        with patch(
+            "subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=stdout, stderr=""
+            ),
+        ):
+            self.assertFalse(ssdc._vscode_process_running())
+
+    def test_vscode_process_running_false_on_timeout(self) -> None:
+        with patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="tasklist.exe", timeout=5),
+        ):
+            self.assertFalse(ssdc._vscode_process_running())
+
+    def test_vscode_process_running_false_when_tasklist_missing(self) -> None:
+        with patch("subprocess.run", side_effect=FileNotFoundError()):
+            self.assertFalse(ssdc._vscode_process_running())
+
+    # ── _push_vscode_to_live ────────────────────────────────────────────
+
+    def test_push_vscode_to_live_identical_returns_none(self) -> None:
+        seed = Path(self.tmpdir) / "seed.json"
+        live = Path(self.tmpdir) / "live.json"
+        seed.write_text('{"a": 1}\n')
+        live.write_text('{"a": 1}\n')
+        self.assertIsNone(ssdc._push_vscode_to_live(seed, live))
+
+    def test_push_vscode_to_live_differing_returns_diff(self) -> None:
+        seed = Path(self.tmpdir) / "seed.json"
+        live = Path(self.tmpdir) / "live.json"
+        seed.write_text('{"a": 2}\n')
+        live.write_text('{"a": 1}\n')
+        result = ssdc._push_vscode_to_live(seed, live)
+        self.assertIsNotNone(result)
+        live_exists, diff = result  # type: ignore[misc]
+        self.assertTrue(live_exists)
+        self.assertIn('"a": 1', diff)
+        self.assertIn('"a": 2', diff)
+
+    def test_push_vscode_to_live_missing_live_shows_creation_no_bak_implied(
+        self,
+    ) -> None:
+        seed = Path(self.tmpdir) / "seed.json"
+        live = Path(self.tmpdir) / "live-missing.json"
+        seed.write_text('{"a": 1}\n')
+        result = ssdc._push_vscode_to_live(seed, live)
+        self.assertIsNotNone(result)
+        live_exists, diff = result  # type: ignore[misc]
+        self.assertFalse(live_exists)
+        self.assertIn('"a": 1', diff)
+
+    # ── cmd_push_vscode ──────────────────────────────────────────────────
+
+    def test_push_vscode_wsl_dir_none_is_explicit_error_not_silent(self) -> None:
+        with patch.object(ssdc, "_vscode_wsl_user_dir", lambda: None):
+            out, code = self.run_push_vscode()
+        self.assertEqual(code, 1)
+        self.assertIn("WSL", out)
+
+    def test_push_vscode_both_identical_is_noop_no_process_check_no_prompt(
+        self,
+    ) -> None:
+        self.write_vscode_seed("settings.json", '{"a": 1}\n')
+        self.write_live_vscode("settings.json", '{"a": 1}\n')
+        self.write_vscode_seed("keybindings.json", "[]\n")
+        self.write_live_vscode("keybindings.json", "[]\n")
+        with (
+            patch.object(ssdc, "_vscode_wsl_user_dir", lambda: self.vscode_user_dir()),
+            patch.object(ssdc, "_vscode_process_running") as mock_proc,
+            patch("builtins.input") as mock_input,
+        ):
+            out, code = self.run_push_vscode()
+        self.assertEqual(code, 0)
+        self.assertIn("nothing to push", out)
+        mock_proc.assert_not_called()
+        mock_input.assert_not_called()
+
+    def test_push_vscode_confirmed_and_process_not_running_writes_with_backup(
+        self,
+    ) -> None:
+        self.write_vscode_seed("settings.json", '{"a": 2}\n')
+        self.write_live_vscode("settings.json", '{"a": 1}\n')
+        self.write_vscode_seed("keybindings.json", "[]\n")
+        self.write_live_vscode("keybindings.json", "[]\n")
+        with (
+            patch.object(ssdc, "_vscode_wsl_user_dir", lambda: self.vscode_user_dir()),
+            patch.object(ssdc, "_vscode_process_running", lambda: False),
+            patch("builtins.input", return_value="y"),
+            patch("sys.stdin.isatty", return_value=True),
+        ):
+            out, code = self.run_push_vscode()
+        self.assertEqual(code, 0)
+        live_text = (self.vscode_user_dir() / "settings.json").read_text()
+        self.assertEqual(live_text, '{"a": 2}\n')
+        backups = list(self.vscode_user_dir().glob("settings.json.bak.*"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_text(), '{"a": 1}\n')
+
+        # second run is a no-op — seed and live now match
+        with (
+            patch.object(ssdc, "_vscode_wsl_user_dir", lambda: self.vscode_user_dir()),
+            patch.object(ssdc, "_vscode_process_running") as mock_proc,
+            patch("builtins.input") as mock_input,
+        ):
+            out2, code2 = self.run_push_vscode()
+        self.assertEqual(code2, 0)
+        self.assertIn("nothing to push", out2)
+        mock_proc.assert_not_called()
+        mock_input.assert_not_called()
+
+    def test_push_vscode_process_running_refuses_writes_neither_file(self) -> None:
+        self.write_vscode_seed("settings.json", '{"a": 2}\n')
+        self.write_live_vscode("settings.json", '{"a": 1}\n')
+        self.write_vscode_seed("keybindings.json", '[{"key": "new"}]\n')
+        self.write_live_vscode("keybindings.json", '[{"key": "old"}]\n')
+        with (
+            patch.object(ssdc, "_vscode_wsl_user_dir", lambda: self.vscode_user_dir()),
+            patch.object(ssdc, "_vscode_process_running", lambda: True),
+            patch("builtins.input", return_value="y"),
+            patch("sys.stdin.isatty", return_value=True),
+        ):
+            out, code = self.run_push_vscode()
+        self.assertEqual(code, 1)
+        self.assertIn("close it first", out)
+        # neither file written — confirms no-partial-write property
+        self.assertEqual(
+            (self.vscode_user_dir() / "settings.json").read_text(), '{"a": 1}\n'
+        )
+        self.assertEqual(
+            (self.vscode_user_dir() / "keybindings.json").read_text(),
+            '[{"key": "old"}]\n',
+        )
+        self.assertEqual(
+            list(self.vscode_user_dir().glob("*.bak.*")),
+            [],
+        )
+
+    def test_push_vscode_noninteractive_stdin_without_yes_aborts_nothing_written(
+        self,
+    ) -> None:
+        self.write_vscode_seed("settings.json", '{"a": 2}\n')
+        self.write_live_vscode("settings.json", '{"a": 1}\n')
+        self.write_vscode_seed("keybindings.json", "[]\n")
+        self.write_live_vscode("keybindings.json", "[]\n")
+        with (
+            patch.object(ssdc, "_vscode_wsl_user_dir", lambda: self.vscode_user_dir()),
+            patch("sys.stdin.isatty", return_value=False),
+        ):
+            out, code = self.run_push_vscode()
+        self.assertEqual(code, 1)
+        self.assertIn("stdin is not interactive", out)
+        self.assertEqual(
+            (self.vscode_user_dir() / "settings.json").read_text(), '{"a": 1}\n'
+        )
+
+    def test_push_vscode_noninteractive_stdin_with_yes_proceeds_without_prompt(
+        self,
+    ) -> None:
+        self.write_vscode_seed("settings.json", '{"a": 2}\n')
+        self.write_live_vscode("settings.json", '{"a": 1}\n')
+        self.write_vscode_seed("keybindings.json", "[]\n")
+        self.write_live_vscode("keybindings.json", "[]\n")
+        with (
+            patch.object(ssdc, "_vscode_wsl_user_dir", lambda: self.vscode_user_dir()),
+            patch.object(ssdc, "_vscode_process_running", lambda: False),
+            patch("sys.stdin.isatty", return_value=False),
+            patch("builtins.input") as mock_input,
+        ):
+            out, code = self.run_push_vscode(yes=True)
+        self.assertEqual(code, 0)
+        mock_input.assert_not_called()
+        self.assertEqual(
+            (self.vscode_user_dir() / "settings.json").read_text(), '{"a": 2}\n'
+        )
 
 
 if __name__ == "__main__":
