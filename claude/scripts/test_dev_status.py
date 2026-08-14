@@ -2865,9 +2865,18 @@ class BacklogTestCase(unittest.TestCase):
         with patch.object(dev_status, "JOURNAL_FILE", self.data_dir):
             err = io.StringIO()
             with patch("sys.stderr", err):
-                dev_status.cmd_done(_args(id="jf-item"))
+                dev_status.cmd_done(_args(id="jf-item", verbose=True))
             self.assertIn("append failed", err.getvalue())
         self.assertEqual(self._item_by_id("jf-item")["status"], "done")
+
+    def test_r09b_journal_append_failure_hidden_without_verbose(self):
+        self.write_items([make_item("jf-item2", status="in-progress")])
+        with patch.object(dev_status, "JOURNAL_FILE", self.data_dir):
+            err = io.StringIO()
+            with patch("sys.stderr", err):
+                dev_status.cmd_done(_args(id="jf-item2"))
+            self.assertNotIn("append failed", err.getvalue())
+        self.assertEqual(self._item_by_id("jf-item2")["status"], "done")
 
     # ── journal reader ──────────────────────────────────────────────────────
 
@@ -2903,9 +2912,27 @@ class BacklogTestCase(unittest.TestCase):
         )
         err = io.StringIO()
         with patch("sys.stderr", err):
-            entries = dev_status.read_journal_entries()
+            entries = dev_status.read_journal_entries(verbose=True)
         self.assertEqual(len(entries), 2)
         self.assertIn("corrupt", err.getvalue())
+
+    def test_r11b_reader_corruption_warning_hidden_without_verbose(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(UTC).isoformat()
+        good1 = json.dumps(
+            {"ts": now, "rev": 1, "machine": "x", "cmd": "add", "kind": "backlog"}
+        )
+        good2 = json.dumps(
+            {"ts": now, "rev": 2, "machine": "x", "cmd": "done", "kind": "backlog"}
+        )
+        self.journal_file.write_text(
+            good1 + "\n" + "not valid json at all\n" + good2 + "\n"
+        )
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            entries = dev_status.read_journal_entries()
+        self.assertEqual(len(entries), 2)
+        self.assertNotIn("corrupt", err.getvalue())
 
     # ── dispatch ────────────────────────────────────────────────────────────
 
@@ -3268,7 +3295,7 @@ class BacklogTestCase(unittest.TestCase):
             dev_status, "_run_recap_regen", return_value=("copilot", "text")
         ) as mock_regen:
             dev_status.cmd_recap(_args(backend="copilot"))
-        mock_regen.assert_called_once_with(backend_override="copilot")
+        mock_regen.assert_called_once_with(backend_override="copilot", verbose=False)
 
     # ── normalization ────────────────────────────────────────────────────────
 
@@ -3423,6 +3450,108 @@ class BacklogTestCase(unittest.TestCase):
             dev_status.render(out=out, err=err)
         self.assertIn("item-map:", err.getvalue())
 
+    # ── --quiet/--verbose: gate bucket-4 confirmations / bucket-5 diagnostics
+
+    def test_r43_quiet_suppresses_confirm_resolution_echo(self):
+        self.write_items([make_item("my-item")])
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_start(_args(id="my-item", quiet=True))
+        self.assertNotIn("[start]", err.getvalue())
+
+    def test_r44_default_shows_confirm_resolution_echo(self):
+        # Regression guard: quiet=False (the default) is unchanged.
+        self.write_items([make_item("my-item2")])
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_start(_args(id="my-item2"))
+        self.assertIn("[start]", err.getvalue())
+
+    def test_r45_quiet_suppresses_blocker_check_reminder(self):
+        self.write_items([make_item("existing-ready")])
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_add(
+                _args(
+                    json='{"id": "new-item", "summary": "x"}',
+                    quiet=True,
+                )
+            )
+        self.assertNotIn("check the READY/IN PROGRESS items above", err.getvalue())
+
+    def test_r46_backfill_gate_apply_quiet_suppresses_full_report(self):
+        self.write_items([make_item("no-gate-item", gate=None)])
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.cmd_backfill_gate(_args(apply=True, quiet=True))
+        self.assertNotIn("missing 'gate'", out.getvalue())
+        self.assertNotIn("stamped", out.getvalue())
+        self.assertIn("┌─", out.getvalue())  # dashboard still renders
+
+    def test_r47_backfill_gate_dry_run_unaffected_by_quiet(self):
+        self.write_items([make_item("no-gate-item2", gate=None)])
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.cmd_backfill_gate(_args(apply=False, quiet=True))
+        self.assertIn("missing 'gate'", out.getvalue())
+        self.assertIn("dry run", out.getvalue())
+
+    def test_r48_rename_quiet_suppresses_echo(self):
+        self.write_items([make_item("old-slug-q")])
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_rename(
+                _args(old_slug="old-slug-q", new_slug="new-slug-q", quiet=True)
+            )
+        self.assertNotIn("[rename]", err.getvalue())
+
+    def test_r49_pending_add_quiet_suppresses_echo(self):
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_pending_add(
+                _args(
+                    json='{"id": "wait-q", "description": "waiting", "kind": "email"}',
+                    quiet=True,
+                )
+            )
+        self.assertNotIn("[pending add]", err.getvalue())
+
+    def test_r50_prune_quiet_suppresses_removed_line_not_nothing_to_prune(self):
+        self.write_items(
+            [
+                make_item(
+                    "old-done",
+                    status="done",
+                    updated="2020-01-01",
+                ),
+                make_item("stays-ready"),
+            ]
+        )
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.cmd_prune(_args(force=True, quiet=True))
+        self.assertNotIn("removed", out.getvalue())
+        self.assertIn("┌─", out.getvalue())  # dashboard still renders
+
+        out2 = io.StringIO()
+        with patch("sys.stdout", out2):
+            dev_status.cmd_prune(_args(force=True, quiet=True))
+        self.assertIn("nothing to prune", out2.getvalue())
+
+    def test_r51_parser_flags_parse_after_leaf_subcommand(self):
+        args = dev_status.build_parser().parse_args(["render", "-q"])
+        self.assertTrue(args.quiet)
+        self.assertFalse(args.verbose)
+
+    def test_r52_parser_flags_parse_after_nested_pending_subcommand(self):
+        args = dev_status.build_parser().parse_args(["pending", "list", "-v"])
+        self.assertTrue(args.verbose)
+        self.assertFalse(args.quiet)
+
+    def test_r53_parser_rejects_quiet_and_verbose_together(self):
+        with self.assertRaises(SystemExit):
+            dev_status.build_parser().parse_args(["render", "-q", "-v"])
+
 
 # ── arg helper ────────────────────────────────────────────────────────────────
 
@@ -3436,6 +3565,10 @@ class _args:
     force = False  # default; argparse sets --force (required) for `prune`
     refresh = False  # default; argparse sets --refresh (default False) for `recap`
     backend = None  # default; argparse sets --backend (default None) for `recap`
+    quiet = (
+        False  # default; argparse sets --quiet/-q (default False) on every leaf parser
+    )
+    verbose = False  # default; argparse sets --verbose/-v (default False) on every leaf parser
 
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
