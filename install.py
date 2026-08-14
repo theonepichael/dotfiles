@@ -1871,6 +1871,71 @@ def seed_opencode_config(ctx: Context) -> tuple[str, str]:
 
 # ── services ──────────────────────────────────────────────────────────────────
 
+_WATCHCOMMIT_SERVICE_KEY = "watchcommit.service"
+
+
+def _probe_systemctl_word(word: str, cmd: list[str]) -> bool | None:
+    """Run a ``systemctl --user is-<x>``-style probe by matching its stdout word.
+
+    Exit code alone can't distinguish "answered no" from "couldn't run" —
+    ``systemctl --user is-enabled`` exits non-zero for a genuinely disabled
+    unit too. True/False for a real answer; None (unavailable/unanswerable)
+    only when there's no recognizable word at all.
+    """
+    if not have("systemctl"):
+        return None
+    text = run_command(cmd, capture=True).stdout.strip()
+    if text == word:
+        return True
+    if text:
+        return False
+    return None
+
+
+def _probe_linger(user: str) -> bool | None:
+    if not have("loginctl") or not user:
+        return None
+    text = run_command(
+        ["loginctl", "show-user", user, "--property=Linger"], capture=True
+    ).stdout.strip()
+    if text == "Linger=yes":
+        return True
+    if text == "Linger=no":
+        return False
+    return None
+
+
+def _capture_live_watchcommit_service(ctx: Context) -> dict[str, object]:
+    """Fresh is-enabled/is-active/linger probe, for capture or classification."""
+    enabled = _probe_systemctl_word(
+        "enabled", ["systemctl", "--user", "is-enabled", _WATCHCOMMIT_SERVICE_KEY]
+    )
+    active = _probe_systemctl_word(
+        "active", ["systemctl", "--user", "is-active", _WATCHCOMMIT_SERVICE_KEY]
+    )
+    linger = _probe_linger(_current_user())
+    return depart.build_service_record(enabled=enabled, active=active, linger=linger)
+
+
+def capture_service_baseline(ctx: Context) -> None:
+    """Capture watchcommit service/linger state, immediately before
+    :func:`enable_watchcommit_service` runs — capturing any later would
+    record the post-install enabled state as baseline and departure would
+    never disable anything.
+    """
+    if (
+        not ctx.is_linux
+        or ctx.opts.dry_run
+        or ctx.opts.profile == "work"
+        or ctx.departure_baseline is None
+    ):
+        return
+    key = depart.service_key("systemd", "watchcommit")
+    stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    ctx.departure_baseline.add_layer(
+        stamp, {key: _capture_live_watchcommit_service(ctx)}
+    )
+
 
 def enable_watchcommit_service(ctx: Context) -> None:
     """Enable and start watchcommit's systemd --user unit (Linux, non-work)."""
@@ -2801,12 +2866,23 @@ def build_preflight_report(
     live = _recapture_departure_live_state(ctx, specs)
     report: dict[str, depart.Classification] = {}
     for key in sorted(baseline.all_keys()):
+        # service: keys use their own dedicated classifier (their record
+        # shape — enabled/active/linger — doesn't fit the tri-state
+        # present/absent model the generic classifier expects).
+        if depart.key_type(key) == "service":
+            continue
         recorded = baseline.value_for(key)
         live_value = live.get(key, {"state": depart.STATE_UNKNOWN})
         report[key] = depart.classify_ownership_key(key, recorded, live_value)
 
     _apply_rc_file_reclassification(ctx, baseline, report)
     _apply_symlink_pair_reclassification(ctx, specs, baseline, live, report)
+
+    service_key = depart.service_key("systemd", "watchcommit")
+    if service_key in baseline.all_keys():
+        report[service_key] = depart.classify_service(
+            baseline.value_for(service_key), _capture_live_watchcommit_service(ctx)
+        )
     return report
 
 
@@ -2943,6 +3019,71 @@ def _maybe_consume_bak(dest: Path, baseline: depart.Baseline) -> None:
             bak.unlink()
     except OSError:
         pass  # best-effort cleanup — never fails the restore itself
+
+
+def _other_enabled_user_units(exclude: str) -> list[str] | None:
+    """Every enabled systemd ``--user`` unit other than ``exclude``.
+
+    None if the listing probe itself failed/is unavailable — callers must
+    treat that as "can't prove it's safe," never as an empty list.
+    """
+    if not have("systemctl"):
+        return None
+    result = run_command(
+        ["systemctl", "--user", "list-unit-files", "--state=enabled", "--no-legend"],
+        capture=True,
+    )
+    if not result.ok:
+        return None
+    units = []
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if parts and parts[0] != exclude:
+            units.append(parts[0])
+    return units
+
+
+def _execute_service_disable(recorded: dict[str, object]) -> str:
+    """Disable+stop watchcommit, and restore linger unless other units need it."""
+    if not have("systemctl"):
+        return "unresolved: systemd --user unavailable"
+    if not run_command(
+        ["systemctl", "--user", "disable", "--now", _WATCHCOMMIT_SERVICE_KEY]
+    ).ok:
+        return "unresolved: systemctl --user disable --now failed"
+
+    if recorded.get("linger") is False:
+        others = _other_enabled_user_units(exclude=_WATCHCOMMIT_SERVICE_KEY)
+        if others is None:
+            return "unresolved: could not check for other enabled systemd --user units"
+        if others:
+            return (
+                "unresolved: linger left enabled — other systemd --user units "
+                f"depend on it ({', '.join(others)})"
+            )
+        if not run_command(
+            ["loginctl", "disable-linger", _current_user()], capture=True
+        ).ok:
+            return "unresolved: loginctl disable-linger failed"
+    return "ok"
+
+
+def execute_service_phase(
+    ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger
+) -> None:
+    """Disable+stop the owned watchcommit service, restoring linger if safe."""
+    key = depart.service_key("systemd", "watchcommit")
+    if key in ledger.completed_keys():
+        return
+    recorded = baseline.value_for(key)
+    if recorded is None:
+        return  # never captured (e.g. a work-profile install) — nothing to check
+    c = depart.classify_service(recorded, _capture_live_watchcommit_service(ctx))
+    if c.bucket != depart.BUCKET_OWNED:
+        return
+    ledger.record(
+        key, c.action or depart.ACTION_DISABLE, _execute_service_disable(recorded or {})
+    )
 
 
 def execute_file_symlink_phase(
@@ -3197,14 +3338,13 @@ def execute_departure(
 ) -> depart.DepartureLedger:
     """Perform every safe ``owned`` action, retry-safe via the departure ledger.
 
-    Order: file/symlink restore-or-remove, then directories deepest-first,
-    then packages in reverse transaction order, then the NVM runtime. A
-    changed-state-then-failed downgrade halts the package phase and skips
-    the runtime phase too. Service/linger handling is not implemented yet
-    — no ``service:`` ownership keys exist in any baseline this version of
-    the installer captures.
+    Order: services stop/disable first, then file/symlink restore-or-remove,
+    then directories deepest-first, then packages in reverse transaction
+    order, then the NVM runtime last. A changed-state-then-failed downgrade
+    halts the package phase and skips the runtime phase too.
     """
     ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
+    execute_service_phase(ctx, baseline, ledger)
     execute_file_symlink_phase(ctx, baseline, report, ledger)
     execute_directory_phase(ctx, report, ledger)
     if execute_package_phase(ctx, baseline, ledger):
@@ -3402,6 +3542,7 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
         import_rectangle_prefs(ctx)
         set_caps_lock_to_escape(ctx)
         load_watchcommit_agent(ctx)
+    capture_service_baseline(ctx)
     enable_watchcommit_service(ctx)
 
     install_vim_plug(ctx)

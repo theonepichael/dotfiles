@@ -1190,3 +1190,64 @@ def classify_package_transactions(
             seen.add(key)
             results.append(_classify_one_package(txn, name, snapshot, requested=False))
     return results
+
+
+# ── service/linger (watchcommit) ────────────────────────────────────────
+
+ACTION_DISABLE = "disable"
+
+
+def build_service_record(
+    *, enabled: bool | None, active: bool | None, linger: bool | None
+) -> dict[str, object]:
+    """Build a ``service:`` record from already-probed values.
+
+    Any probe returning None (unavailable/unanswerable) makes the whole
+    record ``unknown`` — matching the tri-state's "a capture error always
+    records unknown" rule; there's no meaningful partial state here.
+    """
+    if enabled is None or active is None or linger is None:
+        return {"state": STATE_UNKNOWN}
+    return {
+        "state": STATE_PRESENT,
+        "enabled": enabled,
+        "active": active,
+        "linger": linger,
+    }
+
+
+def classify_service(
+    recorded: dict[str, object] | None, live: dict[str, object]
+) -> Classification:
+    """Classify the watchcommit service/linger key.
+
+    Conservative, same principle as :func:`classify_ownership_key`: the
+    only ``owned`` case is baseline recording it disabled and live showing
+    it now enabled (this installer's own ``enable_watchcommit_service``
+    unconditionally enabling it) — any other kind of change (someone
+    toggled it independently, baseline was already enabled and something
+    about it still shifted) is left ``drifted`` rather than guessed at.
+    """
+    if recorded is None or recorded.get("state") == STATE_UNKNOWN:
+        return Classification(
+            BUCKET_UNRESOLVED, None, "no reliable baseline for this service"
+        )
+    if live.get("state") == STATE_UNKNOWN:
+        return Classification(
+            BUCKET_UNRESOLVED, None, "current service state could not be read"
+        )
+    if recorded.get("enabled") == live.get("enabled") and recorded.get(
+        "active"
+    ) == live.get("active"):
+        return Classification(BUCKET_PRESERVED, None, "unchanged since baseline")
+    if recorded.get("enabled") is False and live.get("enabled") is True:
+        return Classification(
+            BUCKET_OWNED,
+            ACTION_DISABLE,
+            "enabled by this installer, was disabled at baseline",
+        )
+    return Classification(
+        BUCKET_DRIFTED,
+        None,
+        "service state changed since baseline in an unexpected way",
+    )

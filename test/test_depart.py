@@ -691,3 +691,63 @@ def test_process_start_time_missing_pid_returns_none(tmp_path):
 
 def test_process_start_time_reads_own_pid():
     assert depart.process_start_time(os.getpid()) is not None
+
+
+# ── service/linger (watchcommit) ─────────────────────────────────────────
+
+
+def test_build_service_record_present_when_all_probes_answer():
+    record = depart.build_service_record(enabled=False, active=False, linger=False)
+    assert record == {
+        "state": "present",
+        "enabled": False,
+        "active": False,
+        "linger": False,
+    }
+
+
+def test_build_service_record_unknown_when_any_probe_failed():
+    assert depart.build_service_record(enabled=None, active=False, linger=False) == {
+        "state": "unknown"
+    }
+
+
+def test_classify_service_no_baseline_is_unresolved():
+    live = depart.build_service_record(enabled=True, active=True, linger=True)
+    c = depart.classify_service(None, live)
+    assert c.bucket == "unresolved"
+
+
+def test_classify_service_unknown_baseline_is_unresolved():
+    live = depart.build_service_record(enabled=True, active=True, linger=True)
+    c = depart.classify_service({"state": "unknown"}, live)
+    assert c.bucket == "unresolved"
+
+
+def test_classify_service_unknown_live_is_unresolved():
+    recorded = depart.build_service_record(enabled=False, active=False, linger=False)
+    c = depart.classify_service(recorded, {"state": "unknown"})
+    assert c.bucket == "unresolved"
+
+
+def test_classify_service_unchanged_is_preserved():
+    recorded = depart.build_service_record(enabled=True, active=True, linger=True)
+    live = depart.build_service_record(enabled=True, active=True, linger=True)
+    c = depart.classify_service(recorded, live)
+    assert c.bucket == "preserved"
+
+
+def test_classify_service_enabled_by_installer_is_owned_disable():
+    recorded = depart.build_service_record(enabled=False, active=False, linger=False)
+    live = depart.build_service_record(enabled=True, active=True, linger=True)
+    c = depart.classify_service(recorded, live)
+    assert c.bucket == "owned"
+    assert c.action == "disable"
+
+
+def test_classify_service_unexpected_change_is_drifted():
+    """Baseline already enabled, live now disabled: not this installer's doing."""
+    recorded = depart.build_service_record(enabled=True, active=True, linger=True)
+    live = depart.build_service_record(enabled=False, active=False, linger=True)
+    c = depart.classify_service(recorded, live)
+    assert c.bucket == "drifted"

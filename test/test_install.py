@@ -115,6 +115,7 @@ def offline_install(monkeypatch):
         "install_mac_packages",
         "install_linux_packages",
         "install_node",
+        "capture_service_baseline",
         "enable_watchcommit_service",
         "load_watchcommit_agent",
         "import_rectangle_prefs",
@@ -2793,3 +2794,118 @@ def test_execute_departure_skips_runtime_phase_after_package_halt(home, monkeypa
     ledger = install.execute_departure(ctx, baseline, report)
 
     assert runtime_key not in ledger.completed_keys()
+
+
+# ── service/linger execution, end to end through do_depart ─────────────────
+
+
+def _watchcommit_run_command(live, *, other_enabled_units=""):
+    """A run_command fake covering watchcommit's full enable/disable + linger cycle."""
+
+    def run(cmd, **kwargs):
+        if cmd == ["systemctl", "--user", "show-environment"]:
+            return install.CommandResult(True, "")
+        if cmd == ["systemctl", "--user", "is-enabled", "watchcommit.service"]:
+            return install.CommandResult(
+                live["enabled"], "enabled" if live["enabled"] else "disabled"
+            )
+        if cmd == ["systemctl", "--user", "is-active", "watchcommit.service"]:
+            return install.CommandResult(
+                live["active"], "active" if live["active"] else "inactive"
+            )
+        if cmd == ["loginctl", "show-user", "testuser", "--property=Linger"]:
+            return install.CommandResult(
+                True, "Linger=yes" if live["linger"] else "Linger=no"
+            )
+        if cmd == ["systemctl", "--user", "daemon-reload"]:
+            return install.CommandResult(True)
+        if cmd == ["systemctl", "--user", "enable", "--now", "watchcommit.service"]:
+            live["enabled"] = True
+            live["active"] = True
+            return install.CommandResult(True)
+        if cmd == ["loginctl", "enable-linger", "testuser"]:
+            live["linger"] = True
+            return install.CommandResult(True)
+        if cmd == ["systemctl", "--user", "disable", "--now", "watchcommit.service"]:
+            live["enabled"] = False
+            live["active"] = False
+            return install.CommandResult(True)
+        if cmd == [
+            "systemctl",
+            "--user",
+            "list-unit-files",
+            "--state=enabled",
+            "--no-legend",
+        ]:
+            return install.CommandResult(True, other_enabled_units)
+        if cmd == ["loginctl", "disable-linger", "testuser"]:
+            live["linger"] = False
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    return run
+
+
+def test_depart_disables_watchcommit_and_restores_linger(
+    home, links, monkeypatch, capsys
+):
+    for name in (
+        "install_mac_packages",
+        "install_linux_packages",
+        "install_node",
+        "load_watchcommit_agent",
+        "import_rectangle_prefs",
+        "set_caps_lock_to_escape",
+        "install_vim_plug",
+        "bootstrap_neovim",
+    ):
+        monkeypatch.setattr(install, name, lambda *a, **k: None)
+    monkeypatch.setattr(install, "install_npm_harness", lambda *a, **k: None)
+
+    live = {"enabled": False, "active": False, "linger": False}
+    monkeypatch.setattr(install, "run_command", _watchcommit_run_command(live))
+    monkeypatch.setattr(install, "have", lambda name: name in ("systemctl", "loginctl"))
+    monkeypatch.setattr(install, "_current_user", lambda: "testuser")
+
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+    assert live == {"enabled": True, "active": True, "linger": True}
+
+    code = install.do_depart(make_ctx(home, yes=True))
+
+    assert code == 0
+    assert live == {"enabled": False, "active": False, "linger": False}
+
+
+def test_depart_preserves_linger_when_other_units_depend_on_it(
+    home, links, monkeypatch, capsys
+):
+    for name in (
+        "install_mac_packages",
+        "install_linux_packages",
+        "install_node",
+        "load_watchcommit_agent",
+        "import_rectangle_prefs",
+        "set_caps_lock_to_escape",
+        "install_vim_plug",
+        "bootstrap_neovim",
+    ):
+        monkeypatch.setattr(install, name, lambda *a, **k: None)
+    monkeypatch.setattr(install, "install_npm_harness", lambda *a, **k: None)
+
+    live = {"enabled": False, "active": False, "linger": False}
+    run = _watchcommit_run_command(
+        live, other_enabled_units="some-other-timer.timer enabled\n"
+    )
+    monkeypatch.setattr(install, "run_command", run)
+    monkeypatch.setattr(install, "have", lambda name: name in ("systemctl", "loginctl"))
+    monkeypatch.setattr(install, "_current_user", lambda: "testuser")
+
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    code = install.do_depart(make_ctx(home, yes=True))
+
+    assert code == 1  # incomplete: linger left enabled is reported unresolved
+    assert live["enabled"] is False  # watchcommit itself was still disabled
+    assert live["linger"] is True  # but linger was correctly preserved
