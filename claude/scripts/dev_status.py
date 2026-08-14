@@ -948,6 +948,7 @@ def _blocker_check_reminder(
     *,
     cmd: str,
     err: TextIO | None = None,
+    quiet: bool = False,
 ) -> None:
     """Print a one-line stderr reminder to check for blocker relationships.
 
@@ -962,17 +963,17 @@ def _blocker_check_reminder(
             item that was just added), or ``None`` if nothing to exclude.
         cmd: Command name to prefix onto the reminder.
         err: Stream to print to; defaults to ``sys.stderr``.
+        quiet: Suppress the reminder (combined with :func:`_agent_quiet`).
     """
-    if _agent_quiet():
-        return
     if err is None:
         err = sys.stderr
     in_progress, ready, _, _, _ = _render_order(items)
     candidates = [i for i in in_progress + ready if i["id"] != exclude_slug]
     if not candidates:
         return
-    print(
+    cli_common.qprint(
         f"[{cmd}] check the READY/IN PROGRESS items above for blocker relationships",
+        quiet=(quiet or _agent_quiet()),
         file=err,
     )
 
@@ -1426,7 +1427,7 @@ def _journal_entry(
     return entry
 
 
-def append_journal_event(entry: dict[str, object]) -> None:
+def append_journal_event(entry: dict[str, object], *, verbose: bool = False) -> None:
     """Append one event to the journal, best-effort.
 
     The JSON store (``items.json``/``pending_items.json``) is authoritative
@@ -1441,7 +1442,11 @@ def append_journal_event(entry: dict[str, object]) -> None:
         with open(JOURNAL_FILE, "a") as f:
             f.write(line + "\n")
     except OSError as e:
-        print(f"[journal] append failed (non-fatal): {e}", file=sys.stderr)
+        cli_common.vprint(
+            f"[journal] append failed (non-fatal): {e}",
+            verbose=verbose,
+            file=sys.stderr,
+        )
 
 
 def _parse_journal_ts(raw: object) -> datetime | None:
@@ -1457,7 +1462,9 @@ def _parse_journal_ts(raw: object) -> datetime | None:
     return ts
 
 
-def read_journal_entries(within_hours: float | None = None) -> list[dict[str, object]]:
+def read_journal_entries(
+    within_hours: float | None = None, *, verbose: bool = False
+) -> list[dict[str, object]]:
     """Read journal entries, optionally filtered to the last ``within_hours``.
 
     Read without holding :func:`backlog_lock` — appends are serialized
@@ -1489,8 +1496,9 @@ def read_journal_entries(within_hours: float | None = None) -> list[dict[str, ob
             entry = json.loads(line)
         except json.JSONDecodeError:
             if i != last_index:
-                print(
+                cli_common.vprint(
                     f"[journal] corrupt line {i + 1} in {JOURNAL_FILE}",
+                    verbose=verbose,
                     file=sys.stderr,
                 )
             continue
@@ -1909,7 +1917,9 @@ def _normalize_recap_text(raw: str) -> str:
 # ── recap: generation + subcommands ─────────────────────────────────────────
 
 
-def _run_recap_regen(backend_override: str | None = None) -> tuple[str, str]:
+def _run_recap_regen(
+    backend_override: str | None = None, *, verbose: bool = False
+) -> tuple[str, str]:
     """Generate fresh recap prose and cache it.
 
     Returns ``(backend, text)`` on success -- including a successful call
@@ -1933,7 +1943,9 @@ def _run_recap_regen(backend_override: str | None = None) -> tuple[str, str]:
     lifetime to at most one more regen cycle, self-triggered by the very
     next command or render.
     """
-    entries = read_journal_entries(within_hours=RECAP_DISPATCH_WINDOW_HOURS)
+    entries = read_journal_entries(
+        within_hours=RECAP_DISPATCH_WINDOW_HOURS, verbose=verbose
+    )
     if not entries:
         return "", ""
 
@@ -2040,7 +2052,9 @@ def cmd_recap(args: argparse.Namespace) -> None:
         if not args.refresh and _fresh_enough(cache):
             _print_recap(cast(dict[str, object], cache))
             return
-        _backend, text = _run_recap_regen(backend_override=args.backend)
+        _backend, text = _run_recap_regen(
+            backend_override=args.backend, verbose=args.verbose
+        )
 
     if text:
         print(text)
@@ -2056,13 +2070,17 @@ def confirm_resolution(
     arg: str | int,
     item: BacklogItem | PendingItem,
     summary_key: str = "summary",
+    *,
+    quiet: bool = False,
 ) -> None:
     """Echo what a mutating command resolved to, so misresolution is visible."""
-    if _agent_quiet():
-        return
     ref = f"{arg} → " if str(arg) != item["id"] else ""
     summary = cast(dict[str, object], item).get(summary_key, "")
-    print(f"[{cmd}] {ref}{item['id']}: {summary}", file=sys.stderr)
+    cli_common.qprint(
+        f"[{cmd}] {ref}{item['id']}: {summary}",
+        quiet=(quiet or _agent_quiet()),
+        file=sys.stderr,
+    )
 
 
 @dataclass
@@ -2098,7 +2116,13 @@ class _MutationResult:
 
 @contextmanager
 def _backlog_mutation(
-    cmd: str, id_arg: str, if_rev_arg: int | None, announce: bool = False
+    cmd: str,
+    id_arg: str,
+    if_rev_arg: int | None,
+    announce: bool = False,
+    *,
+    quiet: bool = False,
+    verbose: bool = False,
 ) -> Iterator[_MutationResult]:
     """Run the shared skeleton for update/start/done/block/unblock/remove
     (also review/approve/reject/gate-set/gate-pass — every command sharing
@@ -2149,6 +2173,9 @@ def _backlog_mutation(
         id_arg: The raw id argument (slug or numeric position).
         if_rev_arg: The ``--if-rev`` value supplied, or ``None``.
         announce: Whether to call :func:`confirm_resolution` on success.
+        quiet: Threaded to :func:`confirm_resolution` and
+            :func:`append_journal_event`.
+        verbose: Threaded to :func:`append_journal_event`.
 
     Yields:
         A :class:`_MutationResult` for the caller to mutate.
@@ -2198,10 +2225,11 @@ def _backlog_mutation(
                 fields=cast(list[str] | None, result.journal_extra.get("fields")),
                 feedback=cast(str | None, result.journal_extra.get("feedback")),
                 count=cast(int | None, result.journal_extra.get("count")),
-            )
+            ),
+            verbose=verbose,
         )
         if announce:
-            confirm_resolution(cmd, id_arg, result.item)
+            confirm_resolution(cmd, id_arg, result.item, quiet=quiet)
         render(result.items, result.pending_items, rev=result.new_rev)
     _maybe_dispatch_recap_regen()
 
@@ -2360,11 +2388,12 @@ def cmd_add(args: argparse.Namespace) -> None:
         append_journal_event(
             _journal_entry(
                 "add", "backlog", new_rev, slug=slug, summary=item["summary"]
-            )
+            ),
+            verbose=args.verbose,
         )
         render(items, pending_items, rev=new_rev)
     _maybe_dispatch_recap_regen()
-    _blocker_check_reminder(items, slug, cmd="add")
+    _blocker_check_reminder(items, slug, cmd="add", quiet=args.quiet)
 
 
 def cmd_update(args: argparse.Namespace) -> None:
@@ -2455,7 +2484,14 @@ def cmd_update(args: argparse.Namespace) -> None:
         ("summary", "category", "related_files", "context", "next_steps"),
     )
 
-    with _backlog_mutation("update", args.id, args.if_rev, announce=True) as m:
+    with _backlog_mutation(
+        "update",
+        args.id,
+        args.if_rev,
+        announce=True,
+        quiet=args.quiet,
+        verbose=args.verbose,
+    ) as m:
         m.journal_extra["fields"] = sorted(patch)
         if "status" in patch:
             _apply_status_transition(
@@ -2473,7 +2509,14 @@ def cmd_update(args: argparse.Namespace) -> None:
 
 def cmd_start(args: argparse.Namespace) -> None:
     """Handle ``start``: mark a backlog item in-progress."""
-    with _backlog_mutation("start", args.id, args.if_rev, announce=True) as m:
+    with _backlog_mutation(
+        "start",
+        args.id,
+        args.if_rev,
+        announce=True,
+        quiet=args.quiet,
+        verbose=args.verbose,
+    ) as m:
         if m.item.get("status") == "in-review":
             print(
                 f"[start] {m.slug} is in-review -- use 'approve <id>' to "
@@ -2493,7 +2536,14 @@ def cmd_start(args: argparse.Namespace) -> None:
 
 def cmd_done(args: argparse.Namespace) -> None:
     """Handle ``done``: mark a backlog item done."""
-    with _backlog_mutation("done", args.id, args.if_rev, announce=True) as m:
+    with _backlog_mutation(
+        "done",
+        args.id,
+        args.if_rev,
+        announce=True,
+        quiet=args.quiet,
+        verbose=args.verbose,
+    ) as m:
         if m.item.get("status") == "in-review":
             print(
                 f"[done] {m.slug} is in-review -- use 'approve <id>' to "
@@ -2517,7 +2567,14 @@ def cmd_review(args: argparse.Namespace) -> None:
     itself (re-pins the content hash after a drift refusal, clearing any
     stale feedback, without changing status).
     """
-    with _backlog_mutation("review", args.id, args.if_rev, announce=True) as m:
+    with _backlog_mutation(
+        "review",
+        args.id,
+        args.if_rev,
+        announce=True,
+        quiet=args.quiet,
+        verbose=args.verbose,
+    ) as m:
         if m.item.get("status") not in ("in-progress", "in-review"):
             print(
                 f"[review] {m.slug} is '{m.item.get('status')}' -- only an "
@@ -2534,7 +2591,14 @@ def cmd_review(args: argparse.Namespace) -> None:
 
 def cmd_approve(args: argparse.Namespace) -> None:
     """Handle ``approve``: accept an in-review item, marking it done."""
-    with _backlog_mutation("approve", args.id, args.if_rev, announce=True) as m:
+    with _backlog_mutation(
+        "approve",
+        args.id,
+        args.if_rev,
+        announce=True,
+        quiet=args.quiet,
+        verbose=args.verbose,
+    ) as m:
         if m.item.get("status") != "in-review":
             print(
                 f"[approve] {m.slug} is '{m.item.get('status')}', not "
@@ -2564,7 +2628,14 @@ def cmd_reject(args: argparse.Namespace) -> None:
     if not feedback:
         print("[reject] feedback is required and cannot be empty", file=sys.stderr)
         sys.exit(1)
-    with _backlog_mutation("reject", args.id, args.if_rev, announce=True) as m:
+    with _backlog_mutation(
+        "reject",
+        args.id,
+        args.if_rev,
+        announce=True,
+        quiet=args.quiet,
+        verbose=args.verbose,
+    ) as m:
         if m.item.get("status") != "in-review":
             print(
                 f"[reject] {m.slug} is '{m.item.get('status')}', not "
@@ -2620,7 +2691,14 @@ def cmd_gate_set(args: argparse.Namespace) -> None:
         )
         sys.exit(1)
 
-    with _backlog_mutation("gate-set", args.id, args.if_rev, announce=True) as m:
+    with _backlog_mutation(
+        "gate-set",
+        args.id,
+        args.if_rev,
+        announce=True,
+        quiet=args.quiet,
+        verbose=args.verbose,
+    ) as m:
         m.item["gate"] = {
             "required": required,
             "criteria": criteria,
@@ -2631,7 +2709,14 @@ def cmd_gate_set(args: argparse.Namespace) -> None:
 
 def cmd_gate_pass(args: argparse.Namespace) -> None:
     """Handle ``gate-pass``: record that an item's gate criteria are satisfied."""
-    with _backlog_mutation("gate-pass", args.id, args.if_rev, announce=True) as m:
+    with _backlog_mutation(
+        "gate-pass",
+        args.id,
+        args.if_rev,
+        announce=True,
+        quiet=args.quiet,
+        verbose=args.verbose,
+    ) as m:
         gate = m.item.get("gate")
         if not gate or not gate.get("required"):
             print(
@@ -2664,9 +2749,18 @@ def cmd_backfill_gate(args: argparse.Namespace) -> None:
         if not missing:
             print("[backfill-gate] nothing to do -- every item already has a gate")
             return
-        print(f"[backfill-gate] {len(missing)} item(s) missing 'gate':")
+        # The listing is payload in dry-run mode (nothing else follows) but
+        # pre-mutation chatter in --apply mode (render() follows below) --
+        # gate it only in the latter case, never in the former.
+        listing_quiet = args.quiet if args.apply else False
+        cli_common.qprint(
+            f"[backfill-gate] {len(missing)} item(s) missing 'gate':",
+            quiet=listing_quiet,
+        )
         for i in missing:
-            print(f"  {i['id']}: {i.get('summary', '')}")
+            cli_common.qprint(
+                f"  {i['id']}: {i.get('summary', '')}", quiet=listing_quiet
+            )
         if not args.apply:
             print(
                 f"[backfill-gate] dry run -- re-run with --apply to stamp "
@@ -2682,9 +2776,12 @@ def cmd_backfill_gate(args: argparse.Namespace) -> None:
         new_rev = bump_rev()
         save_items(items)
         append_journal_event(
-            _journal_entry("backfill-gate", "backlog", new_rev, count=len(missing))
+            _journal_entry("backfill-gate", "backlog", new_rev, count=len(missing)),
+            verbose=args.verbose,
         )
-        print(f"[backfill-gate] stamped {len(missing)} item(s)")
+        cli_common.qprint(
+            f"[backfill-gate] stamped {len(missing)} item(s)", quiet=args.quiet
+        )
         render(items, load_pending(), rev=new_rev)
     _maybe_dispatch_recap_regen()
 
@@ -2791,10 +2888,14 @@ def cmd_rename(args: argparse.Namespace) -> None:
                 new_rev,
                 slug=new_slug,
                 summary=f"renamed an item ({renamed_summary})",
-            )
+            ),
+            verbose=args.verbose,
         )
-        if not _agent_quiet():
-            print(f"[rename] {old_slug} → {new_slug}", file=sys.stderr)
+        cli_common.qprint(
+            f"[rename] {old_slug} → {new_slug}",
+            quiet=(args.quiet or _agent_quiet()),
+            file=sys.stderr,
+        )
         render(items, pending_items, rev=new_rev)
     _maybe_dispatch_recap_regen()
 
@@ -2805,7 +2906,9 @@ def cmd_block(args: argparse.Namespace) -> None:
     Refuses duplicates and cycle-creating blockers.
     """
     blocker = args.blocker
-    with _backlog_mutation("block", args.id, args.if_rev) as m:
+    with _backlog_mutation(
+        "block", args.id, args.if_rev, quiet=args.quiet, verbose=args.verbose
+    ) as m:
         index = build_index(m.items)
         if blocker not in index:
             print(f"[block] blocker not found: {blocker}", file=sys.stderr)
@@ -2827,7 +2930,9 @@ def cmd_block(args: argparse.Namespace) -> None:
 def cmd_unblock(args: argparse.Namespace) -> None:
     """Handle ``unblock``: remove a blocker from a backlog item."""
     blocker = args.blocker
-    with _backlog_mutation("unblock", args.id, args.if_rev) as m:
+    with _backlog_mutation(
+        "unblock", args.id, args.if_rev, quiet=args.quiet, verbose=args.verbose
+    ) as m:
         if blocker not in m.item.get("blocked_by", []):
             print(f"[unblock] {m.slug} is not blocked by {blocker}", file=sys.stderr)
             sys.exit(1)
@@ -2915,13 +3020,17 @@ def cmd_pending_add(args: argparse.Namespace) -> None:
         new_rev = bump_rev()
         save_pending(pending_items)
         append_journal_event(
-            _journal_entry("add", "pending", new_rev, slug=slug, summary=description)
+            _journal_entry("add", "pending", new_rev, slug=slug, summary=description),
+            verbose=args.verbose,
         )
-        if not _agent_quiet():
-            print(f"[pending add] {slug} — {description[:60]}", file=sys.stderr)
+        cli_common.qprint(
+            f"[pending add] {slug} — {description[:60]}",
+            quiet=(args.quiet or _agent_quiet()),
+            file=sys.stderr,
+        )
         render(backlog_items, pending_items, rev=new_rev)
     _maybe_dispatch_recap_regen()
-    _blocker_check_reminder(backlog_items, None, cmd="pending add")
+    _blocker_check_reminder(backlog_items, None, cmd="pending add", quiet=args.quiet)
 
 
 def cmd_pending_update(args: argparse.Namespace) -> None:
@@ -3004,9 +3113,16 @@ def cmd_pending_update(args: argparse.Namespace) -> None:
                 from_status=old_status if old_status != new_status else None,
                 to_status=new_status if old_status != new_status else None,
                 fields=sorted(patch),
-            )
+            ),
+            verbose=args.verbose,
         )
-        confirm_resolution("pending update", args.id, item, summary_key="description")
+        confirm_resolution(
+            "pending update",
+            args.id,
+            item,
+            summary_key="description",
+            quiet=args.quiet,
+        )
         render(items, pending_items, rev=new_rev)
     _maybe_dispatch_recap_regen()
 
@@ -3030,11 +3146,11 @@ def cmd_remove(args: argparse.Namespace) -> None:
     moment this process exits, leaving the stale slug on disk for the next
     command to reload.
     """
-    with _backlog_mutation("remove", args.id, args.if_rev) as m:
+    with _backlog_mutation("remove", args.id, args.if_rev, verbose=args.verbose) as m:
         m.items = [i for i in m.items if i["id"] != m.slug]
         _purge_inbound_refs({m.slug}, m.items, m.pending_items)
         save_pending(m.pending_items)
-        confirm_resolution("remove", args.id, m.item)
+        confirm_resolution("remove", args.id, m.item, quiet=args.quiet)
 
 
 def cmd_prune(args: argparse.Namespace) -> None:
@@ -3123,12 +3239,14 @@ def cmd_prune(args: argparse.Namespace) -> None:
             if pruned_slugs or pending_pruned_slugs:
                 save_pending(pending_keep)
             append_journal_event(
-                _journal_entry("prune", "backlog", new_rev, count=total_removed)
+                _journal_entry("prune", "backlog", new_rev, count=total_removed),
+                verbose=args.verbose,
             )
-            print(
+            cli_common.qprint(
                 f"[prune] removed {len(pruned_slugs)} backlog item(s), "
                 f"{len(pending_pruned_slugs)} pending item(s) — "
-                f"backup written to {DATA_DIR}"
+                f"backup written to {DATA_DIR}",
+                quiet=args.quiet,
             )
             # Match every other mutator: render prints the dashboard and the
             # item-map line so a caller's rev stays fresh.
@@ -3188,30 +3306,39 @@ if __name__ == "__main__" and set(dispatch) != set(SUBCOMMANDS):
     sys.exit(1)
 
 
-def main() -> None:
-    """Parse argv and dispatch to the matching subcommand handler.
+def build_parser() -> argparse.ArgumentParser:
+    """Build the full argument parser for every subcommand.
 
-    ``_internal-regen`` is handled off a raw argv check before argparse ever
-    runs — it's the hidden re-exec target :func:`_maybe_dispatch_recap_regen`
-    spawns for itself, deliberately not a real subcommand (not in
-    :data:`SUBCOMMANDS`/``dispatch``, never shown in ``--help``).
+    Extracted from :func:`main` so tests can exercise parsing (flag
+    placement, mutual exclusion) without going through ``sys.argv``.
     """
-    if len(sys.argv) > 1 and sys.argv[1] == "_internal-regen":
-        cmd_internal_regen()
-        return
-
     parser = argparse.ArgumentParser(
         description="deterministic backlog dashboard v2",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    cli_common.add_verbosity_args(parser)
+    # --quiet/-v are defined once, on every leaf subcommand parser only
+    # (via this shared `parents=` parser) -- never on `parser` itself, and
+    # never on the intermediate `pending` subparser below. Argparse's
+    # subparser dispatch parses the remaining argv into a fresh
+    # sub-namespace and unconditionally copies every attribute (including
+    # an unset flag's default) back onto the outer namespace, so defining
+    # the flags in more than one place along a single dispatch path lets an
+    # outer-set value get silently reset by the inner parse.
+    verbosity_parent = argparse.ArgumentParser(add_help=False)
+    cli_common.add_verbosity_args(verbosity_parent)
     sub = parser.add_subparsers(
         dest="cmd",
         metavar="{" + ",".join(SUBCOMMANDS) + "}",
     )
 
-    sub.add_parser("render", help="render dashboard (pure — no side effects)")
-    p = sub.add_parser("list", help="flat tab-separated output")
+    sub.add_parser(
+        "render",
+        help="render dashboard (pure — no side effects)",
+        parents=[verbosity_parent],
+    )
+    p = sub.add_parser(
+        "list", help="flat tab-separated output", parents=[verbosity_parent]
+    )
     p.add_argument(
         "--status",
         choices=sorted(VALID_STATUSES),
@@ -3219,82 +3346,124 @@ def main() -> None:
         help="only show items with this status",
     )
 
-    p = sub.add_parser("show", help="print full JSON for an item")
+    p = sub.add_parser(
+        "show", help="print full JSON for an item", parents=[verbosity_parent]
+    )
     _add_id_arg(p)
 
-    p = sub.add_parser("add", help="append a new item (id required in JSON)")
+    p = sub.add_parser(
+        "add",
+        help="append a new item (id required in JSON)",
+        parents=[verbosity_parent],
+    )
     p.add_argument(
         "json",
         metavar='\'{"id": "my-slug", "summary": "...", "priority": "high"}\'',
     )
 
-    p = sub.add_parser("update", help="merge JSON patch into an item")
+    p = sub.add_parser(
+        "update", help="merge JSON patch into an item", parents=[verbosity_parent]
+    )
     _add_id_arg(p)
     p.add_argument("patch", metavar='\'{"field": "value", "priority": "high"}\'')
     _add_if_rev_arg(p)
 
-    p = sub.add_parser("start", help="mark item in-progress")
+    p = sub.add_parser(
+        "start", help="mark item in-progress", parents=[verbosity_parent]
+    )
     _add_id_arg(p)
     _add_if_rev_arg(p)
 
-    p = sub.add_parser("done", help="mark item done")
-    _add_id_arg(p)
-    _add_if_rev_arg(p)
-
-    p = sub.add_parser("review", help="submit (or re-submit) an item for review")
-    _add_id_arg(p)
-    _add_if_rev_arg(p)
-
-    p = sub.add_parser("approve", help="approve an in-review item, marking it done")
+    p = sub.add_parser("done", help="mark item done", parents=[verbosity_parent])
     _add_id_arg(p)
     _add_if_rev_arg(p)
 
     p = sub.add_parser(
-        "reject", help="reject an in-review item, sending it back to in-progress"
+        "review",
+        help="submit (or re-submit) an item for review",
+        parents=[verbosity_parent],
+    )
+    _add_id_arg(p)
+    _add_if_rev_arg(p)
+
+    p = sub.add_parser(
+        "approve",
+        help="approve an in-review item, marking it done",
+        parents=[verbosity_parent],
+    )
+    _add_id_arg(p)
+    _add_if_rev_arg(p)
+
+    p = sub.add_parser(
+        "reject",
+        help="reject an in-review item, sending it back to in-progress",
+        parents=[verbosity_parent],
     )
     _add_id_arg(p)
     p.add_argument("feedback", metavar="<feedback>")
     _add_if_rev_arg(p)
 
-    p = sub.add_parser("gate-set", help="classify an item's judgment-verification gate")
+    p = sub.add_parser(
+        "gate-set",
+        help="classify an item's judgment-verification gate",
+        parents=[verbosity_parent],
+    )
     _add_id_arg(p)
     p.add_argument("json", metavar='\'{"required": true, "criteria": ["..."]}\'')
     _add_if_rev_arg(p)
 
     p = sub.add_parser(
-        "gate-pass", help="record that an item's gate criteria are satisfied"
+        "gate-pass",
+        help="record that an item's gate criteria are satisfied",
+        parents=[verbosity_parent],
     )
     _add_id_arg(p)
     _add_if_rev_arg(p)
 
     p = sub.add_parser(
-        "backfill-gate", help="stamp an explicit inert gate on legacy items"
+        "backfill-gate",
+        help="stamp an explicit inert gate on legacy items",
+        parents=[verbosity_parent],
     )
     p.add_argument(
         "--apply", action="store_true", help="write changes (default: dry run)"
     )
 
-    p = sub.add_parser("rename", help="rename slug (rewrites all references)")
+    p = sub.add_parser(
+        "rename",
+        help="rename slug (rewrites all references)",
+        parents=[verbosity_parent],
+    )
     _add_id_arg(p, "old_slug")
     p.add_argument("new_slug")
     _add_if_rev_arg(p, "old_slug")
 
-    p = sub.add_parser("remove", help="permanently remove one item by slug or number")
+    p = sub.add_parser(
+        "remove",
+        help="permanently remove one item by slug or number",
+        parents=[verbosity_parent],
+    )
     _add_id_arg(p)
     _add_if_rev_arg(p)
 
-    p = sub.add_parser("block", help="add a blocker to an item")
-    _add_id_arg(p)
-    p.add_argument("blocker", metavar="<blocker-slug>")
-    _add_if_rev_arg(p)
-
-    p = sub.add_parser("unblock", help="remove a blocker from an item")
+    p = sub.add_parser(
+        "block", help="add a blocker to an item", parents=[verbosity_parent]
+    )
     _add_id_arg(p)
     p.add_argument("blocker", metavar="<blocker-slug>")
     _add_if_rev_arg(p)
 
     p = sub.add_parser(
-        "prune", help="permanently remove done/resolved items older than 14 days"
+        "unblock", help="remove a blocker from an item", parents=[verbosity_parent]
+    )
+    _add_id_arg(p)
+    p.add_argument("blocker", metavar="<blocker-slug>")
+    _add_if_rev_arg(p)
+
+    p = sub.add_parser(
+        "prune",
+        help="permanently remove done/resolved items older than 14 days",
+        parents=[verbosity_parent],
     )
     p.add_argument(
         "--force",
@@ -3303,7 +3472,11 @@ def main() -> None:
         help="required to prevent accidental prune",
     )
 
-    p = sub.add_parser("recap", help="print a friendly prose recap of recent activity")
+    p = sub.add_parser(
+        "recap",
+        help="print a friendly prose recap of recent activity",
+        parents=[verbosity_parent],
+    )
     p.add_argument(
         "--refresh",
         action="store_true",
@@ -3316,10 +3489,15 @@ def main() -> None:
         help="force this backend instead of priority-order fallback",
     )
 
+    # No `parents=[verbosity_parent]` here: `pending` has its own nested
+    # subparsers below, and attaching the flags at this intermediate level
+    # too would reintroduce the same namespace-merge bug one level down.
     pending = sub.add_parser("pending", help="manage pending (waiting-on-reply) items")
     pending_sub = pending.add_subparsers(dest="pending_cmd")
 
-    p = pending_sub.add_parser("add", help="track a new pending item")
+    p = pending_sub.add_parser(
+        "add", help="track a new pending item", parents=[verbosity_parent]
+    )
     p.add_argument(
         "json",
         metavar='\'{"id", "description", "kind", ["source_ref"], ["context"], '
@@ -3327,14 +3505,39 @@ def main() -> None:
     )
 
     p = pending_sub.add_parser(
-        "update", help="merge a JSON patch into an existing pending item"
+        "update",
+        help="merge a JSON patch into an existing pending item",
+        parents=[verbosity_parent],
     )
     _add_id_arg(p)
     p.add_argument("patch", metavar='\'{"status": "reply_received", ...}\'')
     _add_if_rev_arg(p)
 
-    pending_sub.add_parser("list", help="list pending items as JSON lines")
+    pending_sub.add_parser(
+        "list", help="list pending items as JSON lines", parents=[verbosity_parent]
+    )
 
+    # Stashed for `main`'s no-pending-subcommand help path -- argparse has
+    # no public lookup from a parser back to one of its own subparsers by
+    # name.
+    parser.pending_parser = pending  # type: ignore[attr-defined]
+
+    return parser
+
+
+def main() -> None:
+    """Parse argv and dispatch to the matching subcommand handler.
+
+    ``_internal-regen`` is handled off a raw argv check before argparse ever
+    runs — it's the hidden re-exec target :func:`_maybe_dispatch_recap_regen`
+    spawns for itself, deliberately not a real subcommand (not in
+    :data:`SUBCOMMANDS`/``dispatch``, never shown in ``--help``).
+    """
+    if len(sys.argv) > 1 and sys.argv[1] == "_internal-regen":
+        cmd_internal_regen()
+        return
+
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.cmd == "pending":
@@ -3346,7 +3549,7 @@ def main() -> None:
         if args.pending_cmd in pending_dispatch:
             pending_dispatch[args.pending_cmd](args)
         else:
-            pending.print_help()
+            parser.pending_parser.print_help()  # type: ignore[attr-defined]
             sys.exit(1)
     elif args.cmd in dispatch:
         dispatch[args.cmd](args)
