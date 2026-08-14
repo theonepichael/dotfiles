@@ -4,6 +4,10 @@ backend. Single-round by design: the multi-round loop, plan revision, and
 convergence judgment all require LLM reasoning and live in second-opinion.md's
 prose instructions, not here.
 
+Flags
+  --quiet, -q    suppress non-essential output
+  --verbose, -v  emit extra diagnostic messages to stderr
+
 Requires Python 3.12+.
 """
 
@@ -17,6 +21,7 @@ from pathlib import Path
 from types import FrameType
 from typing import NoReturn
 
+import cli_common
 import llm_backends
 from llm_backends import (
     BackendError,
@@ -246,9 +251,9 @@ def cmd_review(args: argparse.Namespace) -> None:
         try:
             critique = BACKEND_RUNNERS[backend](prompt)
         except BackendError as exc:
-            print(
+            cli_common.vprint(
                 f"[second_opinion] {backend_label(backend)} failed: {exc}",
-                file=sys.stderr,
+                verbose=getattr(args, "verbose", False),
             )
             failures.append(f"{backend}: {exc}")
             continue
@@ -267,6 +272,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="one-shot adversarial critique of a plan from a non-Claude backend",
     )
+    cli_common.add_verbosity_args(parser)
     sub = parser.add_subparsers(dest="cmd", metavar="{detect,review}")
 
     sub.add_parser("detect", help="list available backends as JSON")

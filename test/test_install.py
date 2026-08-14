@@ -22,6 +22,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "claude" / "scripts"))
 
 import depart  # noqa: E402 — must follow sys.path.insert above
 import install  # noqa: E402 — must follow sys.path.insert above

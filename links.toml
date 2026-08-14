@@ -113,6 +113,10 @@ src = "claude/scripts/dev_status.py"
 dest = "~/.claude/scripts/dev_status.py"
 
 [[link]]
+src = "claude/scripts/cli_common.py"
+dest = "~/.claude/scripts/cli_common.py"
+
+[[link]]
 src = "claude/scripts/llm_backends.py"
 dest = "~/.claude/scripts/llm_backends.py"
 

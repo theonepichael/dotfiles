@@ -288,7 +288,7 @@ class CmdReviewTests(unittest.TestCase):
                 },
             ):
                 with patch("sys.stdout", out), patch("sys.stderr", err):
-                    second_opinion.cmd_review(ns(plan="my plan"))
+                    second_opinion.cmd_review(ns(plan="my plan", verbose=True))
         self.assertIn("opencode's critique", out.getvalue())
         self.assertIn("agy broke", err.getvalue())
 

@@ -10,6 +10,10 @@ mutate it via `dev_status.py pending add/update`, not here). All sources
 that support a time window use the same `since` boundary (last working day,
 or `--date` to override). See standup_adapters.py for the adapter
 interfaces.
+
+Flags
+  --quiet, -q    suppress non-essential output
+  --verbose, -v  emit extra diagnostic messages to stderr
 """
 
 import argparse
@@ -20,6 +24,7 @@ from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+import cli_common
 from standup_adapters import ADAPTERS, NotConfiguredError
 
 DATA_DIR = Path.home() / ".claude" / "data" / "standup"
@@ -273,6 +278,7 @@ def cmd_fetch(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="/standup skill CLI")
+    cli_common.add_verbosity_args(parser)
     sub = parser.add_subparsers(dest="cmd")
 
     p = sub.add_parser("fetch", help="gather all sources as JSON")

@@ -720,7 +720,7 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         with patch.object(ssdc, "cmd_sync_to_seed") as mock_cmd:
             mock_cmd.return_value = 0
             ssdc.main(["sync-to-seed", "--dotfiles-root", str(custom_root)])
-        mock_cmd.assert_called_once_with(custom_root)
+        mock_cmd.assert_called_once_with(custom_root, quiet=False)
 
     # ── _try_parse_json ───────────────────────────────────────────────────
 

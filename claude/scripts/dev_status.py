@@ -8,6 +8,10 @@ state, applies its change, writes atomically, and bumps a monotonic
 revision counter so numeric positional references (e.g. ``done 3``) can be
 guarded against staleness with ``--if-rev``.
 
+Flags
+  --quiet, -q    suppress non-essential output
+  --verbose, -v  emit extra diagnostic messages to stderr
+
 Requires Python 3.12+.
 """
 
@@ -29,6 +33,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import NotRequired, TextIO, TypedDict, cast
 
+import cli_common
 import llm_backends
 
 DATA_DIR = Path.home() / ".claude" / "data" / "backlog"
@@ -3199,6 +3204,7 @@ def main() -> None:
         description="deterministic backlog dashboard v2",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    cli_common.add_verbosity_args(parser)
     sub = parser.add_subparsers(
         dest="cmd",
         metavar="{" + ",".join(SUBCOMMANDS) + "}",
