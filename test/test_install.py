@@ -2960,3 +2960,483 @@ def test_depart_preserves_linger_when_other_units_depend_on_it(
     assert code == 1  # incomplete: linger left enabled is reported unresolved
     assert live["enabled"] is False  # watchcommit itself was still disabled
     assert live["linger"] is True  # but linger was correctly preserved
+
+
+# ── --check-links: read-only links.toml audit ──────────────────────────────
+
+
+CHECK_LINKS_TOML = """\
+[[link]]
+src = "zsh/.zshrc"
+dest = "~/.zshrc"
+
+[[link]]
+src = "claude/CLAUDE.md"
+dest = "~/.claude/CLAUDE.md"
+harness = "claude"
+
+[[link]]
+src = "copilot/instructions.md"
+dest = "~/.copilot/instructions.md"
+harness = "copilot"
+
+[[link]]
+src = "karabiner/karabiner.json"
+dest = "~/.config/karabiner/karabiner.json"
+platform = "mac"
+"""
+
+
+@pytest.fixture
+def fake_repo(tmp_path):
+    """A throwaway dotfiles repo with its own links.toml.
+
+    Deliberately not the real REPO_ROOT: these tests delete and rename
+    sources to provoke findings, which must never touch tracked files.
+    """
+    repo = tmp_path / "repo"
+    for relative in (
+        "zsh/.zshrc",
+        "claude/CLAUDE.md",
+        "copilot/instructions.md",
+        "karabiner/karabiner.json",
+    ):
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{relative}\n")
+    (repo / "links.toml").write_text(CHECK_LINKS_TOML)
+    return repo
+
+
+def wire_check_links(ctx, *pairs):
+    """Symlink the given (src, dest) relative pairs, recording them as an install."""
+    for src, dest in pairs:
+        install.symlink(ctx, ctx.dotfiles / src, install.expand_dest(dest, ctx.home))
+
+
+def snapshot_tree(root):
+    """Record every path under ``root`` with enough detail to detect a mutation."""
+    state = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            state[str(path)] = ("symlink", os.readlink(path))
+        elif path.is_dir():
+            state[str(path)] = ("dir", "")
+        else:
+            state[str(path)] = ("file", path.read_text())
+    return state
+
+
+def check_links_ctx(home, fake_repo, **kwargs):
+    kwargs.setdefault("harnesses", ("claude", "copilot"))
+    return make_ctx(home, dotfiles=fake_repo, **kwargs)
+
+
+def test_check_links_clean_state_reports_nothing(home, fake_repo, capsys):
+    ctx = check_links_ctx(home, fake_repo)
+    wire_check_links(
+        ctx,
+        ("zsh/.zshrc", "~/.zshrc"),
+        ("claude/CLAUDE.md", "~/.claude/CLAUDE.md"),
+        ("copilot/instructions.md", "~/.copilot/instructions.md"),
+    )
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "every applicable link is" in out
+    for bucket in install.CHECK_BUCKETS:
+        assert f"{bucket} (" not in out
+
+
+def test_check_links_detects_broken_source(home, fake_repo, capsys):
+    ctx = check_links_ctx(home, fake_repo)
+    wire_check_links(ctx, ("zsh/.zshrc", "~/.zshrc"))
+    (fake_repo / "zsh" / ".zshrc").unlink()
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "broken-source (1)" in out
+    assert "~/.zshrc" in out
+    assert "no longer exists in the repo" in out
+
+
+def test_check_links_detects_orphaned_link(home, fake_repo, capsys):
+    """A dest the manifest recorded that links.toml no longer produces."""
+    ctx = check_links_ctx(home, fake_repo)
+    orphan = home / ".oldrc"
+    orphan.symlink_to(fake_repo / "zsh" / ".zshrc")
+    ctx.manifest.record_symlink(orphan, fake_repo / "zsh" / ".zshrc")
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "orphaned (1)" in out
+    assert "~/.oldrc" in out
+    assert "no links.toml entry produces it anymore" in out
+
+
+def test_check_links_ignores_orphan_already_removed(home, fake_repo, capsys):
+    """A recorded dest that a past rollback already deleted is not a finding."""
+    ctx = check_links_ctx(home, fake_repo)
+    ctx.manifest.record_symlink(home / ".oldrc", fake_repo / "zsh" / ".zshrc")
+    capsys.readouterr()
+
+    assert install.do_check_links(ctx) == 0
+
+
+def test_check_links_ignores_gated_off_entry_as_orphan(home, fake_repo, capsys):
+    """A mac-only entry seen from Linux is gated off, not removed from links.toml."""
+    ctx = check_links_ctx(home, fake_repo, system="Linux")
+    karabiner = home / ".config" / "karabiner" / "karabiner.json"
+    karabiner.parent.mkdir(parents=True)
+    karabiner.symlink_to(fake_repo / "karabiner" / "karabiner.json")
+    ctx.manifest.record_symlink(karabiner, fake_repo / "karabiner" / "karabiner.json")
+    capsys.readouterr()
+
+    assert install.do_check_links(ctx) == 0
+
+
+def test_check_links_detects_wrong_target(home, fake_repo, capsys):
+    ctx = check_links_ctx(home, fake_repo)
+    dest = home / ".zshrc"
+    dest.symlink_to(fake_repo / "claude" / "CLAUDE.md")
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "wrong-target (1)" in out
+    assert f"but links.toml says {fake_repo / 'zsh' / '.zshrc'}" in out
+
+
+def test_check_links_detects_real_file_where_a_link_belongs(home, fake_repo, capsys):
+    ctx = check_links_ctx(home, fake_repo)
+    (home / ".zshrc").write_text("hand-written\n")
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "not-a-symlink (1)" in out
+    assert (
+        f"a real file sits where a symlink to {fake_repo / 'zsh' / '.zshrc'} "
+        "belongs" in out
+    )
+
+
+def test_check_links_ignores_unrelated_files(home, fake_repo, capsys):
+    """Files and symlinks the installer never owned are none of its business."""
+    ctx = check_links_ctx(home, fake_repo)
+    wire_check_links(ctx, ("zsh/.zshrc", "~/.zshrc"))
+    (home / ".bashrc").write_text("not ours\n")
+    (home / ".dangling").symlink_to(home / "nowhere")
+    (home / "notes").mkdir()
+    capsys.readouterr()
+
+    assert install.do_check_links(ctx) == 0
+
+
+def test_check_links_ignores_uninstalled_entries(home, fake_repo, capsys):
+    """A dest that simply was never installed is not yet a problem."""
+    ctx = check_links_ctx(home, fake_repo)
+    capsys.readouterr()
+
+    assert install.do_check_links(ctx) == 0
+
+
+def test_check_links_without_harness_widens_to_every_harness(home, fake_repo, capsys):
+    """No --harness audits all harnesses, so a copilot link is still checked."""
+    wiring = check_links_ctx(home, fake_repo)
+    wire_check_links(wiring, ("copilot/instructions.md", "~/.copilot/instructions.md"))
+    (fake_repo / "copilot" / "instructions.md").unlink()
+    capsys.readouterr()
+
+    code = install.do_check_links(check_links_ctx(home, fake_repo, harnesses=()))
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "broken-source (1)" in out
+    assert "~/.copilot/instructions.md" in out
+
+
+def test_check_links_reports_several_buckets_at_once(home, fake_repo, capsys):
+    ctx = check_links_ctx(home, fake_repo)
+    wire_check_links(
+        ctx,
+        ("zsh/.zshrc", "~/.zshrc"),
+        ("claude/CLAUDE.md", "~/.claude/CLAUDE.md"),
+    )
+    (fake_repo / "zsh" / ".zshrc").unlink()
+    orphan = home / ".oldrc"
+    orphan.symlink_to(fake_repo / "claude" / "CLAUDE.md")
+    ctx.manifest.record_symlink(orphan, fake_repo / "claude" / "CLAUDE.md")
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "broken-source (1)" in out
+    assert "orphaned (1)" in out
+    assert "2 link problem(s) found" in out
+
+
+def test_check_links_changes_nothing_on_disk(home, fake_repo, capsys):
+    """The whole point: an audit that finds problems still fixes none of them."""
+    ctx = check_links_ctx(home, fake_repo)
+    wire_check_links(
+        ctx,
+        ("zsh/.zshrc", "~/.zshrc"),
+        ("claude/CLAUDE.md", "~/.claude/CLAUDE.md"),
+    )
+    (fake_repo / "zsh" / ".zshrc").unlink()
+    (home / ".copilot").mkdir()
+    (home / ".copilot" / "instructions.md").write_text("hand-written\n")
+    orphan = home / ".oldrc"
+    orphan.symlink_to(fake_repo / "claude" / "CLAUDE.md")
+    ctx.manifest.record_symlink(orphan, fake_repo / "claude" / "CLAUDE.md")
+
+    before_home = snapshot_tree(home)
+    before_repo = snapshot_tree(fake_repo)
+
+    assert install.do_check_links(ctx) == 1
+
+    assert snapshot_tree(home) == before_home
+    assert snapshot_tree(fake_repo) == before_repo
+
+
+def test_check_links_missing_links_toml_exits_2(home, tmp_path, monkeypatch, capsys):
+    empty_repo = tmp_path / "empty"
+    empty_repo.mkdir()
+    ctx = make_ctx(home, dotfiles=empty_repo)
+    monkeypatch.setattr(install, "build_context", lambda opts: ctx)
+
+    code = install.main(["--check-links"])
+
+    assert code == 2
+    assert "could not read the symlink table" in capsys.readouterr().err
+
+
+def test_main_dispatches_check_links_without_installing(
+    home, fake_repo, monkeypatch, capsys
+):
+    ctx = check_links_ctx(home, fake_repo)
+    monkeypatch.setattr(install, "build_context", lambda opts: ctx)
+    monkeypatch.setattr(
+        install,
+        "run_install",
+        lambda *a, **k: pytest.fail("--check-links must not run the installer"),
+    )
+
+    assert install.main(["--check-links"]) == 0
+    assert "links.toml audit (read-only)" in capsys.readouterr().out
+
+
+def test_check_links_alone_parses():
+    opts = install.parse_args(["--check-links"])
+    assert opts.check_links is True
+    assert opts.harnesses == ()
+
+
+def test_check_links_accepts_harness_and_profile():
+    opts = install.parse_args(["--check-links", "--harness=claude", "--profile=work"])
+    assert opts.check_links is True
+    assert opts.harnesses == ("claude",)
+    assert opts.profile == "work"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--check-links", "--rollback"],
+        ["--check-links", "--wipe"],
+        ["--check-links", "--force"],
+        ["--check-links", "--reseed"],
+        ["--check-links", "--no-nvim-pin"],
+        ["--check-links", "--dry-run"],
+    ],
+)
+def test_check_links_rejects_mutating_flags(argv, capsys):
+    code, err = parse_error(argv, capsys)
+    assert code == 2
+    assert "--check-links must be used alone, apart from --harness and --profile" in err
+
+
+def test_depart_takes_precedence_over_check_links(capsys):
+    """--depart --check-links names the --depart conflict, matching --rollback."""
+    code, err = parse_error(["--depart", "--check-links"], capsys)
+    assert code == 2
+    assert "--depart must be used alone" in err
+
+
+def test_usage_documents_check_links(capsys):
+    with pytest.raises(SystemExit):
+        install.parse_args(["--help"])
+    assert "--check-links" in capsys.readouterr().out
+
+
+# ── --check-links: message units and the worktree/second-checkout case ──────
+
+
+@pytest.fixture
+def other_checkout(tmp_path, fake_repo):
+    """A second checkout of the same repo, the way a git worktree looks.
+
+    The audit's fake_repo fixtures all share one root, which is exactly why
+    a real smoke test from a worktree — where every live link points at the
+    main checkout — surfaced 28 bogus wrong-target findings that no unit
+    test could have caught.
+    """
+    other = tmp_path / "repo-worktree"
+    for path in sorted(fake_repo.rglob("*")):
+        if path.is_dir():
+            continue
+        target = other / path.relative_to(fake_repo)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(path.read_text())
+    (other / "install.py").write_text("# stub\n")
+    (fake_repo / "install.py").write_text("# stub\n")
+    return other
+
+
+def test_check_links_messages_print_absolute_expected_paths(home, fake_repo, capsys):
+    """A finding must show the path the comparison actually used, not spec.src.
+
+    Printing the raw relative src next to a resolved absolute target makes a
+    correct finding read like a tool bug, and hides the real cause.
+    """
+    ctx = check_links_ctx(home, fake_repo)
+    (home / ".zshrc").symlink_to(fake_repo / "claude" / "CLAUDE.md")
+    (home / ".claude").mkdir()
+    (home / ".claude" / "CLAUDE.md").write_text("hand-written\n")
+    capsys.readouterr()
+
+    assert install.do_check_links(ctx) == 1
+
+    out = capsys.readouterr().out
+    assert f"but links.toml says {fake_repo / 'zsh' / '.zshrc'}" in out
+    assert f"a symlink to {fake_repo / 'claude' / 'CLAUDE.md'} belongs" in out
+    # The bare relative form must not appear as the expected value anywhere.
+    assert "says zsh/.zshrc" not in out
+    assert "symlink to claude/CLAUDE.md belongs" not in out
+
+
+def test_check_links_broken_source_message_is_absolute(home, fake_repo, capsys):
+    ctx = check_links_ctx(home, fake_repo)
+    wire_check_links(ctx, ("zsh/.zshrc", "~/.zshrc"))
+    (fake_repo / "zsh" / ".zshrc").unlink()
+    capsys.readouterr()
+
+    assert install.do_check_links(ctx) == 1
+    assert f"links to {fake_repo / 'zsh' / '.zshrc'}" in capsys.readouterr().out
+
+
+def test_check_links_from_a_worktree_collapses_to_one_note(
+    home, fake_repo, other_checkout, capsys
+):
+    """Auditing from a worktree must not drown the report in wrong-target lines."""
+    wiring = check_links_ctx(home, fake_repo)
+    wire_check_links(
+        wiring,
+        ("zsh/.zshrc", "~/.zshrc"),
+        ("claude/CLAUDE.md", "~/.claude/CLAUDE.md"),
+        ("copilot/instructions.md", "~/.copilot/instructions.md"),
+    )
+    capsys.readouterr()
+
+    code = install.do_check_links(check_links_ctx(home, other_checkout))
+
+    out = capsys.readouterr().out
+    assert code == 0, "a worktree audit of a healthy machine is not a failure"
+    assert "wrong-target" not in out
+    assert f"note: 3 link(s) point into {fake_repo}" in out
+    assert f"rather than this checkout ({other_checkout})" in out
+    assert "running from a worktree" in out
+
+
+def test_check_links_worktree_note_reports_entries_not_audited(
+    home, fake_repo, other_checkout, capsys
+):
+    wiring = check_links_ctx(home, fake_repo)
+    wire_check_links(wiring, ("zsh/.zshrc", "~/.zshrc"))
+    capsys.readouterr()
+
+    assert install.do_check_links(check_links_ctx(home, other_checkout)) == 0
+    # 4 entries in links.toml, 1 of them excluded as pointing at the other
+    # checkout — the count must show what was actually looked at.
+    assert "3 of 4 entries checked" in capsys.readouterr().out
+
+
+def test_check_links_dangling_link_into_another_checkout_still_reported(
+    home, fake_repo, other_checkout, capsys
+):
+    """A dead link is a real problem whichever checkout it aims at."""
+    wiring = check_links_ctx(home, fake_repo)
+    wire_check_links(wiring, ("zsh/.zshrc", "~/.zshrc"))
+    (fake_repo / "zsh" / ".zshrc").unlink()
+    capsys.readouterr()
+
+    code = install.do_check_links(check_links_ctx(home, other_checkout))
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "broken-source (1)" in out
+    assert f"links to {fake_repo / 'zsh' / '.zshrc'}" in out
+    assert "dangling symlink" in out
+
+
+def test_check_links_worktree_note_does_not_mask_real_findings(
+    home, fake_repo, other_checkout, capsys
+):
+    """The note is informational; genuine findings still drive exit 1."""
+    wiring = check_links_ctx(home, fake_repo)
+    wire_check_links(wiring, ("zsh/.zshrc", "~/.zshrc"))
+    orphan = home / ".oldrc"
+    orphan.symlink_to(fake_repo / "zsh" / ".zshrc")
+    wiring.manifest.record_symlink(orphan, fake_repo / "zsh" / ".zshrc")
+    capsys.readouterr()
+
+    code = install.do_check_links(check_links_ctx(home, other_checkout))
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "note: 1 link(s) point into" in out
+    assert "orphaned (1)" in out
+    assert "1 link problem(s) found" in out
+
+
+def test_check_links_unrelated_target_is_still_wrong_target(
+    home, fake_repo, tmp_path, capsys
+):
+    """Only *another checkout of this repo* gets the benefit of the doubt."""
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "zsh").mkdir(parents=True)
+    (elsewhere / "zsh" / ".zshrc").write_text("someone else's\n")
+    ctx = check_links_ctx(home, fake_repo)
+    (home / ".zshrc").symlink_to(elsewhere / "zsh" / ".zshrc")
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 1, "a non-checkout directory is not a worktree, it is a bad link"
+    assert "wrong-target (1)" in out
+
+
+def test_implied_repo_root_requires_a_full_tail_match():
+    assert install._implied_repo_root(Path("/a/b/zsh/.zshrc"), "zsh/.zshrc") == Path(
+        "/a/b"
+    )
+    assert install._implied_repo_root(Path("/a/b/other/.zshrc"), "zsh/.zshrc") is None
+    assert install._implied_repo_root(Path("/zsh/.zshrc"), "zsh/.zshrc") == Path("/")
+    assert install._implied_repo_root(Path("/zsh"), "zsh/.zshrc") is None

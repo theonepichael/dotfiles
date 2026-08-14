@@ -238,6 +238,66 @@ watchcommit launchd agent, Rectangle preferences, and the Caps Lock→Escape
 remap are deliberately out of scope — none of them have a clean
 filesystem-delete equivalent.
 
+## Auditing the symlinks (`--check-links`)
+
+`--check-links` compares the live symlinks against `links.toml` and prints
+what it finds. It is strictly read-only — nothing is created, removed, or
+repointed — so it is safe to run at any time:
+
+```sh
+./install.sh --check-links                     # audit every harness's entries
+./install.sh --check-links --harness=claude    # scope it to one harness
+```
+
+This covers a gap neither of the flags above does. `--rollback` only inspects
+destinations the history recorded, and only asks whether the link's target
+string still matches what was recorded; `--depart` compares against a
+snapshot taken at install time. Neither notices that a link's repo-side
+source was deleted or renamed — and a plain re-run does not either, since the
+installer never checks that a source exists before linking to it (Unix
+happily creates a dangling symlink), and stops visiting a destination
+entirely the moment its `links.toml` entry goes away.
+
+Four buckets are reported:
+
+- **broken-source** — the link points exactly where `links.toml` says, but
+  that file no longer exists in the repo. A dangling symlink.
+- **wrong-target** — the destination is a symlink, but to something other
+  than its `links.toml` source (typically a source renamed without the live
+  link being updated).
+- **not-a-symlink** — a real file or directory sits where a link belongs.
+  The next install run would back it up and replace it.
+- **orphaned** — a symlink an earlier run recorded in the history that no
+  `links.toml` entry produces anymore, still sitting on disk. Nothing else
+  in the installer would ever visit it again.
+
+`--harness` and `--profile` scope which entries are considered; with neither,
+every harness's entries are checked. Widening cannot produce false positives,
+because every bucket requires the destination to already exist on disk — an
+entry for a harness this machine never provisioned has nothing to report on.
+Destinations gated off by platform, WSL, or profile are still exempt from the
+orphan check, since a gated-off entry has not been removed from `links.toml`.
+
+**Running it from a worktree.** The audit compares against the checkout it was
+launched from, so from a worktree every live link legitimately points at the
+main checkout instead. Rather than reporting all of them as wrong targets,
+links resolving to the *same file in another checkout of this repo* are
+collapsed into one informational note and excluded from the exit code:
+
+```
+note: 28 link(s) point into /home/you/dotfiles rather than this checkout
+(/home/you/dotfiles-my-branch) — you are running from a worktree, so those
+entries were not audited. Re-run --check-links from that checkout to include
+them.
+```
+
+A link into another checkout that is *dangling* is still reported as
+`broken-source` — a dead link is a real problem whichever checkout it aims at.
+
+**Exit codes.** **0** — nothing wrong. **1** — at least one finding.
+**2** — `links.toml` itself could not be read, or the flag was combined with
+another one (only `--harness` and `--profile` are allowed alongside it).
+
 ## Departure mode (`--depart`)
 
 `--depart` removes or restores everything a **future** install run owns on

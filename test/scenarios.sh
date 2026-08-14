@@ -196,6 +196,7 @@ check "--help exits 0" bash -c "[[ $help_code -eq 0 ]]"
 check "--help prints usage" grep -q "^usage:" /tmp/help.out
 check "--help documents --wipe" grep -q -- "--wipe" /tmp/help.out
 check "--help documents --depart" grep -q -- "--depart" /tmp/help.out
+check "--help documents --check-links" grep -q -- "--check-links" /tmp/help.out
 
 ./install.sh >/tmp/noharness.out 2>&1
 noharness_code=$?
