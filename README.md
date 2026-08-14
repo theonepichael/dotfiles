@@ -238,6 +238,104 @@ watchcommit launchd agent, Rectangle preferences, and the Caps Lock→Escape
 remap are deliberately out of scope — none of them have a clean
 filesystem-delete equivalent.
 
+## Departure mode (`--depart`)
+
+`--depart` removes or restores everything a **future** install run owns on
+this machine — files, symlinks, packages, runtimes, and services — leaving
+no local, user-facing trace that `install.sh` was ever run. It's scoped to
+Ubuntu/WSL (apt) and Fedora (dnf); it does nothing on macOS.
+
+```sh
+./install.sh --depart              # preflight + interactive DEPART confirmation
+./install.sh --depart --dry-run    # preview only, never prompts, never mutates
+./install.sh --depart --yes        # skip the confirmation prompt
+```
+
+**Future installs only.** Departure reasons entirely from a baseline
+snapshot captured automatically at the *start* of a normal install run
+(before any package, symlink, or service mutation happens) — it does not
+and cannot recover a machine set up before this feature existed, and it
+never reads `history.jsonl` (that log stays exactly what it always was: the
+input to `--rollback`, untouched by `--depart`). A machine with no recorded
+baseline refuses immediately (exit 2) rather than guessing.
+
+**Not forensic erasure.** This is local-footprint cleanup — installed
+files, symlinks, packages, runtimes, and services — not a guarantee against
+shell history, package-manager logs, or any record outside what
+`install.sh` itself created. If you need an actual guaranteed-pristine
+reset, see [Nuclear reset (WSL)](#nuclear-reset-wsl) below; `--depart`
+deliberately doesn't attempt that.
+
+**Conservative by design.** Every real run prints a full preflight report
+before doing anything, grouping every tracked item into four buckets:
+
+- **owned** — this installer introduced it (or modified it, like an
+  appended-to `.zshrc`); safe to remove or restore, and the only bucket
+  `--depart` ever mutates.
+- **preserved** — never touched by this installer at all; left alone.
+- **drifted** — baseline is known, but something about live state doesn't
+  match what departure expects (edited in a way that isn't a clean append,
+  removed outside the installer, etc.); reported, never guessed at.
+- **unresolved** — baseline capture failed, a referenced blob is missing, or
+  live state can't be read; reported, never treated as license to act.
+
+A real (non-`--dry-run`) run requires typing the exact token `DEPART` at a
+prompt, unless `--yes` is passed; a non-interactive real run without
+`--yes` refuses (exit 2). Partial completion is retried safely — a crash or
+interrupted run picks back up via its own ledger
+(`~/.local/state/dotfiles/departure.jsonl`) and never re-attempts an
+already-completed action. An advisory lock
+(`~/.local/state/dotfiles/departure.lock`) prevents two `--depart` runs
+from racing each other, and self-recovers from a stale lock left by a
+crashed process (checked by PID *and* process start time, so a reused PID
+after a crash doesn't falsely read as still-live).
+
+Exit codes: **0** — fully clean, nothing left. **1** — attempted, but some
+item(s) remain unresolved or drifted (re-run `--depart` to retry). **2** —
+refused outright: no baseline, a wrong/EOF confirmation token, or another
+`--depart` already running.
+
+Package removal never runs a broad `apt-get autoremove`/`purge` — only the
+specific package(s) a tracked transaction introduced, and only when a
+reverse-dependency probe (`apt-cache rdepends` / `dnf repoquery
+--whatrequires`) confirms nothing else installed still needs it. A package
+this installer *upgraded* (rather than freshly installed) is downgraded
+back toward its original version instead of removed.
+
+## Nuclear reset (WSL)
+
+`--depart` cleans up what this installer put on the machine. It is
+**not** a guarantee of a pristine system — it doesn't know about, and
+can't undo, anything you or another tool did outside of it. The only
+mechanism that's an actual guarantee rather than best-effort is
+unregistering the whole WSL distro and recreating it from a stock image.
+This is genuinely destructive and entirely separate from `install.sh
+--depart` — nothing in this repo triggers it automatically.
+
+**This deletes the entire Linux filesystem for the distro, irreversibly.**
+Anything not backed up elsewhere — SSH keys, git repos with unpushed
+commits, shell history, dotfiles you edited locally and never committed —
+is gone. Back up first:
+
+```powershell
+# From Windows PowerShell, back up anything you care about first, e.g.:
+wsl -d Ubuntu -- tar czf /mnt/c/Users/<you>/wsl-backup.tar.gz -C /home/<you> .
+```
+
+Then, from Windows PowerShell (not from inside WSL — you can't unregister
+the distro you're currently running commands in):
+
+```powershell
+wsl --list --verbose              # confirm the exact distro name (case-sensitive)
+wsl --unregister <DistroName>     # irreversibly deletes it — no confirmation prompt
+wsl --install -d <DistroName>     # recreate from the same stock image (e.g. Ubuntu, Ubuntu-24.04)
+```
+
+After `wsl --install` completes and you've created the new Linux user
+account, `install.sh` starts from a genuinely blank slate — no leftover
+history file, no baseline, nothing for `--depart` to even refuse cleanly
+against, because there's nothing there at all.
+
 ## What's included
 
 | File | Destination |
