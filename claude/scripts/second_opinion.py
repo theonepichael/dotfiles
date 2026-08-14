@@ -8,11 +8,16 @@ Flags
   --quiet, -q    suppress non-essential output
   --verbose, -v  emit extra diagnostic messages to stderr
 
-Environment
-  SECOND_OPINION_AGY_MODEL           force the agy backend model
-  SECOND_OPINION_COPILOT_MODEL       force the copilot backend model
-  SECOND_OPINION_OPENCODE_MODEL      force the opencode adversary-agent model
-  SECOND_OPINION_TIMEOUT_SECONDS     backend subprocess timeout (default 300)
+Env vars
+  SECOND_OPINION_AGY_MODEL        force the agy model (default "Gemini 3.7 Flash (High)")
+  SECOND_OPINION_COPILOT_MODEL    force the Copilot model (default: unset)
+  SECOND_OPINION_OPENCODE_MODEL   force the opencode adversary-agent model (default: live config)
+  SECOND_OPINION_TIMEOUT_SECONDS  per-backend timeout in seconds (default 300)
+
+Files read: <plan-file-or-text> (if a path), --focus-file. Nothing written.
+
+Exit codes: 0 success; 1 any failure (no backend available, all backends failed,
+bad --focus-file, unknown subcommand).
 
 Requires Python 3.12+.
 """
