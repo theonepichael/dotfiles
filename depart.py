@@ -20,9 +20,11 @@ Linux/WSL (apt) and Fedora (dnf) only — this feature does not apply on
 macOS, matching Implementation Sequence step 6.
 """
 
+import fcntl
 import hashlib
 import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -807,3 +809,284 @@ def classify_ownership_key(
         None,
         "changed since baseline — restore rule not yet implemented (step 4)",
     )
+
+
+def reclassify_rc_file(
+    recorded: dict[str, object] | None,
+    baseline_content: bytes | None,
+    live_content: bytes | None,
+) -> Classification | None:
+    """Override the generic classification for one rc file, if warranted.
+
+    Handles the one rc-file case Implementation Sequence step 1/3 calls
+    out by name: NVM/``_install_uv``/oh-my-posh only ever *append* lines to
+    an rc file, so a live file whose content still starts with the exact
+    baseline content is safely restorable by discarding everything after
+    it — never a guess at which lines to strip. Any other kind of change
+    (something inserted or edited within the original content) is left
+    for the generic classifier's ``unresolved`` fallback.
+
+    Returns:
+        A replacement :class:`Classification`, or None to defer to
+        :func:`classify_ownership_key`'s own result for this key.
+    """
+    if recorded is None or recorded.get("state") != STATE_PRESENT:
+        return None
+    if baseline_content is None:
+        return Classification(
+            BUCKET_UNRESOLVED, None, "recorded rc-file blob is missing or unreadable"
+        )
+    if live_content is None:
+        return (
+            None  # defer — the generic "present at baseline, now missing" rule applies
+        )
+    if live_content == baseline_content:
+        return None  # unchanged — defer to the generic "preserved" result
+    if live_content.startswith(baseline_content):
+        return Classification(
+            BUCKET_OWNED,
+            ACTION_RESTORE,
+            "appended to since baseline — restore original content",
+        )
+    return Classification(
+        BUCKET_UNRESOLVED,
+        None,
+        "changed since baseline in a way that isn't a pure append",
+    )
+
+
+def reclassify_symlink_destination_pair(
+    file_recorded: dict[str, object] | None,
+    file_live: dict[str, object],
+    symlink_recorded: dict[str, object] | None,
+    symlink_live: dict[str, object],
+) -> tuple[Classification, Classification] | None:
+    """Jointly reclassify a destination's ``file:``/``symlink:`` key pair.
+
+    Handles the named edge case from Implementation Sequence step 1:
+    ``symlink()`` (``install.py:1301-1324``) takes no ``.bak`` and never
+    calls ``record_symlink`` when the destination was already a symlink
+    before install — so the only trace of "this was backed up and replaced"
+    is the *baseline* recording ``file:<dest>`` present while the installer's
+    new symlink now sits at that path. Classifying each key independently
+    would otherwise leave both permanently ``unresolved`` (the file key sees
+    baseline-present/live-absent → ``drifted``; the symlink key sees
+    baseline-absent/live-present → ``owned``/remove) instead of restoring
+    the original content.
+
+    Returns:
+        ``(file classification, symlink classification)`` when the pattern
+        matches, else None to defer to the independent per-key results.
+    """
+    if not (
+        file_recorded is not None
+        and file_recorded.get("state") == STATE_PRESENT
+        and file_live.get("state") == STATE_ABSENT
+        and symlink_recorded is not None
+        and symlink_recorded.get("state") == STATE_ABSENT
+        and symlink_live.get("state") == STATE_PRESENT
+    ):
+        return None
+    return (
+        Classification(
+            BUCKET_OWNED,
+            ACTION_RESTORE,
+            "backed up then symlinked over — restore the original content",
+        ),
+        Classification(
+            BUCKET_OWNED,
+            ACTION_REMOVE,
+            "installer-created symlink over a backed-up original",
+        ),
+    )
+
+
+# ── departure ledger ─────────────────────────────────────────────────────
+
+
+def departure_ledger_path(state_dir: Path) -> Path:
+    return state_dir / "departure.jsonl"
+
+
+def _fsync_dir(directory: Path) -> None:
+    fd = os.open(str(directory), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+@dataclass
+class DepartureLedger:
+    """Crash-safe, fsynced-per-entry record of completed departure actions.
+
+    Mirrors install.py's ``Manifest._append`` durability pattern: one JSON
+    object per line, flushed and fsynced immediately after each action
+    completes, so a retry can tell exactly which actions already finished
+    without redoing — or worse, re-mutating — them.
+    """
+
+    path: Path
+
+    def entries(self) -> list[dict[str, object]]:
+        if not self.path.is_file():
+            return []
+        out: list[dict[str, object]] = []
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                out.append(parsed)
+        return out
+
+    def completed_keys(self) -> set[str]:
+        """Every ownership key already recorded complete, regardless of outcome.
+
+        A ledger-complete artifact is never mutated again — later changes
+        surface as separate post-departure drift, not a re-attempt.
+        """
+        return {str(e["key"]) for e in self.entries() if "key" in e}
+
+    def record(self, key: str, action: str, outcome: str) -> None:
+        entry = {"key": key, "action": action, "outcome": outcome}
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        is_new = not self.path.exists()
+        with open(self.path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        if is_new:
+            _fsync_dir(self.path.parent)
+
+    def clear(self) -> None:
+        self.path.unlink(missing_ok=True)
+
+
+# ── advisory lock ─────────────────────────────────────────────────────────
+
+
+def departure_lock_path(state_dir: Path) -> Path:
+    return state_dir / "departure.lock"
+
+
+@dataclass(frozen=True)
+class LockInfo:
+    pid: int
+    start_time: int
+
+
+def parse_lock_text(text: str) -> LockInfo | None:
+    try:
+        data = json.loads(text)
+        return LockInfo(pid=int(data["pid"]), start_time=int(data["start_time"]))
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+        return None
+
+
+def read_lock(path: Path) -> LockInfo | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return parse_lock_text(text)
+
+
+def process_start_time(pid: int) -> int | None:
+    """Read a process's start-time field (field 22) from ``/proc/<pid>/stat``.
+
+    Returns None if the process doesn't exist. Raises ``PermissionError``
+    if ``/proc/<pid>/stat`` exists but can't be read — callers must not
+    treat that as "dead"; see :func:`is_lock_holder_alive`.
+    """
+    try:
+        text = Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:
+        return None
+    # Field 2 (comm) may itself contain spaces/parens; split after the last
+    # ')' so the remaining whitespace-separated fields count correctly.
+    _, _, rest = text.rpartition(")")
+    fields = rest.split()
+    try:
+        return int(fields[19])  # field 3 is fields[0]; field 22 is fields[19]
+    except (IndexError, ValueError):
+        return None
+
+
+def is_lock_holder_alive(
+    pid: int,
+    recorded_start_time: int,
+    *,
+    start_time_fn: Callable[[int], int | None] = process_start_time,
+) -> bool:
+    """Whether the recorded lock holder is still running the same process.
+
+    A ``PermissionError`` while probing ``/proc`` is treated as alive — it
+    can't be disproven, so the safe assumption is that it's still there. A
+    live PID whose start time no longer matches the recorded one is a
+    *different* process that reused the PID after a crash — stale, not
+    alive; this is what makes that window detectable at all.
+    """
+    try:
+        current_start = start_time_fn(pid)
+    except PermissionError:
+        return True
+    if current_start is None:
+        return False
+    return current_start == recorded_start_time
+
+
+def acquire_departure_lock(
+    state_dir: Path,
+    *,
+    pid: int | None = None,
+    start_time_fn: Callable[[int], int | None] = process_start_time,
+) -> tuple[bool, LockInfo | None]:
+    """Try to acquire the departure advisory lock.
+
+    The lock's own content (recorded PID + start time) is the source of
+    truth for staleness — an ``flock`` on the file only serializes the
+    read-check-write sequence below between concurrent acquirers, so a
+    genuinely live holder (recorded moments earlier by a concurrent
+    process) is still seen and refused correctly.
+
+    Returns:
+        ``(True, None)`` on success. ``(False, stale_info_or_None)`` on
+        refusal — the second element is the stale holder's info if one was
+        found and logged, purely for a caller's warning message.
+    """
+    lock_path = departure_lock_path(state_dir)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            handle.seek(0)
+            existing = parse_lock_text(handle.read())
+            if existing is not None and is_lock_holder_alive(
+                existing.pid, existing.start_time, start_time_fn=start_time_fn
+            ):
+                return False, None
+
+            our_pid = pid if pid is not None else os.getpid()
+            our_start = start_time_fn(our_pid) or 0
+            handle.seek(0)
+            handle.truncate()
+            handle.write(json.dumps({"pid": our_pid, "start_time": our_start}))
+            handle.flush()
+            os.fsync(handle.fileno())
+            return True, existing
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def release_departure_lock(state_dir: Path, pid: int | None = None) -> None:
+    """Release and unlink the lock, only if it's still recorded as ours."""
+    our_pid = pid if pid is not None else os.getpid()
+    lock_path = departure_lock_path(state_dir)
+    existing = read_lock(lock_path)
+    if existing is not None and existing.pid == our_pid:
+        lock_path.unlink(missing_ok=True)

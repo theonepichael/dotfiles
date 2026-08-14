@@ -7,6 +7,7 @@ No subprocesses, no real HOME — everything runs against a throwaway
 Requires Python 3.12+.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -490,3 +491,203 @@ def test_classify_runtime_versions_order_independent():
     live = {"state": "present", "versions": ["v20.0.0", "v18.0.0"]}
     c = depart.classify_ownership_key("runtime:/home/.nvm", recorded, live)
     assert c.bucket == "preserved"
+
+
+# ── reclassify_rc_file: the append-only restore case ─────────────────────
+
+
+def test_reclassify_rc_file_pure_append_is_owned_restore():
+    recorded = _present_file()
+    c = depart.reclassify_rc_file(
+        recorded, b"export PATH=x\n", b"export PATH=x\nexport NVM_DIR=y\n"
+    )
+    assert c.bucket == "owned"
+    assert c.action == "restore"
+
+
+def test_reclassify_rc_file_unchanged_defers_to_generic_classifier():
+    recorded = _present_file()
+    assert depart.reclassify_rc_file(recorded, b"same\n", b"same\n") is None
+
+
+def test_reclassify_rc_file_edited_in_place_is_unresolved():
+    """Not a pure append (content inserted/changed mid-file) — must not guess."""
+    recorded = _present_file()
+    c = depart.reclassify_rc_file(
+        recorded, b"line1\nline2\n", b"line1\nEDITED\nline2\n"
+    )
+    assert c.bucket == "unresolved"
+    assert c.action is None
+
+
+def test_reclassify_rc_file_missing_blob_is_unresolved():
+    recorded = _present_file()
+    c = depart.reclassify_rc_file(recorded, None, b"anything")
+    assert c.bucket == "unresolved"
+
+
+def test_reclassify_rc_file_live_missing_defers_to_generic_classifier():
+    recorded = _present_file()
+    assert depart.reclassify_rc_file(recorded, b"x", None) is None
+
+
+def test_reclassify_rc_file_baseline_absent_defers():
+    assert depart.reclassify_rc_file(ABSENT, None, b"new content") is None
+
+
+def test_reclassify_rc_file_no_baseline_record_defers():
+    assert depart.reclassify_rc_file(None, None, b"x") is None
+
+
+# ── reclassify_symlink_destination_pair: backed-up-then-symlinked ───────
+
+
+def test_reclassify_symlink_pair_matches_the_named_edge_case():
+    file_recorded = _present_file()
+    file_live = ABSENT
+    symlink_recorded = ABSENT
+    symlink_live = {"state": "present", "target": "/repo/zshrc"}
+    result = depart.reclassify_symlink_destination_pair(
+        file_recorded, file_live, symlink_recorded, symlink_live
+    )
+    assert result is not None
+    file_c, symlink_c = result
+    assert file_c.bucket == "owned"
+    assert file_c.action == "restore"
+    assert symlink_c.bucket == "owned"
+    assert symlink_c.action == "remove"
+
+
+def test_reclassify_symlink_pair_no_match_when_file_still_present():
+    result = depart.reclassify_symlink_destination_pair(
+        _present_file(), _present_file(), ABSENT, {"state": "present", "target": "/x"}
+    )
+    assert result is None
+
+
+def test_reclassify_symlink_pair_no_match_when_symlink_was_already_baseline_present():
+    result = depart.reclassify_symlink_destination_pair(
+        _present_file(),
+        ABSENT,
+        {"state": "present", "target": "/original"},
+        {"state": "present", "target": "/repo/zshrc"},
+    )
+    assert result is None
+
+
+def test_reclassify_symlink_pair_no_match_when_nothing_changed():
+    result = depart.reclassify_symlink_destination_pair(ABSENT, ABSENT, ABSENT, ABSENT)
+    assert result is None
+
+
+# ── departure ledger ──────────────────────────────────────────────────────
+
+
+def test_ledger_records_and_reads_back_entries(tmp_path):
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(tmp_path))
+    ledger.record("file:/a", "remove", "ok")
+    ledger.record("symlink:/b", "restore", "ok")
+    assert ledger.completed_keys() == {"file:/a", "symlink:/b"}
+
+
+def test_ledger_empty_when_no_file(tmp_path):
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(tmp_path))
+    assert ledger.entries() == []
+    assert ledger.completed_keys() == set()
+
+
+def test_ledger_clear_removes_the_file(tmp_path):
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(tmp_path))
+    ledger.record("file:/a", "remove", "ok")
+    ledger.clear()
+    assert not ledger.path.exists()
+
+
+def test_ledger_ignores_unparseable_trailing_line(tmp_path):
+    path = depart.departure_ledger_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '{"key": "file:/a", "action": "remove", "outcome": "ok"}\ntruncated{'
+    )
+    ledger = depart.DepartureLedger(path)
+    assert ledger.completed_keys() == {"file:/a"}
+
+
+# ── advisory lock ─────────────────────────────────────────────────────────
+
+
+def test_acquire_lock_succeeds_when_no_lock_exists(tmp_path):
+    acquired, stale = depart.acquire_departure_lock(
+        tmp_path, pid=1234, start_time_fn=lambda pid: 100
+    )
+    assert acquired is True
+    assert stale is None
+    assert depart.read_lock(depart.departure_lock_path(tmp_path)) == depart.LockInfo(
+        pid=1234, start_time=100
+    )
+
+
+def test_acquire_lock_refuses_when_holder_is_alive(tmp_path):
+    depart.acquire_departure_lock(tmp_path, pid=1234, start_time_fn=lambda pid: 100)
+
+    def start_time_fn(pid):
+        return 100 if pid == 1234 else 999
+
+    acquired, _ = depart.acquire_departure_lock(
+        tmp_path, pid=5678, start_time_fn=start_time_fn
+    )
+    assert acquired is False
+
+
+def test_acquire_lock_reclaims_when_holder_pid_is_dead(tmp_path):
+    depart.acquire_departure_lock(tmp_path, pid=1234, start_time_fn=lambda pid: 100)
+
+    def start_time_fn(pid):
+        return None if pid == 1234 else 200  # dead
+
+    acquired, stale = depart.acquire_departure_lock(
+        tmp_path, pid=5678, start_time_fn=start_time_fn
+    )
+    assert acquired is True
+    assert stale == depart.LockInfo(pid=1234, start_time=100)
+    assert depart.read_lock(depart.departure_lock_path(tmp_path)) == depart.LockInfo(
+        pid=5678, start_time=200
+    )
+
+
+def test_acquire_lock_reclaims_on_pid_reuse_start_time_mismatch(tmp_path):
+    """A live PID whose start time no longer matches is stale, not alive."""
+    depart.acquire_departure_lock(tmp_path, pid=1234, start_time_fn=lambda pid: 100)
+
+    def start_time_fn(pid):
+        return 555 if pid == 1234 else 200  # same pid, different process now
+
+    acquired, stale = depart.acquire_departure_lock(
+        tmp_path, pid=5678, start_time_fn=start_time_fn
+    )
+    assert acquired is True
+    assert stale == depart.LockInfo(pid=1234, start_time=100)
+
+
+def test_is_lock_holder_alive_permission_error_means_alive():
+    def boom(pid):
+        raise PermissionError
+
+    assert depart.is_lock_holder_alive(1, 100, start_time_fn=boom) is True
+
+
+def test_release_lock_only_when_it_is_ours(tmp_path):
+    depart.acquire_departure_lock(tmp_path, pid=1234, start_time_fn=lambda pid: 100)
+    depart.release_departure_lock(tmp_path, pid=9999)  # not ours — no-op
+    assert depart.read_lock(depart.departure_lock_path(tmp_path)) is not None
+
+    depart.release_departure_lock(tmp_path, pid=1234)
+    assert depart.read_lock(depart.departure_lock_path(tmp_path)) is None
+
+
+def test_process_start_time_missing_pid_returns_none(tmp_path):
+    assert depart.process_start_time(999999999) is None
+
+
+def test_process_start_time_reads_own_pid():
+    assert depart.process_start_time(os.getpid()) is not None
