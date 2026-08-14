@@ -1136,6 +1136,15 @@ def _classify_one_package(
             "introduced as a dependency by this transaction",
         )
     if name in txn.before:
+        if txn.before[name] == txn.after.get(name):
+            return PackageClassification(
+                key,
+                txn.manager,
+                name,
+                BUCKET_PRESERVED,
+                None,
+                "already installed, unchanged by this transaction",
+            )
         return PackageClassification(
             key,
             txn.manager,

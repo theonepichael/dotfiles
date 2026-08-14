@@ -450,5 +450,108 @@ check "wipe with nothing left reports the plain nothing-to-roll-back error" \
   grep -q "nothing to roll back" /tmp/wipe-truly-empty.out
 
 echo ""
+echo "=== 14. --depart with no baseline refuses cleanly ==="
+# The rollback in section 13 already deleted baseline.json along with
+# everything else, so this container has no baseline at all right now.
+./install.sh --depart --yes >/tmp/depart-nobaseline.out 2>&1
+depart_none_code=$?
+cat /tmp/depart-nobaseline.out
+check "depart with no baseline exits 2" bash -c "[[ $depart_none_code -eq 2 ]]"
+check "depart with no baseline names nothing-to-depart-from" \
+  grep -q "nothing to depart from" /tmp/depart-nobaseline.out
+
+echo ""
+echo "=== 15. --depart: install departs back to a clean baseline ==="
+# NOTE: by this point in the suite, apt packages and the Nerd Font were
+# already installed by earlier sections and never rolled back (--rollback
+# never touches packages) — so this "install" mostly re-confirms already-
+# present state rather than creating everything fresh. That's realistic
+# (a --depart on a machine that's been through several install.sh runs)
+# and is accounted for below: already-installed-unchanged packages and the
+# pre-existing Nerd Font directory are correctly *preserved*, not owned.
+#
+# A real interactive shell sources ~/.zshrc, which puts ~/.local/bin (uv,
+# oh-my-posh) on PATH — this non-interactive script doesn't, so it's added
+# explicitly here to match realistic usage for the probes below.
+export PATH="$HOME/.local/bin:$PATH"
+
+./install.sh --harness=claude >/tmp/depart-install.out 2>&1
+depart_install_code=$?
+cat /tmp/depart-install.out
+check "install for departure test exits 0 or 1" \
+  bash -c "[[ $depart_install_code -eq 0 || $depart_install_code -eq 1 ]]"
+check "baseline.json captured" bash -c '[[ -f "'"$STATE_DIR"'/baseline.json" ]]'
+
+# An artifact this installer never touched, planted after install — must
+# survive departure untouched (Completion Gate: "unrelated post-install
+# artifacts survive").
+echo "unrelated content" >~/my-own-notes.txt
+# An unrelated package, installed the same way a user would — must also
+# survive, since departure only ever acts on what its own transactions
+# recorded.
+if command -v apt-get >/dev/null 2>&1; then
+  UNRELATED_PKG=sl
+  sudo apt-get install -y -qq "$UNRELATED_PKG" >/tmp/depart-unrelated-pkg.out 2>&1
+else
+  UNRELATED_PKG=cowsay
+  sudo dnf install -y -q "$UNRELATED_PKG" >/tmp/depart-unrelated-pkg.out 2>&1
+fi
+
+./install.sh --depart --dry-run >/tmp/depart-dry.out 2>&1
+depart_dry_code=$?
+cat /tmp/depart-dry.out
+check "depart --dry-run exits 0 regardless of what's unresolved" \
+  bash -c "[[ $depart_dry_code -eq 0 ]]"
+check "depart --dry-run preflight lists owned items" grep -q "owned" /tmp/depart-dry.out
+check "depart --dry-run changed nothing (vimrc symlink still present)" \
+  bash -c '[[ -L ~/.vimrc ]]'
+
+./install.sh --depart --yes >/tmp/depart-real.out 2>&1
+depart_real_code=$?
+cat /tmp/depart-real.out
+# This container has no systemd (no systemctl on PATH), so the watchcommit
+# service/linger probe always comes back "unknown" and the departure
+# always finishes with that one unresolved item — exit 1, not 0. That's
+# the correct, specified behavior (systemd --user unavailable marks
+# service/linger unresolved, never treated as already-clean), not a test
+# bug: verify it's *specifically* the service key, nothing else.
+check "depart exits 1 (only the systemd-unavailable service key unresolved)" \
+  bash -c "[[ $depart_real_code -eq 1 ]]"
+check "preflight reports exactly one unresolved item" \
+  grep -q "unresolved (1):" /tmp/depart-real.out
+check "depart's only unresolved item is the watchcommit service key" bash -c \
+  'grep -A1 "unresolved (1):" /tmp/depart-real.out | grep -q "service:systemd/watchcommit"'
+check "depart removed the vimrc symlink" bash -c '[[ ! -e ~/.vimrc ]]'
+check "depart removed the zshrc symlink" bash -c '[[ ! -e ~/.zshrc ]]'
+check "depart removed the claude settings.json copy" bash -c '[[ ! -e ~/.claude/settings.json ]]'
+check "depart removed the watchcommit shim symlink" bash -c '[[ ! -e ~/.local/bin/watchcommit ]]'
+check "pre-existing Nerd Font directory survives (preserved, not owned — it predates this install)" \
+  bash -c '[[ -e ~/.local/share/fonts/JetBrainsMonoNerdFont ]]'
+check "unrelated file survives departure" bash -c '[[ -f ~/my-own-notes.txt ]]'
+if command -v dpkg-query >/dev/null 2>&1; then
+  check "unrelated package survives departure" dpkg-query -W "$UNRELATED_PKG"
+else
+  check "unrelated package survives departure" rpm -q "$UNRELATED_PKG"
+fi
+check "baseline.json and blobs are retained (departure was incomplete)" \
+  bash -c '[[ -f "'"$STATE_DIR"'/baseline.json" ]]'
+
+echo ""
+echo "=== 15b. Retrying --depart with the one unresolved item still there is a no-op ==="
+# Nothing left for the file/directory/package/runtime phases to do (the
+# ledger already marked every actionable item complete on the previous
+# run) — this should re-report the exact same single unresolved item
+# without erroring or re-attempting anything already done.
+./install.sh --depart --yes >/tmp/depart-retry.out 2>&1
+depart_retry_code=$?
+cat /tmp/depart-retry.out
+check "depart retry still exits 1 (same unresolved service key)" \
+  bash -c "[[ $depart_retry_code -eq 1 ]]"
+check "depart retry reports exactly one unresolved item, same as before" \
+  grep -q "unresolved (1):" /tmp/depart-retry.out
+check "depart retry's owned bucket never re-lists the already-removed vimrc symlink" bash -c \
+  "! awk '/^  owned \\(/{f=1;next} /^  [a-z]+ \\(/{f=0} f' /tmp/depart-retry.out | grep -q vimrc"
+
+echo ""
 echo "════════ Scenario summary: $PASS passed, $FAIL failed ════════"
 [[ $FAIL -eq 0 ]]

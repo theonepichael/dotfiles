@@ -466,6 +466,25 @@ def test_classify_upgraded_preexisting_package_is_owned_downgrade():
     assert results[0].action == "downgrade"
 
 
+def test_classify_already_installed_unchanged_is_preserved_not_downgrade():
+    """apt reporting '0 upgraded' (already the newest version) must not be
+    treated as something to downgrade — nothing this transaction did."""
+    baseline = _baseline_with(
+        {
+            "manager": "apt",
+            "requested": ["tmux"],
+            "before": {"tmux": "3.4-1"},
+            "after": {"tmux": "3.4-1"},
+            "captured_at": "t1",
+            "epoch": {"tmux": "3.4-1"},
+        }
+    )
+    results = depart.classify_package_transactions(baseline, {"apt": {"tmux": "3.4-1"}})
+    assert len(results) == 1
+    assert results[0].bucket == "preserved"
+    assert results[0].action is None
+
+
 def test_classify_introduced_dependency_is_owned_remove():
     baseline = _baseline_with(
         {
