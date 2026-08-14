@@ -88,8 +88,8 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
   - `prune --force` — permanently remove done/resolved items older than 14 days
     - `--force` — required to prevent accidental prune (required)
-  - `recap [--force] [--backend <BACKEND>]` — print a friendly prose recap of recent activity
-    - `--force` — bypass the freshness cache, regenerate now
+  - `recap [--refresh] [--backend <BACKEND>]` — print a friendly prose recap of recent activity
+    - `--refresh` — bypass the freshness cache and regenerate the recap now
     - `--backend` — force this backend instead of priority-order fallback (choices computed at runtime)
   - `pending` — manage pending (waiting-on-reply) items
   - `pending add '{"id", "description", "kind", ["source_ref"], ["context"], ["next_steps"], ["blocking"]}'` — track a new pending item
@@ -587,6 +587,7 @@ are copy-once seeds for exactly that reason.
 | --- | --- |
 | `claude/CLAUDE.md` | `~/.claude/CLAUDE.md` (claude), `~/.copilot/copilot-instructions.md` (copilot), `~/.gemini/GEMINI.md` (agy) |
 | `claude/settings.json` | not symlinked by `links.toml` |
+| `claude/settings.json.bak.20260806-004218` | not symlinked by `links.toml` |
 | `claude/settings.work.json` | not symlinked by `links.toml` |
 | `copilot/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
 | `copilot/aliases.zsh` | `~/.copilot_aliases` (copilot) |
@@ -625,6 +626,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `--reseed`
   - `--depart`
   - `--yes`
+  - `--check-links`
   - `-h/--help`
 - Environment: `LOGNAME`, `NO_COLOR`, `PATH`, `TERM`, `USER`, `WSL_DISTRO_NAME`
 - Explicit exit codes: `0`, `2`
@@ -685,6 +687,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `execute_package_phase(ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> bool` — Remove/downgrade owned packages, reverse transactions order.
   - `execute_departure(ctx: Context, baseline: depart.Baseline, report: dict[str, depart.Classification]) -> depart.DepartureLedger` — Perform every safe ``owned`` action, retry-safe via the departure ledger.
   - `do_depart(ctx: Context) -> int` — Preview and execute a pristine-state departure.
+  - `do_check_links(ctx: Context) -> int` — Audit the live symlinks against ``links.toml`` and report, changing nothing.
   - `run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int` — Run every install step in order and return the process exit status.
 - Tested by: `test/test_install.py`
 
