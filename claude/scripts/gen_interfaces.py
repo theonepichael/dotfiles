@@ -12,9 +12,14 @@ table in links.toml, and the YAML frontmatter of each harness's command and
 skill documents.
 
 Extraction is static only — the module is parsed with :mod:`ast`, never
-imported, and no script is executed (not even ``--help``). These scripts
-manage live state under ``~/.claude`` and ``~/.local/state``; importing or
-running them to document them would be a side effect of building a doc.
+imported, and no documented script is executed (not even ``--help``). These
+scripts manage live state under ``~/.claude`` and ``~/.local/state``;
+importing or running them to document them would be a side effect of
+building a doc.
+
+The one subprocess this module does run is ``git ls-files``, to restrict the
+asset table to tracked files — read-only, and not one of the scripts being
+documented. See :func:`tracked_files` for why that filter is load-bearing.
 
 Usage:
     python3 claude/scripts/gen_interfaces.py            rewrite INTERFACES.md
@@ -36,6 +41,7 @@ import argparse
 import ast
 import difflib
 import re
+import subprocess
 import sys
 import tomllib
 from collections.abc import Iterator, Sequence
@@ -990,8 +996,49 @@ def is_generated_artifact(relpath: str) -> bool:
     return any(part == "__pycache__" or part.startswith(".") for part in parts)
 
 
-def render_assets(repo_root: Path, links: LinkTable) -> list[str]:
-    """Render the non-Python, non-skill harness assets and where they install."""
+def tracked_files(repo_root: Path) -> set[str] | None:
+    """Return every git-tracked path under ``repo_root``, or None if unavailable.
+
+    The asset table below walks the filesystem, which would otherwise pull in
+    whatever untracked cruft happens to sit in one machine's working copy —
+    an editor backup, a stray ``settings.json.bak.<stamp>`` — and bake it into
+    the committed inventory. That makes the document depend on *which checkout*
+    generated it: ``--check`` then fails in every other clean checkout and in
+    CI, which is exactly what happened once.
+
+    Git's index is the authoritative answer to "is this file part of the repo,"
+    so it's what the filter uses. Shelling out to ``git`` does not contradict
+    this module's no-subprocess rule: that rule exists so documenting a harness
+    script never *executes* it (they mutate live state under ``~/.claude``).
+    ``git ls-files`` is read-only and is not a harness script.
+
+    Returns None when git isn't available or this isn't a checkout, so the
+    generator still works standalone — it just falls back to the unfiltered
+    filesystem walk.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "ls-files", "-z"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return {entry for entry in result.stdout.split("\0") if entry}
+
+
+def render_assets(
+    repo_root: Path, links: LinkTable, tracked: set[str] | None = None
+) -> list[str]:
+    """Render the non-Python, non-skill harness assets and where they install.
+
+    ``tracked`` restricts the walk to git-tracked paths; None means git was
+    unavailable, in which case every file on disk is listed (see
+    :func:`tracked_files`).
+    """
     lines = [
         "Everything under the harness directories that is neither a shared script",
         "(section 1) nor a skill document (section 2). A source with no",
@@ -1010,6 +1057,8 @@ def render_assets(repo_root: Path, links: LinkTable) -> list[str]:
             if not path.is_file() or path.suffix == ".py":
                 continue
             relpath = path.relative_to(repo_root).as_posix()
+            if tracked is not None and relpath not in tracked:
+                continue
             if is_generated_artifact(relpath) or any(
                 marker in relpath for marker in SKILL_DIR_MARKERS
             ):
@@ -1045,7 +1094,7 @@ def build_document(repo_root: Path) -> str:
     lines += ["---", "", "## 2. Skill and command surface", ""]
     lines += render_command_matrix(repo_root, links)
     lines += ["---", "", "## 3. Other harness assets", ""]
-    lines += render_assets(repo_root, links)
+    lines += render_assets(repo_root, links, tracked_files(repo_root))
 
     entrypoints = [
         analyze_module(repo_root / name, repo_root, set(), links)
