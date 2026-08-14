@@ -5,6 +5,7 @@
 # clear message instead of a syntax error 900 lines in.
 set -eu
 
+# shellcheck disable=SC1007 # CDPATH= clears CDPATH for this one command so cd ignores it.
 DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 for candidate in python3.13 python3.12 python3 python; do
