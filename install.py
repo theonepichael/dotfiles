@@ -39,6 +39,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
 
+import depart
+
 VALID_HARNESSES = ("claude", "copilot", "opencode", "agy")
 VALID_PROFILES = ("personal", "work")
 
@@ -1971,6 +1973,107 @@ def bootstrap_neovim(ctx: Context) -> None:
         )
 
 
+# ── departure baseline capture ──────────────────────────────────────────────
+
+
+def _departure_owned_destinations(
+    ctx: Context, specs: Sequence[LinkSpec]
+) -> list[Path]:
+    """Every links.toml/seed destination this run's options make applicable.
+
+    These are the only categories whose ``file:``/``symlink:`` keys can ever
+    need content restored (rc files are handled separately) — see
+    :func:`capture_departure_baseline`'s blob-writing rule.
+    """
+    destinations: list[Path] = []
+    for spec in specs:
+        if link_applies(spec, ctx):
+            destinations.append(expand_dest(spec.dest, ctx.home))
+    if ctx.has_harness("claude"):
+        destinations.append(ctx.home / ".claude" / "settings.json")
+    if ctx.has_harness("opencode"):
+        destinations.append(ctx.home / ".config" / "opencode" / "opencode.jsonc")
+    return destinations
+
+
+def capture_departure_baseline(ctx: Context, specs: Sequence[LinkSpec]) -> None:
+    """Capture this run's departure baseline layer before any install step runs.
+
+    Linux/WSL and Fedora only (Implementation Sequence step 6 — this feature
+    does not apply on macOS) and a no-op under ``--dry-run`` (step 1: a
+    dry-run install writes no ``baseline.json`` and creates no immutable
+    first layer). Must run before ``install_linux_packages`` — ``_install_uv``
+    and the oh-my-posh installer both run inside it, earlier than
+    ``install_node``/NVM, and can mutate rc files themselves.
+    """
+    if not ctx.is_linux or ctx.opts.dry_run:
+        return
+
+    state_dir = ctx.state_dir
+    baseline = depart.load_baseline(state_dir) or depart.Baseline()
+    records: dict[str, dict[str, object]] = {}
+    seen_dirs: set[Path] = set()
+
+    def _track_ancestors(path: Path) -> None:
+        for ancestor in depart.ancestor_directories(path, ctx.home):
+            if ancestor not in seen_dirs:
+                seen_dirs.add(ancestor)
+                records[depart.directory_key(ancestor)] = depart.capture_directory(
+                    ancestor
+                )
+
+    for rc_name in depart.RC_FILENAMES:
+        rc_path = ctx.home / rc_name
+        records[depart.file_key(rc_path)] = depart.capture_file(
+            rc_path, blob_dir=state_dir
+        )
+
+    for dest in _departure_owned_destinations(ctx, specs):
+        records[depart.file_key(dest)] = depart.capture_file(dest, blob_dir=state_dir)
+        records[depart.symlink_key(dest)] = depart.capture_symlink(dest)
+        bak = dest.with_name(dest.name + ".bak")
+        records[depart.file_key(bak)] = depart.capture_file(bak)
+        _track_ancestors(dest)
+
+    for path in (
+        ctx.home / ".local" / "bin" / "uv",
+        ctx.home / ".local" / "bin" / "oh-my-posh",
+        ctx.home / ".vim" / "autoload" / "plug.vim",
+        ctx.profile_marker,
+    ):
+        records[depart.file_key(path)] = depart.capture_file(path)
+        _track_ancestors(path)
+
+    for path in (
+        ctx.home / ".local" / "bin" / "bat",
+        ctx.home / ".local" / "bin" / "fd",
+    ):
+        records[depart.symlink_key(path)] = depart.capture_symlink(path)
+        _track_ancestors(path)
+
+    font_dir = ctx.home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont"
+    records[depart.directory_key(font_dir)] = depart.capture_tree_manifest(font_dir)
+    _track_ancestors(font_dir)
+
+    neovim_prefix = ctx.home / ".local" / "opt" / "neovim"
+    records[depart.directory_key(neovim_prefix)] = depart.capture_tree_manifest(
+        neovim_prefix
+    )
+    _track_ancestors(neovim_prefix)
+
+    for parts in depart.SHARED_NEOVIM_DIRS:
+        shared_dir = ctx.home.joinpath(*parts)
+        records[depart.directory_key(shared_dir)] = depart.capture_directory(shared_dir)
+
+    records[depart.runtime_key(ctx.home / ".nvm")] = depart.capture_runtime_nvm(
+        ctx.home
+    )
+
+    stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    baseline.add_layer(stamp, records)
+    depart.save_baseline(state_dir, baseline)
+
+
 # ── profile marker ────────────────────────────────────────────────────────────
 
 
@@ -2001,6 +2104,31 @@ def work_guard_blocks(ctx: Context) -> bool:
 
 
 # ── rollback ──────────────────────────────────────────────────────────────────
+
+
+def _departure_state_paths(state_dir: Path) -> list[Path]:
+    """This feature's own state files, if present — never anything else.
+
+    Snapshot naming is pinned (``baseline.json`` plus
+    ``baseline-snapshot-<sha256>.blob``, flat in the state directory), so a
+    glob is always exactly correct here — regardless of whether
+    ``baseline.json`` itself is missing, empty, or unparseable at rollback
+    time. Never includes ``history.jsonl``, the profile marker, or anything
+    else this feature doesn't own.
+    """
+    if not state_dir.is_dir():
+        return []
+    paths = [depart.baseline_path(state_dir)]
+    paths.extend(sorted(state_dir.glob("baseline-snapshot-*.blob")))
+    paths.append(state_dir / "departure.lock")
+    paths.append(state_dir / "departure.jsonl")
+    return paths
+
+
+def _delete_departure_state(ctx: Context) -> None:
+    """Delete this feature's own state files during a real (non-dry-run) rollback."""
+    for path in _departure_state_paths(ctx.state_dir):
+        path.unlink(missing_ok=True)
 
 
 def do_rollback(ctx: Context) -> int:
@@ -2088,8 +2216,9 @@ def do_rollback(ctx: Context) -> int:
 
     if ctx.opts.dry_run:
         if ctx.opts.wipe:
+            excluded = {manifest.path, *_departure_state_paths(ctx.state_dir)}
             remaining = (
-                [p for p in ctx.state_dir.iterdir() if p != manifest.path]
+                [p for p in ctx.state_dir.iterdir() if p not in excluded]
                 if ctx.state_dir.is_dir()
                 else []
             )
@@ -2101,6 +2230,7 @@ def do_rollback(ctx: Context) -> int:
         )
     else:
         manifest.path.unlink(missing_ok=True)
+        _delete_departure_state(ctx)
         if (
             ctx.opts.wipe
             and ctx.state_dir.is_dir()
@@ -2383,6 +2513,7 @@ def print_summary(
 
 def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
     """Run every install step in order and return the process exit status."""
+    capture_departure_baseline(ctx, specs)
     ctx.manifest.init_run(ctx.opts.profile)
     if ctx.opts.dry_run:
         _header(f"==> DRY RUN — no changes will be made. Profile: {ctx.opts.profile}")

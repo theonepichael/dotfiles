@@ -21,6 +21,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+import depart  # noqa: E402 — must follow sys.path.insert above
 import install  # noqa: E402 — must follow sys.path.insert above
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -1893,3 +1894,158 @@ def test_context_display_shortens_home(home):
     ctx = make_ctx(home)
     assert ctx.display(home / ".claude" / "settings.json") == "~/.claude/settings.json"
     assert ctx.display(Path("/etc/hosts")) == "/etc/hosts"
+
+
+# ── departure baseline capture ──────────────────────────────────────────────
+
+
+def test_capture_departure_baseline_noop_on_mac(home, links):
+    ctx = make_ctx(home, system="Darwin")
+    install.capture_departure_baseline(ctx, links)
+    assert not depart.baseline_path(ctx.state_dir).exists()
+
+
+def test_capture_departure_baseline_noop_on_dry_run(home, links):
+    ctx = make_ctx(home, dry_run=True)
+    install.capture_departure_baseline(ctx, links)
+    assert not depart.baseline_path(ctx.state_dir).exists()
+
+
+def test_capture_departure_baseline_captures_rc_files_with_blobs(home, links):
+    (home / ".zshrc").write_text("original zshrc\n")
+    ctx = make_ctx(home)
+    install.capture_departure_baseline(ctx, links)
+
+    baseline = depart.load_baseline(ctx.state_dir)
+    assert baseline is not None
+    record = baseline.value_for(depart.file_key(home / ".zshrc"))
+    assert record["state"] == "present"
+    assert depart.read_blob(ctx.state_dir, record["blob"]) == b"original zshrc\n"
+
+    assert baseline.value_for(depart.file_key(home / ".bashrc")) == {"state": "absent"}
+
+
+def test_capture_departure_baseline_captures_link_destination_and_bak(home, links):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.capture_departure_baseline(ctx, links)
+    baseline = depart.load_baseline(ctx.state_dir)
+
+    dest = home / ".vimrc"
+    assert baseline.value_for(depart.file_key(dest)) == {"state": "absent"}
+    assert baseline.value_for(depart.symlink_key(dest)) == {"state": "absent"}
+    assert baseline.value_for(depart.file_key(dest.with_name(dest.name + ".bak"))) == {
+        "state": "absent"
+    }
+
+
+def test_capture_departure_baseline_captures_ancestor_directories(home, links):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.capture_departure_baseline(ctx, links)
+    baseline = depart.load_baseline(ctx.state_dir)
+    # ~/.local/bin is an ancestor of the uv/oh-my-posh/shim destinations.
+    assert baseline.value_for(depart.directory_key(home / ".local" / "bin")) == {
+        "state": "absent"
+    }
+
+
+def test_capture_departure_baseline_captures_seed_destination_when_harness_selected(
+    home, links
+):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.capture_departure_baseline(ctx, links)
+    baseline = depart.load_baseline(ctx.state_dir)
+    dest = home / ".claude" / "settings.json"
+    assert baseline.value_for(depart.file_key(dest)) is not None
+
+
+def test_capture_departure_baseline_skips_seed_destination_when_harness_not_selected(
+    home, links
+):
+    ctx = make_ctx(home, harnesses=("opencode",))
+    install.capture_departure_baseline(ctx, links)
+    baseline = depart.load_baseline(ctx.state_dir)
+    dest = home / ".claude" / "settings.json"
+    assert baseline.value_for(depart.file_key(dest)) is None
+
+
+def test_capture_departure_baseline_tree_manifests_font_and_neovim_prefix(home, links):
+    ctx = make_ctx(home)
+    install.capture_departure_baseline(ctx, links)
+    baseline = depart.load_baseline(ctx.state_dir)
+    font_dir = home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont"
+    neovim_prefix = home / ".local" / "opt" / "neovim"
+    assert baseline.value_for(depart.directory_key(font_dir)) == {"state": "absent"}
+    assert baseline.value_for(depart.directory_key(neovim_prefix)) == {
+        "state": "absent"
+    }
+
+
+def test_capture_departure_baseline_captures_shared_nvim_dirs(home, links):
+    ctx = make_ctx(home)
+    install.capture_departure_baseline(ctx, links)
+    baseline = depart.load_baseline(ctx.state_dir)
+    for parts in depart.SHARED_NEOVIM_DIRS:
+        key = depart.directory_key(home.joinpath(*parts))
+        assert baseline.value_for(key) == {"state": "absent"}
+
+
+def test_capture_departure_baseline_captures_runtime_nvm(home, links):
+    ctx = make_ctx(home)
+    install.capture_departure_baseline(ctx, links)
+    baseline = depart.load_baseline(ctx.state_dir)
+    assert baseline.value_for(depart.runtime_key(home / ".nvm")) == {"state": "absent"}
+
+
+def test_capture_departure_baseline_first_layer_is_immutable_across_runs(home, links):
+    ctx = make_ctx(home)
+    install.capture_departure_baseline(ctx, links)  # first run: rc absent
+
+    (home / ".zshrc").write_text("added after baseline was captured")
+    install.capture_departure_baseline(ctx, links)  # second run
+
+    baseline = depart.load_baseline(ctx.state_dir)
+    # Still recorded as absent from the first (immutable) layer — a
+    # later-observed present value must never overwrite it.
+    assert baseline.value_for(depart.file_key(home / ".zshrc")) == {"state": "absent"}
+    assert len(baseline.layers) == 1  # nothing genuinely unrecorded to add
+
+
+def test_capture_departure_baseline_runs_via_run_install(home, links, offline_install):
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+    assert depart.baseline_path(ctx.state_dir).is_file()
+
+
+# ── rollback deletes departure state ────────────────────────────────────────
+
+
+def test_real_rollback_deletes_baseline_and_blobs(home, links, offline_install):
+    (home / ".zshrc").write_text("x")
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+    assert depart.baseline_path(ctx.state_dir).is_file()
+    assert list(ctx.state_dir.glob("baseline-snapshot-*.blob"))
+
+    install.do_rollback(make_ctx(home))
+
+    assert not depart.baseline_path(ctx.state_dir).exists()
+    assert not list(ctx.state_dir.glob("baseline-snapshot-*.blob"))
+
+
+def test_rollback_wipe_dry_run_preview_excludes_departure_state(
+    home, links, offline_install, monkeypatch, capsys
+):
+    (home / ".zshrc").write_text("x")
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    monkeypatch.setattr(
+        install,
+        "run_command",
+        lambda cmd, **k: install.CommandResult(True, ""),
+    )
+    code = install.do_rollback(make_ctx(home, wipe=True, dry_run=True))
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert f"would remove empty state directory {ctx.state_dir}" in out

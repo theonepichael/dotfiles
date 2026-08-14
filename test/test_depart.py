@@ -1,0 +1,394 @@
+#!/usr/bin/env python3
+"""Fast-tier tests for depart.py's ownership-key and baseline-layer primitives.
+
+No subprocesses, no real HOME — everything runs against a throwaway
+``tmp_path``. Mirrors test_install.py's conventions.
+
+Requires Python 3.12+.
+"""
+
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+
+import depart  # noqa: E402 — must follow sys.path.insert above
+
+# ── ownership-key string rendering ──────────────────────────────────────────
+
+
+def test_key_helpers_render_type_prefixed_strings(tmp_path):
+    assert depart.file_key(tmp_path / "x") == f"file:{tmp_path / 'x'}"
+    assert depart.symlink_key(tmp_path / "x") == f"symlink:{tmp_path / 'x'}"
+    assert depart.directory_key(tmp_path / "x") == f"directory:{tmp_path / 'x'}"
+    assert depart.package_key("apt", "eza") == "package:apt/eza"
+    assert depart.package_key("uv-tool", "ruff") == "package:uv-tool/ruff"
+    assert depart.service_key("systemd", "watchcommit") == "service:systemd/watchcommit"
+    assert depart.runtime_key(tmp_path / ".nvm") == f"runtime:{tmp_path / '.nvm'}"
+
+
+def test_file_and_symlink_keys_are_distinct_for_the_same_path(tmp_path):
+    dest = tmp_path / ".zshrc"
+    assert depart.file_key(dest) != depart.symlink_key(dest)
+
+
+def test_key_type_extracts_the_type_prefix():
+    assert depart.key_type("file:/home/user/.zshrc") == "file"
+    assert depart.key_type("package:uv-tool/ruff") == "package"
+
+
+# ── capture_file ─────────────────────────────────────────────────────────
+
+
+def test_capture_file_absent_when_missing(tmp_path):
+    record = depart.capture_file(tmp_path / "nope")
+    assert record == {"state": "absent"}
+
+
+def test_capture_file_present_records_size_and_sha256(tmp_path):
+    path = tmp_path / "f.txt"
+    path.write_bytes(b"hello")
+    record = depart.capture_file(path)
+    assert record["state"] == "present"
+    assert record["size"] == 5
+    import hashlib
+
+    assert record["sha256"] == hashlib.sha256(b"hello").hexdigest()
+
+
+def test_capture_file_with_blob_dir_writes_blob_and_records_digest(tmp_path):
+    state_dir = tmp_path / "state"
+    path = tmp_path / "f.txt"
+    path.write_bytes(b"hello")
+    record = depart.capture_file(path, blob_dir=state_dir)
+    assert record["blob"] == depart.write_blob(state_dir, b"hello")
+    assert depart.read_blob(state_dir, record["blob"]) == b"hello"
+
+
+def test_capture_file_without_blob_dir_has_no_blob_key(tmp_path):
+    path = tmp_path / "f.txt"
+    path.write_bytes(b"hello")
+    record = depart.capture_file(path)
+    assert "blob" not in record
+
+
+def test_capture_file_absent_with_blob_dir_writes_no_blob(tmp_path):
+    state_dir = tmp_path / "state"
+    record = depart.capture_file(tmp_path / "nope", blob_dir=state_dir)
+    assert record == {"state": "absent"}
+    assert not state_dir.exists()
+
+
+def test_capture_file_treats_a_symlink_as_absent(tmp_path):
+    target = tmp_path / "target.txt"
+    target.write_text("x")
+    link = tmp_path / "link.txt"
+    link.symlink_to(target)
+    assert depart.capture_file(link) == {"state": "absent"}
+
+
+def test_capture_file_unknown_on_permission_error(tmp_path, monkeypatch):
+    path = tmp_path / "f.txt"
+    path.write_bytes(b"x")
+
+    def boom(self, *a, **k):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(Path, "read_bytes", boom)
+    assert depart.capture_file(path) == {"state": "unknown"}
+
+
+# ── capture_symlink ──────────────────────────────────────────────────────
+
+
+def test_capture_symlink_absent_for_a_plain_file(tmp_path):
+    path = tmp_path / "f.txt"
+    path.write_text("x")
+    assert depart.capture_symlink(path) == {"state": "absent"}
+
+
+def test_capture_symlink_present_records_target_text(tmp_path):
+    link = tmp_path / "link"
+    link.symlink_to("/some/target")
+    record = depart.capture_symlink(link)
+    assert record == {"state": "present", "target": "/some/target"}
+
+
+# ── capture_directory ────────────────────────────────────────────────────
+
+
+def test_capture_directory_present_and_absent(tmp_path):
+    d = tmp_path / "d"
+    assert depart.capture_directory(d) == {"state": "absent"}
+    d.mkdir()
+    assert depart.capture_directory(d) == {"state": "present"}
+
+
+def test_capture_directory_treats_a_symlinked_dir_as_absent(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    assert depart.capture_directory(link) == {"state": "absent"}
+
+
+# ── ancestor directories (mkdir(parents=True) coverage) ─────────────────
+
+
+def test_ancestor_directories_walks_up_to_but_excluding_home(tmp_path):
+    home = tmp_path / "home"
+    path = home / ".local" / "bin" / "nvim"
+    assert depart.ancestor_directories(path, home) == [
+        home / ".local" / "bin",
+        home / ".local",
+    ]
+
+
+def test_ancestor_directories_direct_child_of_home(tmp_path):
+    home = tmp_path / "home"
+    path = home / ".zshrc"
+    assert depart.ancestor_directories(path, home) == []
+
+
+def test_ancestor_directories_outside_home_is_empty(tmp_path):
+    home = tmp_path / "home"
+    other = tmp_path / "elsewhere" / "deep" / "file"
+    assert depart.ancestor_directories(other, home) == []
+
+
+# ── tree manifest (Neovim prefix / Nerd Font) ───────────────────────────
+
+
+def test_tree_manifest_absent_for_missing_root(tmp_path):
+    assert depart.capture_tree_manifest(tmp_path / "nope") == {"state": "absent"}
+
+
+def test_tree_manifest_captures_files_symlinks_and_empty_dirs(tmp_path):
+    root = tmp_path / "tree"
+    root.mkdir()
+    (root / "bin").mkdir()
+    (root / "bin" / "nvim").write_bytes(b"binary")
+    (root / "empty").mkdir()
+    (root / "link").symlink_to(root / "bin" / "nvim")
+
+    manifest = depart.capture_tree_manifest(root)
+    assert manifest["state"] == "present"
+    entries = manifest["entries"]
+    assert "dir:bin" in entries
+    assert "dir:empty" in entries
+    assert "file:bin/nvim" in entries
+    assert entries["file:bin/nvim"]["size"] == 6
+    assert entries["symlink:link"] == str(root / "bin" / "nvim")
+
+
+def test_tree_manifest_matches_true_for_identical_tree(tmp_path):
+    root = tmp_path / "tree"
+    root.mkdir()
+    (root / "f").write_bytes(b"x")
+    recorded = depart.capture_tree_manifest(root)
+    assert depart.tree_manifest_matches(root, recorded) is True
+
+
+def test_tree_manifest_matches_false_after_any_change(tmp_path):
+    root = tmp_path / "tree"
+    root.mkdir()
+    (root / "f").write_bytes(b"x")
+    recorded = depart.capture_tree_manifest(root)
+    (root / "f").write_bytes(b"changed")
+    assert depart.tree_manifest_matches(root, recorded) is False
+
+
+def test_tree_manifest_matches_false_when_recorded_state_is_not_present(tmp_path):
+    root = tmp_path / "tree"
+    root.mkdir()
+    recorded = {"state": "unknown"}
+    assert depart.tree_manifest_matches(root, recorded) is False
+
+
+# ── runtime:<root> (NVM) — lightweight, top-level-only divergence ───────
+
+
+def test_capture_runtime_nvm_absent_when_no_nvm_dir(tmp_path):
+    assert depart.capture_runtime_nvm(tmp_path) == {"state": "absent"}
+
+
+def test_capture_runtime_nvm_present_with_installed_versions(tmp_path):
+    versions = tmp_path / ".nvm" / "versions" / "node"
+    versions.mkdir(parents=True)
+    (versions / "v20.0.0").mkdir()
+    (versions / "v18.0.0").mkdir()
+    record = depart.capture_runtime_nvm(tmp_path)
+    assert record == {"state": "present", "versions": ["v18.0.0", "v20.0.0"]}
+
+
+def test_runtime_nvm_not_diverged_when_extra_version_added(tmp_path):
+    """Normal `nvm install`/`npm install -g` use must not count as divergence."""
+    versions = tmp_path / ".nvm" / "versions" / "node"
+    versions.mkdir(parents=True)
+    (versions / "v20.0.0").mkdir()
+    recorded = depart.capture_runtime_nvm(tmp_path)
+
+    (versions / "v22.0.0").mkdir()
+    assert depart.runtime_nvm_diverged(tmp_path, recorded) is False
+
+
+def test_runtime_nvm_diverged_when_installed_version_removed(tmp_path):
+    versions = tmp_path / ".nvm" / "versions" / "node"
+    versions.mkdir(parents=True)
+    (versions / "v20.0.0").mkdir()
+    recorded = depart.capture_runtime_nvm(tmp_path)
+
+    import shutil
+
+    shutil.rmtree(versions / "v20.0.0")
+    assert depart.runtime_nvm_diverged(tmp_path, recorded) is True
+
+
+def test_runtime_nvm_diverged_when_root_removed_entirely(tmp_path):
+    versions = tmp_path / ".nvm" / "versions" / "node"
+    versions.mkdir(parents=True)
+    recorded = depart.capture_runtime_nvm(tmp_path)
+
+    import shutil
+
+    shutil.rmtree(tmp_path / ".nvm")
+    assert depart.runtime_nvm_diverged(tmp_path, recorded) is True
+
+
+def test_runtime_nvm_not_diverged_when_recorded_absent(tmp_path):
+    recorded = {"state": "absent"}
+    assert depart.runtime_nvm_diverged(tmp_path, recorded) is False
+
+
+# ── content blobs ────────────────────────────────────────────────────────
+
+
+def test_write_blob_then_read_blob_roundtrips(tmp_path):
+    digest = depart.write_blob(tmp_path, b"hello world")
+    assert depart.read_blob(tmp_path, digest) == b"hello world"
+
+
+def test_write_blob_is_idempotent_for_identical_content(tmp_path):
+    digest1 = depart.write_blob(tmp_path, b"same")
+    digest2 = depart.write_blob(tmp_path, b"same")
+    assert digest1 == digest2
+    assert len(list(tmp_path.glob("baseline-snapshot-*.blob"))) == 1
+
+
+def test_read_blob_missing_returns_none(tmp_path):
+    assert depart.read_blob(tmp_path, "deadbeef" * 8) is None
+
+
+# ── Baseline layering: unrecorded vs absent ─────────────────────────────
+
+
+def test_first_layer_is_created_from_an_empty_baseline():
+    baseline = depart.Baseline()
+    baseline.add_layer("2026-08-13T00:00:00", {"file:/a": {"state": "present"}})
+    assert len(baseline.layers) == 1
+    assert baseline.value_for("file:/a") == {"state": "present"}
+
+
+def test_absent_recorded_key_is_not_unrecorded():
+    """A key captured as absent in layer 1 must not be eligible for re-capture."""
+    baseline = depart.Baseline()
+    baseline.add_layer("t1", {"file:/a": {"state": "absent"}})
+    assert baseline.is_unrecorded("file:/a") is False
+
+
+def test_supplementary_layer_only_adds_genuinely_unrecorded_keys():
+    baseline = depart.Baseline()
+    baseline.add_layer("t1", {"file:/a": {"state": "absent"}})
+    # A later run captures /a fresh (now present) and a brand-new /b.
+    baseline.add_layer(
+        "t2",
+        {
+            "file:/a": {"state": "present", "size": 1, "sha256": "x"},
+            "file:/b": {"state": "present", "size": 1, "sha256": "y"},
+        },
+    )
+    # /a's value is still the first layer's absent — never overwritten.
+    assert baseline.value_for("file:/a") == {"state": "absent"}
+    assert baseline.value_for("file:/b") == {
+        "state": "present",
+        "size": 1,
+        "sha256": "y",
+    }
+    assert len(baseline.layers) == 2
+    assert baseline.layers[1].records == {
+        "file:/b": {"state": "present", "size": 1, "sha256": "y"}
+    }
+
+
+def test_add_layer_with_nothing_new_does_not_append_an_empty_layer():
+    baseline = depart.Baseline()
+    baseline.add_layer("t1", {"file:/a": {"state": "absent"}})
+    baseline.add_layer("t2", {"file:/a": {"state": "present"}})
+    assert len(baseline.layers) == 1
+
+
+def test_first_layer_is_immutable_even_when_value_changes_to_unknown():
+    baseline = depart.Baseline()
+    baseline.add_layer(
+        "t1", {"file:/a": {"state": "present", "size": 1, "sha256": "x"}}
+    )
+    baseline.add_layer("t2", {"file:/a": {"state": "unknown"}})
+    assert baseline.value_for("file:/a") == {
+        "state": "present",
+        "size": 1,
+        "sha256": "x",
+    }
+
+
+def test_all_keys_unions_across_layers():
+    baseline = depart.Baseline()
+    baseline.add_layer("t1", {"file:/a": {"state": "absent"}})
+    baseline.add_layer("t2", {"file:/b": {"state": "present"}})
+    assert baseline.all_keys() == {"file:/a", "file:/b"}
+
+
+def test_value_for_missing_key_is_none():
+    baseline = depart.Baseline()
+    assert baseline.value_for("file:/nope") is None
+    assert baseline.is_unrecorded("file:/nope") is True
+
+
+# ── serialization ────────────────────────────────────────────────────────
+
+
+def test_save_and_load_baseline_roundtrips(tmp_path):
+    baseline = depart.Baseline()
+    baseline.add_layer(
+        "t1", {"file:/a": {"state": "present", "size": 1, "sha256": "x"}}
+    )
+    baseline.transactions.append({"manager": "apt", "packages": ["eza"]})
+
+    depart.save_baseline(tmp_path, baseline)
+    loaded = depart.load_baseline(tmp_path)
+
+    assert loaded is not None
+    assert loaded.value_for("file:/a") == {"state": "present", "size": 1, "sha256": "x"}
+    assert loaded.transactions == [{"manager": "apt", "packages": ["eza"]}]
+
+
+def test_load_baseline_missing_file_returns_none(tmp_path):
+    assert depart.load_baseline(tmp_path) is None
+
+
+def test_load_baseline_empty_file_returns_none(tmp_path):
+    depart.baseline_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    depart.baseline_path(tmp_path).write_text("")
+    assert depart.load_baseline(tmp_path) is None
+
+
+def test_load_baseline_unparseable_file_returns_none(tmp_path):
+    depart.baseline_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    depart.baseline_path(tmp_path).write_text("not json{")
+    assert depart.load_baseline(tmp_path) is None
+
+
+def test_save_baseline_creates_state_dir_if_missing(tmp_path):
+    state_dir = tmp_path / "does" / "not" / "exist"
+    depart.save_baseline(state_dir, depart.Baseline())
+    assert depart.baseline_path(state_dir).is_file()
