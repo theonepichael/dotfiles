@@ -5,6 +5,14 @@
      configured under Copilot CLI, per the --work profile's
      no-personal-data-on-work-hardware rule — intentional, not a gap. -->
 
+## Planning Gate
+
+For any non-trivial change, don't start editing files first. Produce a plan
+— via `grill-me` and/or `second-opinion` as the change warrants — and wait
+for an explicit "go" before implementing. Trivial changes (a one-liner, a
+doc typo, a config tweak with no real design question) can skip straight to
+execution.
+
 ## Workflow Behaviors
 
 ### Judgment calls — lead with a recommendation
@@ -365,8 +373,20 @@ used for backlog capture.
   repo falls into, default to the safer path: keep merge and push as
   separate, individually-confirmed asks — never bundle.
 
+## Test Hygiene
+
+Never let tests touch real user state. Mock `subprocess.Popen`/
+`subprocess.run` calls and any writes to `~/.claude/`, `~/.config/`, or
+production data directories. When fixing a bug, add a regression test
+proven to fail against the pre-fix code (run it red, then green) — a test
+that can't be made to fail first isn't verifying anything.
+
 ## Shell Command Safety
 
+- Before an `Edit`, re-read the exact target lines rather than retyping
+  them from memory — prose files in this repo contain unicode dashes and
+  smart quotes that look identical to ASCII but break literal string
+  matching, causing avoidable failed-edit retries.
 - Never put text that may contain an apostrophe (backlog titles/summaries,
   commit bodies, freeform notes) inside a single-quoted shell string — an
   apostrophe there terminates the quote early and breaks the command. Write
