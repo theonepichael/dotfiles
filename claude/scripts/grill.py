@@ -834,7 +834,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="grill-me session state CLI (all mutations go through here)",
     )
-    cli_common.add_verbosity_args(parser)
+    # --quiet/-v are defined once, on every leaf subcommand parser only
+    # (via this shared `parents=` parser) -- never on `parser` itself. See
+    # dev_status.py's build_parser() for the full rationale.
+    verbosity_parent = argparse.ArgumentParser(add_help=False)
+    cli_common.add_verbosity_args(verbosity_parent)
     sub = parser.add_subparsers(
         dest="cmd",
         metavar=(
@@ -851,15 +855,19 @@ def main() -> None:
             help="session slug or unique substring (default: most recent)",
         )
 
-    p = sub.add_parser("new", help="create a session")
+    p = sub.add_parser("new", help="create a session", parents=[verbosity_parent])
     p.add_argument("json", metavar='\'{"topic": "..."}\'')
 
-    p = sub.add_parser("ask", help="register an open decision point")
+    p = sub.add_parser(
+        "ask", help="register an open decision point", parents=[verbosity_parent]
+    )
     p.add_argument("json", metavar='\'{"id", "question", ["reasoning"]}\'')
     add_session_flag(p)
 
     p = sub.add_parser(
-        "decide", help="resolve an open decision point (or add+decide in one shot)"
+        "decide",
+        help="resolve an open decision point (or add+decide in one shot)",
+        parents=[verbosity_parent],
     )
     p.add_argument(
         "json",
@@ -867,16 +875,26 @@ def main() -> None:
     )
     add_session_flag(p)
 
-    p = sub.add_parser("revise", help="amend a decision (resets its verdict)")
+    p = sub.add_parser(
+        "revise",
+        help="amend a decision (resets its verdict)",
+        parents=[verbosity_parent],
+    )
     p.add_argument("decision_id")
     p.add_argument("patch", metavar='\'{"decision": "..."}\'')
     add_session_flag(p)
 
-    p = sub.add_parser("rm", help="remove a decision point from a session")
+    p = sub.add_parser(
+        "rm",
+        help="remove a decision point from a session",
+        parents=[verbosity_parent],
+    )
     p.add_argument("decision_id")
     add_session_flag(p)
 
-    p = sub.add_parser("verdict", help="record a verification verdict")
+    p = sub.add_parser(
+        "verdict", help="record a verification verdict", parents=[verbosity_parent]
+    )
     p.add_argument("decision_id")
     p.add_argument(
         "json",
@@ -885,7 +903,9 @@ def main() -> None:
     add_session_flag(p)
 
     p = sub.add_parser(
-        "plan", help="record the path of the model-authored plan artifact"
+        "plan",
+        help="record the path of the model-authored plan artifact",
+        parents=[verbosity_parent],
     )
     p.add_argument("path")
     add_session_flag(p)
@@ -893,6 +913,7 @@ def main() -> None:
     p = sub.add_parser(
         "mark-pending-execution",
         help="flag a session's plan as ready for clear-and-go resume",
+        parents=[verbosity_parent],
     )
     p.add_argument(
         "--backlog-slug",
@@ -904,6 +925,7 @@ def main() -> None:
     p = sub.add_parser(
         "pending-plan",
         help="print (and optionally consume) the most recent pending-execution plan",
+        parents=[verbosity_parent],
     )
     p.add_argument(
         "--consume",
@@ -911,15 +933,27 @@ def main() -> None:
         help="clear pending_execution on the printed session (one-shot)",
     )
 
-    p = sub.add_parser("next", help="print the first open decision point")
+    p = sub.add_parser(
+        "next",
+        help="print the first open decision point",
+        parents=[verbosity_parent],
+    )
     add_session_flag(p)
 
-    p = sub.add_parser("render", help="print session status as markdown")
+    p = sub.add_parser(
+        "render",
+        help="print session status as markdown",
+        parents=[verbosity_parent],
+    )
     add_session_flag(p)
 
-    sub.add_parser("list", help="list sessions")
+    sub.add_parser("list", help="list sessions", parents=[verbosity_parent])
 
-    p = sub.add_parser("show", help="print session (or one decision) as JSON")
+    p = sub.add_parser(
+        "show",
+        help="print session (or one decision) as JSON",
+        parents=[verbosity_parent],
+    )
     p.add_argument("decision_id", nargs="?", default=None)
     add_session_flag(p)
 

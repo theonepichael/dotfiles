@@ -639,5 +639,33 @@ class GrillTestCase(unittest.TestCase):
         self.assertNotIn("/backlog-item", out.getvalue())
 
 
+class ParserVerbosityTests(unittest.TestCase):
+    def test_flags_parse_after_every_leaf_subcommand(self) -> None:
+        # A leaf added later without an entry here silently loses coverage.
+        cases = {
+            "new": ("cmd_new", ["{}"]),
+            "ask": ("cmd_ask", ["{}"]),
+            "decide": ("cmd_decide", ["{}"]),
+            "revise": ("cmd_revise", ["dummy-id", "{}"]),
+            "rm": ("cmd_rm", ["dummy-id"]),
+            "verdict": ("cmd_verdict", ["dummy-id", "{}"]),
+            "plan": ("cmd_plan", ["dummy-path"]),
+            "mark-pending-execution": ("cmd_mark_pending_execution", []),
+            "pending-plan": ("cmd_pending_plan", []),
+            "next": ("cmd_next", []),
+            "render": ("cmd_render", []),
+            "list": ("cmd_list", []),
+            "show": ("cmd_show", []),
+        }
+        for cmd, (target, extra) in cases.items():
+            argv = ["grill.py", cmd, *extra, "-q"]
+            with (
+                patch.object(grill, target) as mock_cmd,
+                patch.object(sys, "argv", argv),
+            ):
+                grill.main()
+            self.assertTrue(mock_cmd.call_args.args[0].quiet)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

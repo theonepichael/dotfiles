@@ -772,5 +772,24 @@ class ExportImportTests(SyncTestCase):
             sync.cmd_import(self._args(if_rev=99))
 
 
+class ParserVerbosityTests(unittest.TestCase):
+    def test_flags_parse_after_every_leaf_subcommand(self):
+        # A leaf added later without an entry here silently loses coverage.
+        cases = {
+            "sync": [],
+            "status": [],
+            "export": [],
+            "import": ["--if-rev", "0"],
+        }
+        for cmd, extra in cases.items():
+            args = sync.build_parser().parse_args([cmd, "-q", *extra])
+            self.assertTrue(args.quiet)
+            self.assertFalse(args.verbose)
+
+    def test_rejects_quiet_and_verbose_together(self):
+        with self.assertRaises(SystemExit):
+            sync.build_parser().parse_args(["status", "-q", "-v"])
+
+
 if __name__ == "__main__":
     unittest.main()
