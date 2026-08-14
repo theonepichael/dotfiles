@@ -5,12 +5,18 @@ commit bundled over to a GitHub-blocked work machine.
 Usage:
     dotfiles_sync_check.py check       print a drift note if HEAD is ahead of the marker (default)
     dotfiles_sync_check.py mark [sha]  record the given (or current HEAD) commit as last-bundled
+
+Flags
+  --quiet, -q    suppress non-essential output
+  --verbose, -v  emit extra diagnostic messages to stderr
 """
 
 import argparse
 import subprocess
 import sys
 from pathlib import Path
+
+import cli_common
 
 REPO = Path.home() / "dotfiles"
 STATE_DIR = Path.home() / ".local" / "state" / "dotfiles"
@@ -30,7 +36,7 @@ def git(*args: str) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def cmd_check() -> None:
+def cmd_check(quiet: bool = False) -> None:
     if not REPO.is_dir() or not MARKER.exists():
         return
     marker_sha = MARKER.read_text().strip()
@@ -42,19 +48,23 @@ def cmd_check() -> None:
     count = git("rev-list", "--count", f"{marker_sha}..{head}")
     if not count or count == "0":
         return
-    print(
-        f"dotfiles: {count} commit(s) ahead of last bundled transfer ({marker_sha[:7]})"
+    cli_common.qprint(
+        f"dotfiles: {count} commit(s) ahead of last bundled transfer ({marker_sha[:7]})",
+        quiet=quiet,
     )
 
 
-def cmd_mark(sha: str | None) -> None:
+def cmd_mark(sha: str | None, quiet: bool = False) -> None:
     target = sha or git("rev-parse", "HEAD")
     if not target:
         print("dotfiles_sync_check: could not resolve HEAD", file=sys.stderr)
         sys.exit(1)
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     MARKER.write_text(target + "\n")
-    print(f"dotfiles: marked {target[:7]} as last-bundled commit")
+    cli_common.qprint(
+        f"dotfiles: marked {target[:7]} as last-bundled commit",
+        quiet=quiet,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -62,6 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Flag when the dotfiles repo has drifted from the last "
         "commit bundled over to a GitHub-blocked work machine."
     )
+    cli_common.add_verbosity_args(parser)
     subparsers = parser.add_subparsers(dest="subcommand")
     subparsers.add_parser(
         "check", help="print a drift note if HEAD is ahead of the marker (default)"
@@ -79,10 +90,11 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     subcommand = args.subcommand or "check"
+    quiet = getattr(args, "quiet", False)
     if subcommand == "check":
-        cmd_check()
+        cmd_check(quiet=quiet)
     else:
-        cmd_mark(args.sha)
+        cmd_mark(args.sha, quiet=quiet)
 
 
 if __name__ == "__main__":

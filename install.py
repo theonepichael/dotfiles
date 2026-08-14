@@ -20,6 +20,10 @@ Two properties from the shell version are load-bearing and preserved here:
 The dotfile symlink table itself lives in ``links.toml`` next to this file,
 not in code — see that file's header for the per-entry schema.
 
+Flags
+  --quiet, -q    suppress non-essential output
+  --verbose, -v  emit extra diagnostic messages to stderr
+
 Requires Python 3.12+.
 """
 
@@ -38,6 +42,10 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import NoReturn
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "claude" / "scripts"))
+
+import cli_common  # noqa: E402 — sibling dir inserted above
 
 import depart
 
@@ -115,10 +123,12 @@ CAPS_LOCK_TO_ESCAPE = [
 ]
 
 USAGE = """\
-usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--no-nvim-pin] [--reseed]
-       ./install.sh --depart [--yes] [--dry-run]
-       ./install.sh --check-links [--harness=...] [--profile=personal|work]
+usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--no-nvim-pin] [--reseed] [--quiet | --verbose]
+       ./install.sh --depart [--yes] [--dry-run] [--quiet | --verbose]
+       ./install.sh --check-links [--harness=...] [--profile=personal|work] [--quiet | --verbose]
 
+  --quiet, -q   suppress non-essential output
+  --verbose, -v emit extra diagnostic messages to stderr
   --harness   required for an install run; not needed by the undo/audit
               actions (--rollback, --depart, --check-links), though
               --check-links accepts it to scope which entries apply.
@@ -352,10 +362,13 @@ class Manifest:
     path: Path
     dry_run: bool = False
 
-    def init_run(self, profile: str) -> None:
+    def init_run(self, profile: str, quiet: bool = False) -> None:
         """Open a new run in the history (or preview doing so)."""
         if self.dry_run:
-            print(PALETTE.dim(f"  [dry-run] would record a new run in {self.path}"))
+            cli_common.qprint(
+                PALETTE.dim(f"  [dry-run] would record a new run in {self.path}"),
+                quiet=quiet,
+            )
             return
         stamp = datetime.now().astimezone().isoformat(timespec="seconds")
         self._append({"kind": "run", "timestamp": stamp, "profile": profile})
@@ -468,6 +481,8 @@ class Options:
     depart: bool = False
     yes: bool = False
     check_links: bool = False
+    quiet: bool = False
+    verbose: bool = False
 
 
 @dataclass
@@ -584,6 +599,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         SystemExit: 0 for ``--help``, 2 for any argument error.
     """
     parser = _Parser(add_help=False, allow_abbrev=False)
+    cli_common.add_verbosity_args(parser)
     parser.add_argument("--profile", default="personal")
     # append, not store: --harness=claude --harness=copilot must accumulate
     # both, not silently drop the first on the second flag.
@@ -719,6 +735,8 @@ def parse_args(argv: Sequence[str]) -> Options:
         depart=args.depart,
         yes=args.yes,
         check_links=args.check_links,
+        quiet=args.quiet,
+        verbose=args.verbose,
     )
 
 
@@ -778,14 +796,14 @@ def have(executable: str) -> bool:
     return shutil.which(executable) is not None
 
 
-def _preview(message: str) -> None:
+def _preview(message: str, *, quiet: bool = False) -> None:
     """Print a dry-run preview line."""
-    print(PALETTE.dim(f"  [dry-run] {message}"))
+    cli_common.qprint(PALETTE.dim(f"  [dry-run] {message}"), quiet=quiet)
 
 
-def _header(message: str) -> None:
+def _header(message: str, *, quiet: bool = False) -> None:
     """Print a section header line."""
-    print(PALETTE.header(message))
+    cli_common.qprint(PALETTE.header(message), quiet=quiet)
 
 
 # ── packages: macOS ───────────────────────────────────────────────────────────
@@ -822,10 +840,11 @@ def install_mac_packages(ctx: Context) -> None:
             # dependency deep.
             _preview(
                 "would install Homebrew "
-                "(curl raw.githubusercontent.com/Homebrew/install | bash)"
+                "(curl raw.githubusercontent.com/Homebrew/install | bash)",
+                quiet=ctx.opts.quiet,
             )
         else:
-            _header("==> Installing Homebrew...")
+            _header("==> Installing Homebrew...", quiet=ctx.opts.quiet)
             installed = run_command(
                 '/bin/bash -c "$(curl -fsSL '
                 'https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
@@ -844,17 +863,19 @@ def install_mac_packages(ctx: Context) -> None:
         return
 
     if ctx.opts.dry_run:
-        _preview(f"would install formulae: {' '.join(BREW_FORMULAE)}")
-        _preview(f"would install casks: {' '.join(BREW_CASKS)}")
+        _preview(
+            f"would install formulae: {' '.join(BREW_FORMULAE)}", quiet=ctx.opts.quiet
+        )
+        _preview(f"would install casks: {' '.join(BREW_CASKS)}", quiet=ctx.opts.quiet)
         return
 
-    _header("==> Installing formulae...")
+    _header("==> Installing formulae...", quiet=ctx.opts.quiet)
     if run_command(["brew", "install", *BREW_FORMULAE]).ok:
         ctx.manifest.record_package("brew formulae")
     else:
         ctx.reporter.skip("brew formulae", "brew install failed")
 
-    _header("==> Installing casks...")
+    _header("==> Installing casks...", quiet=ctx.opts.quiet)
     if run_command(["brew", "install", "--cask", *BREW_CASKS]).ok:
         ctx.manifest.record_package("brew casks")
     else:
@@ -923,10 +944,10 @@ def _install_linux_packages_one_by_one(
         if manager == "dnf"
         else ["sudo", "apt-get", "install", "-y"]
     )
-    _header(f"==> Installing packages ({manager})...")
+    _header(f"==> Installing packages ({manager})...", quiet=ctx.opts.quiet)
     for pkg in LINUX_PACKAGES:
         if ctx.opts.dry_run:
-            _preview(f"would run: {' '.join(base)} {pkg}")
+            _preview(f"would run: {' '.join(base)} {pkg}", quiet=ctx.opts.quiet)
             continue
         before = (
             _capture_package_snapshot(manager)
@@ -960,7 +981,10 @@ def _shim(ctx: Context, shim_name: str, real_name: str) -> None:
         return
     target = ctx.home / ".local" / "bin" / shim_name
     if ctx.opts.dry_run:
-        _preview(f"would shim {shim_name} → {real_name} ({ctx.display(target)})")
+        _preview(
+            f"would shim {shim_name} → {real_name} ({ctx.display(target)})",
+            quiet=ctx.opts.quiet,
+        )
         return
     real_path = Path(shutil.which(real_name) or real_name)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -968,7 +992,9 @@ def _shim(ctx: Context, shim_name: str, real_name: str) -> None:
         target.unlink()
     target.symlink_to(real_path)
     ctx.manifest.record_symlink(target, real_path)
-    print(PALETTE.ok(f"  shimmed {shim_name} → {real_name}"))
+    cli_common.qprint(
+        PALETTE.ok(f"  shimmed {shim_name} → {real_name}"), quiet=ctx.opts.quiet
+    )
 
 
 def _install_uv(ctx: Context) -> None:
@@ -976,9 +1002,11 @@ def _install_uv(ctx: Context) -> None:
     if have("uv"):
         return
     if ctx.opts.dry_run:
-        _preview("would install uv (curl astral.sh/uv/install.sh | sh)")
+        _preview(
+            "would install uv (curl astral.sh/uv/install.sh | sh)", quiet=ctx.opts.quiet
+        )
         return
-    _header("==> Installing uv...")
+    _header("==> Installing uv...", quiet=ctx.opts.quiet)
     if run_command("curl -LsSf https://astral.sh/uv/install.sh | sh", shell=True).ok:
         ctx.manifest.record_package("uv")
         # The installer writes ~/.local/bin/env for shells to source; this
@@ -1012,11 +1040,15 @@ def _install_nerd_font(ctx: Context) -> None:
 
     if ctx.opts.dry_run:
         _preview(
-            f"would install JetBrainsMono Nerd Font v{NERD_FONT_VERSION} to {font_dir}"
+            f"would install JetBrainsMono Nerd Font v{NERD_FONT_VERSION} to {font_dir}",
+            quiet=ctx.opts.quiet,
         )
         return
 
-    _header(f"==> Installing JetBrainsMono Nerd Font v{NERD_FONT_VERSION}...")
+    _header(
+        f"==> Installing JetBrainsMono Nerd Font v{NERD_FONT_VERSION}...",
+        quiet=ctx.opts.quiet,
+    )
     tmp_dir = Path(tempfile.mkdtemp())
     try:
         archive = tmp_dir / "JetBrainsMono.zip"
@@ -1038,7 +1070,9 @@ def _install_nerd_font(ctx: Context) -> None:
             # before the user can add fonts of their own.
             if ctx.departure_baseline is not None:
                 depart.record_installed_tree(ctx.departure_baseline, font_dir)
-            print(PALETTE.ok(f"  installed to {font_dir}"))
+            cli_common.qprint(
+                PALETTE.ok(f"  installed to {font_dir}"), quiet=ctx.opts.quiet
+            )
         else:
             ctx.reporter.skip(
                 "JetBrainsMono Nerd Font",
@@ -1120,12 +1154,14 @@ def _install_neovim_fallback(ctx: Context) -> None:
 
     if ctx.opts.dry_run:
         _preview(
-            f"would install Neovim v{NEOVIM_FALLBACK_VERSION} to {ctx.display(prefix)}"
+            f"would install Neovim v{NEOVIM_FALLBACK_VERSION} to {ctx.display(prefix)}",
+            quiet=ctx.opts.quiet,
         )
         return
 
     _header(
-        f"==> Installing Neovim v{NEOVIM_FALLBACK_VERSION} (apt's Neovim is too old or broken)..."
+        f"==> Installing Neovim v{NEOVIM_FALLBACK_VERSION} (apt's Neovim is too old or broken)...",
+        quiet=ctx.opts.quiet,
     )
     tmp_dir = Path(tempfile.mkdtemp())
     try:
@@ -1166,10 +1202,11 @@ def _install_neovim_fallback(ctx: Context) -> None:
             # tree wholesale if it still matches this snapshot exactly.
             if ctx.departure_baseline is not None:
                 depart.record_installed_tree(ctx.departure_baseline, prefix)
-            print(
+            cli_common.qprint(
                 PALETTE.ok(
                     f"  installed to {ctx.display(prefix)}, linked from {ctx.display(shim)}"
-                )
+                ),
+                quiet=ctx.opts.quiet,
             )
         else:
             ctx.neovim_fallback_failure = (
@@ -1190,7 +1227,7 @@ def _install_ruff_uv_tool(ctx: Context) -> None:
         ctx.reporter.skip("ruff", "uv unavailable")
         return
     if ctx.opts.dry_run:
-        _preview("would run: uv tool install ruff")
+        _preview("would run: uv tool install ruff", quiet=ctx.opts.quiet)
         return
     before = (
         _capture_package_snapshot("uv-tool")
@@ -1224,9 +1261,9 @@ def install_linux_packages(ctx: Context) -> None:
 
     if manager == "dnf":
         if ctx.opts.dry_run:
-            _preview("would run: sudo dnf makecache")
+            _preview("would run: sudo dnf makecache", quiet=ctx.opts.quiet)
         else:
-            _header("==> Refreshing dnf package metadata...")
+            _header("==> Refreshing dnf package metadata...", quiet=ctx.opts.quiet)
             if not run_command(["sudo", "dnf", "makecache"]).ok:
                 ctx.reporter.skip(
                     "dnf makecache", "dnf makecache failed (offline or blocked?)"
@@ -1234,9 +1271,9 @@ def install_linux_packages(ctx: Context) -> None:
         _install_linux_packages_one_by_one(ctx, "dnf", epoch)
     else:
         if ctx.opts.dry_run:
-            _preview("would run: sudo apt-get update")
+            _preview("would run: sudo apt-get update", quiet=ctx.opts.quiet)
         else:
-            _header("==> Updating apt package lists...")
+            _header("==> Updating apt package lists...", quiet=ctx.opts.quiet)
             if not run_command(["sudo", "apt-get", "update"]).ok:
                 ctx.reporter.skip(
                     "apt update", "apt-get update failed (offline or blocked?)"
@@ -1254,10 +1291,11 @@ def install_linux_packages(ctx: Context) -> None:
         if ctx.opts.dry_run:
             _preview(
                 "would install oh-my-posh "
-                "(curl ohmyposh.dev/install.sh | bash -s -- -d ~/.local/bin)"
+                "(curl ohmyposh.dev/install.sh | bash -s -- -d ~/.local/bin)",
+                quiet=ctx.opts.quiet,
             )
         else:
-            _header("==> Installing oh-my-posh...")
+            _header("==> Installing oh-my-posh...", quiet=ctx.opts.quiet)
             bin_dir = ctx.home / ".local" / "bin"
             if run_command(
                 f"curl -s https://ohmyposh.dev/install.sh | bash -s -- -d {bin_dir}",
@@ -1303,9 +1341,12 @@ def install_node(ctx: Context) -> None:
 
     if not (ctx.home / ".nvm").is_dir():
         if ctx.opts.dry_run:
-            _preview("would install NVM (curl nvm-sh/nvm install.sh | bash)")
+            _preview(
+                "would install NVM (curl nvm-sh/nvm install.sh | bash)",
+                quiet=ctx.opts.quiet,
+            )
         else:
-            _header("==> Installing NVM...")
+            _header("==> Installing NVM...", quiet=ctx.opts.quiet)
             if not run_command(
                 "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/HEAD/"
                 "install.sh | bash",
@@ -1324,7 +1365,7 @@ def install_node(ctx: Context) -> None:
     if not nvm_sh.is_file():
         return
     if ctx.opts.dry_run:
-        _preview("would run: nvm install --lts")
+        _preview("would run: nvm install --lts", quiet=ctx.opts.quiet)
         return
     if run_command(f'. "{nvm_sh}" && nvm install --lts', shell=True).ok:
         _activate_nvm_node(ctx)
@@ -1335,15 +1376,17 @@ def install_node(ctx: Context) -> None:
 def install_npm_harness(ctx: Context, harness: str, label: str, package: str) -> None:
     """Install one npm-distributed harness CLI, if it was selected."""
     if not ctx.has_harness(harness):
-        print(f"  {label}: skipped (not in --harness)")
+        cli_common.qprint(
+            f"  {label}: skipped (not in --harness)", quiet=ctx.opts.quiet
+        )
         return
     if not have("npm"):
         ctx.reporter.skip(label, "npm unavailable (NVM install failed or skipped)")
         return
     if ctx.opts.dry_run:
-        _preview(f"would run: npm install -g {package}")
+        _preview(f"would run: npm install -g {package}", quiet=ctx.opts.quiet)
         return
-    _header(f"==> Installing {label}...")
+    _header(f"==> Installing {label}...", quiet=ctx.opts.quiet)
     before = (
         _capture_package_snapshot("npm") if ctx.departure_baseline is not None else None
     )
@@ -1488,13 +1531,22 @@ def symlink(ctx: Context, src: Path, dest: Path) -> bool:
         if dest.is_symlink():
             current = os.readlink(dest)
             if current == str(src):
-                _preview(f"{dest} already correctly linked → {src}, no-op")
+                _preview(
+                    f"{dest} already correctly linked → {src}, no-op",
+                    quiet=ctx.opts.quiet,
+                )
             else:
-                _preview(f"would relink {dest} → {src} (currently → {current})")
+                _preview(
+                    f"would relink {dest} → {src} (currently → {current})",
+                    quiet=ctx.opts.quiet,
+                )
         elif dest.exists():
-            _preview(f"would back up {dest} → {dest}.bak, then link {dest} → {src}")
+            _preview(
+                f"would back up {dest} → {dest}.bak, then link {dest} → {src}",
+                quiet=ctx.opts.quiet,
+            )
         else:
-            _preview(f"would link {dest} → {src}")
+            _preview(f"would link {dest} → {src}", quiet=ctx.opts.quiet)
         return True
 
     try:
@@ -1527,7 +1579,7 @@ def symlink(ctx: Context, src: Path, dest: Path) -> bool:
 
     if not was_link:
         ctx.manifest.record_symlink(dest, src)
-    print(PALETTE.ok(f"  linked {dest}"))
+    cli_common.qprint(PALETTE.ok(f"  linked {dest}"), quiet=ctx.opts.quiet)
     return True
 
 
@@ -1562,10 +1614,12 @@ def install_symlinks(ctx: Context, specs: Sequence[LinkSpec]) -> None:
     The WSL VS Code case isn't handled here even though it's a symlink
     candidate everywhere else: see ``seed_vscode_settings``.
     """
-    _header("==> Symlinking dotfiles...")
+    _header("==> Symlinking dotfiles...", quiet=ctx.opts.quiet)
 
     if ctx.opts.profile == "work":
-        print("  watchcommit: excluded (work profile)")
+        cli_common.qprint(
+            "  watchcommit: excluded (work profile)", quiet=ctx.opts.quiet
+        )
 
     for spec in specs:
         if not link_applies(spec, ctx):
@@ -1707,7 +1761,8 @@ def _replace_stale_vscode_symlink(ctx: Context, dest: Path) -> None:
         return
     if ctx.opts.dry_run:
         _preview(
-            f"would remove stale WSL symlink at {ctx.display(dest)} and copy instead"
+            f"would remove stale WSL symlink at {ctx.display(dest)} and copy instead",
+            quiet=ctx.opts.quiet,
         )
         return
     dest.unlink()
@@ -1795,7 +1850,10 @@ def seed_file(
     """
     if not dest.is_file():
         if ctx.opts.dry_run:
-            _preview(f"would copy {ctx.display(dest)} (from {seed.name})")
+            _preview(
+                f"would copy {ctx.display(dest)} (from {seed.name})",
+                quiet=ctx.opts.quiet,
+            )
             return ""
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -1804,7 +1862,10 @@ def seed_file(
             ctx.reporter.skip(skip_label, "copy failed")
             return ""
         ctx.manifest.record_copy(dest)
-        print(PALETTE.ok(f"  copied {ctx.display(dest)} (from {seed.name})"))
+        cli_common.qprint(
+            PALETTE.ok(f"  copied {ctx.display(dest)} (from {seed.name})"),
+            quiet=ctx.opts.quiet,
+        )
         return ""
 
     drift_desc = drift(seed, dest)
@@ -1835,7 +1896,8 @@ def _reseed_file(
         if ctx.opts.dry_run:
             _preview(
                 f"would skip reseeding {ctx.display(dest)} — {backup.name} exists "
-                "but isn't a recorded backup, resolve manually"
+                "but isn't a recorded backup, resolve manually",
+                quiet=ctx.opts.quiet,
             )
             return drift_desc
         ctx.reporter.skip(
@@ -1851,11 +1913,13 @@ def _reseed_file(
         if needs_backup:
             _preview(
                 f"would back up {ctx.display(dest)} → {dest.name}.bak, "
-                f"then reseed from {seed.name}"
+                f"then reseed from {seed.name}",
+                quiet=ctx.opts.quiet,
             )
         else:
             _preview(
-                f"would reseed {ctx.display(dest)} from {seed.name} (already backed up)"
+                f"would reseed {ctx.display(dest)} from {seed.name} (already backed up)",
+                quiet=ctx.opts.quiet,
             )
         return ""
 
@@ -1866,7 +1930,7 @@ def _reseed_file(
             ctx.reporter.skip(skip_label, "reseed backup failed")
             return ""
         ctx.manifest.record_backup(dest, backup)
-        print(f"  Backing up {dest} → {backup}")
+        cli_common.qprint(f"  Backing up {dest} → {backup}", quiet=ctx.opts.quiet)
 
     try:
         shutil.copy(seed, dest)
@@ -1884,7 +1948,10 @@ def _reseed_file(
         return ""
 
     ctx.manifest.record_copy(dest)
-    print(PALETTE.ok(f"  reseeded {ctx.display(dest)} (from {seed.name})"))
+    cli_common.qprint(
+        PALETTE.ok(f"  reseeded {ctx.display(dest)} (from {seed.name})"),
+        quiet=ctx.opts.quiet,
+    )
     return ""
 
 
@@ -2018,10 +2085,11 @@ def enable_watchcommit_service(ctx: Context) -> None:
     if ctx.opts.dry_run:
         _preview(
             "would enable+start watchcommit systemd user service, "
-            f"enable-linger for {_current_user()}"
+            f"enable-linger for {_current_user()}",
+            quiet=ctx.opts.quiet,
         )
         return
-    _header("==> Enabling watchcommit systemd user service...")
+    _header("==> Enabling watchcommit systemd user service...", quiet=ctx.opts.quiet)
     run_command(["systemctl", "--user", "daemon-reload"])
     if run_command(
         ["systemctl", "--user", "enable", "--now", "watchcommit.service"]
@@ -2031,9 +2099,10 @@ def enable_watchcommit_service(ctx: Context) -> None:
         if not run_command(
             ["loginctl", "enable-linger", _current_user()], capture=True
         ).ok:
-            print(
+            cli_common.qprint(
                 "  note: loginctl enable-linger failed — "
-                "service won't survive full logout"
+                "service won't survive full logout",
+                quiet=ctx.opts.quiet,
             )
     else:
         ctx.reporter.skip("watchcommit service", "systemctl --user enable --now failed")
@@ -2050,9 +2119,9 @@ def load_watchcommit_agent(ctx: Context) -> None:
         return
     plist = ctx.home / "Library" / "LaunchAgents" / "com.user.watchcommit.plist"
     if ctx.opts.dry_run:
-        _preview("would (re)load watchcommit launchd agent")
+        _preview("would (re)load watchcommit launchd agent", quiet=ctx.opts.quiet)
         return
-    _header("==> Loading watchcommit launchd agent...")
+    _header("==> Loading watchcommit launchd agent...", quiet=ctx.opts.quiet)
     run_command(["launchctl", "unload", str(plist)], capture=True)
     if not run_command(["launchctl", "load", str(plist)]).ok:
         ctx.reporter.skip("watchcommit agent", "launchctl load failed")
@@ -2065,9 +2134,11 @@ def import_rectangle_prefs(ctx: Context) -> None:
     """Import the repo's Rectangle window-manager preferences."""
     plist = ctx.dotfiles / "rectangle" / "com.knollsoft.Rectangle.plist"
     if ctx.opts.dry_run:
-        _preview(f"would import Rectangle preferences from {plist}")
+        _preview(
+            f"would import Rectangle preferences from {plist}", quiet=ctx.opts.quiet
+        )
         return
-    _header("==> Importing Rectangle preferences...")
+    _header("==> Importing Rectangle preferences...", quiet=ctx.opts.quiet)
     if not run_command(
         ["defaults", "import", "com.knollsoft.Rectangle", str(plist)]
     ).ok:
@@ -2084,15 +2155,18 @@ def set_caps_lock_to_escape(ctx: Context) -> None:
     if ctx.opts.dry_run:
         _preview(
             "would set Caps Lock → Escape "
-            "(rewrite ~/Library/Preferences/ByHost/.GlobalPreferences.*.plist)"
+            "(rewrite ~/Library/Preferences/ByHost/.GlobalPreferences.*.plist)",
+            quiet=ctx.opts.quiet,
         )
         return
 
-    _header("==> Setting Caps Lock → Escape...")
+    _header("==> Setting Caps Lock → Escape...", quiet=ctx.opts.quiet)
     byhost = ctx.home / "Library" / "Preferences" / "ByHost"
     plists = sorted(byhost.glob(".GlobalPreferences.*.plist"))
     if not plists:
-        print("  No ByHost GlobalPreferences plist found — skipping")
+        cli_common.qprint(
+            "  No ByHost GlobalPreferences plist found — skipping", quiet=ctx.opts.quiet
+        )
         return
 
     for path in plists:
@@ -2107,7 +2181,7 @@ def set_caps_lock_to_escape(ctx: Context) -> None:
         except (OSError, ValueError, plistlib.InvalidFileException):
             ctx.reporter.skip("Caps Lock → Escape", "plist rewrite failed")
             return
-        print(f"  Updated {path.name}")
+        cli_common.qprint(f"  Updated {path.name}", quiet=ctx.opts.quiet)
 
 
 # ── editors ───────────────────────────────────────────────────────────────────
@@ -2119,14 +2193,18 @@ def install_vim_plug(ctx: Context) -> None:
     if target.is_file():
         return
     if ctx.opts.dry_run:
-        _preview(f"would install vim-plug to {ctx.display(target)}")
+        _preview(
+            f"would install vim-plug to {ctx.display(target)}", quiet=ctx.opts.quiet
+        )
         return
-    _header("==> Installing vim-plug...")
+    _header("==> Installing vim-plug...", quiet=ctx.opts.quiet)
     target.parent.mkdir(parents=True, exist_ok=True)
     url = "https://raw.githubusercontent.com/junegunn/vim-plug/master/plug.vim"
     if run_command(["curl", "-fLo", str(target), "--create-dirs", url]).ok:
         ctx.manifest.record_copy(target)
-        print("  Run :PlugInstall inside vim to install plugins")
+        cli_common.qprint(
+            "  Run :PlugInstall inside vim to install plugins", quiet=ctx.opts.quiet
+        )
     else:
         ctx.reporter.skip("vim-plug", "download failed (network blocked?)")
 
@@ -2228,12 +2306,18 @@ def bootstrap_neovim(ctx: Context) -> None:
         )
         return
     if ctx.opts.dry_run:
-        _preview(f'would run: nvim --headless "+Lazy! sync" +qa (Neovim {pretty})')
+        _preview(
+            f'would run: nvim --headless "+Lazy! sync" +qa (Neovim {pretty})',
+            quiet=ctx.opts.quiet,
+        )
         return
 
-    _header(f"==> Bootstrapping Neovim plugins (lazy.nvim sync, Neovim {pretty})...")
+    _header(
+        f"==> Bootstrapping Neovim plugins (lazy.nvim sync, Neovim {pretty})...",
+        quiet=ctx.opts.quiet,
+    )
     if run_command(["nvim", "--headless", "+Lazy! sync", "+qa"]).ok:
-        print(PALETTE.ok("  plugins synced"))
+        cli_common.qprint(PALETTE.ok("  plugins synced"), quiet=ctx.opts.quiet)
     else:
         ctx.reporter.skip(
             "Neovim plugin sync",
@@ -2373,7 +2457,9 @@ def write_profile_marker(ctx: Context) -> None:
     if ctx.opts.profile != "work" or ctx.profile_marker.is_file():
         return
     if ctx.opts.dry_run:
-        _preview(f"would write profile marker: {ctx.profile_marker}")
+        _preview(
+            f"would write profile marker: {ctx.profile_marker}", quiet=ctx.opts.quiet
+        )
         return
     ctx.profile_marker.parent.mkdir(parents=True, exist_ok=True)
     ctx.profile_marker.write_text("work\n")
@@ -2445,10 +2531,11 @@ def do_rollback(ctx: Context) -> int:
     manifest = ctx.manifest
     if not manifest.path.is_file():
         if swept:
-            print(
+            cli_common.qprint(
                 PALETTE.header(
                     "Wipe swept untracked state — no recorded history to reverse."
-                )
+                ),
+                quiet=ctx.opts.quiet,
             )
             return _report_skips_and_exit(skips)
         print(
@@ -2466,7 +2553,7 @@ def do_rollback(ctx: Context) -> int:
             " — wipe mode: original configs discarded, not restored; "
             "untracked Neovim/watchcommit state swept"
         )
-    _header(header_msg)
+    _header(header_msg, quiet=ctx.opts.quiet)
 
     # Which backup paths this pass has already restored (or, under --wipe,
     # deleted). An older duplicate file-backed-up entry for the same path
@@ -2491,14 +2578,16 @@ def do_rollback(ctx: Context) -> int:
             case "file-backed-up":
                 _rollback_backup(ctx, entry, skips, restored, restored_dests)
             case "package-installed":
-                print(
+                cli_common.qprint(
                     f"  package left installed (profile-independent): "
-                    f"{entry.get('name', '')}"
+                    f"{entry.get('name', '')}",
+                    quiet=ctx.opts.quiet,
                 )
             case "run":
-                print(
+                cli_common.qprint(
                     f"  (run was: {entry.get('timestamp', '')}, "
-                    f"profile: {entry.get('profile', '')})"
+                    f"profile: {entry.get('profile', '')})",
+                    quiet=ctx.opts.quiet,
                 )
 
     if ctx.opts.dry_run:
@@ -2510,7 +2599,10 @@ def do_rollback(ctx: Context) -> int:
                 else []
             )
             if not remaining:
-                _preview(f"would remove empty state directory {ctx.state_dir}")
+                _preview(
+                    f"would remove empty state directory {ctx.state_dir}",
+                    quiet=ctx.opts.quiet,
+                )
         print(
             "Dry run complete — nothing was changed. "
             "Re-run without --dry-run to roll back for real."
@@ -2576,13 +2668,19 @@ def _wipe_watchcommit(ctx: Context, skips: Reporter) -> bool:
         return True
 
     if ctx.opts.dry_run:
-        _preview("would disable+stop the watchcommit systemd user service (wipe)")
+        _preview(
+            "would disable+stop the watchcommit systemd user service (wipe)",
+            quiet=ctx.opts.quiet,
+        )
         return True
 
     if run_command(
         ["systemctl", "--user", "disable", "--now", "watchcommit.service"]
     ).ok:
-        print("  disabled+stopped watchcommit systemd user service")
+        cli_common.qprint(
+            "  disabled+stopped watchcommit systemd user service",
+            quiet=ctx.opts.quiet,
+        )
     else:
         skips.note("could not disable+stop the watchcommit systemd user service")
     return True
@@ -2620,14 +2718,14 @@ def _wipe_neovim_dirs(ctx: Context, skips: Reporter) -> bool:
             continue
         found = True
         if ctx.opts.dry_run:
-            _preview(f"would remove {path} (wipe)")
+            _preview(f"would remove {path} (wipe)", quiet=ctx.opts.quiet)
             continue
         try:
             shutil.rmtree(path)
         except OSError as exc:
             skips.note(f"could not remove {path}: {exc}")
             continue
-        print(f"  removed {path}")
+        cli_common.qprint(f"  removed {path}", quiet=ctx.opts.quiet)
     return found
 
 
@@ -2645,14 +2743,14 @@ def _rollback_symlink(ctx: Context, entry: dict[str, object], skips: Reporter) -
         )
         return
     if ctx.opts.dry_run:
-        _preview(f"would remove symlink {dest}")
+        _preview(f"would remove symlink {dest}", quiet=ctx.opts.quiet)
         return
     try:
         dest.unlink()
     except OSError as exc:
         skips.note(f"could not remove symlink {dest}: {exc}")
         return
-    print(f"  removed symlink {dest}")
+    cli_common.qprint(f"  removed symlink {dest}", quiet=ctx.opts.quiet)
 
 
 def _rollback_copy(
@@ -2669,15 +2767,18 @@ def _rollback_copy(
     """
     dest = Path(str(entry.get("dest", "")))
     if dest in restored_dests:
-        print(f"  {dest} left in place (already restored by a later entry)")
+        cli_common.qprint(
+            f"  {dest} left in place (already restored by a later entry)",
+            quiet=ctx.opts.quiet,
+        )
         return
     if not dest.is_file():
         return
     if ctx.opts.dry_run:
-        _preview(f"would remove {dest}")
+        _preview(f"would remove {dest}", quiet=ctx.opts.quiet)
         return
     dest.unlink()
-    print(f"  removed {dest}")
+    cli_common.qprint(f"  removed {dest}", quiet=ctx.opts.quiet)
 
 
 def _rollback_backup(
@@ -2698,10 +2799,11 @@ def _rollback_backup(
         if ctx.opts.dry_run:
             if ctx.opts.wipe:
                 _preview(
-                    f"would delete backup {backup} (wipe — {dest} will not be restored)"
+                    f"would delete backup {backup} (wipe — {dest} will not be restored)",
+                    quiet=ctx.opts.quiet,
                 )
             else:
-                _preview(f"would restore {dest} from {backup}")
+                _preview(f"would restore {dest} from {backup}", quiet=ctx.opts.quiet)
             return
         if ctx.opts.wipe:
             try:
@@ -2709,7 +2811,10 @@ def _rollback_backup(
             except OSError as exc:
                 skips.note(f"could not delete backup {backup}: {exc}")
                 return
-            print(f"  deleted backup {backup} — original {dest} not restored (wipe)")
+            cli_common.qprint(
+                f"  deleted backup {backup} — original {dest} not restored (wipe)",
+                quiet=ctx.opts.quiet,
+            )
             restored.add(backup)
             return
         try:
@@ -2717,7 +2822,7 @@ def _rollback_backup(
         except (OSError, shutil.Error) as exc:
             skips.note(f"could not restore {dest} from {backup}: {exc}")
             return
-        print(f"  restored {dest} from {backup}")
+        cli_common.qprint(f"  restored {dest} from {backup}", quiet=ctx.opts.quiet)
         restored.add(backup)
         restored_dests.add(dest)
         return
@@ -2951,9 +3056,10 @@ def build_package_preflight(ctx: Context) -> list[depart.PackageClassification] 
 def _print_preflight_report(
     report: dict[str, depart.Classification],
     package_report: Sequence[depart.PackageClassification] = (),
+    quiet: bool = False,
 ) -> None:
     """Print the full departure preflight, grouped by bucket."""
-    _header("==> Departure preflight")
+    _header("==> Departure preflight", quiet=quiet)
     for bucket in (
         depart.BUCKET_OWNED,
         depart.BUCKET_DRIFTED,
@@ -3515,7 +3621,7 @@ def do_depart(ctx: Context) -> int:
         return 2
     package_report = build_package_preflight(ctx) or []
 
-    _print_preflight_report(report, package_report)
+    _print_preflight_report(report, package_report, quiet=ctx.opts.quiet)
 
     if ctx.opts.dry_run:
         print(PALETTE.header("Dry run complete — nothing was changed."))
@@ -3806,7 +3912,7 @@ def do_check_links(ctx: Context) -> int:
     findings, foreign = _check_applicable_links(ctx, specs)
     _check_orphaned_links(ctx, specs, findings)
 
-    _header("==> links.toml audit (read-only)")
+    _header("==> links.toml audit (read-only)", quiet=ctx.opts.quiet)
     for root, count in sorted(foreign.items()):
         print(
             PALETTE.dim(
@@ -3846,11 +3952,16 @@ def do_check_links(ctx: Context) -> int:
 def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
     """Run every install step in order and return the process exit status."""
     capture_departure_baseline(ctx, specs)
-    ctx.manifest.init_run(ctx.opts.profile)
+    ctx.manifest.init_run(ctx.opts.profile, quiet=ctx.opts.quiet)
     if ctx.opts.dry_run:
-        _header(f"==> DRY RUN — no changes will be made. Profile: {ctx.opts.profile}")
+        _header(
+            f"==> DRY RUN — no changes will be made. Profile: {ctx.opts.profile}",
+            quiet=ctx.opts.quiet,
+        )
     else:
-        _header(f"==> Installing with profile: {ctx.opts.profile}")
+        _header(
+            f"==> Installing with profile: {ctx.opts.profile}", quiet=ctx.opts.quiet
+        )
 
     if ctx.is_mac:
         install_mac_packages(ctx)

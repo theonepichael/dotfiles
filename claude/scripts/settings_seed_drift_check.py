@@ -149,6 +149,10 @@ but never blocks the session otherwise. ``fix`` exits 1 when it refused
 to run (active sessions) or hit a parse failure, 0 otherwise.
 ``sync-to-seed`` exits 1 on a parse failure or a ``--dotfiles-root`` that
 doesn't exist, 0 otherwise.
+
+Flags
+  --quiet, -q    suppress non-essential output
+  --verbose, -v  emit extra diagnostic messages to stderr
 """
 
 from __future__ import annotations
@@ -163,6 +167,8 @@ import tempfile
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
+
+import cli_common
 
 HOME = Path.home()
 DOTFILES = HOME / "dotfiles"
@@ -464,7 +470,7 @@ def _print_loud(msg: str) -> None:
     print(msg, file=sys.stderr)
 
 
-def cmd_check() -> int:
+def cmd_check(quiet: bool = False) -> int:
     """Print a one-liner per drifted file; silent when nothing drifted.
     Loud-fail (nonzero exit) on a parse failure."""
     messages: list[str] = []
@@ -516,7 +522,7 @@ def cmd_check() -> int:
                 )
 
     if messages:
-        print("\n".join(messages))
+        cli_common.qprint("\n".join(messages), quiet=quiet)
     return exit_code
 
 
@@ -816,7 +822,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
-def _fix_settings_file(live_path: Path, seed_path: Path) -> int:
+def _fix_settings_file(live_path: Path, seed_path: Path, quiet: bool = False) -> int:
     """Additively fix settings.json drift. Return 0 on success or
     no-action, 1 on parse failure."""
     try:
@@ -869,27 +875,29 @@ def _fix_settings_file(live_path: Path, seed_path: Path) -> int:
     # silence it in cosmetics.
 
     if not applied:
-        print(
-            f"settings_seed_drift_check: {live_path.name} — no auto-repairable drift."
+        cli_common.qprint(
+            f"settings_seed_drift_check: {live_path.name} — no auto-repairable drift.",
+            quiet=quiet,
         )
         for s in skipped:
-            print(f"  skipped: {s}")
+            cli_common.qprint(f"  skipped: {s}", quiet=quiet)
         return 0
 
     stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
     backup = live_path.with_suffix(live_path.suffix + f".bak.{stamp}")
     shutil.copy2(live_path, backup)
     _atomic_write(live_path, live)
-    print(
+    cli_common.qprint(
         f"settings_seed_drift_check: repaired {live_path} "
-        f"(applied: {', '.join(applied)}) — backup at {backup}"
+        f"(applied: {', '.join(applied)}) — backup at {backup}",
+        quiet=quiet,
     )
     for s in skipped:
-        print(f"  skipped: {s}")
+        cli_common.qprint(f"  skipped: {s}", quiet=quiet)
     return 0
 
 
-def _fix_opencode_file(live_path: Path, seed_path: Path) -> int:
+def _fix_opencode_file(live_path: Path, seed_path: Path, quiet: bool = False) -> int:
     """Additively fix opencode.jsonc drift. Return 0 on success or
     no-action, 1 on parse failure."""
     try:
@@ -924,30 +932,34 @@ def _fix_opencode_file(live_path: Path, seed_path: Path) -> int:
                 live["permission"] = new_perm
 
     if not applied:
-        print(
-            f"settings_seed_drift_check: {live_path.name} — no auto-repairable drift."
+        cli_common.qprint(
+            f"settings_seed_drift_check: {live_path.name} — no auto-repairable drift.",
+            quiet=quiet,
         )
         for s in skipped:
-            print(f"  skipped: {s}")
+            cli_common.qprint(f"  skipped: {s}", quiet=quiet)
         return 0
 
     stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
     backup = live_path.with_suffix(live_path.suffix + f".bak.{stamp}")
     shutil.copy2(live_path, backup)
     _atomic_write(live_path, live)
-    print(
+    cli_common.qprint(
         f"settings_seed_drift_check: repaired {live_path} "
-        f"(applied: {', '.join(applied)}) — backup at {backup}"
+        f"(applied: {', '.join(applied)}) — backup at {backup}",
+        quiet=quiet,
     )
     for s in skipped:
-        print(f"  skipped: {s}")
+        cli_common.qprint(f"  skipped: {s}", quiet=quiet)
     return 0
 
 
 # ── sync-to-seed: reverse direction (live -> seed) ─────────────────────────
 
 
-def _sync_settings_to_seed(live_path: Path, seed_path: Path) -> int:
+def _sync_settings_to_seed(
+    live_path: Path, seed_path: Path, quiet: bool = False
+) -> int:
     """Mirror live settings.json back into the seed. Return 0 on success
     or no-action, 1 on parse failure.
 
@@ -994,17 +1006,20 @@ def _sync_settings_to_seed(live_path: Path, seed_path: Path) -> int:
         backup = seed_path.with_suffix(seed_path.suffix + f".bak.{stamp}")
         shutil.copy2(seed_path, backup)
         _atomic_write(seed_path, seed)
-        print(
+        cli_common.qprint(
             f"settings_seed_drift_check: synced {seed_path} "
-            f"({hook_desc}) — backup at {backup}"
+            f"({hook_desc}) — backup at {backup}",
+            quiet=quiet,
         )
 
     for line in report_lines:
-        print(line)
+        cli_common.qprint(line, quiet=quiet)
     return 0
 
 
-def _sync_opencode_to_seed(live_path: Path, seed_path: Path) -> int:
+def _sync_opencode_to_seed(
+    live_path: Path, seed_path: Path, quiet: bool = False
+) -> int:
     """Mirror live opencode.jsonc permission drift back into the seed as a
     report only — there is no hooks-equivalent key in opencode.jsonc, so
     nothing is ever wholesale-written for this file. Return 0 on success,
@@ -1031,13 +1046,14 @@ def _sync_opencode_to_seed(live_path: Path, seed_path: Path) -> int:
     if isinstance(live_perm, dict) and isinstance(seed_perm, dict):
         fragments = _opencode_permission_live_only(seed_perm, live_perm)
         if fragments:
-            print(
-                f"opencode.jsonc permission live-only (not synced): {', '.join(fragments)}"
+            cli_common.qprint(
+                f"opencode.jsonc permission live-only (not synced): {', '.join(fragments)}",
+                quiet=quiet,
             )
     return 0
 
 
-def _sync_vscode_to_seed(live_path: Path, seed_path: Path) -> int:
+def _sync_vscode_to_seed(live_path: Path, seed_path: Path, quiet: bool = False) -> int:
     """Mirror a live VS Code settings.json/keybindings.json file back into
     its seed. Return 0 always — there's no active-session guard needed
     (this only writes the seed) and no parse-failure path to fail on,
@@ -1065,8 +1081,9 @@ def _sync_vscode_to_seed(live_path: Path, seed_path: Path) -> int:
         shutil.copy2(seed_path, backup)
         backup_msg = f" — backup at {backup}"
     _atomic_write_text(seed_path, live_text)
-    print(
-        f"settings_seed_drift_check: synced {seed_path} (from {live_path}){backup_msg}"
+    cli_common.qprint(
+        f"settings_seed_drift_check: synced {seed_path} (from {live_path}){backup_msg}",
+        quiet=quiet,
     )
     return 0
 
@@ -1159,7 +1176,7 @@ def _sessions_active() -> int:
 # ── subcommand entry points ──────────────────────────────────────────────────
 
 
-def cmd_fix() -> int:
+def cmd_fix(quiet: bool = False) -> int:
     """Additively repair drifted critical keys in live files from seeds.
     Refuse to run while any Claude Code session is active — Claude Code
     holds settings in memory for the session's lifetime and serializes its
@@ -1179,18 +1196,20 @@ def cmd_fix() -> int:
     settings_live = HOME / ".claude" / "settings.json"
     settings_seed = settings_seed_path()
     if settings_live.is_file() and settings_seed.is_file():
-        exit_code = _fix_settings_file(settings_live, settings_seed) or exit_code
+        exit_code = (
+            _fix_settings_file(settings_live, settings_seed, quiet=quiet) or exit_code
+        )
 
     oc_seed = opencode_seed_path()
     if oc_seed is not None and oc_seed.is_file():
         oc_live = HOME / ".config" / "opencode" / "opencode.jsonc"
         if oc_live.is_file():
-            exit_code = _fix_opencode_file(oc_live, oc_seed) or exit_code
+            exit_code = _fix_opencode_file(oc_live, oc_seed, quiet=quiet) or exit_code
 
     return exit_code
 
 
-def cmd_sync_to_seed(dotfiles_root: Path) -> int:
+def cmd_sync_to_seed(dotfiles_root: Path, quiet: bool = False) -> int:
     """Mirror live settings back into the dotfiles seed (reverse of
     fix()). No active-session guard needed — this only writes the seed
     file in ``dotfiles_root``, never the live files Claude Code/opencode
@@ -1205,25 +1224,30 @@ def cmd_sync_to_seed(dotfiles_root: Path) -> int:
     exit_code = 0
     settings_live = HOME / ".claude" / "settings.json"
     settings_seed = settings_seed_path(dotfiles_root)
-    exit_code = _sync_settings_to_seed(settings_live, settings_seed) or exit_code
+    exit_code = (
+        _sync_settings_to_seed(settings_live, settings_seed, quiet=quiet) or exit_code
+    )
 
     oc_seed = opencode_seed_path(dotfiles_root)
     if oc_seed is not None:
         oc_live = HOME / ".config" / "opencode" / "opencode.jsonc"
-        exit_code = _sync_opencode_to_seed(oc_live, oc_seed) or exit_code
+        exit_code = _sync_opencode_to_seed(oc_live, oc_seed, quiet=quiet) or exit_code
 
     vscode_user_dir = _vscode_wsl_user_dir()
     if vscode_user_dir is not None:
         for name in ("settings.json", "keybindings.json"):
             vscode_live = vscode_user_dir / name
             vscode_seed = vscode_seed_path(name, dotfiles_root)
-            exit_code = _sync_vscode_to_seed(vscode_live, vscode_seed) or exit_code
+            exit_code = (
+                _sync_vscode_to_seed(vscode_live, vscode_seed, quiet=quiet) or exit_code
+            )
 
     return exit_code
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="settings_seed_drift_check")
+    cli_common.add_verbosity_args(parser)
     subparsers = parser.add_subparsers(dest="subcommand")
     subparsers.add_parser("check")
     subparsers.add_parser("fix")
@@ -1233,12 +1257,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
+    quiet = getattr(args, "quiet", False)
     subcommand = args.subcommand or "check"
     if subcommand == "check":
-        return cmd_check()
+        return cmd_check(quiet=quiet)
     if subcommand == "fix":
-        return cmd_fix()
-    return cmd_sync_to_seed(args.dotfiles_root)
+        return cmd_fix(quiet=quiet)
+    return cmd_sync_to_seed(args.dotfiles_root, quiet=quiet)
 
 
 if __name__ == "__main__":

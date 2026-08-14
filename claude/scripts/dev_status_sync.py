@@ -13,6 +13,10 @@ than holding a live bidirectional session. See the companion plan document
 for the full design rationale (3-way merge algorithm, conflict log, graph
 integrity pass, path mapping, locking).
 
+Flags
+  --quiet, -q    suppress non-essential output
+  --verbose, -v  emit extra diagnostic messages to stderr
+
 Requires Python 3.12+.
 """
 
@@ -36,6 +40,7 @@ from pathlib import Path
 from typing import cast
 
 sys.path.insert(0, str(Path(__file__).parent))
+import cli_common
 import dev_status
 
 PROTOCOL_VERSION = 1
@@ -842,29 +847,47 @@ def print_diff(
     local_rev: int,
     remote_rev: int,
     header: str,
+    quiet: bool = False,
 ) -> None:
-    print(f"=== {header} ===")
+    cli_common.qprint(f"=== {header} ===", quiet=quiet)
     for store, local_pre, remote_pre, merged in (
         ("items", local_items, remote_items, result.merged_items),
         ("pending_items", local_pending, remote_pending, result.merged_pending),
     ):
         cats = _categorize(store, local_pre, remote_pre, merged, result.conflicts)
-        print(f"-- {store} --")
-        print(
-            f"  added-on-remote ({len(cats['added_from_remote'])}): {cats['added_from_remote']}"
+        cli_common.qprint(f"-- {store} --", quiet=quiet)
+        cli_common.qprint(
+            f"  added-on-remote ({len(cats['added_from_remote'])}): {cats['added_from_remote']}",
+            quiet=quiet,
         )
-        print(
-            f"  added-on-local  ({len(cats['added_from_local'])}): {cats['added_from_local']}"
+        cli_common.qprint(
+            f"  added-on-local  ({len(cats['added_from_local'])}): {cats['added_from_local']}",
+            quiet=quiet,
         )
-        print(f"  updated         ({len(cats['updated'])}): {cats['updated']}")
-        print(f"  deleted         ({len(cats['deleted'])}): {cats['deleted']}")
-        print(f"  unchanged       ({len(cats['unchanged'])})")
+        cli_common.qprint(
+            f"  updated         ({len(cats['updated'])}): {cats['updated']}",
+            quiet=quiet,
+        )
+        cli_common.qprint(
+            f"  deleted         ({len(cats['deleted'])}): {cats['deleted']}",
+            quiet=quiet,
+        )
+        cli_common.qprint(
+            f"  unchanged       ({len(cats['unchanged'])})",
+            quiet=quiet,
+        )
     if result.conflicts:
-        print(f"-- conflicts ({len(result.conflicts)}) --")
+        cli_common.qprint(f"-- conflicts ({len(result.conflicts)}) --", quiet=quiet)
         for c in result.conflicts:
-            print(f"  [{c['type']}] {c['store']}:{c['item_id']}")
-            print(json.dumps(c["payload"], indent=2, sort_keys=True))
-    print(f"local rev: {local_rev} · remote rev: {remote_rev}")
+            cli_common.qprint(
+                f"  [{c['type']}] {c['store']}:{c['item_id']}",
+                quiet=quiet,
+            )
+            cli_common.qprint(
+                json.dumps(c["payload"], indent=2, sort_keys=True),
+                quiet=quiet,
+            )
+    cli_common.qprint(f"local rev: {local_rev} · remote rev: {remote_rev}", quiet=quiet)
 
 
 # ── subcommand handlers ──────────────────────────────────────────────────────────
@@ -919,7 +942,9 @@ def cmd_import(args: argparse.Namespace) -> None:
         )
         new_rev = dev_status.bump_rev()
 
-    print(f"[import] wrote rev {new_rev}", file=sys.stderr)
+    cli_common.vprint(
+        f"[import] wrote rev {new_rev}", verbose=getattr(args, "verbose", False)
+    )
 
 
 def cmd_status(args: argparse.Namespace) -> None:
@@ -963,6 +988,7 @@ def cmd_status(args: argparse.Namespace) -> None:
         local_rev,
         cast(int, remote_payload["rev"]),
         "status (report only, no writes)",
+        quiet=getattr(args, "quiet", False),
     )
 
 
@@ -1028,6 +1054,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
                         local_rev,
                         cast(int, remote_payload["rev"]),
                         "sync --dry-run (no writes)",
+                        quiet=getattr(args, "quiet", False),
                     )
                     return
 
@@ -1053,10 +1080,10 @@ def cmd_sync(args: argparse.Namespace) -> None:
                     raise SyncFatalError(
                         f"exhausted {args.max_retries} retries: {e}"
                     ) from e
-                print(
+                cli_common.vprint(
                     f"[sync] retryable condition (attempt {attempt}/{args.max_retries}): {e} "
                     "— retrying from export",
-                    file=sys.stderr,
+                    verbose=getattr(args, "verbose", False),
                 )
                 time.sleep(_LOCK_POLL_INTERVAL + random.uniform(0, 0.1))
                 continue
@@ -1080,6 +1107,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
             new_rev if new_rev is not None else local_rev,
             cast(int, remote_payload["rev"]),
             "sync complete",
+            quiet=getattr(args, "quiet", False),
         )
 
 
@@ -1101,6 +1129,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Cross-machine sync for dev_status.py's backlog/pending store."
     )
+    cli_common.add_verbosity_args(parser)
     parser.add_argument(
         "--host", default=DEFAULT_HOST, help="SSH alias for the remote machine"
     )

@@ -33,7 +33,7 @@ Config & secrets
 
 Logging & output
 - Scripts should write normal results to stdout and diagnostics to stderr.
-- Provide --quiet / --verbose toggles.
+- Provide --quiet / --verbose toggles via `cli_common.add_verbosity_args` (claude/scripts/cli_common.py), which also supplies the `qprint` / `vprint` output helpers; gate non-essential stdout with `qprint(..., quiet=quiet)` and diagnostics with `vprint(..., verbose=verbose)`.
 - Keep prompts and secrets out of logs by default.
 
 Tests & CI

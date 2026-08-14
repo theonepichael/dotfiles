@@ -303,7 +303,7 @@ class GrillTestCase(unittest.TestCase):
             )
         err = io.StringIO()
         with patch("sys.stderr", err):
-            grill.cmd_rm(ns(decision_id="token-storage", session=slug))
+            grill.cmd_rm(ns(decision_id="token-storage", session=slug, verbose=True))
         self.assertIn("removed token-storage (open)", err.getvalue())
         self.assertEqual(grill.load_session(slug)["decisions"], [])
 

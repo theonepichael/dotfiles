@@ -26,7 +26,8 @@ Usage:
     python3 claude/scripts/gen_interfaces.py --check    exit 1 if it is stale
     python3 claude/scripts/gen_interfaces.py --stdout   print, write nothing
 
-Flags: --check, --stdout, --repo-root <path>, --output <path>.
+Flags: --check, --stdout, --repo-root <path>, --output <path>,
+--quiet/-q, --verbose/-v.
 Env vars: none.
 Files read: <repo>/links.toml and every file under claude/, copilot/,
 opencode/, agy/.
@@ -47,6 +48,8 @@ import tomllib
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import cli_common
 
 HARNESS_DIRS = ("claude", "copilot", "opencode", "agy")
 SCRIPTS_DIR = "claude/scripts"
@@ -557,6 +560,21 @@ def extract_cli(tree: ast.Module, module_doc: str) -> CliSpec | None:
                 bindings = helper_bindings(helper, call)
                 for inner in helper.calls:
                     attach(ref, build_argument(inner, bindings))
+            return None
+        if dotted.endswith("add_verbosity_args") and call.args:
+            first = call.args[0]
+            ref = symbols.get(first.id) if isinstance(first, ast.Name) else None
+            if isinstance(ref, _ParserRef):
+                attach(
+                    ref,
+                    CliArgument(usage="[--quiet]", label="--quiet/-q", help_text=None),
+                )
+                attach(
+                    ref,
+                    CliArgument(
+                        usage="[--verbose]", label="--verbose/-v", help_text=None
+                    ),
+                )
         return None
 
     for statement in linear_statements(builder.body):
@@ -1137,6 +1155,7 @@ def main() -> None:
         prog="gen_interfaces",
         description="regenerate INTERFACES.md from the harness sources",
     )
+    cli_common.add_verbosity_args(parser)
     parser.add_argument(
         "--check",
         action="store_true",
@@ -1175,7 +1194,10 @@ def main() -> None:
     if args.check:
         current = output.read_text(encoding="utf-8") if output.is_file() else ""
         if current == document:
-            print(f"[gen_interfaces] {output.name} is up to date")
+            cli_common.qprint(
+                f"[gen_interfaces] {output.name} is up to date",
+                quiet=args.quiet,
+            )
             return
         diff = difflib.unified_diff(
             current.splitlines(keepends=True),
@@ -1192,7 +1214,7 @@ def main() -> None:
         sys.exit(1)
 
     output.write_text(document, encoding="utf-8")
-    print(f"[gen_interfaces] wrote {output}")
+    cli_common.qprint(f"[gen_interfaces] wrote {output}", quiet=args.quiet)
 
 
 if __name__ == "__main__":

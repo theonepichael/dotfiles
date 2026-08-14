@@ -7,6 +7,10 @@ Usage:
 
 Writes to ~/.local/share/bash-completion/completions/claude by default, where
 bash-completion will auto-load it on the first `claude <TAB>`.
+
+Flags
+  --quiet, -q    suppress non-essential output
+  --verbose, -v  emit extra diagnostic messages to stderr
 """
 
 from __future__ import annotations
@@ -18,6 +22,8 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import cli_common
 
 CLAUDE_BIN = "claude"
 DEFAULT_OUT = Path.home() / ".local/share/bash-completion/completions/claude"
@@ -52,7 +58,7 @@ class Node:
     aliases: list[str] = field(default_factory=list)
 
 
-def run_help(path: list[str]) -> str:
+def run_help(path: list[str], *, verbose: bool = False) -> str:
     try:
         r = subprocess.run(
             [CLAUDE_BIN, *path, "--help"],
@@ -62,8 +68,9 @@ def run_help(path: list[str]) -> str:
             check=False,
         )
     except Exception as e:
-        print(
-            f"warn: help failed for {' '.join(path) or '<root>'}: {e}", file=sys.stderr
+        cli_common.vprint(
+            f"warn: help failed for {' '.join(path) or '<root>'}: {e}",
+            verbose=verbose,
         )
         return ""
     else:
@@ -199,26 +206,31 @@ def help_matches_path(text: str, path: tuple[str, ...]) -> bool:
     return True
 
 
-def build_tree(path: tuple[str, ...], seen: set[tuple[str, ...]]) -> Node:
+def build_tree(
+    path: tuple[str, ...], seen: set[tuple[str, ...]], *, verbose: bool = False
+) -> Node:
     if path in seen:
         return Node(path=path)
     seen.add(path)
     if len(path) > MAX_DEPTH:
-        print(f"warn: max depth exceeded at {' '.join(path)}", file=sys.stderr)
+        cli_common.vprint(
+            f"warn: max depth exceeded at {' '.join(path)}",
+            verbose=verbose,
+        )
         return Node(path=path)
-    text = run_help(list(path))
+    text = run_help(list(path), verbose=verbose)
     if path and not help_matches_path(text, path):
         # Commander fell back to a parent's help — this path isn't real.
-        print(
+        cli_common.vprint(
             f"warn: {' '.join(path)} is not a real subcommand; skipping",
-            file=sys.stderr,
+            verbose=verbose,
         )
         return Node(path=path)
     sections = collect_sections(text)
     node = Node(path=path)
     node.options = parse_options(sections.get("Options", []))
     for name, aliases in parse_commands(sections.get("Commands", [])):
-        child = build_tree(path + (name,), seen)
+        child = build_tree(path + (name,), seen, verbose=verbose)
         child.aliases = aliases
         node.subcommands[name] = child
     return node
@@ -430,6 +442,7 @@ complete -F _claude claude
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
+    cli_common.add_verbosity_args(ap)
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument(
         "--stdout", action="store_true", help="Print to stdout instead of writing"
@@ -437,7 +450,7 @@ def main() -> int:
     args = ap.parse_args()
 
     # Sanity check the CLI is reachable.
-    probe = run_help([])
+    probe = run_help([], verbose=args.verbose)
     if not probe:
         print(
             "error: `claude --help` produced no output; is the CLI installed?",
@@ -445,7 +458,7 @@ def main() -> int:
         )
         return 1
 
-    root = build_tree((), set())
+    root = build_tree((), set(), verbose=args.verbose)
     script = emit_bash(root)
 
     if args.stdout:
@@ -454,7 +467,7 @@ def main() -> int:
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(script)
-    print(f"wrote {args.out}")
+    cli_common.qprint(f"wrote {args.out}", quiet=args.quiet)
     return 0
 
 

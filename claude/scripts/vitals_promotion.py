@@ -13,6 +13,10 @@ longer classifies as AUTO_PROMOTE has its vitals record flipped to
 This is a mechanical, rerunnable pass — no cross-session contradiction
 detection, no curation. Dry-run by default; pass --apply to write.
 
+Flags
+  --quiet, -q    suppress non-essential output
+  --verbose, -v  emit extra diagnostic messages to stderr
+
 Requires Python 3.12+.
 """
 
@@ -25,6 +29,8 @@ from contextlib import suppress
 from datetime import date, datetime
 from pathlib import Path
 from typing import TypedDict, cast
+
+import cli_common
 
 DATA_DIR = Path.home() / ".claude" / "data" / "grill"
 VITALS_DIR = DATA_DIR / "vitals"
@@ -381,31 +387,41 @@ def run(data_dir: Path, apply: bool) -> Report:
     }
 
 
-def print_report(report: Report, apply: bool) -> None:
+def print_report(report: Report, apply: bool, quiet: bool = False) -> None:
     mode = "APPLIED" if apply else "DRY RUN (pass --apply to write)"
-    print(f"── vitals-promotion: {mode} ──")
-    print(f"sessions scanned:    {report['sessions_scanned']}")
-    print(f"total decisions:     {report['total_decisions']}")
-    print(f"open (skipped):      {report['open_decisions']}")
-    print("bucket counts (closed decisions):")
+    cli_common.qprint(f"── vitals-promotion: {mode} ──", quiet=quiet)
+    cli_common.qprint(f"sessions scanned:    {report['sessions_scanned']}", quiet=quiet)
+    cli_common.qprint(f"total decisions:     {report['total_decisions']}", quiet=quiet)
+    cli_common.qprint(f"open (skipped):      {report['open_decisions']}", quiet=quiet)
+    cli_common.qprint("bucket counts (closed decisions):", quiet=quiet)
     for bucket in BUCKETS:
-        print(f"  {bucket:<20} {report['bucket_counts'][bucket]}")
-    print(f"promoted this run:   {report['promoted_count']}")
-    print(f"superseded this run: {report['superseded_count']}")
-    print(f"schema anomalies:    {len(report['anomaly_entries'])}")
+        cli_common.qprint(
+            f"  {bucket:<20} {report['bucket_counts'][bucket]}", quiet=quiet
+        )
+    cli_common.qprint(f"promoted this run:   {report['promoted_count']}", quiet=quiet)
+    cli_common.qprint(f"superseded this run: {report['superseded_count']}", quiet=quiet)
+    cli_common.qprint(
+        f"schema anomalies:    {len(report['anomaly_entries'])}", quiet=quiet
+    )
     if report["anomaly_entries"]:
         for slug, decision_id, reason in report["anomaly_entries"]:
-            print(f"  ANOMALY {slug}:{decision_id} — {reason}")
+            cli_common.qprint(f"  ANOMALY {slug}:{decision_id} — {reason}", quiet=quiet)
     if apply:
-        print(f"needs-review written to: {report['needs_review_path']}")
+        cli_common.qprint(
+            f"needs-review written to: {report['needs_review_path']}", quiet=quiet
+        )
         for path in report["dirty_vitals_paths"]:
-            print(f"vitals written: {path}")
+            cli_common.qprint(f"vitals written: {path}", quiet=quiet)
     else:
-        print(f"needs-review would be written to: {report['needs_review_path']}")
+        cli_common.qprint(
+            f"needs-review would be written to: {report['needs_review_path']}",
+            quiet=quiet,
+        )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    cli_common.add_verbosity_args(parser)
     parser.add_argument(
         "--data-dir",
         type=Path,
@@ -427,14 +443,19 @@ def main() -> None:
     if args.needs_review_summary:
         path = latest_needs_review_file(args.data_dir / "needs-review")
         if path is None:
-            print("needs-review: 0 entries")
+            cli_common.qprint(
+                "needs-review: 0 entries", quiet=getattr(args, "quiet", False)
+            )
         else:
             entries = cast(list[NeedsReviewEntry], json.loads(path.read_text()))
-            print(summarize_needs_review(entries))
+            cli_common.qprint(
+                summarize_needs_review(entries),
+                quiet=getattr(args, "quiet", False),
+            )
         return
 
     report = run(args.data_dir, args.apply)
-    print_report(report, args.apply)
+    print_report(report, args.apply, quiet=getattr(args, "quiet", False))
 
 
 if __name__ == "__main__":

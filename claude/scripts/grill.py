@@ -8,6 +8,10 @@ conversation. The plan document itself is authored by the model as a separate
 markdown artifact, informed by these decision points; the session stores only a
 pointer to it (plan_path). `render` prints session status, not the plan.
 
+Flags
+  --quiet, -q    suppress non-essential output
+  --verbose, -v  emit extra diagnostic messages to stderr
+
 Requires Python 3.12+.
 """
 
@@ -23,6 +27,8 @@ from contextlib import contextmanager, suppress
 from datetime import date, datetime
 from pathlib import Path
 from typing import NoReturn, TypedDict, cast
+
+import cli_common
 
 DATA_DIR = Path.home() / ".claude" / "data" / "grill"
 SCHEMA_VERSION = 1
@@ -349,9 +355,9 @@ def is_open(decision: Decision) -> bool:
     return decision.get("decision") is None
 
 
-def confirm(context: str, session: Session, detail: str) -> None:
+def confirm(context: str, session: Session, detail: str, verbose: bool = False) -> None:
     """Echo a mutating command's outcome to stderr."""
-    print(f"[{context}] {session['slug']}: {detail}", file=sys.stderr)
+    cli_common.vprint(f"[{context}] {session['slug']}: {detail}", verbose=verbose)
 
 
 def touch(session: Session) -> None:
@@ -461,7 +467,7 @@ def cmd_new(args: argparse.Namespace) -> None:
             "decisions": [],
         }
         save_session(session)
-    confirm("new", session, topic)
+    confirm("new", session, topic, verbose=getattr(args, "verbose", False))
     print(slug)
 
 
@@ -499,7 +505,12 @@ def cmd_ask(args: argparse.Namespace) -> None:
         )
         touch(session)
         save_session(session)
-    confirm("ask", session, f"? {decision_id} — {question[:60]}")
+    confirm(
+        "ask",
+        session,
+        f"? {decision_id} — {question[:60]}",
+        verbose=getattr(args, "verbose", False),
+    )
 
 
 def cmd_decide(args: argparse.Namespace) -> None:
@@ -560,7 +571,12 @@ def cmd_decide(args: argparse.Namespace) -> None:
 
         touch(session)
         save_session(session)
-    confirm("decide", session, f"{decision_id} ({source}) — {decision_text[:60]}")
+    confirm(
+        "decide",
+        session,
+        f"{decision_id} ({source}) — {decision_text[:60]}",
+        verbose=getattr(args, "verbose", False),
+    )
 
 
 def cmd_revise(args: argparse.Namespace) -> None:
@@ -606,7 +622,12 @@ def cmd_revise(args: argparse.Namespace) -> None:
             note = " (verdict reset — re-verify)"
         touch(session)
         save_session(session)
-    confirm("revise", session, f"{args.decision_id} updated{note}")
+    confirm(
+        "revise",
+        session,
+        f"{args.decision_id} updated{note}",
+        verbose=getattr(args, "verbose", False),
+    )
 
 
 def cmd_rm(args: argparse.Namespace) -> None:
@@ -619,7 +640,12 @@ def cmd_rm(args: argparse.Namespace) -> None:
         state = "open" if is_open(decision) else "decided"
         touch(session)
         save_session(session)
-    confirm("rm", session, f"removed {args.decision_id} ({state})")
+    confirm(
+        "rm",
+        session,
+        f"removed {args.decision_id} ({state})",
+        verbose=getattr(args, "verbose", False),
+    )
 
 
 def cmd_verdict(args: argparse.Namespace) -> None:
@@ -652,7 +678,12 @@ def cmd_verdict(args: argparse.Namespace) -> None:
         decision["verdict"] = {"result": result, "evidence": evidence, "date": today()}
         touch(session)
         save_session(session)
-    confirm("verdict", session, f"{args.decision_id}: {result}")
+    confirm(
+        "verdict",
+        session,
+        f"{args.decision_id}: {result}",
+        verbose=getattr(args, "verbose", False),
+    )
 
 
 def cmd_plan(args: argparse.Namespace) -> None:
@@ -669,7 +700,12 @@ def cmd_plan(args: argparse.Namespace) -> None:
         session["plan_path"] = str(path)
         touch(session)
         save_session(session)
-    confirm("plan", session, f"plan artifact recorded: {path}")
+    confirm(
+        "plan",
+        session,
+        f"plan artifact recorded: {path}",
+        verbose=getattr(args, "verbose", False),
+    )
 
 
 def cmd_mark_pending_execution(args: argparse.Namespace) -> None:
@@ -695,7 +731,12 @@ def cmd_mark_pending_execution(args: argparse.Namespace) -> None:
             session["backlog_slug"] = backlog_slug
         touch(session)
         save_session(session)
-    confirm("mark-pending-execution", session, "pending_execution set")
+    confirm(
+        "mark-pending-execution",
+        session,
+        "pending_execution set",
+        verbose=getattr(args, "verbose", False),
+    )
 
 
 def cmd_pending_plan(args: argparse.Namespace) -> None:
@@ -793,6 +834,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="grill-me session state CLI (all mutations go through here)",
     )
+    cli_common.add_verbosity_args(parser)
     sub = parser.add_subparsers(
         dest="cmd",
         metavar=(

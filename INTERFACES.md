@@ -33,6 +33,7 @@ House style for these interfaces is in `STYLE.md`.
 
 | Module | Purpose |
 | --- | --- |
+| [`cli_common.py`](#claudescriptsclicommonpy) | Shared CLI helpers used across dotfiles scripts. |
 | [`dev_status.py`](#claudescriptsdevstatuspy) | dev_status.py v2 — slug IDs, structured dependency graph, pure render. |
 | [`dev_status_sync.py`](#claudescriptsdevstatussyncpy) | dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending store. |
 | [`dotfiles_sync_check.py`](#claudescriptsdotfilessynccheckpy) | SessionStart hook: flag when the dotfiles repo has drifted from the last commit bundled over to a GitHub-blocked work machine. |
@@ -47,6 +48,19 @@ House style for these interfaces is in `STYLE.md`.
 | [`vitals_promotion.py`](#claudescriptsvitalspromotionpy) | vitals-promotion.py — mechanical vitals-promotion pass over grill session data. |
 | [`watchcommit_activity.py`](#claudescriptswatchcommitactivitypy) | Print watchcommit's last known background pull/commit/push, so a session (or wc-status) can tell daemon-driven git state changes from manual ones instead of only seeing a clean/up-to-date working tree. |
 
+### `claude/scripts/cli_common.py`
+
+Shared CLI helpers used across dotfiles scripts.
+
+- Installed at: `~/.claude/scripts/cli_common.py` (all harnesses)
+- Entrypoint: not executable, no shebang
+- CLI: none (library module).
+- Public functions:
+  - `add_verbosity_args(parser: argparse.ArgumentParser) -> None` — Add mutually-exclusive --quiet/-q and --verbose/-v flags to a parser.
+  - `vprint(msg: str, *, verbose: bool, file: TextIO | None = None) -> None` — Print a diagnostic message when verbose mode is enabled.
+  - `qprint(msg: str, *, quiet: bool, file: TextIO | None = None) -> None` — Print a message unless quiet mode is enabled.
+- Tested by: `claude/scripts/test_cli_common.py`
+
 ### `claude/scripts/dev_status.py`
 
 dev_status.py v2 — slug IDs, structured dependency graph, pure render.
@@ -54,6 +68,8 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
 - Installed at: `~/.claude/scripts/dev_status.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): deterministic backlog dashboard v2
+  - `--quiet/-q`
+  - `--verbose/-v`
 - Subcommands:
   - `render` — render dashboard (pure — no side effects)
   - `list [--status <STATUS>]` — flat tab-separated output
@@ -108,7 +124,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `RECAP_CACHE_FILE = DATA_DIR / 'recap-cache.json'`
   - `RECAP_REGEN_LOCK_FILE = DATA_DIR / 'recap-regen.lock'`
 - Explicit exit codes: `1`
-- Depends on: `llm_backends.py`
+- Depends on: `cli_common.py`, `llm_backends.py`
 - Public classes:
   - `class Gate(TypedDict)` — A judgment-step verification checkpoint on a backlog item.
   - `class BacklogItem(TypedDict)` — A single backlog item as stored in ``items.json`` (schema v2).
@@ -144,6 +160,8 @@ dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending st
 - Installed at: `~/.claude/scripts/dev_status_sync.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Cross-machine sync for dev_status.py's backlog/pending store.
+  - `--quiet/-q`
+  - `--verbose/-v`
   - `--host` — SSH alias for the remote machine
   - `--remote-script`
   - `--local-user`
@@ -160,7 +178,7 @@ dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending st
     - `--if-rev` (required)
 - Environment: `LOGNAME`, `USER`
 - Explicit exit codes: `1`, `2`
-- Depends on: `dev_status.py`
+- Depends on: `cli_common.py`, `dev_status.py`
 - Exceptions:
   - `class SyncFatalError(Exception)` — A non-retryable sync failure.
   - `class SyncRetryableError(Exception)` — A retryable sync condition (stale rev, lock timeout, SSH hiccup).
@@ -179,7 +197,7 @@ dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending st
   - `ssh_run(host: str, remote_script: str, remote_args: list[str], ssh_timeout: float, input_bytes: bytes | None = None) -> bytes` — Run ``remote_script`` on ``host`` over SSH, bounded against a hung network.
   - `ssh_export(host: str, remote_script: str, ssh_timeout: float) -> dict[str, object]`
   - `ssh_import(host: str, remote_script: str, ssh_timeout: float, items: list[dict[str, object]], pending: list[dict[str, object]], schema: dict[str, object], if_rev: int) -> None`
-  - `print_diff(result: SyncComputation, local_items: list[dict[str, object]], local_pending: list[dict[str, object]], remote_items: list[dict[str, object]], remote_pending: list[dict[str, object]], local_rev: int, remote_rev: int, header: str) -> None`
+  - `print_diff(result: SyncComputation, local_items: list[dict[str, object]], local_pending: list[dict[str, object]], remote_items: list[dict[str, object]], remote_pending: list[dict[str, object]], local_rev: int, remote_rev: int, header: str, quiet: bool = False) -> None`
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_export`, `cmd_import`, `cmd_status`, `cmd_sync`
 - Tested by: `claude/scripts/test_dev_status_sync.py`
@@ -191,6 +209,8 @@ SessionStart hook: flag when the dotfiles repo has drifted from the last commit 
 - Installed at: `~/.claude/scripts/dotfiles_sync_check.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Flag when the dotfiles repo has drifted from the last commit bundled over to a GitHub-blocked work machine.
+  - `--quiet/-q`
+  - `--verbose/-v`
 - Subcommands:
   - `check` — print a drift note if HEAD is ahead of the marker (default)
   - `mark [<sha>]` — record the given (or current HEAD) commit as last-bundled
@@ -200,6 +220,7 @@ SessionStart hook: flag when the dotfiles repo has drifted from the last commit 
   - `STATE_DIR = Path.home() / '.local' / 'state' / 'dotfiles'`
   - `MARKER = STATE_DIR / 'last-bundled-commit'`
 - Explicit exit codes: `1`
+- Depends on: `cli_common.py`
 - Public functions:
   - `git(*args: str) -> str | None`
   - `build_parser() -> argparse.ArgumentParser`
@@ -213,20 +234,23 @@ Recursively walk `claude --help` and emit a bash completion script.
 - Installed at: `~/.claude/scripts/gen_claude_completion.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Recursively walk `claude --help` and emit a bash completion script.
+  - `--quiet/-q`
+  - `--verbose/-v`
   - `--out`
   - `--stdout` — Print to stdout instead of writing
 - Filesystem constants:
   - `DEFAULT_OUT = Path.home() / '.local/share/bash-completion/completions/claude'`
+- Depends on: `cli_common.py`
 - Public classes:
   - `class Option`
   - `class Node`
 - Public functions:
-  - `run_help(path: list[str]) -> str`
+  - `run_help(path: list[str], *, verbose: bool = False) -> str`
   - `collect_sections(text: str) -> dict[str, list[str]]`
   - `parse_options(lines: list[str]) -> list[Option]`
   - `parse_commands(lines: list[str]) -> list[tuple[str, list[str]]]` — Return list of (primary_name, aliases).
   - `help_matches_path(text: str, path: tuple[str, ...]) -> bool` — Check that the help output's `Usage:` line reflects the path we asked for.
-  - `build_tree(path: tuple[str, ...], seen: set[tuple[str, ...]]) -> Node`
+  - `build_tree(path: tuple[str, ...], seen: set[tuple[str, ...]], *, verbose: bool = False) -> Node`
   - `path_key(path: tuple[str, ...]) -> str`
   - `is_dir_option(opt: Option) -> bool`
   - `is_file_option(opt: Option) -> bool`
@@ -242,11 +266,14 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
 - Installed at: `~/.claude/scripts/gen_interfaces.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): regenerate INTERFACES.md from the harness sources
+  - `--quiet/-q`
+  - `--verbose/-v`
   - `--check` — exit 1 (with a diff on stderr) if the file on disk is stale
   - `--stdout` — print the document, write nothing
   - `--repo-root` — repository root (default: inferred from this script's path)
   - `--output`
 - Explicit exit codes: `1`, `2`
+- Depends on: `cli_common.py`
 - Public classes:
   - `class CliArgument` — One ``add_argument`` call, reduced to what a reader needs.
   - `class Subcommand` — One ``add_parser`` call and the arguments attached to it.
@@ -306,6 +333,8 @@ grill.py — grill-me session state CLI. All session mutations go through here.
 - Installed at: `~/.claude/scripts/grill.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): grill-me session state CLI (all mutations go through here)
+  - `--quiet/-q`
+  - `--verbose/-v`
 - Subcommands:
   - `new '{"topic": "..."}'` — create a session
   - `ask '{"id", "question", ["reasoning"]}' [--session <SESSION>]` — register an open decision point
@@ -336,6 +365,7 @@ grill.py — grill-me session state CLI. All session mutations go through here.
 - Filesystem constants:
   - `DATA_DIR = Path.home() / '.claude' / 'data' / 'grill'`
 - Explicit exit codes: `1`
+- Depends on: `cli_common.py`
 - Public classes:
   - `class Verdict(TypedDict)` — A recorded verification result for one decision.
   - `class Decision(TypedDict)` — One decision point within a grill session.
@@ -355,7 +385,7 @@ grill.py — grill-me session state CLI. All session mutations go through here.
   - `resolve_session(arg: str | None, context: str) -> Session` — Resolve ``--session`` (see :func:`_resolve_slug`) and load it.
   - `find_decision(session: Session, decision_id: str, context: str) -> Decision` — Find a decision by id within a session.
   - `is_open(decision: Decision) -> bool` — Return whether ``decision`` has not yet been decided.
-  - `confirm(context: str, session: Session, detail: str) -> None` — Echo a mutating command's outcome to stderr.
+  - `confirm(context: str, session: Session, detail: str, verbose: bool = False) -> None` — Echo a mutating command's outcome to stderr.
   - `touch(session: Session) -> None` — Stamp ``session['updated']`` with the current timestamp, in place.
   - `render_markdown(session: Session) -> str` — Render a session's status as a Markdown document.
 - Subcommand handlers: `cmd_new`, `cmd_ask`, `cmd_decide`, `cmd_revise`, `cmd_rm`, `cmd_verdict`, `cmd_plan`, `cmd_mark_pending_execution`, `cmd_pending_plan`, `cmd_next`, `cmd_render`, `cmd_list`, `cmd_show`
@@ -386,6 +416,8 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
 - Installed at: `~/.claude/scripts/second_opinion.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): one-shot adversarial critique of a plan from a non-Claude backend
+  - `--quiet/-q`
+  - `--verbose/-v`
 - Subcommands:
   - `detect` — list available backends as JSON
   - `review <plan-file-or-text> [--backend <BACKEND>] [--focus-file <FOCUS_FILE>]` — get one critique from the priority-selected backend
@@ -393,7 +425,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
     - `--focus-file` — path to a file of plan-specific risk hints, appended to the critique prompt as areas to scrutinize (supplements, not replaces, the generic adversarial mandate)
 - Environment: `SECOND_OPINION_AGY_MODEL`, `SECOND_OPINION_COPILOT_MODEL`, `SECOND_OPINION_TIMEOUT_SECONDS`
 - Explicit exit codes: `1`
-- Depends on: `llm_backends.py`
+- Depends on: `cli_common.py`, `llm_backends.py`
 - Public functions:
   - `build_prompt(plan_text: str, focus_hints: str | None) -> str` — Build the critique prompt, optionally inserting plan-specific focus hints.
   - `die(msg: str) -> NoReturn` — Print an error to stderr, prefixed for this script, and exit with status 1.
@@ -412,6 +444,8 @@ SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/
 - Installed at: `~/.claude/scripts/settings_seed_drift_check.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): no `description=` set
+  - `--quiet/-q`
+  - `--verbose/-v`
 - Subcommands:
   - `check`
   - `fix`
@@ -420,6 +454,7 @@ SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/
   - `HOME = Path.home()`
   - `DOTFILES = HOME / 'dotfiles'`
   - `PROFILE_MARKER = HOME / '.local' / 'state' / 'dotfiles' / 'profile'`
+- Depends on: `cli_common.py`
 - Exceptions:
   - `class DriftCheckError(Exception)` — Raised when drift checking can't proceed (parse failure, not a missing file).
 - Public functions:
@@ -442,6 +477,8 @@ standup.py — /standup skill CLI: local data gathering.
 - Installed at: `~/.claude/scripts/standup.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): /standup skill CLI
+  - `--quiet/-q`
+  - `--verbose/-v`
 - Subcommands:
   - `fetch [--date <DATE>]` — gather all sources as JSON
     - `--date` — override reference date (YYYY-MM-DD) — for re-running after a gap (holiday, PTO) where the default last-working-day boundary would miss it
@@ -451,7 +488,7 @@ standup.py — /standup skill CLI: local data gathering.
   - `BACKLOG_FILE = Path.home() / '.claude' / 'data' / 'backlog' / 'items.json'`
   - `CANONICAL_PENDING_FILE = Path.home() / '.claude' / 'data' / 'backlog' / 'pending_items.json'`
 - Explicit exit codes: `1`
-- Depends on: `standup_adapters.py`
+- Depends on: `cli_common.py`, `standup_adapters.py`
 - Public functions:
   - `today() -> str`
   - `last_working_day(ref: date) -> date`
@@ -493,6 +530,8 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
 - Installed at: `~/.claude/scripts/vitals_promotion.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): vitals-promotion.py — mechanical vitals-promotion pass over grill session data.
+  - `--quiet/-q`
+  - `--verbose/-v`
   - `--data-dir` — grill session data directory (default: ~/.claude/data/grill)
   - `--apply` — write vitals/needs-review files (default: dry-run, prints only)
   - `--needs-review-summary` — print a one-line summary of the latest needs-review file and exit
@@ -500,6 +539,7 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `DATA_DIR = Path.home() / '.claude' / 'data' / 'grill'`
   - `VITALS_DIR = DATA_DIR / 'vitals'`
   - `NEEDS_REVIEW_DIR = DATA_DIR / 'needs-review'`
+- Depends on: `cli_common.py`
 - Public classes:
   - `class Verdict(TypedDict)`
   - `class Decision(TypedDict)`
@@ -522,7 +562,7 @@ vitals-promotion.py — mechanical vitals-promotion pass over grill session data
   - `needs_review_reason(decision: Decision) -> str` — Which NEEDS_REVIEW sub-condition fired, in priority order (for the breakdown).
   - `supersede_reason(record: VitalsRecord, lookup: dict[DecisionKey, Decision]) -> str | None` — Return why ``record`` should be superseded, or None if it's still valid.
   - `run(data_dir: Path, apply: bool) -> Report`
-  - `print_report(report: Report, apply: bool) -> None`
+  - `print_report(report: Report, apply: bool, quiet: bool = False) -> None`
 - Tested by: `claude/scripts/test_vitals_promotion.py`
 
 ### `claude/scripts/watchcommit_activity.py`
@@ -620,6 +660,8 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
 - Installed at: not symlinked by `links.toml`
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): no `description=` set
+  - `--quiet/-q`
+  - `--verbose/-v`
   - `--profile` (default: personal)
   - `--harness`
   - `--rollback`
