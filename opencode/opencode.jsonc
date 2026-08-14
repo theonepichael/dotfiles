@@ -75,7 +75,7 @@
     "adversary": {
       "description": "Adversarial critique agent for grill-me's --auto mode and second_opinion.py's opencode backend. Argues against a proposed decision/plan using a model different from the primary session's default, so the critique is genuinely independent rather than the same model second-guessing itself. mode \"all\" (not \"subagent\") is required: opencode run --agent silently falls back to the default agent for anything marked subagent-only.",
       "mode": "all",
-      "model": "opencode-go/qwen3.7-max"
+      "model": "opencode-go/deepseek-v4-flash"
     }
   }
 }
