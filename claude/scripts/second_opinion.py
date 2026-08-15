@@ -23,7 +23,16 @@ Env vars
                                      if also set, wins outright over the pool.
   SECOND_OPINION_COPILOT_MODEL_POOL   same, for the copilot backend and
                                      SECOND_OPINION_COPILOT_MODEL.
-  SECOND_OPINION_TIMEOUT_SECONDS    per-backend timeout in seconds (default 300)
+  SECOND_OPINION_TIMEOUT_SECONDS    default per-backend timeout in seconds (default 120)
+  SECOND_OPINION_AGY_TIMEOUT_SECONDS      override the timeout for agy calls only
+  SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS override the timeout for opencode calls only
+  SECOND_OPINION_COPILOT_TIMEOUT_SECONDS  override the timeout for copilot calls only
+                                     Unset/blank/non-integer/zero/negative
+                                     falls back to SECOND_OPINION_TIMEOUT_SECONDS.
+                                     A value above 300 is clamped to 300 —
+                                     the previous global default is now a
+                                     hard ceiling on every timeout, default
+                                     or overridden.
 
 Files read: <plan-file-or-text> (if a path), --focus-file. Nothing written.
 
@@ -56,7 +65,50 @@ from llm_backends import (
 )
 
 BACKEND_PRIORITY = llm_backends.BACKEND_PRIORITY
-BACKEND_TIMEOUT_SECONDS = int(os.environ.get("SECOND_OPINION_TIMEOUT_SECONDS", "300"))
+
+_MAX_BACKEND_TIMEOUT_SECONDS = 300  # the previous global default, now a hard ceiling
+
+
+def _parse_positive_int(value: str, default: int) -> int:
+    """Parse ``value`` as a positive int, clamped to the max, or fall back to ``default``.
+
+    Blank (after stripping whitespace), non-integer, zero, and negative
+    values all fall back to ``default``, itself clamped to the max --
+    callers must not rely on an un-clamped ``default`` bypassing the
+    ceiling. A parsed value above :data:`_MAX_BACKEND_TIMEOUT_SECONDS` is
+    clamped down to it, not treated as invalid -- a large override is
+    honored, capped. A leading ``+`` (e.g. ``"+120"``) is accepted, matching
+    Python's own ``int()`` semantics for a positive-int string -- not
+    special-cased to reject.
+    """
+    value = value.strip()
+    if not value:
+        return min(default, _MAX_BACKEND_TIMEOUT_SECONDS)
+    try:
+        parsed = int(value)
+    except ValueError:
+        return min(default, _MAX_BACKEND_TIMEOUT_SECONDS)
+    if parsed <= 0:
+        return min(default, _MAX_BACKEND_TIMEOUT_SECONDS)
+    return min(parsed, _MAX_BACKEND_TIMEOUT_SECONDS)
+
+
+BACKEND_TIMEOUT_SECONDS = _parse_positive_int(
+    os.environ.get("SECOND_OPINION_TIMEOUT_SECONDS", ""), 120
+)
+
+
+def _resolve_timeout(env_var: str) -> int:
+    """Return ``env_var``'s value as a per-backend timeout override.
+
+    Falls back to :data:`BACKEND_TIMEOUT_SECONDS` if ``env_var`` is unset,
+    blank, non-integer, zero, or negative. Read fresh from the environment
+    on every call (unlike the module-latched global) -- matches how
+    :func:`_resolve_pooled_model`'s single-override env var is already read
+    fresh per call, not latched.
+    """
+    return _parse_positive_int(os.environ.get(env_var, ""), BACKEND_TIMEOUT_SECONDS)
+
 
 # backend -> (pool env var, single-override env var). agy is deliberately
 # absent: it has no pool/rotation behavior.
@@ -220,15 +272,19 @@ def _handle_termination(signum: int, frame: FrameType | None) -> NoReturn:
     sys.exit(128 + signum)
 
 
-def _run_command(cmd: list[str]) -> tuple[int, str, str]:
-    """Run ``cmd`` as a subprocess, capturing its output, at this module's timeout.
+def _run_command(cmd: list[str], timeout: int | None = None) -> tuple[int, str, str]:
+    """Run ``cmd`` as a subprocess, capturing its output.
 
     Thin wrapper around :func:`llm_backends._run_command` — kept local (rather
     than a bare re-export) so :data:`BACKEND_TIMEOUT_SECONDS` is read from
     *this* module's global at call time, matching pre-extraction behavior for
-    anything that patches it.
+    anything that patches it. ``timeout`` defaults to
+    :data:`BACKEND_TIMEOUT_SECONDS` when not given (``None``); callers with a
+    resolved per-backend override pass their own value.
     """
-    return llm_backends._run_command(cmd, BACKEND_TIMEOUT_SECONDS)
+    return llm_backends._run_command(
+        cmd, timeout if timeout is not None else BACKEND_TIMEOUT_SECONDS
+    )
 
 
 DEFAULT_AGY_MODEL = "Gemini 3.7 Flash (High)"
@@ -244,7 +300,11 @@ def run_agy(prompt: str, *, model_index: int | None = None) -> str:
     convention.
     """
     model = os.environ.get("SECOND_OPINION_AGY_MODEL", DEFAULT_AGY_MODEL)
-    return llm_backends.run_agy(prompt, model=model, timeout=BACKEND_TIMEOUT_SECONDS)
+    return llm_backends.run_agy(
+        prompt,
+        model=model,
+        timeout=_resolve_timeout("SECOND_OPINION_AGY_TIMEOUT_SECONDS"),
+    )
 
 
 def run_opencode(prompt: str, *, model_index: int | None = None) -> str:
@@ -299,7 +359,9 @@ def run_opencode(prompt: str, *, model_index: int | None = None) -> str:
     if model:
         cmd += ["-m", model]
     cmd.append(prompt)
-    _, stdout, stderr = _run_command(cmd)
+    _, stdout, stderr = _run_command(
+        cmd, timeout=_resolve_timeout("SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS")
+    )
     events = _opencode_json_events(stdout)
     _raise_on_tool_use(events, context="adversary agent")
     chunks = _opencode_text_chunks(events)
@@ -328,7 +390,7 @@ def run_copilot(prompt: str, *, model_index: int | None = None) -> str:
             "SECOND_OPINION_COPILOT_MODEL",
             model_index,
         ),
-        timeout=BACKEND_TIMEOUT_SECONDS,
+        timeout=_resolve_timeout("SECOND_OPINION_COPILOT_TIMEOUT_SECONDS"),
     )
 
 
