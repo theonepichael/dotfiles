@@ -31,3 +31,23 @@ harness CLIs, flags, or behavior get an entry going forward.
   gpt-5.6-luna specifically fails outright (not a text leak) under this
   agent's restricted permission, reproduced regardless of permission shape —
   pin a different model via `SECOND_OPINION_OPENCODE_MODEL` if you hit it.
+
+## 2026-08-15
+
+### Added
+
+- `second_opinion.py review` gained per-machine model-pool rotation for the
+  opencode and copilot backends: `SECOND_OPINION_OPENCODE_MODEL_POOL` /
+  `SECOND_OPINION_COPILOT_MODEL_POOL` (comma-separated model IDs) plus a new
+  `--model-index N` flag (0-based, non-negative) pick
+  `pool[N % len(pool)]` for that call. The existing
+  `SECOND_OPINION_OPENCODE_MODEL`/`_COPILOT_MODEL` single-model overrides
+  still work and win outright over a configured pool. Both env vars are
+  unset by default, so behavior is unchanged unless you opt in. `agy` is
+  unaffected — no pool/rotation for it. The `/second-opinion` skill's
+  iteration loop now passes `--model-index` on every round. grill-me's
+  `--auto` mode has no rotation available through either of its documented
+  paths: its Primary path is a native opencode Task-tool spawn (no
+  per-spawn model override exists in opencode's Task tool), and its
+  Alternative path is `agy`-only (no pool support) by design — see
+  `opencode/skills/grill-me/SKILL.md` for the corrected explanation.

@@ -13,11 +13,18 @@ the script's.
 ```
 second_opinion.py detect                        # which backends are present (JSON)
 second_opinion.py review <plan-file-or-text> \
-    [--focus-file <path>]                        # one critique from the
+    [--focus-file <path>] \
+    [--model-index N]                            # one critique from the
                                                   # priority-selected backend,
                                                   # optionally scoped with
                                                   # plan-specific risk hints
 ```
+
+`--model-index` is a 0-based index into a per-machine model pool
+(`SECOND_OPINION_OPENCODE_MODEL_POOL`/`_COPILOT_MODEL_POOL`, set by the
+user, not this skill) — round 1 of the loop below is index 0, round 2 is
+index 1, etc. It's a harmless no-op if the user hasn't configured a pool,
+so always pass it unconditionally rather than checking first.
 
 ## Resolving the target plan
 
@@ -75,7 +82,8 @@ loop:
     focus_hints = derive 2-3 plan-specific risk bullets from current_plan
                   (see above), or skip if nothing specific stands out
     critique = second_opinion.py review <current_plan> \
-                   [--focus-file <focus-hints-path>]   # one call
+                   [--focus-file <focus-hints-path>] \
+                   --model-index <round - 1>   # one call
     show "Round N critique" + critique in chat
 
     if round > 1 and critique raises nothing substantively
