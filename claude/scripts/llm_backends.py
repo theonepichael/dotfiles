@@ -10,12 +10,48 @@ Requires Python 3.12+.
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
 from contextlib import suppress
 
 BACKEND_PRIORITY = ["agy", "opencode", "copilot"]
+
+# Each pattern captures one shape a tool-hungry model can emit as literal
+# text when every tool is denied (opencode's "permission": "deny") or a
+# swapped-in model is otherwise tool-starved: XML with the <tool_calls>
+# wrapper, bare XML without it, or a JSON-shaped tool-call block — attribute
+# order and the presence of a wrapper/parameters aren't guaranteed, so each
+# form is matched independently. Every pattern requires an actual *closing*
+# marker (</tool_calls>, </invoke>, a <parameter ...name=, or a closing `]`/
+# `}`); none fall back to matching to end-of-string on an unclosed tag, since
+# that would also swallow prose that merely *mentions* an opening tag without
+# ever completing the structure (e.g. "will never emit <tool_calls>
+# wrappers").
+_TOOL_CALL_LEAK_PATTERNS = (
+    re.compile(r"<tool_calls\b.*?</tool_calls>", re.IGNORECASE | re.DOTALL),
+    re.compile(
+        r"<invoke\b[^>]*\bname\s*=.*?(?:<parameter\b[^>]*\bname\s*=|</invoke>)",
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(r'"tool_calls"\s*:\s*\[.*?\]', re.IGNORECASE | re.DOTALL),
+    re.compile(r'"type"\s*:\s*"tool_use".*?\}', re.IGNORECASE | re.DOTALL),
+)
+
+# Caps how much of a response the leak check scans. Bounds worst-case regex
+# cost on a degenerate repetition-loop response (measured 15-42s unbounded at
+# 500KB-2MB of repeated markup-like text) while covering any realistic
+# critique length with room to spare — a genuine leak is the model's entire
+# turn, so it always appears well within this window.
+_TOOL_CALL_LEAK_SCAN_LIMIT = 20_000
+
+# Fraction of the scanned text that must fall inside a matched block before
+# it's treated as a leak rather than prose that quotes/discusses an example.
+# A genuine leaked tool call largely *is* the response; a critique that
+# illustrates the failure mode with a quoted snippet has that snippet
+# embedded in much more surrounding analysis, so its ratio stays low.
+_TOOL_CALL_LEAK_DOMINANCE_RATIO = 0.4
 
 _active_process: subprocess.Popen[str] | None = None
 
@@ -248,6 +284,70 @@ def _raise_on_tool_use(events: list[dict[str, object]], *, context: str) -> None
     raise BackendError(f"{context} used tools instead of returning text: {names}")
 
 
+def _raise_on_emitted_tool_call(text: str, *, context: str) -> None:
+    """Raise :class:`BackendError` if ``text`` looks like a leaked tool call.
+
+    A text-only or tool-starved caller must never return a "critique" that is
+    actually a model's rejected tool invocation. Some tool-hungry models
+    respond to having no usable tool by emitting their attempted call as
+    literal markup (XML or JSON-shaped) inside a text event instead of a real
+    ``tool_use`` event — which :func:`_raise_on_tool_use` can't see. This is
+    the second backstop for that leak.
+
+    Detection combines two checks against :data:`_TOOL_CALL_LEAK_PATTERNS`,
+    scanned up to :data:`_TOOL_CALL_LEAK_SCAN_LIMIT`:
+
+    - At least one pattern must match a *closed* block (never a bare opening
+      tag), so prose that only mentions tool-call syntax in passing never
+      matches at all.
+    - The matched block(s) must make up at least
+      :data:`_TOOL_CALL_LEAK_DOMINANCE_RATIO` of the scanned text, so a
+      critique that quotes/discusses a complete example snippet as one small
+      part of much larger prose isn't treated the same as a response that
+      *is* the leaked call.
+
+    Args:
+        text: The joined text chunks to inspect.
+        context: Label for the failing caller, used in the error message.
+
+    Raises:
+        BackendError: If ``text`` is dominated by a leaked tool-call block.
+    """
+    scanned = text[:_TOOL_CALL_LEAK_SCAN_LIMIT]
+    spans = sorted(
+        (m.start(), m.end())
+        for pattern in _TOOL_CALL_LEAK_PATTERNS
+        for m in pattern.finditer(scanned)
+    )
+    if not spans:
+        return
+    merged: list[list[int]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    matched_chars = sum(end - start for start, end in merged)
+    if matched_chars / len(scanned) < _TOOL_CALL_LEAK_DOMINANCE_RATIO:
+        return
+    raise BackendError(f"{context} returned tool-call markup instead of prose")
+
+
+def _finalize_text_response(chunks: list[str], *, context: str) -> str:
+    """Join text chunks, apply the leaked-tool-call backstop, and return the result.
+
+    Shared by both ``run_opencode`` variants (the generic one in this module
+    and second_opinion.py's adversary-agent one) so the two call sites can't
+    drift out of sync with each other.
+
+    Raises:
+        BackendError: Via :func:`_raise_on_emitted_tool_call`.
+    """
+    text = "".join(chunks).strip()
+    _raise_on_emitted_tool_call(text, context=context)
+    return text
+
+
 def run_opencode(prompt: str, *, model: str | None, timeout: float) -> str:
     """Run opencode's default agent (no ``--agent`` override) and return its text output.
 
@@ -259,9 +359,11 @@ def run_opencode(prompt: str, *, model: str | None, timeout: float) -> str:
     Raises:
         BackendError: If the event stream contains a ``tool_use`` event (the
             agent took a real shell/file action instead of returning text),
-            or if it has no text chunks — either because an explicit error
-            event was emitted, or because nothing recognizable was produced
-            at all.
+            the returned text is dominated by leaked tool-call markup (an
+            attempted tool call leaking through as text instead of a real
+            ``tool_use`` event), or if it has no text chunks — either because
+            an explicit error event was emitted, or because nothing
+            recognizable was produced at all.
     """
     cmd = ["opencode", "run", "--auto", "--format", "json"]
     if model:
@@ -272,7 +374,7 @@ def run_opencode(prompt: str, *, model: str | None, timeout: float) -> str:
     _raise_on_tool_use(events, context="opencode")
     chunks = _opencode_text_chunks(events)
     if chunks:
-        return "".join(chunks).strip()
+        return _finalize_text_response(chunks, context="opencode")
     for e in events:
         if e.get("type") == "error":
             message = _safe_get(e, "error", "data", "message")

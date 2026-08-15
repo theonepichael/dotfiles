@@ -357,6 +357,67 @@ class RunOpencodeTests(unittest.TestCase):
                 second_opinion.run_opencode("prompt")
         self.assertIn("read", str(cm.exception))
 
+    def test_62_emitted_tool_call_markup_text_raises(self) -> None:
+        # Regression: a tool-hungry model denied every tool can emit its
+        # attempted tool calls as literal <tool_calls> XML in a text event
+        # (the captured post-fix failure), which would otherwise be returned
+        # verbatim as the adversary critique.
+        text = (
+            "\n\n<tool_calls>\n"
+            '<invoke name="bash">\n'
+            '<parameter name="command" string="true">ls -la</parameter>\n'
+            "</invoke>\n"
+            "</tool_calls>"
+        )
+        stdout = json.dumps({"type": "text", "part": {"text": text}}) + "\n"
+        with (
+            self._run_command_returning(stdout),
+            self.assertRaises(second_opinion.BackendError) as cm,
+        ):
+            second_opinion.run_opencode("prompt")
+        self.assertIn("tool-call markup", str(cm.exception))
+
+    def test_63_prose_merely_mentioning_tool_calls_passes(self) -> None:
+        text = (
+            "The plan's agent config will never emit <tool_calls> wrappers or "
+            '<invoke name="bash"> markup since every tool is denied, so this '
+            "risk is moot."
+        )
+        stdout = json.dumps({"type": "text", "part": {"text": text}}) + "\n"
+        with self._run_command_returning(stdout):
+            self.assertEqual(second_opinion.run_opencode("prompt"), text)
+
+    def test_64_reordered_invoke_attributes_raises(self) -> None:
+        # Regression: attribute order isn't guaranteed on a leaked <invoke>.
+        text = '<invoke id="1" name="bash"><parameter name="command">ls</parameter></invoke>'
+        stdout = json.dumps({"type": "text", "part": {"text": text}}) + "\n"
+        with (
+            self._run_command_returning(stdout),
+            self.assertRaises(second_opinion.BackendError) as cm,
+        ):
+            second_opinion.run_opencode("prompt")
+        self.assertIn("tool-call markup", str(cm.exception))
+
+    def test_65_quoted_example_in_larger_critique_passes(self) -> None:
+        # Regression: a real critique that quotes a fully-closed example of
+        # this exact leak shape (plausible when reviewing this very feature)
+        # must not itself be rejected as a leaked call.
+        critique = (
+            "This diff's leak detection is a good idea but underspecified. "
+            "For instance, a leak shaped like "
+            '<tool_calls><invoke name="bash"><parameter name="command">ls'
+            "</parameter></invoke></tool_calls> would need every attribute "
+            "in exactly that order to be caught, which is fragile. I'd "
+            "recommend a broader set of shape patterns plus a check that "
+            "the matched markup actually dominates the response, rather "
+            "than merely appearing somewhere within it, so a critique that "
+            "quotes an example like the one above during review doesn't "
+            "get rejected as if it were the leak itself."
+        )
+        stdout = json.dumps({"type": "text", "part": {"text": critique}}) + "\n"
+        with self._run_command_returning(stdout):
+            self.assertEqual(second_opinion.run_opencode("prompt"), critique)
+
 
 class CmdDetectTests(unittest.TestCase):
     def test_41_detect_prints_availability_json(self) -> None:
