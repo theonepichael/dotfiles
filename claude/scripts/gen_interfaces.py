@@ -597,8 +597,100 @@ def extract_cli(tree: ast.Module, module_doc: str) -> CliSpec | None:
 ENV_ACCESSORS = frozenset({"os.environ.get", "os.getenv", "environ.get", "getenv"})
 
 
+def _module_functions(tree: ast.Module) -> dict[str, ast.FunctionDef]:
+    """Map top-level function name -> its ``FunctionDef`` node.
+
+    Nested/class-scoped functions are excluded — this repo's env-var
+    forwarding pattern (a small module-level helper that resolves one env
+    var) only occurs at module scope, so a bare-name call-site match is
+    enough and no further scope resolution is needed.
+    """
+    return {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+
+
+def _env_forwarding_params(tree: ast.Module) -> dict[str, set[str]]:
+    """Find, per module-level function, which parameters eventually reach
+    an env-var accessor — directly, or via a call to another such function
+    in this module (any number of hops).
+
+    E.g. ``_resolve_pooled_model`` doesn't call ``os.environ.get`` itself;
+    it forwards to ``_env_stripped``/``_parse_pool``, which do. A single
+    fixed-point pass over module-level functions catches chains of any
+    depth: each pass can only add new markings (monotonic), so it always
+    terminates.
+    """
+    functions = _module_functions(tree)
+    param_names = {
+        name: [a.arg for a in fn.args.args] for name, fn in functions.items()
+    }
+    marked: dict[str, set[str]] = {name: set() for name in functions}
+
+    changed = True
+    while changed:
+        changed = False
+        for name, fn in functions.items():
+            own_params = set(param_names[name])
+            for node in ast.walk(fn):
+                if node is fn:
+                    continue
+                if isinstance(node, ast.Call):
+                    path = attr_path(node.func)
+                    if path in ENV_ACCESSORS:
+                        if node.args and isinstance(node.args[0], ast.Name):
+                            arg_name = node.args[0].id
+                            if arg_name in own_params and arg_name not in marked[name]:
+                                marked[name].add(arg_name)
+                                changed = True
+                        continue
+                    callee_marked = marked.get(path)
+                    if not callee_marked:
+                        continue
+                    callee_params = param_names[path]
+                    for i, arg in enumerate(node.args):
+                        if (
+                            i >= len(callee_params)
+                            or callee_params[i] not in callee_marked
+                        ):
+                            continue
+                        if (
+                            isinstance(arg, ast.Name)
+                            and arg.id in own_params
+                            and arg.id not in marked[name]
+                        ):
+                            marked[name].add(arg.id)
+                            changed = True
+                    for kw in node.keywords:
+                        if kw.arg is None or kw.arg not in callee_marked:
+                            continue
+                        if (
+                            isinstance(kw.value, ast.Name)
+                            and kw.value.id in own_params
+                            and kw.value.id not in marked[name]
+                        ):
+                            marked[name].add(kw.value.id)
+                            changed = True
+                elif isinstance(node, ast.Subscript) and attr_path(node.value) in (
+                    "os.environ",
+                    "environ",
+                ):
+                    if (
+                        isinstance(node.slice, ast.Name)
+                        and node.slice.id in own_params
+                        and node.slice.id not in marked[name]
+                    ):
+                        marked[name].add(node.slice.id)
+                        changed = True
+    return {name: params for name, params in marked.items() if params}
+
+
 def extract_env_vars(tree: ast.Module) -> list[str]:
-    """Collect the environment variable names the module reads."""
+    """Collect the environment variable names the module reads.
+
+    Includes direct ``os.environ.get``/``os.getenv``/subscript access, plus
+    env var names passed as literal string arguments to a local helper
+    function whose parameter is itself (transitively) passed to one of
+    those accessors — see :func:`_env_forwarding_params`.
+    """
     found: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and attr_path(node.func) in ENV_ACCESSORS:
@@ -612,6 +704,33 @@ def extract_env_vars(tree: ast.Module) -> list[str]:
             name = literal_str(node.slice, {})
             if name:
                 found.add(name)
+
+    forwarding = _env_forwarding_params(tree)
+    if forwarding:
+        function_params = {
+            name: [a.arg for a in fn.args.args]
+            for name, fn in _module_functions(tree).items()
+        }
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            marked_params = forwarding.get(attr_path(node.func))
+            if not marked_params:
+                continue
+            callee_params = function_params[attr_path(node.func)]
+            for i, arg in enumerate(node.args):
+                if i >= len(callee_params) or callee_params[i] not in marked_params:
+                    continue
+                name = literal_str(arg, {})
+                if name:
+                    found.add(name)
+            for kw in node.keywords:
+                if kw.arg not in marked_params:
+                    continue
+                name = literal_str(kw.value, {})
+                if name:
+                    found.add(name)
+
     return sorted(found)
 
 

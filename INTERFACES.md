@@ -426,7 +426,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
     - `--backend` — force this backend instead of priority-order fallback (choices computed at runtime)
     - `--focus-file` — path to a file of plan-specific risk hints, appended to the critique prompt as areas to scrutinize (supplements, not replaces, the generic adversarial mandate)
     - `--model-index` — 0-based index into the opencode/copilot model pool (SECOND_OPINION_OPENCODE_MODEL_POOL / _COPILOT_MODEL_POOL) for this call -- round 1 of a rotation is index 0, round 2 is index 1, etc. Ignored for agy, and a no-op when no pool is set.
-- Environment: `SECOND_OPINION_AGY_MODEL`, `SECOND_OPINION_TIMEOUT_SECONDS`
+- Environment: `SECOND_OPINION_AGY_MODEL`, `SECOND_OPINION_AGY_TIMEOUT_SECONDS`, `SECOND_OPINION_COPILOT_MODEL`, `SECOND_OPINION_COPILOT_MODEL_POOL`, `SECOND_OPINION_COPILOT_TIMEOUT_SECONDS`, `SECOND_OPINION_OPENCODE_MODEL`, `SECOND_OPINION_OPENCODE_MODEL_POOL`, `SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS`, `SECOND_OPINION_TIMEOUT_SECONDS`
 - Explicit exit codes: `1`
 - Depends on: `cli_common.py`, `llm_backends.py`
 - Public functions:
