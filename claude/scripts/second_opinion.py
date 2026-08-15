@@ -5,14 +5,25 @@ convergence judgment all require LLM reasoning and live in second-opinion.md's
 prose instructions, not here.
 
 Flags
-  --quiet, -q    suppress non-essential output
-  --verbose, -v  emit extra diagnostic messages to stderr
+  --quiet, -q      suppress non-essential output
+  --verbose, -v    emit extra diagnostic messages to stderr
+  --model-index N  (review only) 0-based index into the opencode/copilot
+                   model pool for this call, e.g. round 1 of a rotation is
+                   index 0, round 2 is index 1. Ignored for agy, and a no-op
+                   for opencode/copilot when no *_MODEL_POOL is set. Must be
+                   non-negative.
 
 Env vars
-  SECOND_OPINION_AGY_MODEL        force the agy model (default "Gemini 3.7 Flash (High)")
-  SECOND_OPINION_COPILOT_MODEL    force the Copilot model (default: unset)
-  SECOND_OPINION_OPENCODE_MODEL   force the opencode adversary-agent model (default: live config)
-  SECOND_OPINION_TIMEOUT_SECONDS  per-backend timeout in seconds (default 300)
+  SECOND_OPINION_AGY_MODEL          force the agy model (default "Gemini 3.7 Flash (High)")
+  SECOND_OPINION_COPILOT_MODEL      force the Copilot model (default: unset)
+  SECOND_OPINION_OPENCODE_MODEL     force the opencode adversary-agent model (default: live config)
+  SECOND_OPINION_OPENCODE_MODEL_POOL  comma-separated opencode model pool for
+                                     --model-index rotation (default: unset,
+                                     no rotation). SECOND_OPINION_OPENCODE_MODEL,
+                                     if also set, wins outright over the pool.
+  SECOND_OPINION_COPILOT_MODEL_POOL   same, for the copilot backend and
+                                     SECOND_OPINION_COPILOT_MODEL.
+  SECOND_OPINION_TIMEOUT_SECONDS    per-backend timeout in seconds (default 300)
 
 Files read: <plan-file-or-text> (if a path), --focus-file. Nothing written.
 
@@ -46,6 +57,80 @@ from llm_backends import (
 
 BACKEND_PRIORITY = llm_backends.BACKEND_PRIORITY
 BACKEND_TIMEOUT_SECONDS = int(os.environ.get("SECOND_OPINION_TIMEOUT_SECONDS", "300"))
+
+# backend -> (pool env var, single-override env var). agy is deliberately
+# absent: it has no pool/rotation behavior.
+_POOL_ENV_VARS = {
+    "opencode": ("SECOND_OPINION_OPENCODE_MODEL_POOL", "SECOND_OPINION_OPENCODE_MODEL"),
+    "copilot": ("SECOND_OPINION_COPILOT_MODEL_POOL", "SECOND_OPINION_COPILOT_MODEL"),
+}
+
+
+def _env_stripped(var: str) -> str:
+    """Return ``var``'s value stripped of whitespace, or ``""`` if unset/blank."""
+    return (os.environ.get(var) or "").strip()
+
+
+def _parse_pool(var: str) -> list[str]:
+    """Split ``var``'s comma-separated value into stripped, non-empty entries."""
+    return [m.strip() for m in os.environ.get(var, "").split(",") if m.strip()]
+
+
+def _resolve_pooled_model(
+    pool_env_var: str, single_env_var: str, model_index: int | None
+) -> str | None:
+    """Pick a model for one backend call.
+
+    Pure function, no side effects (no logging) — callers that want
+    visibility into the choice log it themselves, once, at the point they
+    call this (see :func:`_vprint_pool_choice`); logging from inside here
+    would fire once per call site per attempt instead of once per attempt.
+
+    The single-model override env var wins outright if set (whitespace-only
+    counts as unset). Otherwise, if the pool env var is non-empty, pick
+    ``pool[index % len(pool)]`` (index defaults to 0 if ``model_index`` is
+    ``None``). Otherwise ``None`` — today's "let the backend pick" behavior.
+    """
+    single = _env_stripped(single_env_var)
+    if single:
+        return single
+    pool = _parse_pool(pool_env_var)
+    if not pool:
+        return None
+    index = model_index if model_index is not None else 0
+    return pool[index % len(pool)]
+
+
+def _vprint_pool_choice(
+    backend: str, model_index: int | None, *, verbose: bool
+) -> None:
+    """Emit the one and only --verbose notice about pool/index resolution for ``backend``.
+
+    A manual/exploratory-CLI and --verbose-debugging convenience, not a
+    safety net against a caller forgetting --model-index: it only fires
+    under --verbose, so a non-verbose automated caller never sees it.
+    Automated multi-round callers are documented to always pass
+    --model-index every round regardless of pool state (see SKILL.md /
+    second-opinion.md) rather than relying on this to catch a missed flag.
+    """
+    if backend not in _POOL_ENV_VARS or not verbose:
+        return
+    pool_var, single_var = _POOL_ENV_VARS[backend]
+    if _env_stripped(single_var):
+        if model_index is not None:
+            cli_common.vprint(
+                f"[second_opinion] {single_var} is set; ignoring --model-index",
+                verbose=verbose,
+            )
+        return
+    pool = _parse_pool(pool_var)
+    if not pool:
+        return
+    index = model_index if model_index is not None else 0
+    chosen = pool[index % len(pool)]
+    cli_common.vprint(
+        f"[second_opinion] {pool_var} -> {chosen} (index {index})", verbose=verbose
+    )
 
 
 CRITIQUE_PROMPT = """\
@@ -149,17 +234,20 @@ def _run_command(cmd: list[str]) -> tuple[int, str, str]:
 DEFAULT_AGY_MODEL = "Gemini 3.7 Flash (High)"
 
 
-def run_agy(prompt: str) -> str:
+def run_agy(prompt: str, *, model_index: int | None = None) -> str:
     """Run the ``agy`` backend and return its critique text.
 
     An explicit model can be forced via the ``SECOND_OPINION_AGY_MODEL`` env
-    var; unset means :data:`DEFAULT_AGY_MODEL`.
+    var; unset means :data:`DEFAULT_AGY_MODEL`. ``model_index`` is accepted
+    and ignored — ``agy`` has no pool/rotation behavior; the parameter
+    exists only so every entry in :data:`BACKEND_RUNNERS` shares one calling
+    convention.
     """
     model = os.environ.get("SECOND_OPINION_AGY_MODEL", DEFAULT_AGY_MODEL)
     return llm_backends.run_agy(prompt, model=model, timeout=BACKEND_TIMEOUT_SECONDS)
 
 
-def run_opencode(prompt: str) -> str:
+def run_opencode(prompt: str, *, model_index: int | None = None) -> str:
     """Run the ``opencode`` backend's adversary agent and return its critique text.
 
     Not routed through :func:`llm_backends.run_opencode` (the generic
@@ -167,8 +255,11 @@ def run_opencode(prompt: str) -> str:
     adversary``), so this builds its own command but reuses the shared
     event-parsing helpers.
 
-    An explicit model can be forced via the ``SECOND_OPINION_OPENCODE_MODEL``
-    env var; unset/empty means the live opencode config's model.
+    The model is resolved via :func:`_resolve_pooled_model`:
+    ``SECOND_OPINION_OPENCODE_MODEL``, if set, wins outright; otherwise
+    ``model_index`` picks an entry from ``SECOND_OPINION_OPENCODE_MODEL_POOL``
+    if that's set; otherwise unset/empty means the live opencode config's
+    model.
 
     Raises:
         BackendError: If the event stream contains a ``tool_use`` event — the
@@ -200,7 +291,11 @@ def run_opencode(prompt: str) -> str:
         "--format",
         "json",
     ]
-    model = os.environ.get("SECOND_OPINION_OPENCODE_MODEL")
+    model = _resolve_pooled_model(
+        "SECOND_OPINION_OPENCODE_MODEL_POOL",
+        "SECOND_OPINION_OPENCODE_MODEL",
+        model_index,
+    )
     if model:
         cmd += ["-m", model]
     cmd.append(prompt)
@@ -217,16 +312,22 @@ def run_opencode(prompt: str) -> str:
     raise BackendError(f"no text output: {stderr.strip() or stdout.strip()[:200]}")
 
 
-def run_copilot(prompt: str) -> str:
+def run_copilot(prompt: str, *, model_index: int | None = None) -> str:
     """Run the ``copilot`` backend and return its critique text.
 
-    An explicit model can be forced via the ``SECOND_OPINION_COPILOT_MODEL``
-    env var (empty/unset means no ``--model`` flag — see
+    The model is resolved via :func:`_resolve_pooled_model`:
+    ``SECOND_OPINION_COPILOT_MODEL``, if set, wins outright; otherwise
+    ``model_index`` picks an entry from ``SECOND_OPINION_COPILOT_MODEL_POOL``
+    if that's set; otherwise ``None`` (no ``--model`` flag — see
     :func:`llm_backends.run_copilot` for why that's the safe default).
     """
     return llm_backends.run_copilot(
         prompt,
-        model=os.environ.get("SECOND_OPINION_COPILOT_MODEL"),
+        model=_resolve_pooled_model(
+            "SECOND_OPINION_COPILOT_MODEL_POOL",
+            "SECOND_OPINION_COPILOT_MODEL",
+            model_index,
+        ),
         timeout=BACKEND_TIMEOUT_SECONDS,
     )
 
@@ -239,8 +340,14 @@ BACKEND_LABELS = {
 }
 
 
-def backend_label(backend: str) -> str:
-    """Return ``backend``'s display label, appending an overridden agy/copilot/opencode model if set."""
+def backend_label(backend: str, *, model_index: int | None = None) -> str:
+    """Return ``backend``'s display label, appending the resolved agy/copilot/opencode model if any.
+
+    For ``opencode``/``copilot``, resolution goes through the same
+    :func:`_resolve_pooled_model` the runner uses (single-override env var,
+    else pool + ``model_index``) — one source of truth, so the printed label
+    always matches the model the runner actually used, pool or not.
+    """
     label = BACKEND_LABELS[backend]
     if backend == "agy":
         model = os.environ.get("SECOND_OPINION_AGY_MODEL")
@@ -248,11 +355,19 @@ def backend_label(backend: str) -> str:
             return f"agy ({model})"
         return label
     if backend == "copilot":
-        model = os.environ.get("SECOND_OPINION_COPILOT_MODEL")
+        model = _resolve_pooled_model(
+            "SECOND_OPINION_COPILOT_MODEL_POOL",
+            "SECOND_OPINION_COPILOT_MODEL",
+            model_index,
+        )
         if model:
             return f"{label} ({model})"
     if backend == "opencode":
-        model = os.environ.get("SECOND_OPINION_OPENCODE_MODEL")
+        model = _resolve_pooled_model(
+            "SECOND_OPINION_OPENCODE_MODEL_POOL",
+            "SECOND_OPINION_OPENCODE_MODEL",
+            model_index,
+        )
         if model:
             return f"{label} ({model})"
     return label
@@ -289,29 +404,50 @@ def cmd_review(args: argparse.Namespace) -> None:
         focus_hints = focus_path.read_text()
     prompt = build_prompt(plan_text, focus_hints)
 
+    model_index = getattr(args, "model_index", None)
+    verbose = getattr(args, "verbose", False)
     failures = []
     for backend in candidates:
+        _vprint_pool_choice(backend, model_index, verbose=verbose)
         try:
-            critique = BACKEND_RUNNERS[backend](prompt)
+            critique = BACKEND_RUNNERS[backend](prompt, model_index=model_index)
         except BackendError as exc:
             cli_common.vprint(
-                f"[second_opinion] {backend_label(backend)} failed: {exc}",
-                verbose=getattr(args, "verbose", False),
+                f"[second_opinion] {backend_label(backend, model_index=model_index)} "
+                f"failed: {exc}",
+                verbose=verbose,
             )
             failures.append(f"{backend}: {exc}")
             continue
-        print(f"Second opinion via {backend_label(backend)}:")
+        print(f"Second opinion via {backend_label(backend, model_index=model_index)}:")
         print(critique)
         return
 
     die("all backends failed — " + "; ".join(failures))
 
 
-def main() -> None:
-    """Register termination handlers, parse argv, and dispatch to a subcommand."""
-    signal.signal(signal.SIGTERM, _handle_termination)
-    signal.signal(signal.SIGINT, _handle_termination)
+def _non_negative_int(value: str) -> int:
+    """argparse ``type=`` for ``--model-index``: reject negatives with a clean error.
 
+    A plain ``type=int`` would accept ``-1`` (this parser has no option
+    strings that look like negative numbers, so argparse's own heuristic
+    lets ``-1`` through as a value rather than an unrecognized flag) and
+    hand it to :func:`_resolve_pooled_model`'s modulo, silently wrapping
+    instead of rejecting. There's no legitimate rotation use case for a
+    negative index, so reject it here where argparse reports it cleanly.
+    """
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError(f"must be non-negative, got {parsed}")
+    return parsed
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the full argument parser for every subcommand.
+
+    Extracted from :func:`main` so tests can exercise parsing (e.g.
+    --model-index validation) without going through sys.argv.
+    """
     parser = argparse.ArgumentParser(
         description="one-shot adversarial critique of a plan from a non-Claude backend",
     )
@@ -345,7 +481,26 @@ def main() -> None:
         "critique prompt as areas to scrutinize (supplements, not replaces, "
         "the generic adversarial mandate)",
     )
+    p.add_argument(
+        "--model-index",
+        type=_non_negative_int,
+        default=None,
+        metavar="N",
+        help="0-based index into the opencode/copilot model pool "
+        "(SECOND_OPINION_OPENCODE_MODEL_POOL / _COPILOT_MODEL_POOL) for "
+        "this call -- round 1 of a rotation is index 0, round 2 is index "
+        "1, etc. Ignored for agy, and a no-op when no pool is set.",
+    )
 
+    return parser
+
+
+def main() -> None:
+    """Register termination handlers, parse argv, and dispatch to a subcommand."""
+    signal.signal(signal.SIGTERM, _handle_termination)
+    signal.signal(signal.SIGINT, _handle_termination)
+
+    parser = build_parser()
     args = parser.parse_args()
 
     dispatch = {"detect": cmd_detect, "review": cmd_review}

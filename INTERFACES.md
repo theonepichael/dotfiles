@@ -422,20 +422,22 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `--verbose/-v`
 - Subcommands:
   - `detect` — list available backends as JSON
-  - `review <plan-file-or-text> [--backend <BACKEND>] [--focus-file <FOCUS_FILE>]` — get one critique from the priority-selected backend
+  - `review <plan-file-or-text> [--backend <BACKEND>] [--focus-file <FOCUS_FILE>] [--model-index N]` — get one critique from the priority-selected backend
     - `--backend` — force this backend instead of priority-order fallback (choices computed at runtime)
     - `--focus-file` — path to a file of plan-specific risk hints, appended to the critique prompt as areas to scrutinize (supplements, not replaces, the generic adversarial mandate)
-- Environment: `SECOND_OPINION_AGY_MODEL`, `SECOND_OPINION_COPILOT_MODEL`, `SECOND_OPINION_OPENCODE_MODEL`, `SECOND_OPINION_TIMEOUT_SECONDS`
+    - `--model-index` — 0-based index into the opencode/copilot model pool (SECOND_OPINION_OPENCODE_MODEL_POOL / _COPILOT_MODEL_POOL) for this call -- round 1 of a rotation is index 0, round 2 is index 1, etc. Ignored for agy, and a no-op when no pool is set.
+- Environment: `SECOND_OPINION_AGY_MODEL`, `SECOND_OPINION_TIMEOUT_SECONDS`
 - Explicit exit codes: `1`
 - Depends on: `cli_common.py`, `llm_backends.py`
 - Public functions:
   - `build_prompt(plan_text: str, focus_hints: str | None) -> str` — Build the critique prompt, optionally inserting plan-specific focus hints.
   - `die(msg: str) -> NoReturn` — Print an error to stderr, prefixed for this script, and exit with status 1.
   - `resolve_plan_text(arg: str) -> str` — Resolve a CLI argument to plan text: a file's contents, or the arg itself.
-  - `run_agy(prompt: str) -> str` — Run the ``agy`` backend and return its critique text.
-  - `run_opencode(prompt: str) -> str` — Run the ``opencode`` backend's adversary agent and return its critique text.
-  - `run_copilot(prompt: str) -> str` — Run the ``copilot`` backend and return its critique text.
-  - `backend_label(backend: str) -> str` — Return ``backend``'s display label, appending an overridden agy/copilot/opencode model if set.
+  - `run_agy(prompt: str, *, model_index: int | None = None) -> str` — Run the ``agy`` backend and return its critique text.
+  - `run_opencode(prompt: str, *, model_index: int | None = None) -> str` — Run the ``opencode`` backend's adversary agent and return its critique text.
+  - `run_copilot(prompt: str, *, model_index: int | None = None) -> str` — Run the ``copilot`` backend and return its critique text.
+  - `backend_label(backend: str, *, model_index: int | None = None) -> str` — Return ``backend``'s display label, appending the resolved agy/copilot/opencode model if any.
+  - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
 - Subcommand handlers: `cmd_detect`, `cmd_review`
 - Tested by: `claude/scripts/test_second_opinion.py`
 

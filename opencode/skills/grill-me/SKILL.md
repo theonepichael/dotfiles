@@ -132,6 +132,12 @@ it trades interactivity for adversarial rigor instead of just guessing.
      it is, that round produced no real critique — don't record it as one;
      retry once, and if it leaks again treat `adversary` as erroring and fall
      through to the Alternative path below.
+
+     No model rotation is available on this path: opencode's Task tool has
+     no per-spawn model override (confirmed against its source —
+     `packages/opencode/src/tool/task.ts`'s `Parameters` schema has no
+     `model` field), so a spawned `adversary` always uses whatever's fixed
+     in `opencode.jsonc`'s `agent.adversary.model`, every round.
    - **Alternative — `second_opinion.py review`**: use this instead (or in
      addition, for a third opinion) when you specifically want `agy`'s Gemini
      backend rather than `adversary`'s configured model, or if `adversary` is
@@ -141,6 +147,14 @@ it trades interactivity for adversarial rigor instead of just guessing.
      opencode it would just shell out to `opencode run --agent adversary` as
      a subprocess of itself, redoing what the Task tool already does natively
      and more cheaply. Force `--backend agy` if you go this route.
+
+     `agy` has no pool/rotation behavior (`--model-index` is a no-op for
+     it), so — same as the Primary path above — no model rotation is
+     available through this skill's documented paths. Model-pool rotation
+     for opencode/copilot is currently only reachable via `second_opinion.py`
+     called directly, or the `/second-opinion` skill's own iteration loop
+     (`claude/commands/second-opinion.md`), neither of which this skill's
+     `--auto` mode routes through.
 
    "Adversarial" here means exactly what `second_opinion.py`'s own
    `CRITIQUE_PROMPT` asks for regardless of which path you use — find

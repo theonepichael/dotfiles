@@ -28,6 +28,7 @@ import second_opinion
 def ns(**kwargs: object) -> argparse.Namespace:
     kwargs.setdefault("backend", None)
     kwargs.setdefault("focus_file", None)
+    kwargs.setdefault("model_index", None)
     return argparse.Namespace(**kwargs)
 
 
@@ -112,6 +113,7 @@ class RunCopilotWrapperTests(unittest.TestCase):
     def test_05_no_env_var_passes_none(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("SECOND_OPINION_COPILOT_MODEL", None)
+            os.environ.pop("SECOND_OPINION_COPILOT_MODEL_POOL", None)
             with (
                 patch.object(
                     second_opinion.llm_backends, "run_copilot", return_value="critique"
@@ -120,6 +122,144 @@ class RunCopilotWrapperTests(unittest.TestCase):
             ):
                 second_opinion.run_copilot("my prompt")
         mock_run.assert_called_once_with("my prompt", model=None, timeout=300)
+
+    def test_05b_model_from_pool_at_index(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SECOND_OPINION_COPILOT_MODEL_POOL": "gpt-4.1,gpt-5-mini",
+                    "SECOND_OPINION_COPILOT_MODEL": "",
+                },
+            ),
+            patch.object(
+                second_opinion.llm_backends, "run_copilot", return_value="critique"
+            ) as mock_run,
+            patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 300),
+        ):
+            second_opinion.run_copilot("my prompt", model_index=1)
+        mock_run.assert_called_once_with("my prompt", model="gpt-5-mini", timeout=300)
+
+
+class ResolvePooledModelTests(unittest.TestCase):
+    """Direct tests of _resolve_pooled_model -- the pure precedence/rotation
+    logic shared by the runners and backend_label."""
+
+    def _clear(self) -> None:
+        for var in (
+            "SECOND_OPINION_OPENCODE_MODEL",
+            "SECOND_OPINION_OPENCODE_MODEL_POOL",
+        ):
+            os.environ.pop(var, None)
+
+    def test_06a_single_override_wins_regardless_of_pool(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "SECOND_OPINION_OPENCODE_MODEL": "pinned",
+                "SECOND_OPINION_OPENCODE_MODEL_POOL": "a,b,c",
+            },
+        ):
+            self.assertEqual(
+                second_opinion._resolve_pooled_model(
+                    "SECOND_OPINION_OPENCODE_MODEL_POOL",
+                    "SECOND_OPINION_OPENCODE_MODEL",
+                    2,
+                ),
+                "pinned",
+            )
+
+    def test_06b_whitespace_only_single_override_treated_as_unset(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "SECOND_OPINION_OPENCODE_MODEL": "   ",
+                "SECOND_OPINION_OPENCODE_MODEL_POOL": "a,b,c",
+            },
+        ):
+            self.assertEqual(
+                second_opinion._resolve_pooled_model(
+                    "SECOND_OPINION_OPENCODE_MODEL_POOL",
+                    "SECOND_OPINION_OPENCODE_MODEL",
+                    1,
+                ),
+                "b",
+            )
+
+    def test_06c_empty_pool_and_no_override_returns_none(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            self._clear()
+            self.assertIsNone(
+                second_opinion._resolve_pooled_model(
+                    "SECOND_OPINION_OPENCODE_MODEL_POOL",
+                    "SECOND_OPINION_OPENCODE_MODEL",
+                    None,
+                )
+            )
+
+    def test_06d_pool_of_commas_and_whitespace_treated_as_empty(self) -> None:
+        with patch.dict(os.environ, {"SECOND_OPINION_OPENCODE_MODEL_POOL": " , , "}):
+            self._clear_single_only()
+            self.assertIsNone(
+                second_opinion._resolve_pooled_model(
+                    "SECOND_OPINION_OPENCODE_MODEL_POOL",
+                    "SECOND_OPINION_OPENCODE_MODEL",
+                    None,
+                )
+            )
+
+    def _clear_single_only(self) -> None:
+        os.environ.pop("SECOND_OPINION_OPENCODE_MODEL", None)
+
+    def test_06e_no_index_defaults_to_zero(self) -> None:
+        with patch.dict(os.environ, {"SECOND_OPINION_OPENCODE_MODEL_POOL": "a,b,c"}):
+            self._clear_single_only()
+            self.assertEqual(
+                second_opinion._resolve_pooled_model(
+                    "SECOND_OPINION_OPENCODE_MODEL_POOL",
+                    "SECOND_OPINION_OPENCODE_MODEL",
+                    None,
+                ),
+                "a",
+            )
+
+    def test_06f_explicit_index_selects_entry(self) -> None:
+        with patch.dict(os.environ, {"SECOND_OPINION_OPENCODE_MODEL_POOL": "a,b,c"}):
+            self._clear_single_only()
+            self.assertEqual(
+                second_opinion._resolve_pooled_model(
+                    "SECOND_OPINION_OPENCODE_MODEL_POOL",
+                    "SECOND_OPINION_OPENCODE_MODEL",
+                    2,
+                ),
+                "c",
+            )
+
+    def test_06g_index_wraps_via_modulo(self) -> None:
+        with patch.dict(os.environ, {"SECOND_OPINION_OPENCODE_MODEL_POOL": "a,b,c"}):
+            self._clear_single_only()
+            self.assertEqual(
+                second_opinion._resolve_pooled_model(
+                    "SECOND_OPINION_OPENCODE_MODEL_POOL",
+                    "SECOND_OPINION_OPENCODE_MODEL",
+                    5,
+                ),
+                "c",
+            )
+
+    def test_06h_pool_entries_stripped_of_whitespace(self) -> None:
+        with patch.dict(
+            os.environ, {"SECOND_OPINION_OPENCODE_MODEL_POOL": " a , b ,c "}
+        ):
+            self._clear_single_only()
+            self.assertEqual(
+                second_opinion._resolve_pooled_model(
+                    "SECOND_OPINION_OPENCODE_MODEL_POOL",
+                    "SECOND_OPINION_OPENCODE_MODEL",
+                    1,
+                ),
+                "b",
+            )
 
 
 class BackendLabelTests(unittest.TestCase):
@@ -217,6 +357,30 @@ class BackendLabelTests(unittest.TestCase):
             self.assertEqual(
                 second_opinion.backend_label("copilot"),
                 second_opinion.BACKEND_LABELS["copilot"],
+            )
+
+    def test_61_opencode_label_reflects_pool_resolved_model(self) -> None:
+        # Regression: backend_label used to read SECOND_OPINION_OPENCODE_MODEL
+        # directly, independent of the runner's resolution -- once the runner
+        # started resolving via the pool, the label would silently stop
+        # showing a model at all unless it shares the same resolution.
+        with patch.dict(
+            os.environ, {"SECOND_OPINION_OPENCODE_MODEL_POOL": "model-a,model-b"}
+        ):
+            os.environ.pop("SECOND_OPINION_OPENCODE_MODEL", None)
+            self.assertEqual(
+                second_opinion.backend_label("opencode", model_index=1),
+                f"{second_opinion.BACKEND_LABELS['opencode']} (model-b)",
+            )
+
+    def test_62_copilot_label_reflects_pool_resolved_model(self) -> None:
+        with patch.dict(
+            os.environ, {"SECOND_OPINION_COPILOT_MODEL_POOL": "gpt-4.1,gpt-5-mini"}
+        ):
+            os.environ.pop("SECOND_OPINION_COPILOT_MODEL", None)
+            self.assertEqual(
+                second_opinion.backend_label("copilot", model_index=0),
+                f"{second_opinion.BACKEND_LABELS['copilot']} (gpt-4.1)",
             )
 
 
@@ -320,6 +484,51 @@ class RunOpencodeTests(unittest.TestCase):
         ):
             second_opinion.run_opencode("my prompt")
         self.assertNotIn("-m", box["cmd"])
+
+    def test_40e_model_flag_from_pool_at_index(self) -> None:
+        capture, box = self._capture_cmd()
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SECOND_OPINION_OPENCODE_MODEL_POOL": "model-a,model-b,model-c",
+                    "SECOND_OPINION_OPENCODE_MODEL": "",
+                },
+            ),
+            patch.object(second_opinion, "_run_command", side_effect=capture),
+        ):
+            second_opinion.run_opencode("my prompt", model_index=1)
+        self.assertEqual(box["cmd"][-3:-1], ["-m", "model-b"])
+
+    def test_40f_pool_index_wraps_via_modulo(self) -> None:
+        capture, box = self._capture_cmd()
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SECOND_OPINION_OPENCODE_MODEL_POOL": "model-a,model-b,model-c",
+                    "SECOND_OPINION_OPENCODE_MODEL": "",
+                },
+            ),
+            patch.object(second_opinion, "_run_command", side_effect=capture),
+        ):
+            second_opinion.run_opencode("my prompt", model_index=4)
+        self.assertEqual(box["cmd"][-3:-1], ["-m", "model-b"])  # 4 % 3 == 1
+
+    def test_40g_single_override_wins_over_pool(self) -> None:
+        capture, box = self._capture_cmd()
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "SECOND_OPINION_OPENCODE_MODEL_POOL": "model-a,model-b",
+                    "SECOND_OPINION_OPENCODE_MODEL": "pinned-model",
+                },
+            ),
+            patch.object(second_opinion, "_run_command", side_effect=capture),
+        ):
+            second_opinion.run_opencode("my prompt", model_index=1)
+        self.assertEqual(box["cmd"][-3:-1], ["-m", "pinned-model"])
 
     def test_60_tool_use_event_raises_backend_error(self) -> None:
         # Regression: the adversary agent must be stateless and text-only; a
@@ -462,10 +671,10 @@ class CmdReviewTests(unittest.TestCase):
                 second_opinion,
                 "BACKEND_RUNNERS",
                 {
-                    "agy": lambda p: (_ for _ in ()).throw(
+                    "agy": lambda p, model_index=None: (_ for _ in ()).throw(
                         second_opinion.BackendError("agy broke")
                     ),
-                    "opencode": lambda p: "opencode's critique",
+                    "opencode": lambda p, model_index=None: "opencode's critique",
                 },
             ):
                 with patch("sys.stdout", out), patch("sys.stderr", err):
@@ -480,13 +689,13 @@ class CmdReviewTests(unittest.TestCase):
                 second_opinion,
                 "BACKEND_RUNNERS",
                 {
-                    "agy": lambda p: (_ for _ in ()).throw(
+                    "agy": lambda p, model_index=None: (_ for _ in ()).throw(
                         second_opinion.BackendError("agy broke")
                     ),
-                    "opencode": lambda p: (_ for _ in ()).throw(
+                    "opencode": lambda p, model_index=None: (_ for _ in ()).throw(
                         second_opinion.BackendError("opencode broke")
                     ),
-                    "copilot": lambda p: (_ for _ in ()).throw(
+                    "copilot": lambda p, model_index=None: (_ for _ in ()).throw(
                         second_opinion.BackendError("copilot broke")
                     ),
                 },
@@ -508,7 +717,7 @@ class CmdReviewTests(unittest.TestCase):
 
             captured_prompt = {}
 
-            def fake_runner(prompt: str) -> str:
+            def fake_runner(prompt: str, model_index: int | None = None) -> str:
                 captured_prompt["value"] = prompt
                 return "critique"
 
@@ -523,6 +732,41 @@ class CmdReviewTests(unittest.TestCase):
                         second_opinion.cmd_review(ns(plan=str(plan_path)))
         self.assertIn("# The actual plan", captured_prompt["value"])
         self.assertIn("details here", captured_prompt["value"])
+
+    def test_63_model_index_threaded_through_to_runner(self) -> None:
+        # Not just that the runner tolerates model_index (the fakes updated
+        # above for that) -- that cmd_review actually passes args.model_index
+        # through, end to end, rather than e.g. a stale default.
+        captured = {}
+
+        def spy_runner(prompt: str, model_index: int | None = None) -> str:
+            captured["model_index"] = model_index
+            return "critique"
+
+        out = io.StringIO()
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(second_opinion, "BACKEND_RUNNERS", {"agy": spy_runner}),
+            patch("sys.stdout", out),
+        ):
+            second_opinion.cmd_review(ns(plan="text", backend="agy", model_index=2))
+        self.assertEqual(captured["model_index"], 2)
+
+    def test_64_agy_backend_with_explicit_model_index_succeeds(self) -> None:
+        # agy accepts and ignores model_index (signature symmetry only) --
+        # must not crash.
+        out = io.StringIO()
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"agy": lambda p, model_index=None: "agy critique"},
+            ),
+            patch("sys.stdout", out),
+        ):
+            second_opinion.cmd_review(ns(plan="text", backend="agy", model_index=3))
+        self.assertIn("agy critique", out.getvalue())
 
 
 class DieTests(unittest.TestCase):
@@ -560,6 +804,37 @@ class ParserVerbosityTests(unittest.TestCase):
             ):
                 second_opinion.main()
             self.assertTrue(mock_cmd.call_args.args[0].quiet)
+
+
+class ModelIndexParsingTests(unittest.TestCase):
+    """--model-index validation, tested directly against the parser
+    (build_parser) rather than only live -- see Verification steps."""
+
+    def test_65_negative_index_rejected(self) -> None:
+        parser = second_opinion.build_parser()
+        err = io.StringIO()
+        with patch("sys.stderr", err), self.assertRaises(SystemExit) as cm:
+            parser.parse_args(["review", "plan.md", "--model-index", "-1"])
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("--model-index", err.getvalue())
+
+    def test_66_non_integer_index_rejected(self) -> None:
+        parser = second_opinion.build_parser()
+        err = io.StringIO()
+        with patch("sys.stderr", err), self.assertRaises(SystemExit) as cm:
+            parser.parse_args(["review", "plan.md", "--model-index", "abc"])
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("--model-index", err.getvalue())
+
+    def test_67_non_negative_index_accepted(self) -> None:
+        parser = second_opinion.build_parser()
+        args = parser.parse_args(["review", "plan.md", "--model-index", "0"])
+        self.assertEqual(args.model_index, 0)
+
+    def test_68_index_omitted_defaults_to_none(self) -> None:
+        parser = second_opinion.build_parser()
+        args = parser.parse_args(["review", "plan.md"])
+        self.assertIsNone(args.model_index)
 
 
 if __name__ == "__main__":
