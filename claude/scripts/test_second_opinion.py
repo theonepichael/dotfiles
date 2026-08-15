@@ -247,9 +247,11 @@ class RunOpencodeTests(unittest.TestCase):
             )
             + "\n"
         )
-        with self._run_command_returning(stdout):
-            with self.assertRaises(second_opinion.BackendError) as cm:
-                second_opinion.run_opencode("prompt")
+        with (
+            self._run_command_returning(stdout),
+            self.assertRaises(second_opinion.BackendError) as cm,
+        ):
+            second_opinion.run_opencode("prompt")
         self.assertIn("agent crashed", str(cm.exception))
 
     def test_38_error_field_as_plain_string_does_not_crash(self) -> None:
@@ -257,24 +259,30 @@ class RunOpencodeTests(unittest.TestCase):
         # with AttributeError when "error" was a plain string rather than
         # a nested object.
         stdout = json.dumps({"type": "error", "error": "flat string error"}) + "\n"
-        with self._run_command_returning(stdout):
-            with self.assertRaises(second_opinion.BackendError) as cm:
-                second_opinion.run_opencode("prompt")
+        with (
+            self._run_command_returning(stdout),
+            self.assertRaises(second_opinion.BackendError) as cm,
+        ):
+            second_opinion.run_opencode("prompt")
         self.assertIn("flat string error", str(cm.exception))
 
     def test_39_no_text_no_error_falls_back_to_raw_output(self) -> None:
         stdout = json.dumps({"type": "other"}) + "\n"
-        with self._run_command_returning(stdout, stderr="some stderr detail"):
-            with self.assertRaises(second_opinion.BackendError) as cm:
-                second_opinion.run_opencode("prompt")
+        with (
+            self._run_command_returning(stdout, stderr="some stderr detail"),
+            self.assertRaises(second_opinion.BackendError) as cm,
+        ):
+            second_opinion.run_opencode("prompt")
         self.assertIn("some stderr detail", str(cm.exception))
 
     def test_40_completely_unparseable_output_falls_back_to_stdout_snippet(
         self,
     ) -> None:
-        with self._run_command_returning("not json at all", stderr=""):
-            with self.assertRaises(second_opinion.BackendError) as cm:
-                second_opinion.run_opencode("prompt")
+        with (
+            self._run_command_returning("not json at all", stderr=""),
+            self.assertRaises(second_opinion.BackendError) as cm,
+        ):
+            second_opinion.run_opencode("prompt")
         self.assertIn("not json at all", str(cm.exception))
 
     def _capture_cmd(self) -> tuple[list[str], dict[str, list[str]]]:
@@ -334,9 +342,11 @@ class RunOpencodeTests(unittest.TestCase):
             )
             + "\n"
         )
-        with self._run_command_returning(stdout):
-            with self.assertRaises(second_opinion.BackendError) as cm:
-                second_opinion.run_opencode("prompt")
+        with (
+            self._run_command_returning(stdout),
+            self.assertRaises(second_opinion.BackendError) as cm,
+        ):
+            second_opinion.run_opencode("prompt")
         self.assertIn("bash", str(cm.exception))
         self.assertIn("instead of returning", str(cm.exception))
 
@@ -352,9 +362,11 @@ class RunOpencodeTests(unittest.TestCase):
             )
             + "\n"
         )
-        with self._run_command_returning(stdout):
-            with self.assertRaises(second_opinion.BackendError) as cm:
-                second_opinion.run_opencode("prompt")
+        with (
+            self._run_command_returning(stdout),
+            self.assertRaises(second_opinion.BackendError) as cm,
+        ):
+            second_opinion.run_opencode("prompt")
         self.assertIn("read", str(cm.exception))
 
     def test_62_emitted_tool_call_markup_text_raises(self) -> None:
@@ -439,26 +451,31 @@ class CmdDetectTests(unittest.TestCase):
 class CmdReviewTests(unittest.TestCase):
     def test_42_forced_backend_not_on_path_dies(self) -> None:
         err = io.StringIO()
-        with patch("shutil.which", return_value=None):
-            with self.assertRaises(SystemExit) as cm:
-                with patch("sys.stderr", err):
-                    second_opinion.cmd_review(ns(plan="text", backend="agy"))
+        with (
+            patch("shutil.which", return_value=None),
+            self.assertRaises(SystemExit) as cm,
+            patch("sys.stderr", err),
+        ):
+            second_opinion.cmd_review(ns(plan="text", backend="agy"))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("agy not found on PATH", err.getvalue())
 
     def test_43_no_backend_available_dies(self) -> None:
         err = io.StringIO()
-        with patch("shutil.which", return_value=None):
-            with self.assertRaises(SystemExit) as cm:
-                with patch("sys.stderr", err):
-                    second_opinion.cmd_review(ns(plan="text"))
+        with (
+            patch("shutil.which", return_value=None),
+            self.assertRaises(SystemExit) as cm,
+            patch("sys.stderr", err),
+        ):
+            second_opinion.cmd_review(ns(plan="text"))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("no backend available", err.getvalue())
 
     def test_44_first_backend_fails_second_succeeds(self) -> None:
         out, err = io.StringIO(), io.StringIO()
-        with patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"):
-            with patch.object(
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
                 second_opinion,
                 "BACKEND_RUNNERS",
                 {
@@ -467,16 +484,19 @@ class CmdReviewTests(unittest.TestCase):
                     ),
                     "opencode": lambda p: "opencode's critique",
                 },
-            ):
-                with patch("sys.stdout", out), patch("sys.stderr", err):
-                    second_opinion.cmd_review(ns(plan="my plan", verbose=True))
+            ),
+            patch("sys.stdout", out),
+            patch("sys.stderr", err),
+        ):
+            second_opinion.cmd_review(ns(plan="my plan", verbose=True))
         self.assertIn("opencode's critique", out.getvalue())
         self.assertIn("agy broke", err.getvalue())
 
     def test_45_all_backends_fail_dies_with_combined_message(self) -> None:
         err = io.StringIO()
-        with patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"):
-            with patch.object(
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
                 second_opinion,
                 "BACKEND_RUNNERS",
                 {
@@ -490,10 +510,11 @@ class CmdReviewTests(unittest.TestCase):
                         second_opinion.BackendError("copilot broke")
                     ),
                 },
-            ):
-                with self.assertRaises(SystemExit) as cm:
-                    with patch("sys.stderr", err):
-                        second_opinion.cmd_review(ns(plan="my plan"))
+            ),
+            self.assertRaises(SystemExit) as cm,
+            patch("sys.stderr", err),
+        ):
+            second_opinion.cmd_review(ns(plan="my plan"))
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("agy broke", err.getvalue())
         self.assertIn("opencode broke", err.getvalue())
@@ -513,14 +534,16 @@ class CmdReviewTests(unittest.TestCase):
                 return "critique"
 
             out = io.StringIO()
-            with patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"):
-                with patch.object(
+            with (
+                patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+                patch.object(
                     second_opinion,
                     "BACKEND_RUNNERS",
                     {"agy": fake_runner, "opencode": fake_runner},
-                ):
-                    with patch("sys.stdout", out):
-                        second_opinion.cmd_review(ns(plan=str(plan_path)))
+                ),
+                patch("sys.stdout", out),
+            ):
+                second_opinion.cmd_review(ns(plan=str(plan_path)))
         self.assertIn("# The actual plan", captured_prompt["value"])
         self.assertIn("details here", captured_prompt["value"])
 
@@ -538,9 +561,11 @@ class DieTests(unittest.TestCase):
 
 class HandleTerminationTests(unittest.TestCase):
     def test_48_kills_active_process_and_exits_with_128_plus_signum(self) -> None:
-        with patch.object(second_opinion, "_kill_active_process") as mock_kill:
-            with self.assertRaises(SystemExit) as cm:
-                second_opinion._handle_termination(15, None)
+        with (
+            patch.object(second_opinion, "_kill_active_process") as mock_kill,
+            self.assertRaises(SystemExit) as cm,
+        ):
+            second_opinion._handle_termination(15, None)
         mock_kill.assert_called_once()
         self.assertEqual(cm.exception.code, 128 + 15)
 

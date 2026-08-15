@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 import unittest
+from contextlib import AbstractContextManager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -278,7 +279,7 @@ class RunCopilotTests(unittest.TestCase):
 class RunOpencodeTests(unittest.TestCase):
     def _run_command_returning(
         self, stdout: str, stderr: str = "", returncode: int = 0
-    ):
+    ) -> AbstractContextManager[object]:
         return patch.object(
             llm_backends, "_run_command", return_value=(returncode, stdout, stderr)
         )
@@ -335,31 +336,39 @@ class RunOpencodeTests(unittest.TestCase):
             )
             + "\n"
         )
-        with self._run_command_returning(stdout):
-            with self.assertRaises(llm_backends.BackendError) as cm:
-                llm_backends.run_opencode("prompt", model=None, timeout=60)
+        with (
+            self._run_command_returning(stdout),
+            self.assertRaises(llm_backends.BackendError) as cm,
+        ):
+            llm_backends.run_opencode("prompt", model=None, timeout=60)
         self.assertIn("backend crashed", str(cm.exception))
 
     def test_41_error_field_as_plain_string_does_not_crash(self) -> None:
         stdout = json.dumps({"type": "error", "error": "flat string error"}) + "\n"
-        with self._run_command_returning(stdout):
-            with self.assertRaises(llm_backends.BackendError) as cm:
-                llm_backends.run_opencode("prompt", model=None, timeout=60)
+        with (
+            self._run_command_returning(stdout),
+            self.assertRaises(llm_backends.BackendError) as cm,
+        ):
+            llm_backends.run_opencode("prompt", model=None, timeout=60)
         self.assertIn("flat string error", str(cm.exception))
 
     def test_42_no_text_no_error_falls_back_to_stderr(self) -> None:
         stdout = json.dumps({"type": "other"}) + "\n"
-        with self._run_command_returning(stdout, stderr="some stderr detail"):
-            with self.assertRaises(llm_backends.BackendError) as cm:
-                llm_backends.run_opencode("prompt", model=None, timeout=60)
+        with (
+            self._run_command_returning(stdout, stderr="some stderr detail"),
+            self.assertRaises(llm_backends.BackendError) as cm,
+        ):
+            llm_backends.run_opencode("prompt", model=None, timeout=60)
         self.assertIn("some stderr detail", str(cm.exception))
 
     def test_43_completely_unparseable_output_falls_back_to_stdout_snippet(
         self,
     ) -> None:
-        with self._run_command_returning("not json at all", stderr=""):
-            with self.assertRaises(llm_backends.BackendError) as cm:
-                llm_backends.run_opencode("prompt", model=None, timeout=60)
+        with (
+            self._run_command_returning("not json at all", stderr=""),
+            self.assertRaises(llm_backends.BackendError) as cm,
+        ):
+            llm_backends.run_opencode("prompt", model=None, timeout=60)
         self.assertIn("not json at all", str(cm.exception))
 
     def test_44_tool_use_event_raises_backend_error(self) -> None:
@@ -372,9 +381,11 @@ class RunOpencodeTests(unittest.TestCase):
             )
             + "\n"
         )
-        with self._run_command_returning(stdout):
-            with self.assertRaises(llm_backends.BackendError) as cm:
-                llm_backends.run_opencode("prompt", model=None, timeout=60)
+        with (
+            self._run_command_returning(stdout),
+            self.assertRaises(llm_backends.BackendError) as cm,
+        ):
+            llm_backends.run_opencode("prompt", model=None, timeout=60)
         self.assertIn("bash", str(cm.exception))
         self.assertIn("tools instead of returning text", str(cm.exception))
 
@@ -392,9 +403,11 @@ class RunOpencodeTests(unittest.TestCase):
             )
             + "\n"
         )
-        with self._run_command_returning(stdout):
-            with self.assertRaises(llm_backends.BackendError) as cm:
-                llm_backends.run_opencode("prompt", model=None, timeout=60)
+        with (
+            self._run_command_returning(stdout),
+            self.assertRaises(llm_backends.BackendError) as cm,
+        ):
+            llm_backends.run_opencode("prompt", model=None, timeout=60)
         self.assertIn("read", str(cm.exception))
 
     def test_48_emitted_tool_call_markup_text_raises(self) -> None:
