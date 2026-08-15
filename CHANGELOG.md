@@ -54,6 +54,10 @@ harness CLIs, flags, or behavior get an entry going forward.
 
 ### Changed
 
+- `dev_status.py render` now shows at most the five most recently completed
+  backlog items in `DONE`, replacing the previous 48-hour recency window.
+  Recap generation uses the same selected completions while retaining the
+  broader 48-hour journal activity window.
 - `second_opinion.py`'s default per-backend subprocess timeout dropped from
   300s to 120s, so a hung backend blocks a single review attempt for at
   most ~2 minutes before `cmd_review`'s existing cross-backend fallback
