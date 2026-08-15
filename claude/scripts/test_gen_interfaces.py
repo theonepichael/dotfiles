@@ -328,6 +328,90 @@ class ModuleFactExtractionTests(unittest.TestCase):
         )
         self.assertEqual(gi.extract_env_vars(tree), ["ALPHA", "BRAVO", "CHARLIE"])
 
+    def test_env_vars_via_one_hop_helper_indirection(self) -> None:
+        # Mirrors second_opinion.py's _resolve_timeout: a helper that calls
+        # os.environ.get directly on its own parameter.
+        tree = parse(
+            """
+            import os
+
+            def _resolve_timeout(env_var):
+                return os.environ.get(env_var, "")
+
+            def run_agy():
+                return _resolve_timeout("SECOND_OPINION_AGY_TIMEOUT_SECONDS")
+            """
+        )
+        self.assertEqual(
+            gi.extract_env_vars(tree), ["SECOND_OPINION_AGY_TIMEOUT_SECONDS"]
+        )
+
+    def test_env_vars_via_two_hop_helper_indirection(self) -> None:
+        # Mirrors second_opinion.py's _resolve_pooled_model: it doesn't call
+        # os.environ.get itself, it forwards to _env_stripped/_parse_pool,
+        # which do. Detection must chain through both hops.
+        tree = parse(
+            """
+            import os
+
+            def _env_stripped(var):
+                return (os.environ.get(var) or "").strip()
+
+            def _parse_pool(var):
+                return os.environ.get(var, "").split(",")
+
+            def _resolve_pooled_model(pool_env_var, single_env_var, model_index):
+                single = _env_stripped(single_env_var)
+                pool = _parse_pool(pool_env_var)
+                return single or (pool[model_index] if pool else None)
+
+            def run_opencode():
+                return _resolve_pooled_model(
+                    "SECOND_OPINION_OPENCODE_MODEL_POOL",
+                    "SECOND_OPINION_OPENCODE_MODEL",
+                    0,
+                )
+            """
+        )
+        self.assertEqual(
+            gi.extract_env_vars(tree),
+            ["SECOND_OPINION_OPENCODE_MODEL", "SECOND_OPINION_OPENCODE_MODEL_POOL"],
+        )
+
+    def test_env_vars_indirection_skips_non_literal_arguments(self) -> None:
+        tree = parse(
+            """
+            import os
+
+            def _resolve_timeout(env_var):
+                return os.environ.get(env_var, "")
+
+            def run_agy(computed_name):
+                return _resolve_timeout(computed_name)
+            """
+        )
+        self.assertEqual(gi.extract_env_vars(tree), [])
+
+    def test_env_vars_indirection_only_marked_parameter_counts(self) -> None:
+        # model_index is a plain int parameter, never forwarded to an env
+        # accessor -- a literal string passed there must not be mistaken
+        # for an env var name just because it's a literal at a call site
+        # to a function that *also* has a marked parameter.
+        tree = parse(
+            """
+            import os
+
+            def _resolve_timeout(env_var, label):
+                return os.environ.get(env_var, "") or label
+
+            def run_agy():
+                return _resolve_timeout("SECOND_OPINION_AGY_TIMEOUT_SECONDS", "not-an-env-var")
+            """
+        )
+        self.assertEqual(
+            gi.extract_env_vars(tree), ["SECOND_OPINION_AGY_TIMEOUT_SECONDS"]
+        )
+
     def test_exit_codes_include_bare_exit_as_zero(self) -> None:
         tree = parse(
             """
