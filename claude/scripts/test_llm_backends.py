@@ -397,6 +397,127 @@ class RunOpencodeTests(unittest.TestCase):
                 llm_backends.run_opencode("prompt", model=None, timeout=60)
         self.assertIn("read", str(cm.exception))
 
+    def test_48_emitted_tool_call_markup_text_raises(self) -> None:
+        # Regression: when every tool is denied (e.g. the adversary agent's
+        # "permission": "deny"), a tool-hungry model can emit its attempted
+        # tool calls as literal <tool_calls> XML inside a text event rather
+        # than a real tool_use event. That has no `_raise_on_tool_use` match
+        # and would otherwise be returned verbatim as the critique.
+        text = (
+            "\n\n<tool_calls>\n"
+            '<invoke name="bash">\n'
+            '<parameter name="command" string="true">ls -la</parameter>\n'
+            "</invoke>\n"
+            "</tool_calls>"
+        )
+        stdout = json.dumps({"type": "text", "part": {"text": text}}) + "\n"
+        with (
+            self._run_command_returning(stdout),
+            self.assertRaises(llm_backends.BackendError) as cm,
+        ):
+            llm_backends.run_opencode("prompt", model=None, timeout=60)
+        self.assertIn("tool-call markup", str(cm.exception))
+
+    def test_49_prose_merely_mentioning_tool_calls_passes(self) -> None:
+        text = (
+            "The plan's agent config will never emit <tool_calls> wrappers or "
+            '<invoke name="bash"> markup since every tool is denied, so this '
+            "risk is moot."
+        )
+        stdout = json.dumps({"type": "text", "part": {"text": text}}) + "\n"
+        with self._run_command_returning(stdout):
+            self.assertEqual(
+                llm_backends.run_opencode("prompt", model=None, timeout=60), text
+            )
+
+
+class ToolCallLeakDetectionTests(unittest.TestCase):
+    """Direct tests of _raise_on_emitted_tool_call's shape coverage and the
+    dominance-ratio false-positive guard, bypassing the subprocess/event
+    plumbing that OpencodeCommandTests exercises above."""
+
+    def _assert_leak(self, text: str) -> None:
+        with self.assertRaises(llm_backends.BackendError) as cm:
+            llm_backends._raise_on_emitted_tool_call(text, context="ctx")
+        self.assertIn("tool-call markup", str(cm.exception))
+
+    def _assert_no_leak(self, text: str) -> None:
+        llm_backends._raise_on_emitted_tool_call(text, context="ctx")  # no raise
+
+    def test_50_reordered_invoke_attributes_raises(self) -> None:
+        # Regression: attribute order isn't guaranteed — `name` need not be
+        # the first attribute on <invoke>.
+        self._assert_leak(
+            '<invoke id="1" name="bash"><parameter name="command">ls</parameter></invoke>'
+        )
+
+    def test_51_zero_argument_invoke_raises(self) -> None:
+        # Regression: a no-argument tool call has no <parameter> tag at all.
+        self._assert_leak('<invoke name="list_files"></invoke>')
+
+    def test_52_invoke_without_tool_calls_wrapper_raises(self) -> None:
+        # Regression: a swapped-in model can emit the inner <invoke> block
+        # without ever wrapping it in <tool_calls>.
+        self._assert_leak(
+            '<invoke name="bash"><parameter name="command">ls</parameter></invoke>'
+        )
+
+    def test_53_json_tool_calls_array_raises(self) -> None:
+        self._assert_leak('{"tool_calls": [{"name": "bash", "arguments": {}}]}')
+
+    def test_54_json_tool_use_type_raises(self) -> None:
+        self._assert_leak('{"type": "tool_use", "name": "bash", "input": {}}')
+
+    def test_55_fenced_tool_call_block_raises(self) -> None:
+        # Regression: wrapping the leaked markup in a code fence must not
+        # hide it from detection.
+        self._assert_leak(
+            '```xml\n<tool_calls><invoke name="bash">'
+            '<parameter name="command">ls</parameter></invoke></tool_calls>\n```'
+        )
+
+    def test_56_unclosed_tag_mention_passes(self) -> None:
+        # No closing marker anywhere — must not fall back to matching to
+        # end-of-string, or any prose mentioning an opening tag would leak-flag.
+        self._assert_no_leak(
+            "If a tool would help here, note that <tool_calls> is unavailable."
+        )
+
+    def test_57_quoted_example_in_larger_critique_passes(self) -> None:
+        # Regression: a real, multi-paragraph critique that illustrates this
+        # exact failure mode with one fully-closed example snippet must not
+        # be rejected as if the whole response were the leaked call — the
+        # snippet is a small fraction of the total response.
+        critique = (
+            "The plan's regex backstop for the adversary agent has a real gap: "
+            "several tool-call leak shapes still pass through undetected. For "
+            "example, catching leaks shaped like "
+            '<tool_calls><invoke name="bash"><parameter name="command">ls -la'
+            "</parameter></invoke></tool_calls> is good, but the plan's regex "
+            "requires that exact attribute order and tag sequence, so a "
+            "reordered or zero-argument invoke slips through silently. "
+            "I'd also flag that the plan never accounts for JSON-shaped "
+            'tool-call blocks like {"tool_calls": [...]}, which some backends '
+            "emit instead of XML. Recommend broadening the pattern set and "
+            "adding a dominance check so a quoted example like the one above, "
+            "embedded in an otherwise-substantive critique, isn't itself "
+            "mistaken for a leaked call. Overall the core permission-deny "
+            "approach is sound; it's specifically the text-based backstop "
+            "that needs the extra coverage described above before this is "
+            "ready to rely on for every model that might get swapped in."
+        )
+        self._assert_no_leak(critique)
+
+    def test_58_scan_is_bounded_on_repetitive_input(self) -> None:
+        # Regression: unbounded scanning measured 15-42s on 500KB-2MB of
+        # repeated markup-like text (a realistic LLM repetition-loop output).
+        # The scan window must keep this well under a second regardless of
+        # total input size.
+        huge = '<tool_calls><invoke name="x">' * 200_000  # ~5.8MB, never closed
+        start = time.monotonic()
+        self._assert_no_leak(huge)  # never closes -> no match, must return fast
+        self.assertLess(time.monotonic() - start, 2.0)
+
 
 class OpencodeToolUseEventsTests(unittest.TestCase):
     def test_46_filters_only_tool_use_events(self) -> None:

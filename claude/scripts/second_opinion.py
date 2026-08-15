@@ -36,6 +36,7 @@ import cli_common
 import llm_backends
 from llm_backends import (
     BackendError,
+    _finalize_text_response,
     _opencode_json_events,
     _opencode_text_chunks,
     _raise_on_tool_use,
@@ -50,6 +51,10 @@ BACKEND_TIMEOUT_SECONDS = int(os.environ.get("SECOND_OPINION_TIMEOUT_SECONDS", "
 CRITIQUE_PROMPT = """\
 You are reviewing a plan written by another AI assistant (Claude).
 Your job is to find problems, not to summarize or agree.
+
+Respond in plain prose only: you have no tools, so never emit tool-call
+markup (XML like <tool_calls>, JSON tool-call blocks, or fenced tool
+invocations) — if you could not check something, say so in the critique.
 
 Be specific and concrete:
 - What could go wrong or is underspecified?
@@ -169,9 +174,22 @@ def run_opencode(prompt: str) -> str:
         BackendError: If the event stream contains a ``tool_use`` event — the
             adversary agent must be stateless and text-only, so a swapped-in
             model taking real shell/file actions is a hard failure, not a
-            silently swallowed event — or if it has no text chunks: either an
-            explicit error event was emitted, or nothing recognizable was
-            produced at all.
+            silently swallowed event — if the returned text is dominated by
+            leaked tool-call markup (a tool-starved model's denied tool
+            invocation leaking through as text instead of a real ``tool_use``
+            event), or if it has no text chunks: either an explicit error
+            event was emitted, or nothing recognizable was produced at all.
+
+            Some models (e.g. gpt-5.6-luna, as of 2026-08) fail this last way
+            unconditionally under this agent's ``permission: deny`` — reliably
+            reproduced even with a prompt that never attempts a tool call, and
+            reproduced identically under a bare-string ``deny`` and a
+            granular per-capability ``deny`` object, while the same model
+            works fine on the default (unrestricted) agent. That points to an
+            opencode/provider-side bug specific to restricted permission on
+            this model, not a "tool-hungry model" trait — but the practical
+            fix is the same either way: pin a model that tolerates this
+            agent's restriction via ``SECOND_OPINION_OPENCODE_MODEL``.
     """
     cmd = [
         "opencode",
@@ -191,7 +209,7 @@ def run_opencode(prompt: str) -> str:
     _raise_on_tool_use(events, context="adversary agent")
     chunks = _opencode_text_chunks(events)
     if chunks:
-        return "".join(chunks).strip()
+        return _finalize_text_response(chunks, context="adversary agent")
     for e in events:
         if e.get("type") == "error":
             message = _safe_get(e, "error", "data", "message")
