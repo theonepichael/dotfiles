@@ -14,9 +14,10 @@ import argparse
 import io
 import json
 import os
+import subprocess
 import sys
 import unittest
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -64,6 +65,7 @@ class RunAgyWrapperTests(unittest.TestCase):
     def test_03_supplies_default_model_and_timeout(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("SECOND_OPINION_AGY_MODEL", None)
+            os.environ.pop("SECOND_OPINION_AGY_TIMEOUT_SECONDS", None)
             with (
                 patch.object(
                     second_opinion.llm_backends, "run_agy", return_value="critique"
@@ -86,6 +88,7 @@ class RunAgyWrapperTests(unittest.TestCase):
             ) as mock_run,
             patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 300),
         ):
+            os.environ.pop("SECOND_OPINION_AGY_TIMEOUT_SECONDS", None)
             result = second_opinion.run_agy("my prompt")
         self.assertEqual(result, "critique")
         mock_run.assert_called_once_with(
@@ -104,6 +107,7 @@ class RunCopilotWrapperTests(unittest.TestCase):
             ) as mock_run,
             patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 300),
         ):
+            os.environ.pop("SECOND_OPINION_COPILOT_TIMEOUT_SECONDS", None)
             result = second_opinion.run_copilot("my prompt")
         self.assertEqual(result, "critique")
         mock_run.assert_called_once_with(
@@ -114,6 +118,7 @@ class RunCopilotWrapperTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("SECOND_OPINION_COPILOT_MODEL", None)
             os.environ.pop("SECOND_OPINION_COPILOT_MODEL_POOL", None)
+            os.environ.pop("SECOND_OPINION_COPILOT_TIMEOUT_SECONDS", None)
             with (
                 patch.object(
                     second_opinion.llm_backends, "run_copilot", return_value="critique"
@@ -137,6 +142,7 @@ class RunCopilotWrapperTests(unittest.TestCase):
             ) as mock_run,
             patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 300),
         ):
+            os.environ.pop("SECOND_OPINION_COPILOT_TIMEOUT_SECONDS", None)
             second_opinion.run_copilot("my prompt", model_index=1)
         mock_run.assert_called_once_with("my prompt", model="gpt-5-mini", timeout=300)
 
@@ -449,12 +455,16 @@ class RunOpencodeTests(unittest.TestCase):
             second_opinion.run_opencode("prompt")
         self.assertIn("not json at all", str(cm.exception))
 
-    def _capture_cmd(self) -> tuple[list[str], dict[str, list[str]]]:
-        """Return a `_run_command` side-effect capturing its argv, plus the box."""
-        box: dict[str, list[str]] = {}
+    def _capture_cmd(
+        self,
+    ) -> tuple[Callable[..., tuple[int, str, str]], dict[str, list[str] | int]]:
+        """Return a `_run_command` side-effect capturing its argv and timeout, plus the box."""
+        box: dict[str, list[str] | int] = {}
 
-        def capture(cmd: list[str]) -> tuple[int, str, str]:
+        def capture(cmd: list[str], timeout: int | None = None) -> tuple[int, str, str]:
             box["cmd"] = cmd
+            if timeout is not None:
+                box["timeout"] = timeout
             return (
                 0,
                 json.dumps({"type": "text", "part": {"text": "critique"}}) + "\n",
@@ -860,6 +870,172 @@ class ModelIndexParsingTests(unittest.TestCase):
         parser = second_opinion.build_parser()
         args = parser.parse_args(["review", "plan.md"])
         self.assertIsNone(args.model_index)
+
+
+class ParsePositiveIntTests(unittest.TestCase):
+    """Direct tests of _parse_positive_int -- the pure hardening/clamping
+    logic shared by the global default and every per-backend override."""
+
+    def test_70_blank_falls_back_to_default(self) -> None:
+        self.assertEqual(second_opinion._parse_positive_int("", 120), 120)
+
+    def test_71_whitespace_only_falls_back_to_default(self) -> None:
+        self.assertEqual(second_opinion._parse_positive_int("   ", 120), 120)
+
+    def test_72_non_integer_falls_back_to_default(self) -> None:
+        self.assertEqual(second_opinion._parse_positive_int("abc", 120), 120)
+
+    def test_73_zero_falls_back_to_default(self) -> None:
+        self.assertEqual(second_opinion._parse_positive_int("0", 120), 120)
+
+    def test_74_negative_falls_back_to_default(self) -> None:
+        self.assertEqual(second_opinion._parse_positive_int("-5", 120), 120)
+
+    def test_75_valid_value_below_cap_returned_as_is(self) -> None:
+        self.assertEqual(second_opinion._parse_positive_int("90", 120), 90)
+
+    def test_76_value_above_cap_clamped(self) -> None:
+        self.assertEqual(
+            second_opinion._parse_positive_int("999999", 120),
+            second_opinion._MAX_BACKEND_TIMEOUT_SECONDS,
+        )
+
+    def test_77_surrounding_whitespace_stripped_then_parsed(self) -> None:
+        self.assertEqual(second_opinion._parse_positive_int(" 200 ", 120), 200)
+
+    def test_78_leading_plus_accepted(self) -> None:
+        self.assertEqual(second_opinion._parse_positive_int("+120", 90), 120)
+
+    def test_79_default_itself_clamped_to_max(self) -> None:
+        self.assertEqual(
+            second_opinion._parse_positive_int("", 999999),
+            second_opinion._MAX_BACKEND_TIMEOUT_SECONDS,
+        )
+
+
+class ResolveTimeoutTests(unittest.TestCase):
+    """Direct tests of _resolve_timeout -- reads its env var fresh per call,
+    unlike the module-latched global BACKEND_TIMEOUT_SECONDS."""
+
+    def test_80_unset_falls_back_to_global(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SECOND_OPINION_AGY_TIMEOUT_SECONDS", None)
+            with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 120):
+                self.assertEqual(
+                    second_opinion._resolve_timeout(
+                        "SECOND_OPINION_AGY_TIMEOUT_SECONDS"
+                    ),
+                    120,
+                )
+
+    def test_81_valid_value_overrides_global(self) -> None:
+        with (
+            patch.dict(os.environ, {"SECOND_OPINION_AGY_TIMEOUT_SECONDS": "45"}),
+            patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 120),
+        ):
+            self.assertEqual(
+                second_opinion._resolve_timeout("SECOND_OPINION_AGY_TIMEOUT_SECONDS"),
+                45,
+            )
+
+    def test_82_invalid_value_falls_back_to_global(self) -> None:
+        with (
+            patch.dict(os.environ, {"SECOND_OPINION_AGY_TIMEOUT_SECONDS": "-5"}),
+            patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 120),
+        ):
+            self.assertEqual(
+                second_opinion._resolve_timeout("SECOND_OPINION_AGY_TIMEOUT_SECONDS"),
+                120,
+            )
+
+
+class PerBackendTimeoutIsolationTests(unittest.TestCase):
+    """Cross-contamination checks run through the real run_agy/run_opencode/
+    run_copilot call sites -- the only place a wrong literal env-var-name
+    string typo'd into one call site would actually be caught."""
+
+    def _clear_all_timeout_vars(self) -> None:
+        for var in (
+            "SECOND_OPINION_TIMEOUT_SECONDS",
+            "SECOND_OPINION_AGY_TIMEOUT_SECONDS",
+            "SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS",
+            "SECOND_OPINION_COPILOT_TIMEOUT_SECONDS",
+        ):
+            os.environ.pop(var, None)
+
+    def test_83_agy_override_does_not_leak_into_copilot_or_opencode(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            self._clear_all_timeout_vars()
+            os.environ["SECOND_OPINION_AGY_TIMEOUT_SECONDS"] = "45"
+            with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 120):
+                with patch.object(
+                    second_opinion.llm_backends, "run_agy", return_value="c"
+                ) as mock_agy:
+                    second_opinion.run_agy("prompt")
+                mock_agy.assert_called_once_with(
+                    "prompt", model=second_opinion.DEFAULT_AGY_MODEL, timeout=45
+                )
+
+                with patch.object(
+                    second_opinion.llm_backends, "run_copilot", return_value="c"
+                ) as mock_copilot:
+                    second_opinion.run_copilot("prompt")
+                mock_copilot.assert_called_once_with("prompt", model=None, timeout=120)
+
+                capture, box = RunOpencodeTests()._capture_cmd()
+                with patch.object(second_opinion, "_run_command", side_effect=capture):
+                    second_opinion.run_opencode("prompt")
+                self.assertEqual(box["timeout"], 120)
+
+    def test_84_opencode_override_does_not_leak_into_agy_or_copilot(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            self._clear_all_timeout_vars()
+            os.environ["SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS"] = "60"
+            with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 120):
+                capture, box = RunOpencodeTests()._capture_cmd()
+                with patch.object(second_opinion, "_run_command", side_effect=capture):
+                    second_opinion.run_opencode("prompt")
+                self.assertEqual(box["timeout"], 60)
+
+                with patch.object(
+                    second_opinion.llm_backends, "run_agy", return_value="c"
+                ) as mock_agy:
+                    second_opinion.run_agy("prompt")
+                mock_agy.assert_called_once_with(
+                    "prompt", model=second_opinion.DEFAULT_AGY_MODEL, timeout=120
+                )
+
+                with patch.object(
+                    second_opinion.llm_backends, "run_copilot", return_value="c"
+                ) as mock_copilot:
+                    second_opinion.run_copilot("prompt")
+                mock_copilot.assert_called_once_with("prompt", model=None, timeout=120)
+
+
+class BackendTimeoutDefaultSubprocessTest(unittest.TestCase):
+    """Regression-tests the literal default-argument value against a fresh
+    interpreter, since BACKEND_TIMEOUT_SECONDS is latched at import time and
+    pytest imports test modules at collection time -- before any fixture
+    runs -- so in-process env patching can't cover this. Spawns only the
+    Python interpreter itself; no backend CLI or production path involved."""
+
+    def test_85_default_is_120_with_no_env_override(self) -> None:
+        env = dict(os.environ)
+        env.pop("SECOND_OPINION_TIMEOUT_SECONDS", None)
+        script_dir = str(Path(__file__).parent)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import second_opinion; print(second_opinion.BACKEND_TIMEOUT_SECONDS)",
+            ],
+            env={**env, "PYTHONPATH": script_dir},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "120")
 
 
 if __name__ == "__main__":

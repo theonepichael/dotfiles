@@ -51,3 +51,21 @@ harness CLIs, flags, or behavior get an entry going forward.
   per-spawn model override exists in opencode's Task tool), and its
   Alternative path is `agy`-only (no pool support) by design — see
   `opencode/skills/grill-me/SKILL.md` for the corrected explanation.
+
+### Changed
+
+- `second_opinion.py`'s default per-backend subprocess timeout dropped from
+  300s to 120s, so a hung backend blocks a single review attempt for at
+  most ~2 minutes before `cmd_review`'s existing cross-backend fallback
+  moves on, instead of a full 5 minutes. Each backend also gained an
+  optional override — `SECOND_OPINION_AGY_TIMEOUT_SECONDS`,
+  `SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS`,
+  `SECOND_OPINION_COPILOT_TIMEOUT_SECONDS` — for a backend known to run
+  slower or faster than the default. `SECOND_OPINION_TIMEOUT_SECONDS`
+  (unset, blank, non-integer, zero, or negative all fall back to 120) is
+  now hardened the same way it always should have been: previously a
+  non-integer value crashed the module at import, and zero/negative values
+  silently parsed and propagated as an unusable timeout. A hard ceiling of
+  300s — the previous global default — now applies to every timeout,
+  default or overridden, so a large per-backend override can no longer
+  recreate the old unbounded-per-backend wait.
