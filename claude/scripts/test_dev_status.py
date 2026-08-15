@@ -483,36 +483,40 @@ class BacklogTestCase(unittest.TestCase):
         self.assertNotIn("⚠️", fresh_line)
         self.assertIn("⚠️", stale_line)
 
-    # ── 18: DONE section is a recency window, not a fixed top-5 ────────────
+    # ── 18: DONE section is a fixed latest-five selection ───────────────────
 
-    def test_18_done_section_keeps_only_recency_window_items(self):
-        recent = (date.today() - timedelta(days=1)).isoformat()
-        stale = (date.today() - timedelta(days=10)).isoformat()
+    def test_18_done_section_keeps_latest_five_not_recency_window(self):
         items = [
-            make_item("recent", status="done", updated=recent),
-            make_item("stale", status="done", updated=stale),
+            make_item(
+                f"done-{year}",
+                status="done",
+                updated=f"{year}-01-01",
+            )
+            for year in range(2020, 2026)
         ]
+        for item in items:
+            item["completed_at"] = item["updated"]
         out = io.StringIO()
         dev_status.render(items, out=out, err=io.StringIO())
         text = out.getvalue()
         self.assertIn("DONE", text)
-        self.assertIn("recent", text)
-        self.assertNotIn("stale", text)
-        # No "(showing N of M)" denominator anymore.
+        for year in range(2021, 2026):
+            self.assertIn(f"done-{year}", text)
+        self.assertNotIn("done-2020", text)
         self.assertNotIn("showing", text)
 
-    def test_18b_done_section_omitted_when_window_empty(self):
+    def test_18b_done_section_keeps_old_completion_when_selected(self):
         stale = (date.today() - timedelta(days=10)).isoformat()
         items = [make_item("stale", status="done", updated=stale)]
         out = io.StringIO()
         dev_status.render(items, out=out, err=io.StringIO())
-        self.assertNotIn("DONE", out.getvalue())
+        self.assertIn("DONE", out.getvalue())
+        self.assertIn("stale", out.getvalue())
 
-    def test_18c_done_recency_keys_on_completed_at(self):
+    def test_18c_done_order_keys_on_completed_at(self):
         # `completed_at` stamps the actual completion; `updated` getting
-        # bumped later (e.g. an edit to a done item) must NOT resurface a
-        # stale completion into the window. Regression test for the exact
-        # bug class `completed_at`-first lookup prevents.
+        # bumped later (e.g. an edit to a done item) must not change the
+        # completion ordering. Regression test for completed_at precedence.
         old_completion = (date.today() - timedelta(days=10)).isoformat()
         items = [
             make_item(
@@ -523,9 +527,9 @@ class BacklogTestCase(unittest.TestCase):
         ]
         items[0]["completed_at"] = old_completion
         _, _, _, _, done = dev_status._render_order(items)
-        self.assertEqual([i["id"] for i in done], [])
+        self.assertEqual([i["id"] for i in done], ["edited-old"])
 
-    def test_18d_done_recency_falls_back_to_updated_without_completed_at(self):
+    def test_18d_done_selection_falls_back_to_updated_without_completed_at(self):
         # Legacy done items without `completed_at` fall back to `updated`.
         recent = (date.today() - timedelta(days=1)).isoformat()
         items = [make_item("legacy", status="done", updated=recent)]
@@ -535,8 +539,7 @@ class BacklogTestCase(unittest.TestCase):
     def test_18e_done_section_orders_by_completed_at_not_updated(self):
         # Regression test: an item finished earlier but edited afterward
         # (bumping `updated`) must not outrank an item that finished more
-        # recently. Both fall inside the recency window; only completion
-        # order should decide DONE ordering.
+        # recently. Only completion order should decide DONE ordering.
         items = [
             make_item(
                 "finished-earlier-edited-later",
@@ -556,6 +559,31 @@ class BacklogTestCase(unittest.TestCase):
             [i["id"] for i in done],
             ["finished-later-not-edited", "finished-earlier-edited-later"],
         )
+
+    def test_18f_done_selection_uses_deterministic_id_tie_break(self):
+        items = []
+        for slug in ("z-item", "a-item", "m-item"):
+            item = make_item(slug, status="done", updated="2026-01-01")
+            item["completed_at"] = "2026-01-01T12:00:00+00:00"
+            items.append(item)
+        _, _, _, _, done = dev_status._render_order(items)
+        self.assertEqual([item["id"] for item in done], ["a-item", "m-item", "z-item"])
+
+    def test_18g_invalid_completed_at_does_not_fall_back(self):
+        invalid = make_item("invalid", status="done", updated="2026-01-02")
+        invalid["completed_at"] = "not-a-date"
+        empty = make_item("empty", status="done", updated="2026-01-03")
+        empty["completed_at"] = ""
+        _, _, _, _, done = dev_status._render_order([invalid, empty])
+        self.assertEqual([item["id"] for item in done], ["empty"])
+
+    def test_18h_done_selection_normalizes_naive_and_aware_timestamps(self):
+        aware = make_item("aware", status="done", updated="2026-01-01")
+        aware["completed_at"] = "2026-01-01T12:00:00+02:00"
+        naive = make_item("naive", status="done", updated="2026-01-01")
+        naive["completed_at"] = "2026-01-01T09:00:00"
+        _, _, _, _, done = dev_status._render_order([naive, aware])
+        self.assertEqual([item["id"] for item in done], ["aware", "naive"])
 
     # ── 19: color gated on isatty ─────────────────────────────────────────────
 
@@ -932,10 +960,9 @@ class BacklogTestCase(unittest.TestCase):
             ]
         )
         _, _, _, _, done = dev_status._render_order(self.read_items())
-        # Only the two in-window items appear, in updated-desc order; the
-        # high-priority "old" is dropped by the recency window (and would
-        # not float even if included — done is pure updated-desc).
-        self.assertEqual([i["id"] for i in done], ["newest", "newer"])
+        # All eligible items appear in completion order; priority does not
+        # reorder DONE.
+        self.assertEqual([i["id"] for i in done], ["newest", "newer", "old"])
 
     def test_35_render_priority_badge_for_high_and_low(self):
         self.write_items(
@@ -3201,6 +3228,96 @@ class BacklogTestCase(unittest.TestCase):
         self.assertEqual(
             cache["board_fingerprint"], dev_status._current_board_fingerprint()
         )
+
+    def test_r23d_recap_prompt_uses_selected_done_items_and_other_activity(self):
+        items = [
+            make_item(f"done-{year}", status="done", updated=f"{year}-01-01")
+            for year in range(2020, 2026)
+        ]
+        for item in items:
+            item["completed_at"] = item["updated"]
+        self.write_items(items)
+        ts = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+        self._write_journal_line(
+            {
+                "ts": ts,
+                "cmd": "done",
+                "kind": "backlog",
+                "slug": "done-2025",
+                "summary": "Selected completion",
+                "from_status": "in-progress",
+                "to_status": "done",
+            }
+        )
+        self._write_journal_line(
+            {
+                "ts": ts,
+                "cmd": "done",
+                "kind": "backlog",
+                "slug": "done-2020",
+                "summary": "Excluded completion",
+                "from_status": "in-progress",
+                "to_status": "done",
+            }
+        )
+        self._write_journal_line(
+            {
+                "ts": ts,
+                "cmd": "start",
+                "kind": "backlog",
+                "slug": "active",
+                "summary": "Unrelated active work",
+                "from_status": "open",
+                "to_status": "in-progress",
+            }
+        )
+        prompts = []
+        with (
+            patch.object(llm_backends, "available_backends", return_value=["agy"]),
+            patch.object(llm_backends, "run_agy", side_effect=lambda prompt, **_: prompts.append(prompt) or "text"),
+        ):
+            dev_status._run_recap_regen()
+        self.assertEqual(len(prompts), 1)
+        prompt = prompts[0]
+        self.assertIn("Summary of done-2025", prompt)
+        self.assertNotIn("Selected completion", prompt)
+        self.assertNotIn("Excluded completion", prompt)
+        self.assertIn("Unrelated active work", prompt)
+        self.assertIn("done (latest 5 max): 5", prompt)
+        self.assertIn("2025-01-01", prompt)
+
+    def test_r23e_completion_only_journal_still_generates_with_empty_activity(self):
+        item = make_item("done-item", status="done", updated="2026-01-01")
+        item["completed_at"] = "2026-01-01"
+        self.write_items([item])
+        self._write_journal_line(
+            {
+                "ts": (datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+                "cmd": "done",
+                "kind": "backlog",
+                "slug": "done-item",
+                "summary": "Completed item",
+                "from_status": "in-progress",
+                "to_status": "done",
+            }
+        )
+        prompts = []
+        with (
+            patch.object(llm_backends, "available_backends", return_value=["agy"]),
+            patch.object(llm_backends, "run_agy", side_effect=lambda prompt, **_: prompts.append(prompt) or "text"),
+        ):
+            dev_status._run_recap_regen()
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("(none)", prompts[0])
+        self.assertIn("Summary of done-item", prompts[0])
+
+    def test_r23f_done_stamp_changes_invalidate_recap_fingerprint(self):
+        item = make_item("done-item", status="done", updated="2026-01-01")
+        item["completed_at"] = "2026-01-01"
+        first = dev_status._board_fingerprint([item], [])
+        item["completed_at"] = "2026-01-02"
+        second = dev_status._board_fingerprint([item], [])
+        self.assertNotEqual(first, second)
 
     # ── synchronous `recap` subcommand ──────────────────────────────────────
 

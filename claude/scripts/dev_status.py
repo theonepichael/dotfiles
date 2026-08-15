@@ -69,14 +69,8 @@ def _agent_quiet() -> bool:
     return bool(os.environ.get("DEVSTATUS_AGENT"))
 
 
-# Recency window (in hours) for the dashboard's DONE section: only items
-# completed within this many hours appear. Keyed on `completed_at`, falling
-# back to `updated` when `completed_at` is absent (legacy items). An hours
-# helper (vs. the days granularity of `_age_days`) keeps the window honest
-# and survives a future upgrade to full timestamps — `datetime.fromisoformat`
-# accepts both date-only and full ISO strings, where `date.fromisoformat`
-# would raise on the latter.
-DONE_RECENCY_HOURS = 48
+DONE_MAX_ITEMS = 5
+DONE_SELECTION_VERSION = 2
 
 # Sort rank for priority (absence == normal). Lower sorts first.
 _PRIORITY_RANK = {"high": 0, "normal": 1, "low": 2}
@@ -359,46 +353,55 @@ def _age_days(updated_str: str) -> int | None:
     return (date.today() - d).days
 
 
-def _done_stamp(item: BacklogItem) -> str:
-    """Return the completion timestamp to key the DONE recency window on.
+def _normalize_done_stamp(raw: object) -> datetime | None:
+    """Normalize a non-empty ISO completion stamp to an aware UTC datetime."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.strip())
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
-    Prefers ``completed_at`` (stamped only on actual completion, so it's
-    immune to later edits bumping ``updated``); falls back to ``updated``
-    only for legacy done items that lack ``completed_at``.
+
+def _done_selection_stamp(item: BacklogItem) -> datetime | None:
+    """Return the normalized completion key for a done item.
+
+    ``completed_at`` takes precedence when it contains a non-empty value.
+    Empty values are treated as absent for legacy data and fall back to
+    ``updated``; a non-empty invalid value remains ineligible.
     """
-    return cast(str, item.get("completed_at") or item.get("updated", ""))
+    completed_at = item.get("completed_at")
+    if completed_at is None or (
+        isinstance(completed_at, str) and not completed_at.strip()
+    ):
+        completed_at = item.get("updated")
+    return _normalize_done_stamp(completed_at)
+
+
+def _done_selection(items: list[BacklogItem]) -> list[BacklogItem]:
+    """Return the five newest eligible done items with deterministic ties."""
+    candidates = [
+        (item, stamp)
+        for item in items
+        if item.get("status") == "done"
+        and (stamp := _done_selection_stamp(item)) is not None
+    ]
+    candidates.sort(key=lambda pair: pair[0]["id"])
+    candidates.sort(key=lambda pair: pair[1], reverse=True)
+    return [item for item, _stamp in candidates[:DONE_MAX_ITEMS]]
 
 
 def _age_hours(stamp_str: str) -> float | None:
-    """Return whole hours elapsed since an ISO date or datetime string.
-
-    Unlike :func:`_age_days`, this parses with :func:`datetime.fromisoformat`
-    so it accepts full ISO timestamps (with a time component) as well as
-    bare dates (taken as midnight). This keeps the DONE-section recency
-    window meaningful on today's date-only stamps and correct if the stamp
-    format ever gains a time component.
-
-    Timezone-aware stamps (e.g. ``2026-07-29T10:00:00+00:00``) are
-    compared against a timezone-aware "now"; naive stamps against naive
-    ``datetime.now()``. Mixing the two raises ``TypeError`` outside the
-    try/except, which would crash :func:`render` end-to-end — a future
-    upgrade to tz-aware ``completed_at`` stamps would trip this.
-
-    Args:
-        stamp_str: An ISO-8601 date or datetime string, or any invalid/empty
-            value.
-
-    Returns:
-        Whole hours elapsed since ``stamp_str``, or ``None`` if it isn't a
-        valid ISO date/datetime.
-    """
+    """Return elapsed hours since an ISO date or datetime string."""
     try:
         dt = datetime.fromisoformat(stamp_str)
     except (TypeError, ValueError):
         return None
     now = datetime.now(UTC) if dt.tzinfo is not None else datetime.now()
-    delta = now - dt
-    return delta.total_seconds() / 3600.0
+    return (now - dt).total_seconds() / 3600.0
 
 
 def _use_color(out: TextIO) -> bool:
@@ -883,22 +886,15 @@ def _render_order(items: list[BacklogItem]) -> RenderOrder:
 
     Returns:
         A 5-tuple of ``(in_progress, ready, blocked, in_review, done)``,
-        where ``done`` is the subset of done items completed within the
-        last :data:`DONE_RECENCY_HOURS` (keyed on ``completed_at``, falling
-        back to ``updated``), sorted most-recently-completed first using
-        that same key. The dashboard omits the DONE section entirely when
-        this is empty.
+        where ``done`` contains at most :data:`DONE_MAX_ITEMS` eligible done
+        items, sorted most-recently-completed first. Completion ordering uses
+        normalized ``completed_at`` values, falling back to ``updated`` for
+        legacy items, with ascending id ties. The dashboard omits the DONE
+        section entirely when this is empty.
 
     Note:
-        DONE-section membership is a function of ``datetime.now()`` vs
-        :data:`DONE_RECENCY_HOURS`, so the numeric positions of DONE rows
-        can shift with the passage of time alone, without a rev bump —
-        defeating a downstream numeric ``--if-rev`` guard whose snapshot
-        was taken before the wall-clock edge crossed. Accepted as a known
-        low-severity limitation: DONE items are rarely the target of a
-        numeric mutation, and the rev guard still catches concurrent
-        *writes*. A systemic snapshot-or-stored-state fix would close this;
-        see backlog ``meta-devstatus-atomicity-fsync``.
+        DONE-section membership changes only when the backlog data changes,
+        aside from malformed data being repaired outside this renderer.
     """
     index = build_index(items)
 
@@ -919,25 +915,12 @@ def _render_order(items: list[BacklogItem]) -> RenderOrder:
         key=lambda i: (len(effective_blockers(i, index)), i.get("updated", "")),
     )
     blocked = sorted(blocked, key=_priority_rank)  # stable
-    # Explicit `is None` check (not `or float("inf")`): an age of exactly
-    # `0.0` (a stamp dated this very second) is falsy and would otherwise
-    # be excluded from the window. None (invalid stamp) still excludes.
     in_review = sorted(
         [i for i in items if i.get("status") == "in-review"],
         key=lambda i: i.get("updated", ""),
     )
     in_review = sorted(in_review, key=_priority_rank)  # stable
-    # Explicit `is None` check (not `or float("inf")`): an age of exactly
-    # `0.0` (a stamp dated this very second) is falsy and would otherwise
-    # be excluded from the window. None (invalid stamp) still excludes.
-    done_in_window = [
-        i
-        for i in items
-        if i.get("status") == "done"
-        and _age_hours(_done_stamp(i)) is not None
-        and cast(float, _age_hours(_done_stamp(i))) < DONE_RECENCY_HOURS
-    ]
-    done = sorted(done_in_window, key=_done_stamp, reverse=True)
+    done = _done_selection(items)
 
     return in_progress, ready, blocked, in_review, done
 
@@ -1724,7 +1707,10 @@ description), never by an internal id or slug, even if one appears in the \
 facts below. Stay short, but be comprehensive within that space: name what \
 was actually done rather than only a count or a vague gesture at it.
 
-Recent activity (last 48h):
+Latest completions (not necessarily within the last 48h):
+{completed}
+
+Other recent activity (last 48h, excluding completion transitions):
 {changelog}
 
 Current board: {buckets}
@@ -1762,6 +1748,8 @@ def _render_changelog(entries: list[dict[str, object]]) -> str:
     """
     lines = []
     for e in entries:
+        if e.get("to_status") == "done":
+            continue
         ts = _parse_journal_ts(e.get("ts"))
         time_str = ts.strftime("%H:%M") if ts else "??:??"
         line = f"[{time_str}] {e.get('cmd', '?')}"
@@ -1786,6 +1774,16 @@ def _render_changelog(entries: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+def _render_done_facts(items: list[BacklogItem]) -> str:
+    """Render selected completed items as dated, slug-free prompt facts."""
+    lines = []
+    for item in items:
+        stamp = _done_selection_stamp(item)
+        completed = stamp.date().isoformat() if stamp else "unknown date"
+        lines.append(f"- {item.get('summary', '')} (completed {completed})")
+    return "\n".join(lines)
+
+
 def _bucket_summary(
     in_progress: int, ready: int, blocked: int, in_review: int, done: int, pending: int
 ) -> str:
@@ -1803,7 +1801,7 @@ def _bucket_summary(
         f"ready: {ready}",
         f"blocked: {blocked}",
         f"in review: {in_review}",
-        f"done (recent): {done}",
+        f"done (latest 5 max): {done}",
         f"pending: {pending}",
     ]
     return ", ".join(parts)
@@ -1856,9 +1854,10 @@ def _board_fingerprint(
 
     Deliberately excludes ``priority``/sort-order fields (they reorder a
     bucket's rows but never move an item between buckets or change what a
-    "ready: N" claim means, nor do they appear in any recap prose) and the
-    DONE bucket's recency window (already a documented, accepted drift
-    source elsewhere -- see :func:`_render_order`'s docstring).
+    "ready: N" claim means, nor do they appear in any recap prose). The DONE
+    selection version and normalized selection inputs are included separately
+    so a change to the fixed selection rule or to a legacy fallback stamp
+    cannot leave cached recap facts looking current.
     """
     pairs = sorted(
         (
@@ -1873,7 +1872,25 @@ def _board_fingerprint(
         (f"pending:{p['id']}", p["status"], p.get("description", ""), ())
         for p in pending_items
     )
-    digest = hashlib.sha256(json.dumps(pairs + pending_pairs).encode()).hexdigest()
+    done_selection_pairs = sorted(
+        (
+            item["id"],
+            (
+                stamp.isoformat()
+                if (stamp := _done_selection_stamp(item)) is not None
+                else None
+            ),
+            item.get("summary", ""),
+        )
+        for item in items
+        if item.get("status") == "done"
+    )
+    payload = {
+        "selection_version": DONE_SELECTION_VERSION,
+        "board": pairs + pending_pairs,
+        "done_selection": done_selection_pairs,
+    }
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     return digest[:16]
 
 
@@ -1887,9 +1904,13 @@ def _current_board_fingerprint() -> str:
     return _board_fingerprint(load_items(), load_pending())
 
 
-def _build_recap_prompt(changelog: str, buckets: str) -> str:
-    """Build the recap generation prompt from a changelog and bucket summary."""
-    return RECAP_PROMPT.format(changelog=changelog or "(none)", buckets=buckets)
+def _build_recap_prompt(changelog: str, buckets: str, completed: str) -> str:
+    """Build the recap prompt from activity, selected completions, and counts."""
+    return RECAP_PROMPT.format(
+        changelog=changelog or "(none)",
+        completed=completed or "(none)",
+        buckets=buckets,
+    )
 
 
 _RECAP_MARKDOWN_RE = re.compile(r"[*_`#>~]")
@@ -1960,7 +1981,9 @@ def _run_recap_regen(
         len(done),
         len(pending_items),
     )
-    prompt = _build_recap_prompt(_render_changelog(entries), buckets)
+    prompt = _build_recap_prompt(
+        _render_changelog(entries), buckets, _render_done_facts(done)
+    )
 
     candidates = (
         [backend_override] if backend_override else llm_backends.available_backends()
