@@ -1649,17 +1649,6 @@ class BacklogTestCase(unittest.TestCase):
         self.assertEqual(items["renamed-slug"]["context"], "context-foo-bar-baz-end")
         self.assertEqual(items["renamed-slug"]["next_steps"], "x-foo-bar-baz")
 
-    # ── #7: _age_hours handles timezone-aware stamps
-
-    def test_bug07_age_hours_handles_tz_aware_stamp(self):
-        from datetime import datetime
-
-        now_iso = datetime.now(UTC).isoformat(timespec="seconds")
-        age = dev_status._age_hours(now_iso)
-        self.assertIsNotNone(age)
-        self.assertGreaterEqual(age, 0.0)
-        self.assertLess(age, 1.0)
-
     # ── #8: _list_field rejects non-list (string) values
 
     def test_bug08_list_field_rejects_string(self):
@@ -3274,7 +3263,11 @@ class BacklogTestCase(unittest.TestCase):
         prompts = []
         with (
             patch.object(llm_backends, "available_backends", return_value=["agy"]),
-            patch.object(llm_backends, "run_agy", side_effect=lambda prompt, **_: prompts.append(prompt) or "text"),
+            patch.object(
+                llm_backends,
+                "run_agy",
+                side_effect=lambda prompt, **_: prompts.append(prompt) or "text",
+            ),
         ):
             dev_status._run_recap_regen()
         self.assertEqual(len(prompts), 1)
@@ -3304,7 +3297,11 @@ class BacklogTestCase(unittest.TestCase):
         prompts = []
         with (
             patch.object(llm_backends, "available_backends", return_value=["agy"]),
-            patch.object(llm_backends, "run_agy", side_effect=lambda prompt, **_: prompts.append(prompt) or "text"),
+            patch.object(
+                llm_backends,
+                "run_agy",
+                side_effect=lambda prompt, **_: prompts.append(prompt) or "text",
+            ),
         ):
             dev_status._run_recap_regen()
         self.assertEqual(len(prompts), 1)

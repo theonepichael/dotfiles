@@ -394,16 +394,6 @@ def _done_selection(items: list[BacklogItem]) -> list[BacklogItem]:
     return [item for item, _stamp in candidates[:DONE_MAX_ITEMS]]
 
 
-def _age_hours(stamp_str: str) -> float | None:
-    """Return elapsed hours since an ISO date or datetime string."""
-    try:
-        dt = datetime.fromisoformat(stamp_str)
-    except (TypeError, ValueError):
-        return None
-    now = datetime.now(UTC) if dt.tzinfo is not None else datetime.now()
-    return (now - dt).total_seconds() / 3600.0
-
-
 def _use_color(out: TextIO) -> bool:
     """Return whether ANSI color codes should be written to ``out``."""
     return hasattr(out, "isatty") and out.isatty()
