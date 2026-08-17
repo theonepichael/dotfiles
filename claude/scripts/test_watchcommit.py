@@ -16,8 +16,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "scripts"))
 import watchcommit  # noqa: E402
+
+pytestmark = pytest.mark.allow_real_subprocess
 
 
 def sh(cwd: Path, *args: str) -> subprocess.CompletedProcess:

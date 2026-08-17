@@ -20,6 +20,8 @@ import textwrap
 import unittest
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 import gen_interfaces as gi
 
@@ -661,10 +663,12 @@ class AssetFilterTests(unittest.TestCase):
             self.assertIn("claude/real.md", unfiltered)
             self.assertIn("settings.json.bak", unfiltered)
 
+    @pytest.mark.allow_real_subprocess
     def test_tracked_files_returns_none_outside_a_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             self.assertIsNone(gi.tracked_files(Path(tmp)))
 
+    @pytest.mark.allow_real_subprocess
     def test_tracked_files_lists_this_repo(self) -> None:
         tracked = gi.tracked_files(REPO_ROOT)
         assert tracked is not None
@@ -736,6 +740,7 @@ class RealSourceTests(unittest.TestCase):
 
 
 class GeneratedDocumentTests(unittest.TestCase):
+    @pytest.mark.allow_real_subprocess
     def test_document_has_every_module_section(self) -> None:
         document = gi.build_document(REPO_ROOT)
         for module in (REPO_ROOT / gi.SCRIPTS_DIR).glob("*.py"):
@@ -750,6 +755,7 @@ class GeneratedDocumentTests(unittest.TestCase):
             "test/test_install.py", gi.find_tests(REPO_ROOT / "install.py", REPO_ROOT)
         )
 
+    @pytest.mark.allow_real_subprocess
     def test_committed_interfaces_md_is_not_stale(self) -> None:
         committed = (REPO_ROOT / gi.OUTPUT_NAME).read_text(encoding="utf-8")
         self.assertEqual(

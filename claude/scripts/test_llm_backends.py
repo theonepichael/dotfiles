@@ -19,6 +19,8 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 import llm_backends
 
@@ -132,6 +134,7 @@ class AvailableBackendsTests(unittest.TestCase):
 class RunCommandRealSubprocessTests(unittest.TestCase):
     """Exercises `_run_command`/`_kill_active_process` with real child processes."""
 
+    @pytest.mark.allow_real_subprocess
     def test_20_successful_command(self) -> None:
         returncode, stdout, _stderr = llm_backends._run_command(
             py("print('hi')"), timeout=30
@@ -139,18 +142,21 @@ class RunCommandRealSubprocessTests(unittest.TestCase):
         self.assertEqual(returncode, 0)
         self.assertEqual(stdout.strip(), "hi")
 
+    @pytest.mark.allow_real_subprocess
     def test_21_nonzero_exit_captured(self) -> None:
         returncode, _stdout, _stderr = llm_backends._run_command(
             py("import sys; sys.exit(3)"), timeout=30
         )
         self.assertEqual(returncode, 3)
 
+    @pytest.mark.allow_real_subprocess
     def test_22_stderr_captured(self) -> None:
         _returncode, _stdout, stderr = llm_backends._run_command(
             py("import sys; sys.stderr.write('oops')"), timeout=30
         )
         self.assertIn("oops", stderr)
 
+    @pytest.mark.allow_real_subprocess
     def test_23_missing_executable_wrapped_as_backend_error(self) -> None:
         # Regression: this used to propagate a raw OSError/FileNotFoundError
         # instead of BackendError, crashing the caller's fallback loop.
@@ -158,15 +164,18 @@ class RunCommandRealSubprocessTests(unittest.TestCase):
             llm_backends._run_command(["/no/such/executable-xyz"], timeout=30)
         self.assertIn("failed to start", str(cm.exception))
 
+    @pytest.mark.allow_real_subprocess
     def test_24_missing_executable_does_not_leave_active_process_set(self) -> None:
         with self.assertRaises(llm_backends.BackendError):
             llm_backends._run_command(["/no/such/executable-xyz"], timeout=30)
         self.assertIsNone(llm_backends._active_process)
 
+    @pytest.mark.allow_real_subprocess
     def test_25_active_process_cleared_after_success(self) -> None:
         llm_backends._run_command(py("print('hi')"), timeout=30)
         self.assertIsNone(llm_backends._active_process)
 
+    @pytest.mark.allow_real_subprocess
     def test_26_timeout_kills_process_and_raises(self) -> None:
         start = time.monotonic()
         with self.assertRaises(llm_backends.BackendError) as cm:
@@ -177,6 +186,7 @@ class RunCommandRealSubprocessTests(unittest.TestCase):
         self.assertLess(elapsed, 5)
         self.assertIsNone(llm_backends._active_process)
 
+    @pytest.mark.allow_real_subprocess
     def test_27_kill_active_process_terminates_real_child(self) -> None:
         proc = subprocess.Popen(
             py("import time; time.sleep(30)"),
@@ -204,6 +214,7 @@ class RunCommandRealSubprocessTests(unittest.TestCase):
         llm_backends._active_process = None
         llm_backends._kill_active_process()  # must not raise
 
+    @pytest.mark.allow_real_subprocess
     def test_29_kill_active_process_noop_when_already_exited(self) -> None:
         proc = subprocess.Popen(py("pass"), text=True)
         proc.wait()
@@ -214,6 +225,7 @@ class RunCommandRealSubprocessTests(unittest.TestCase):
             llm_backends._active_process = None
 
 
+@pytest.mark.allow_real_subprocess
 class RunBackendCommandTests(unittest.TestCase):
     def test_30_success_returns_stripped_stdout(self) -> None:
         result = llm_backends.run_backend_command(

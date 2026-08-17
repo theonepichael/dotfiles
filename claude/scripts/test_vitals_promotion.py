@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 import vitals_promotion as vp
 
@@ -462,12 +464,15 @@ class SummarizeNeedsReviewTests(unittest.TestCase):
 
     def test_long_question_is_truncated(self) -> None:
         long_question = "x" * 200
-        entries = [make_needs_review_entry("2026-08-01-slug", "d1", question=long_question)]
+        entries = [
+            make_needs_review_entry("2026-08-01-slug", "d1", question=long_question)
+        ]
         summary = vp.summarize_needs_review(entries)
         self.assertNotIn(long_question, summary)
         self.assertIn("...", summary)
 
 
+@pytest.mark.allow_real_subprocess
 class NeedsReviewSummaryCliTests(VitalsPromotionTestCase):
     def test_flag_prints_zero_entries_on_missing_dir(self) -> None:
         result = subprocess.run(

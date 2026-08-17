@@ -10,8 +10,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 import dotfiles_sync_check
+
+pytestmark = pytest.mark.allow_real_subprocess
 
 
 def git(repo: Path, *args: str) -> str:

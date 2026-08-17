@@ -4,9 +4,12 @@
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+@pytest.mark.allow_real_subprocess
 def test_ruff_check_passes() -> None:
     result = subprocess.run(
         ["uv", "run", "ruff", "check", "."],

@@ -20,6 +20,8 @@ import time
 import unittest
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 import statusline  # noqa: E402
 
@@ -458,6 +460,7 @@ class CombineSegmentsTestCase(unittest.TestCase):
         self.assertEqual(statusline._combine_segments(self.left, ""), self.left)
 
 
+@pytest.mark.allow_real_subprocess
 class ProcessTestCase(unittest.TestCase):
     """Full stdin -> stdout contract through a real subprocess."""
 

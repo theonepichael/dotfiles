@@ -22,6 +22,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
 import second_opinion
 
@@ -1019,6 +1021,7 @@ class BackendTimeoutDefaultSubprocessTest(unittest.TestCase):
     runs -- so in-process env patching can't cover this. Spawns only the
     Python interpreter itself; no backend CLI or production path involved."""
 
+    @pytest.mark.allow_real_subprocess
     def test_85_default_is_120_with_no_env_override(self) -> None:
         env = dict(os.environ)
         env.pop("SECOND_OPINION_TIMEOUT_SECONDS", None)
