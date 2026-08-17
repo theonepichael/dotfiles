@@ -272,7 +272,9 @@ def _handle_termination(signum: int, frame: FrameType | None) -> NoReturn:
     sys.exit(128 + signum)
 
 
-def _run_command(cmd: list[str], timeout: int | None = None) -> tuple[int, str, str]:
+def _run_command(
+    cmd: list[str], timeout: int | None = None, *, retries: int = 0
+) -> tuple[int, str, str]:
     """Run ``cmd`` as a subprocess, capturing its output.
 
     Thin wrapper around :func:`llm_backends._run_command` — kept local (rather
@@ -280,10 +282,14 @@ def _run_command(cmd: list[str], timeout: int | None = None) -> tuple[int, str, 
     *this* module's global at call time, matching pre-extraction behavior for
     anything that patches it. ``timeout`` defaults to
     :data:`BACKEND_TIMEOUT_SECONDS` when not given (``None``); callers with a
-    resolved per-backend override pass their own value.
+    resolved per-backend override pass their own value. ``retries`` is
+    passed straight through to :func:`llm_backends._run_command` — see its
+    docstring.
     """
     return llm_backends._run_command(
-        cmd, timeout if timeout is not None else BACKEND_TIMEOUT_SECONDS
+        cmd,
+        timeout if timeout is not None else BACKEND_TIMEOUT_SECONDS,
+        retries=retries,
     )
 
 
@@ -341,6 +347,16 @@ def run_opencode(prompt: str, *, model_index: int | None = None) -> str:
             this model, not a "tool-hungry model" trait — but the practical
             fix is the same either way: pin a model that tolerates this
             agent's restriction via ``SECOND_OPINION_OPENCODE_MODEL``.
+
+    Retries once on a timeout (``retries=1``): confirmed via direct
+    bisection (2026-08-17) that opencode's CLI intermittently stalls its
+    event stream (emits ``step_start`` and then nothing, no ``text``/
+    ``step_finish``/error — a genuine stall, not merely slow) at roughly a
+    20-33% rate on prompts around 20KB, independent of exact byte count,
+    the model-pool index, and whether the prompt is passed inline or via
+    ``-f``/``--file`` — no fix is available at this layer, so one retry is
+    the practical mitigation (drops the practical failure rate to roughly
+    4-10%).
     """
     cmd = [
         "opencode",
@@ -360,7 +376,9 @@ def run_opencode(prompt: str, *, model_index: int | None = None) -> str:
         cmd += ["-m", model]
     cmd.append(prompt)
     _, stdout, stderr = _run_command(
-        cmd, timeout=_resolve_timeout("SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS")
+        cmd,
+        timeout=_resolve_timeout("SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS"),
+        retries=1,
     )
     events = _opencode_json_events(stdout)
     _raise_on_tool_use(events, context="adversary agent")
