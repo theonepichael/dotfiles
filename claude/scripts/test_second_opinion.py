@@ -463,10 +463,13 @@ class RunOpencodeTests(unittest.TestCase):
         """Return a `_run_command` side-effect capturing its argv and timeout, plus the box."""
         box: dict[str, list[str] | int] = {}
 
-        def capture(cmd: list[str], timeout: int | None = None) -> tuple[int, str, str]:
+        def capture(
+            cmd: list[str], timeout: int | None = None, *, retries: int = 0
+        ) -> tuple[int, str, str]:
             box["cmd"] = cmd
             if timeout is not None:
                 box["timeout"] = timeout
+            box["retries"] = retries
             return (
                 0,
                 json.dumps({"type": "text", "part": {"text": "critique"}}) + "\n",
@@ -549,6 +552,16 @@ class RunOpencodeTests(unittest.TestCase):
         ):
             second_opinion.run_opencode("my prompt", model_index=1)
         self.assertEqual(box["cmd"][-3:-1], ["-m", "pinned-model"])
+
+    def test_40h_requests_one_retry(self) -> None:
+        # opencode's CLI intermittently stalls its event stream (see
+        # llm_backends.run_opencode's docstring) -- the adversary agent
+        # must ask for one retry, not the zero-retry default every other
+        # backend uses.
+        capture, box = self._capture_cmd()
+        with patch.object(second_opinion, "_run_command", side_effect=capture):
+            second_opinion.run_opencode("my prompt")
+        self.assertEqual(box["retries"], 1)
 
     def test_60_tool_use_event_raises_backend_error(self) -> None:
         # Regression: the adversary agent must be stateless and text-only; a

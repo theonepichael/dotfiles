@@ -106,7 +106,9 @@ def _kill_active_process() -> None:
     proc.wait()
 
 
-def _run_command(cmd: list[str], timeout: float) -> tuple[int, str, str]:
+def _run_command(
+    cmd: list[str], timeout: float, *, retries: int = 0
+) -> tuple[int, str, str]:
     """Run ``cmd`` as a subprocess, capturing its output.
 
     Tracks the running process in :data:`_active_process` so a termination
@@ -115,44 +117,59 @@ def _run_command(cmd: list[str], timeout: float) -> tuple[int, str, str]:
     Args:
         cmd: The command and arguments to execute.
         timeout: Seconds to wait before killing the process.
+        retries: Extra attempts after an initial timeout, before raising —
+            each retry re-runs ``cmd`` from scratch (a fresh subprocess),
+            waiting up to ``timeout`` again, so worst-case wall time is
+            ``timeout * (1 + retries)``. Only a *timeout* triggers a retry;
+            a nonzero exit or a failed-to-start error still raises/returns
+            on the first attempt (those aren't the observed opencode
+            failure mode this exists for — see ``run_opencode``). Default
+            0 preserves the original no-retry behavior for every other
+            caller (agy, copilot).
 
     Returns:
         ``(returncode, stdout, stderr)``.
 
     Raises:
-        BackendError: If ``cmd``'s executable can't be started, or the
-            process doesn't finish within ``timeout`` (it's killed before
-            this is raised).
+        BackendError: If ``cmd``'s executable can't be started, or every
+            attempt (the initial one plus ``retries``) times out.
     """
     global _active_process
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
-    except OSError as e:
-        # e.g. the backend vanished from PATH between `shutil.which` and
-        # here — without this, an unhandled OSError would crash the whole
-        # program instead of letting the caller's per-backend fallback run.
-        raise BackendError(f"failed to start {cmd[0]}: {e}") from e
-    _active_process = proc
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _kill_active_process()
-        # `_kill_active_process` only reaps the process (`wait()`); the
-        # stdout/stderr pipes opened by Popen(..., stdout=PIPE, stderr=PIPE)
-        # are still open at this point. A second `communicate()` on the now-
-        # dead process drains and closes them — without it, the fds leak
-        # until the Popen object happens to get garbage-collected.
-        proc.communicate()
-        raise BackendError(f"timed out after {timeout}s — killed")
-    finally:
-        _active_process = None
-    return proc.returncode, stdout, stderr
+    attempt = 0
+    while True:
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+        except OSError as e:
+            # e.g. the backend vanished from PATH between `shutil.which` and
+            # here — without this, an unhandled OSError would crash the
+            # whole program instead of letting the caller's per-backend
+            # fallback run.
+            raise BackendError(f"failed to start {cmd[0]}: {e}") from e
+        _active_process = proc
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_active_process()
+            # `_kill_active_process` only reaps the process (`wait()`); the
+            # stdout/stderr pipes opened by Popen(..., stdout=PIPE, stderr=PIPE)
+            # are still open at this point. A second `communicate()` on the
+            # now-dead process drains and closes them — without it, the fds
+            # leak until the Popen object happens to get garbage-collected.
+            proc.communicate()
+            if attempt < retries:
+                attempt += 1
+                continue
+            suffix = f" (all {retries + 1} attempts timed out)" if retries else ""
+            raise BackendError(f"timed out after {timeout}s — killed{suffix}")
+        finally:
+            _active_process = None
+        return proc.returncode, stdout, stderr
 
 
 def run_backend_command(cmd: list[str], timeout: float) -> str:
@@ -364,12 +381,22 @@ def run_opencode(prompt: str, *, model: str | None, timeout: float) -> str:
             ``tool_use`` event), or if it has no text chunks — either because
             an explicit error event was emitted, or because nothing
             recognizable was produced at all.
+
+    Retries once on a timeout (``retries=1``): confirmed via direct
+    bisection (2026-08-17) that opencode's CLI intermittently stalls its
+    event stream (emits ``step_start`` and then nothing, no ``text``/
+    ``step_finish``/error — a genuine stall, not merely slow) at roughly a
+    20-33% rate on prompts around 20KB, independent of exact byte count,
+    the model-pool index, and whether the prompt is passed inline or via
+    ``-f``/``--file`` — no fix is available at this layer, so one retry is
+    the practical mitigation (drops the practical failure rate to roughly
+    4-10%).
     """
     cmd = ["opencode", "run", "--auto", "--format", "json"]
     if model:
         cmd += ["-m", model]
     cmd.append(prompt)
-    _, stdout, stderr = _run_command(cmd, timeout)
+    _, stdout, stderr = _run_command(cmd, timeout, retries=1)
     events = _opencode_json_events(stdout)
     _raise_on_tool_use(events, context="opencode")
     chunks = _opencode_text_chunks(events)

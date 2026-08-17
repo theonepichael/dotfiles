@@ -13,6 +13,7 @@ mocks `_run_command`/`run_backend_command` instead, since real
 import json
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from contextlib import AbstractContextManager
@@ -187,6 +188,51 @@ class RunCommandRealSubprocessTests(unittest.TestCase):
         self.assertIsNone(llm_backends._active_process)
 
     @pytest.mark.allow_real_subprocess
+    def test_59_retries_zero_by_default_message_unchanged(self) -> None:
+        # Default (no retries kwarg) must behave exactly like pre-retry
+        # code: a single attempt, no "(all N attempts...)" suffix.
+        with self.assertRaises(llm_backends.BackendError) as cm:
+            llm_backends._run_command(py("import time; time.sleep(30)"), timeout=0.3)
+        self.assertEqual(str(cm.exception), "timed out after 0.3s — killed")
+
+    @pytest.mark.allow_real_subprocess
+    def test_60_retry_recovers_after_one_timeout(self) -> None:
+        # First attempt: no marker file yet -> creates it, then sleeps past
+        # the timeout (gets killed). Second attempt (the retry): marker
+        # exists -> prints immediately and exits 0. Proves a genuine retry
+        # (a fresh subprocess) happens, not just a longer single wait.
+        marker = Path(tempfile.mkdtemp()) / "attempt-marker"
+        script = (
+            "import pathlib, time\n"
+            f"marker = pathlib.Path({str(marker)!r})\n"
+            "if marker.exists():\n"
+            "    print('recovered')\n"
+            "else:\n"
+            "    marker.touch()\n"
+            "    time.sleep(30)\n"
+        )
+        returncode, stdout, _stderr = llm_backends._run_command(
+            py(script), timeout=0.3, retries=1
+        )
+        self.assertEqual(returncode, 0)
+        self.assertEqual(stdout.strip(), "recovered")
+
+    @pytest.mark.allow_real_subprocess
+    def test_61_retry_exhausted_raises_with_attempt_count(self) -> None:
+        start = time.monotonic()
+        with self.assertRaises(llm_backends.BackendError) as cm:
+            llm_backends._run_command(
+                py("import time; time.sleep(30)"), timeout=0.3, retries=1
+            )
+        elapsed = time.monotonic() - start
+        self.assertIn("timed out after 0.3s — killed", str(cm.exception))
+        self.assertIn("all 2 attempts timed out", str(cm.exception))
+        # bounded: roughly 2x timeout (both attempts killed promptly), not
+        # anywhere near the 30s sleep either attempt would otherwise run
+        self.assertLess(elapsed, 5)
+        self.assertIsNone(llm_backends._active_process)
+
+    @pytest.mark.allow_real_subprocess
     def test_27_kill_active_process_terminates_real_child(self) -> None:
         proc = subprocess.Popen(
             py("import time; time.sleep(30)"),
@@ -328,6 +374,7 @@ class RunOpencodeTests(unittest.TestCase):
                 "prompt",
             ],
             60,
+            retries=1,
         )
 
     def test_39_no_model_argv(self) -> None:
@@ -338,7 +385,9 @@ class RunOpencodeTests(unittest.TestCase):
         ) as mock_run:
             llm_backends.run_opencode("prompt", model=None, timeout=60)
         mock_run.assert_called_once_with(
-            ["opencode", "run", "--auto", "--format", "json", "prompt"], 60
+            ["opencode", "run", "--auto", "--format", "json", "prompt"],
+            60,
+            retries=1,
         )
 
     def test_40_structured_error_event_raises_with_message(self) -> None:
