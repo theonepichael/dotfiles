@@ -12,11 +12,76 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 import settings_seed_drift_check as ssdc
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# ── committed seed key coverage (class guard) — expectation sets ────────────
+# Deliberately hardcoded, not derived from ssdc.SETTINGS_COSMETIC_KEYS /
+# ssdc.OPENCODE_COSMETIC_KEYS: deriving from those would make the coverage
+# test below tautological (the test's expectation and the checker's actual
+# behavior would come from the identical source, so a silent
+# misclassification in production could never fail the test). This is a
+# second, independent source of truth, hand-maintained alongside the
+# production constants.
+EXPECTED_SETTINGS_COSMETIC = frozenset(
+    {
+        "tui",
+        "voice",
+        "theme",
+        "statusLine",
+        "model",
+    }
+)
+EXPECTED_SETTINGS_NONCOSMETIC = frozenset(
+    {
+        "permissions",
+        "hooks",
+        "skipDangerousModePermissionPrompt",
+    }
+)
+EXPECTED_OPENCODE_COSMETIC = frozenset({"$schema", "agent"})
+EXPECTED_OPENCODE_NONCOSMETIC = frozenset({"permission"})
+
+_DRIFT_SENTINEL = "__drift_sentinel__"
+
+
+def _drift_perturb(value: object) -> object:
+    """Return a value guaranteed to differ from ``value`` under ``!=``,
+    while staying JSON-serializable, for any JSON scalar/structure type."""
+    if isinstance(value, dict):
+        return {**value, _DRIFT_SENTINEL: True}
+    if isinstance(value, list):
+        return [*value, _DRIFT_SENTINEL]
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, str):
+        return value + _DRIFT_SENTINEL
+    if isinstance(value, (int, float)):
+        return value + 1
+    return _DRIFT_SENTINEL  # None or any other JSON scalar type
+
+
+def _assert_no_key_name_collisions(keys: frozenset[str]) -> None:
+    """Fail loudly if any key name is a substring of another — the
+    behavioral check in ``_assert_seed_key_coverage`` uses plain substring
+    matching against ``cmd_check``'s output, which would become ambiguous
+    if that ever holds. Not expected to fire against today's committed
+    keys; it's a tripwire for a future key addition."""
+    for a in keys:
+        for b in keys:
+            if a != b and a in b:
+                raise AssertionError(
+                    f"key {a!r} is a substring of key {b!r} — substring-based "
+                    "drift assertions in _assert_seed_key_coverage would be "
+                    "ambiguous for this pair; rename or use a more precise "
+                    "output match"
+                )
 
 
 class SettingsSeedDriftCheckTestCase(unittest.TestCase):
@@ -1141,6 +1206,103 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         mock_input.assert_not_called()
         self.assertEqual(
             (self.vscode_user_dir() / "settings.json").read_text(), '{"a": 2}\n'
+        )
+
+    # ── committed seed key coverage (class guard) ───────────────────────
+
+    def _assert_seed_key_coverage(
+        self,
+        *,
+        real_seed_path: Path,
+        expected_cosmetic: frozenset[str],
+        expected_noncosmetic: frozenset[str],
+        write_seed: Callable[[dict[str, object]], None],
+        write_live: Callable[[dict[str, object]], None],
+        check_stale: bool = True,
+    ) -> None:
+        real_seed = json.loads(real_seed_path.read_text())
+
+        # The two expected sets must be disjoint — otherwise a key in both
+        # would only ever exercise the cosmetic branch below, silently
+        # skipping its non-cosmetic assertion.
+        overlap = expected_cosmetic & expected_noncosmetic
+        self.assertEqual(
+            overlap,
+            set(),
+            f"key(s) {overlap!r} listed as both cosmetic and non-cosmetic in "
+            "the EXPECTED_* sets",
+        )
+        _assert_no_key_name_collisions(expected_cosmetic | expected_noncosmetic)
+
+        # Exhaustiveness: every committed key must be in exactly one
+        # expected set. check_stale additionally requires every expected
+        # key to still exist in the file — skip it for a file that's an
+        # intentional subset of a larger expected-key universe (e.g.
+        # settings.work.json vs. settings.json).
+        committed_keys = set(real_seed.keys())
+        expected_keys = expected_cosmetic | expected_noncosmetic
+        unclassified = committed_keys - expected_keys
+        self.assertEqual(
+            unclassified,
+            set(),
+            f"seed key(s) {unclassified!r} in {real_seed_path} have no test "
+            "classification — add to EXPECTED_*_COSMETIC or "
+            "EXPECTED_*_NONCOSMETIC and confirm the intended drift behavior",
+        )
+        if check_stale:
+            stale = expected_keys - committed_keys
+            self.assertEqual(
+                stale,
+                set(),
+                f"expected key(s) {stale!r} no longer exist in "
+                f"{real_seed_path} — remove from the EXPECTED_* set",
+            )
+
+        # Behavioral: for each key, drift it and check the checker's
+        # actual runtime output against the test's own expectation.
+        for key in sorted(committed_keys):
+            with self.subTest(key=key):
+                live = dict(real_seed)
+                live[key] = _drift_perturb(real_seed[key])
+                write_seed(dict(real_seed))
+                write_live(live)
+                out, _code = self.run_check()
+                if key in expected_cosmetic:
+                    self.assertNotIn(
+                        key, out, f"{key} expected cosmetic (silent) but was reported"
+                    )
+                else:
+                    self.assertIn(key, out, f"{key} expected reported but was silent")
+
+    def test_every_settings_seed_key_has_explicit_drift_coverage(self) -> None:
+        self._assert_seed_key_coverage(
+            real_seed_path=REPO_ROOT / "claude" / "settings.json",
+            expected_cosmetic=EXPECTED_SETTINGS_COSMETIC,
+            expected_noncosmetic=EXPECTED_SETTINGS_NONCOSMETIC,
+            write_seed=self.write_settings_seed,
+            write_live=self.write_live_settings,
+        )
+
+    def test_every_settings_work_seed_key_has_explicit_drift_coverage(self) -> None:
+        self.mark_work()
+        self._assert_seed_key_coverage(
+            real_seed_path=REPO_ROOT / "claude" / "settings.work.json",
+            expected_cosmetic=EXPECTED_SETTINGS_COSMETIC,
+            expected_noncosmetic=EXPECTED_SETTINGS_NONCOSMETIC,
+            write_seed=lambda body: self.write_settings_seed(
+                body, name="settings.work.json"
+            ),
+            write_live=self.write_live_settings,
+            check_stale=False,  # settings.work.json is an intentional subset
+        )
+
+    def test_every_opencode_seed_key_has_explicit_drift_coverage(self) -> None:
+        self._assert_seed_key_coverage(
+            real_seed_path=REPO_ROOT / "opencode" / "opencode.jsonc",
+            expected_cosmetic=EXPECTED_OPENCODE_COSMETIC,
+            expected_noncosmetic=EXPECTED_OPENCODE_NONCOSMETIC,
+            write_seed=self.write_opencode_seed,
+            write_live=self.write_live_opencode,
         )
 
 
