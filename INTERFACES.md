@@ -685,6 +685,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `--dry-run`
   - `--no-nvim-pin`
   - `--reseed`
+  - `--adopt`
   - `--depart`
   - `--yes`
   - `--check-links`
@@ -721,7 +722,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `describe_opencode_drift(seed: Path, live: Path) -> str` — Describe how a live opencode.jsonc diverged from its seed.
   - `describe_vscode_drift(seed: Path, live: Path) -> str` — Describe how a live VS Code settings/keybindings file diverged from its seed.
   - `seed_vscode_settings(ctx: Context) -> list[tuple[str, tuple[str, str]]]` — Seed the Windows-side VS Code settings.json and keybindings.json under WSL.
-  - `seed_file(ctx: Context, seed: Path, dest: Path, *, skip_label: str, drift: Callable[[Path, Path], str]) -> str` — Copy ``seed`` to ``dest`` once, or report drift if it's already there.
+  - `seed_file(ctx: Context, seed: Path, dest: Path, *, skip_label: str, drift: Callable[[Path, Path], str], adopt_drift: Callable[[str, str], str] | None = None, adopt_blocker: Callable[[Context, Path, Path, str, str], str | None] | None = None) -> str` — Copy ``seed`` to ``dest`` once, or report drift if it's already there.
   - `seed_claude_settings(ctx: Context) -> tuple[str, str]` — Seed ~/.claude/settings.json, if Claude Code was selected.
   - `seed_opencode_config(ctx: Context) -> tuple[str, str]` — Seed ~/.config/opencode/opencode.jsonc, if opencode was selected.
   - `capture_service_baseline(ctx: Context) -> None` — Capture watchcommit service/linger state, immediately before :func:`enable_watchcommit_service` runs — capturing any later would record the post-install enabled state as baseline and departure would never disable anything.

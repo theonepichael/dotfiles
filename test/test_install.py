@@ -63,6 +63,7 @@ def make_ctx(
     wipe=False,
     no_nvim_pin=False,
     reseed=False,
+    adopt=False,
     depart=False,
     yes=False,
     system="Linux",
@@ -78,6 +79,7 @@ def make_ctx(
         wipe=wipe,
         no_nvim_pin=no_nvim_pin,
         reseed=reseed,
+        adopt=adopt,
         depart=depart,
         yes=yes,
     )
@@ -169,6 +171,8 @@ def parse_error(argv, capsys):
         (["--rollback", "--profile=work"], "must be used alone"),
         (["--rollback", "--force"], "must be used alone"),
         (["--rollback", "--reseed"], "must be used alone"),
+        (["--rollback", "--adopt"], "must be used alone"),
+        (["--adopt", "--reseed", "--harness=claude"], "cannot be used together"),
         (["--reseed"], "no --harness specified"),
         # No --harness alongside --wipe, deliberately: exercises the
         # parse_args ordering fix (the --wipe-without-rollback check must
@@ -180,6 +184,8 @@ def parse_error(argv, capsys):
         (["--depart", "--profile=work"], "--depart must be used alone"),
         (["--depart", "--force"], "--depart must be used alone"),
         (["--depart", "--reseed"], "--depart must be used alone"),
+        (["--depart", "--adopt"], "--depart must be used alone"),
+        (["--check-links", "--adopt"], "--check-links must be used alone"),
         (["--depart", "--no-nvim-pin"], "--depart must be used alone"),
         # --depart --rollback names the --depart conflict, not rollback's —
         # the --depart-alone check runs first.
@@ -271,6 +277,11 @@ def test_no_nvim_pin_flag_parses():
 def test_reseed_flag_parses():
     opts = install.parse_args(["--harness=claude", "--reseed"])
     assert opts.reseed
+
+
+def test_adopt_flag_parses():
+    opts = install.parse_args(["--harness=claude", "--adopt"])
+    assert opts.adopt
 
 
 # ── links.toml ────────────────────────────────────────────────────────────────
@@ -594,6 +605,302 @@ def test_drift_helpers_on_raw_dicts():
 
 def _raise_oserror(*args, **kwargs):
     raise OSError("simulated failure")
+
+
+def _stub_clean_git(monkeypatch, *, status=""):
+    """Stub the two Git probes used by --adopt."""
+
+    def _run(cmd, *, capture=False, shell=False):
+        assert cmd[0] == "git"
+        if "ls-files" in cmd:
+            return install.CommandResult(True, f"{cmd[-1]}\n")
+        if "status" in cmd:
+            return install.CommandResult(True, status)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "run_command", _run)
+
+
+def _adopt_repo(tmp_path, *, name, content):
+    """Create a minimal fake checkout containing one tracked seed."""
+    repo = tmp_path / "repo"
+    seed = repo / "claude" / name
+    seed.parent.mkdir(parents=True)
+    seed.write_text(content)
+    return repo, seed
+
+
+def test_adopt_copies_live_claude_text_without_history_or_backup(
+    tmp_path, home, monkeypatch
+):
+    repo, seed = _adopt_repo(
+        tmp_path, name="settings.json", content='{"model":"repo"}\n'
+    )
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b'{"model":"live"}\r\n')
+    seed.chmod(0o640)
+    _stub_clean_git(monkeypatch)
+
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
+    _, drift = install.seed_claude_settings(ctx)
+
+    assert drift == ""
+    assert seed.read_bytes() == b'{"model":"live"}\n'
+    assert seed.stat().st_mode & 0o777 == 0o640
+    assert not ctx.manifest.path.exists()
+    assert not (home / ".claude" / "settings.json.bak").exists()
+
+
+def test_adopt_crlf_only_difference_is_a_noop(tmp_path, home, monkeypatch):
+    repo, seed = _adopt_repo(
+        tmp_path, name="settings.json", content='{"model":"same"}\n'
+    )
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b'{"model":"same"}\r\n')
+    _stub_clean_git(monkeypatch)
+
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
+    _, drift = install.seed_claude_settings(ctx)
+
+    assert drift == ""
+    assert seed.read_text() == '{"model":"same"}\n'
+    assert not ctx.reporter.skipped
+
+
+def test_adopt_copies_both_vscode_files_when_wsl_selected(tmp_path, home, monkeypatch):
+    repo = tmp_path / "repo"
+    vscode = repo / "vscode"
+    vscode.mkdir(parents=True)
+    (vscode / "settings.json").write_text('{"theme":"repo"}\n')
+    (vscode / "keybindings.json").write_text('[{"key":"ctrl+a"}]\n')
+    live_dir = home / "windows" / "Code" / "User"
+    live_dir.mkdir(parents=True)
+    (live_dir / "settings.json").write_text('{"theme":"live"}\n')
+    (live_dir / "keybindings.json").write_text('[{"key":"ctrl+a"},{"key":"ctrl+b"}]\n')
+    monkeypatch.setattr(install, "_vscode_wsl_user_dir", lambda: live_dir)
+    _stub_clean_git(monkeypatch)
+
+    ctx = make_ctx(home, is_wsl=True, adopt=True, dotfiles=repo)
+    results = install.seed_vscode_settings(ctx)
+
+    assert all(drift == "" for _, (_, drift) in results)
+    assert (vscode / "settings.json").read_text() == '{"theme":"live"}\n'
+    assert (vscode / "keybindings.json").read_text() == (
+        '[{"key":"ctrl+a"},{"key":"ctrl+b"}]\n'
+    )
+    assert not ctx.manifest.path.exists()
+
+
+def test_adopt_refuses_malformed_live_opencode_with_live_path(
+    tmp_path, home, monkeypatch, capsys
+):
+    repo, seed = _adopt_repo(tmp_path, name="unused", content="unused\n")
+    seed = repo / "opencode" / "opencode.jsonc"
+    seed.parent.mkdir()
+    seed.write_text('{"theme":"repo"}\n')
+    dest = home / ".config" / "opencode" / "opencode.jsonc"
+    dest.parent.mkdir(parents=True)
+    dest.write_text('{"theme":}\n')
+    _stub_clean_git(monkeypatch)
+
+    ctx = make_ctx(home, harnesses=("opencode",), adopt=True, dotfiles=repo)
+    _, drift = install.seed_opencode_config(ctx)
+    out = capsys.readouterr().out
+
+    assert drift != ""
+    assert "live opencode file ~/.config/opencode/opencode.jsonc" in out
+    assert seed.read_text() == '{"theme":"repo"}\n'
+
+
+def test_adopt_missing_live_file_is_a_silent_noop(tmp_path, home, monkeypatch):
+    repo, seed = _adopt_repo(
+        tmp_path, name="settings.json", content='{"model":"repo"}\n'
+    )
+    _stub_clean_git(monkeypatch)
+
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
+    assert install.seed_claude_settings(ctx) == ("settings.json", "")
+    assert not (home / ".claude" / "settings.json").exists()
+    assert not ctx.reporter.skipped
+    assert seed.read_text() == '{"model":"repo"}\n'
+
+
+def test_adopt_dry_run_does_not_change_seed(tmp_path, home, monkeypatch, capsys):
+    repo, seed = _adopt_repo(
+        tmp_path, name="settings.json", content='{"model":"repo"}\n'
+    )
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text('{"model":"live"}\n')
+    _stub_clean_git(monkeypatch)
+
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dry_run=True, dotfiles=repo)
+    _, drift = install.seed_claude_settings(ctx)
+
+    assert drift == ""
+    assert seed.read_text() == '{"model":"repo"}\n'
+    assert "would adopt" in capsys.readouterr().out
+    assert not ctx.manifest.path.exists()
+
+
+def test_adopt_refuses_dirty_repo_seed(tmp_path, home, monkeypatch, capsys):
+    repo, seed = _adopt_repo(
+        tmp_path, name="settings.json", content='{"model":"repo"}\n'
+    )
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text('{"model":"live"}\n')
+    _stub_clean_git(monkeypatch, status=" M claude/settings.json\n")
+
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
+    _, drift = install.seed_claude_settings(ctx)
+
+    assert drift == "model"
+    assert seed.read_text() == '{"model":"repo"}\n'
+    assert "commit or stash" in capsys.readouterr().out
+    assert not ctx.manifest.path.exists()
+
+
+def test_adopt_refuses_untracked_repo_seed(tmp_path, home, monkeypatch, capsys):
+    repo, seed = _adopt_repo(
+        tmp_path, name="settings.json", content='{"model":"repo"}\n'
+    )
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text('{"model":"live"}\n')
+
+    def _untracked(cmd, *, capture=False, shell=False):
+        assert "ls-files" in cmd
+        return install.CommandResult(False)
+
+    monkeypatch.setattr(install, "run_command", _untracked)
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
+    _, drift = install.seed_claude_settings(ctx)
+
+    assert drift == "model"
+    assert seed.read_text() == '{"model":"repo"}\n'
+    assert "untracked" in capsys.readouterr().out
+
+
+def test_adopt_refuses_symlinked_repo_seed_without_replacing_link(
+    tmp_path, home, monkeypatch, capsys
+):
+    repo, seed = _adopt_repo(
+        tmp_path, name="settings.json", content='{"model":"repo"}\n'
+    )
+    target = repo / "target.json"
+    target.write_text('{"model":"target"}\n')
+    seed.unlink()
+    seed.symlink_to(target)
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text('{"model":"live"}\n')
+
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
+    _, drift = install.seed_claude_settings(ctx)
+
+    assert drift
+    assert seed.is_symlink()
+    assert "repo/claude/settings.json" in capsys.readouterr().out
+
+
+def test_adopt_opencode_blocks_live_bypass(tmp_path, home, monkeypatch, capsys):
+    seed_text = '{"permission":{"bash":{}}}\n'
+    repo, seed = _adopt_repo(tmp_path, name="unused", content="unused\n")
+    seed = repo / "opencode" / "opencode.jsonc"
+    seed.parent.mkdir()
+    seed.write_text(seed_text)
+    dest = home / ".config" / "opencode" / "opencode.jsonc"
+    dest.parent.mkdir(parents=True)
+    dest.write_text('{"permission":{"bash":{"xargs *":"allow"}}}\n')
+    _stub_clean_git(monkeypatch)
+
+    ctx = make_ctx(home, harnesses=("opencode",), adopt=True, dotfiles=repo)
+    _, drift = install.seed_opencode_config(ctx)
+    out = capsys.readouterr().out
+
+    assert drift.startswith("SECURITY: xargs *")
+    assert "SECURITY" in out
+    assert "live ~/.config/opencode/opencode.jsonc" in out
+    assert seed.read_text() == seed_text
+
+
+def test_adopt_opencode_repairs_malformed_repo_seed(tmp_path, home, monkeypatch):
+    repo, seed = _adopt_repo(tmp_path, name="unused", content="unused\n")
+    seed = repo / "opencode" / "opencode.jsonc"
+    seed.parent.mkdir()
+    seed.write_text("{not json\n")
+    dest = home / ".config" / "opencode" / "opencode.jsonc"
+    dest.parent.mkdir(parents=True)
+    dest.write_text('{"theme":"custom"}\n')
+    _stub_clean_git(monkeypatch)
+
+    ctx = make_ctx(home, harnesses=("opencode",), adopt=True, dotfiles=repo)
+    _, drift = install.seed_opencode_config(ctx)
+
+    assert drift == ""
+    assert seed.read_text() == '{"theme":"custom"}\n'
+
+
+def test_adopt_opencode_writes_the_validated_snapshot(tmp_path, home, monkeypatch):
+    repo, seed = _adopt_repo(tmp_path, name="unused", content="unused\n")
+    seed = repo / "opencode" / "opencode.jsonc"
+    seed.parent.mkdir()
+    seed.write_text('{"theme":"repo"}\n')
+    dest = home / ".config" / "opencode" / "opencode.jsonc"
+    dest.parent.mkdir(parents=True)
+    original = '{"theme":"validated"}\n'
+    dest.write_text(original)
+    _stub_clean_git(monkeypatch)
+    blocker = install._opencode_adopt_blocker
+
+    def mutate_after_validation(ctx, seed_path, dest_path, seed_text, live_text):
+        result = blocker(ctx, seed_path, dest_path, seed_text, live_text)
+        dest_path.write_text('{"theme":"changed-after-check"}\n')
+        return result
+
+    monkeypatch.setattr(install, "_opencode_adopt_blocker", mutate_after_validation)
+    ctx = make_ctx(home, harnesses=("opencode",), adopt=True, dotfiles=repo)
+    _, drift = install.seed_opencode_config(ctx)
+
+    assert drift == ""
+    assert seed.read_text() == original
+
+
+def test_adopt_empty_live_file_is_reported(tmp_path, home, monkeypatch, capsys):
+    repo, _ = _adopt_repo(tmp_path, name="settings.json", content='{"model":"repo"}\n')
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text("")
+    _stub_clean_git(monkeypatch)
+
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
+    _, drift = install.seed_claude_settings(ctx)
+
+    assert drift != ""
+    assert "empty" in capsys.readouterr().out
+    assert ctx.reporter.skipped
+
+
+def test_adopt_atomic_failure_preserves_seed(tmp_path, home, monkeypatch, capsys):
+    repo, seed = _adopt_repo(
+        tmp_path, name="settings.json", content='{"model":"repo"}\n'
+    )
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text('{"model":"live"}\n')
+    _stub_clean_git(monkeypatch)
+    monkeypatch.setattr(install.os, "replace", _raise_oserror)
+
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
+    _, drift = install.seed_claude_settings(ctx)
+
+    assert drift == "model"
+    assert seed.read_text() == '{"model":"repo"}\n'
+    assert "atomically write" in capsys.readouterr().out
+    assert not list(seed.parent.glob(f".{seed.name}.adopt-*"))
 
 
 def test_manifest_entries_and_has_backup_with_no_history_file(home):
