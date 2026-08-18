@@ -1181,10 +1181,51 @@ def _install_neovim_fallback(ctx: Context) -> None:
             candidates = [p for p in tmp_dir.iterdir() if p.is_dir()]
             extracted_dir = candidates[0] if len(candidates) == 1 else None
         if extracted and extracted_dir and extracted_dir.is_dir():
-            if prefix.is_symlink() or prefix.is_file():
-                prefix.unlink()
-            elif prefix.is_dir():
-                shutil.rmtree(prefix)
+            if prefix.exists() or prefix.is_symlink():
+                # Only consult the baseline when there's actually something
+                # at prefix that removal could affect -- a clean install
+                # (nothing here yet) must never be gated on
+                # departure_baseline, since there's nothing to protect
+                # against either way.
+                if ctx.departure_baseline is None:
+                    # is_linux and not dry_run always hold whenever prefix
+                    # already exists on a real run (_install_neovim_fallback
+                    # only runs under install_linux_packages, and returns
+                    # before this point under --dry-run; capture_departure_baseline
+                    # is a no-op under the identical condition) -- this is a
+                    # defensive fallback for that invariant breaking in a
+                    # future refactor, not an expected path today. Fails
+                    # *safe* (skip) rather than reproducing the unguarded
+                    # clobber this check exists to remove.
+                    ctx.neovim_fallback_failure = (
+                        "no departure baseline available to verify this "
+                        "install is safe to replace"
+                    )
+                    ctx.reporter.skip(
+                        "Neovim fallback install",
+                        f"{ctx.neovim_fallback_failure} — remove "
+                        f"{ctx.display(prefix)} by hand, then re-run to reinstall",
+                    )
+                    return
+
+                verdict = depart.installed_tree_verdict(ctx.departure_baseline, prefix)
+                if verdict == depart.TREE_MODIFIED:
+                    ctx.neovim_fallback_failure = (
+                        "existing install may contain changes you made after installing"
+                    )
+                    ctx.reporter.skip(
+                        "Neovim fallback install",
+                        f"{ctx.neovim_fallback_failure} (unproven safe to "
+                        f"remove) — remove {ctx.display(prefix)} by hand, "
+                        "then re-run to reinstall",
+                    )
+                    return
+
+                # TREE_UNCHANGED or TREE_UNRECORDED (self-heal) -- proceed.
+                if prefix.is_symlink() or prefix.is_file():
+                    prefix.unlink()
+                elif prefix.is_dir():
+                    shutil.rmtree(prefix)
             prefix.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(extracted_dir), str(prefix))
             ctx.manifest.record_package(

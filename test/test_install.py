@@ -1865,7 +1865,10 @@ def test_install_neovim_fallback_unsupported_arch_skips(home, monkeypatch, capsy
 
 
 def test_install_neovim_fallback_replaces_stale_prefix(home, monkeypatch):
+    """An unrecorded stale prefix self-heals: TREE_UNRECORDED still proceeds
+    (see meta-guard-nvim-fallback-clobber's asymmetric verdict design)."""
     ctx = make_ctx(home)
+    ctx.departure_baseline = depart.Baseline()
     prefix = home / ".local" / "opt" / "neovim"
     (prefix / "bin").mkdir(parents=True)
     (prefix / "bin" / "nvim").write_text("stale old binary\n")
@@ -1880,6 +1883,7 @@ def test_install_neovim_fallback_replaces_stale_prefix(home, monkeypatch):
 
 def test_install_neovim_fallback_replaces_incomplete_prefix(home, monkeypatch):
     ctx = make_ctx(home)
+    ctx.departure_baseline = depart.Baseline()
     prefix = home / ".local" / "opt" / "neovim"
     (prefix / "bin").mkdir(parents=True)  # interrupted install: no nvim binary
 
@@ -1887,6 +1891,138 @@ def test_install_neovim_fallback_replaces_incomplete_prefix(home, monkeypatch):
     install._install_neovim_fallback(ctx)
 
     assert (prefix / "bin" / "nvim").read_text() == "fake nvim binary\n"
+
+
+def test_install_neovim_fallback_replaces_unchanged_recorded_prefix(home, monkeypatch):
+    """TREE_UNCHANGED: a prefix that still matches its recorded manifest is
+    removed and replaced, same as an unrecorded one — the common reinstall
+    case."""
+    ctx = make_ctx(home)
+    ctx.departure_baseline = depart.Baseline()
+    prefix = home / ".local" / "opt" / "neovim"
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / "bin" / "nvim").write_text("previous fallback binary\n")
+    depart.record_installed_tree(ctx.departure_baseline, prefix)
+
+    _stub_neovim_fallback(monkeypatch, have_nvim=False)
+    install._install_neovim_fallback(ctx)
+
+    assert (prefix / "bin" / "nvim").read_text() == "fake nvim binary\n"
+
+
+def test_install_neovim_fallback_blocks_on_modified_recorded_prefix(
+    home, monkeypatch, capsys
+):
+    """TREE_MODIFIED: a recorded prefix that no longer matches (the user
+    added something) is left untouched, not silently destroyed — the fix
+    for meta-guard-nvim-fallback-clobber's incident class."""
+    ctx = make_ctx(home)
+    ctx.departure_baseline = depart.Baseline()
+    prefix = home / ".local" / "opt" / "neovim"
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / "bin" / "nvim").write_text("previous fallback binary\n")
+    depart.record_installed_tree(ctx.departure_baseline, prefix)
+    (prefix / "my-own-plugin.lua").write_text("-- mine\n")
+
+    calls = _stub_neovim_fallback(monkeypatch, have_nvim=False)
+    install._install_neovim_fallback(ctx)
+
+    out = capsys.readouterr().out
+    assert "may contain changes you made after installing" in out
+    assert ctx.neovim_fallback_failure is not None
+    assert (prefix / "bin" / "nvim").read_text() == "previous fallback binary\n"
+    assert (prefix / "my-own-plugin.lua").read_text() == "-- mine\n"
+    assert kinds(ctx, "package-installed") == []
+    # tmp_dir cleanup still runs even though the install is skipped
+    assert any(argv[0] == "curl" for argv in calls)
+    assert any(argv[0] == "tar" for argv in calls)
+
+
+def test_install_neovim_fallback_blocks_on_modified_recorded_symlink(
+    home, monkeypatch, capsys
+):
+    """A symlinked prefix goes through the same verdict check as a
+    directory -- TREE_MODIFIED blocks it too, not just the directory case."""
+    ctx = make_ctx(home)
+    ctx.departure_baseline = depart.Baseline()
+    prefix = home / ".local" / "opt" / "neovim"
+    real_dir = home / "custom-neovim-build"
+    (real_dir / "bin").mkdir(parents=True)
+    (real_dir / "bin" / "nvim").write_text("custom build\n")
+    depart.record_installed_tree(ctx.departure_baseline, prefix)  # recorded as a dir
+    prefix.parent.mkdir(parents=True)
+    prefix.symlink_to(real_dir)  # now a symlink -- mismatches the recording
+
+    _stub_neovim_fallback(monkeypatch, have_nvim=False)
+    install._install_neovim_fallback(ctx)
+
+    out = capsys.readouterr().out
+    assert "may contain changes you made after installing" in out
+    assert prefix.is_symlink()
+    assert prefix.resolve() == real_dir.resolve()
+
+
+def test_install_neovim_fallback_replaces_unrecorded_symlink(home, monkeypatch):
+    """An unrecorded symlink self-heals (unlinked, not blocked) -- proves
+    the non-directory branch's TREE_UNRECORDED path doesn't hit a
+    shutil.rmtree-on-non-directory error."""
+    ctx = make_ctx(home)
+    ctx.departure_baseline = depart.Baseline()
+    prefix = home / ".local" / "opt" / "neovim"
+    real_dir = home / "elsewhere"
+    real_dir.mkdir(parents=True)
+    prefix.parent.mkdir(parents=True)
+    prefix.symlink_to(real_dir)
+
+    _stub_neovim_fallback(monkeypatch, have_nvim=False)
+    install._install_neovim_fallback(ctx)
+
+    assert not prefix.is_symlink()
+    assert (prefix / "bin" / "nvim").read_text() == "fake nvim binary\n"
+
+
+def test_install_neovim_fallback_no_baseline_skips_when_prefix_exists(
+    home, monkeypatch, capsys
+):
+    """ctx.departure_baseline is None with an existing prefix fails safe
+    (skips) rather than falling through to an unguarded clobber -- this
+    branch is unreachable via a real run_install (see the module-level
+    comment at its call site) but must still fail safe if ever hit
+    directly, e.g. by a test or a future refactor."""
+    ctx = make_ctx(home)
+    assert ctx.departure_baseline is None
+    prefix = home / ".local" / "opt" / "neovim"
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / "bin" / "nvim").write_text("existing binary\n")
+
+    calls = _stub_neovim_fallback(monkeypatch, have_nvim=False)
+    install._install_neovim_fallback(ctx)
+
+    out = capsys.readouterr().out
+    assert "no departure baseline available" in out
+    assert ctx.neovim_fallback_failure is not None
+    assert (prefix / "bin" / "nvim").read_text() == "existing binary\n"
+    assert any(argv[0] == "curl" for argv in calls)  # tmp_dir cleanup still ran
+
+
+def test_install_neovim_fallback_no_baseline_proceeds_when_prefix_absent(
+    home, monkeypatch
+):
+    """The no-baseline check must never fire when there's nothing at prefix
+    to protect -- a clean install proceeds regardless of
+    ctx.departure_baseline. This is the case an earlier draft of this fix
+    got wrong (gated the whole function on the baseline instead of just
+    the removal decision)."""
+    ctx = make_ctx(home)
+    assert ctx.departure_baseline is None
+    prefix = home / ".local" / "opt" / "neovim"
+    assert not prefix.exists()
+
+    _stub_neovim_fallback(monkeypatch, have_nvim=False)
+    install._install_neovim_fallback(ctx)
+
+    assert (prefix / "bin" / "nvim").read_text() == "fake nvim binary\n"
+    assert ctx.neovim_fallback_failure is None
 
 
 def test_install_neovim_fallback_dry_run(home, monkeypatch, capsys):

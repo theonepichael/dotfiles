@@ -410,12 +410,18 @@ def installed_tree_verdict(baseline: Baseline, root: Path) -> str:
 
 def remove_manifest_tree(baseline: Baseline, path: Path) -> str:
     """Remove ``path`` wholesale, but only if its :func:`installed_tree_verdict`
-    is ``TREE_UNCHANGED`` — the sole function in this codebase allowed to
-    ``shutil.rmtree`` a tree-manifest-tracked directory (see
-    ``test_depart_removal_guard.py``'s file-wide ban on calling
-    ``shutil.rmtree`` anywhere else). Returns the verdict: ``TREE_UNCHANGED``
-    means the removal happened; ``TREE_MODIFIED``/``TREE_UNRECORDED`` mean
-    nothing was touched and the caller must decide how to report that.
+    is ``TREE_UNCHANGED`` — the departure-time policy: refuse unless
+    provably unchanged, since refusing is departure's safe terminal outcome.
+    (``install._install_neovim_fallback`` has its own, more permissive
+    install-time policy for the same tree-manifest-tracked prefix — it also
+    self-heals on ``TREE_UNRECORDED``, which this function deliberately does
+    not, so it calls :func:`installed_tree_verdict` directly instead of
+    this function. Both are still the only ``shutil.rmtree`` sites for a
+    manifest-tracked directory; see ``test_depart_removal_guard.py``'s
+    file-wide ban on calling ``shutil.rmtree`` anywhere else.) Returns the
+    verdict: ``TREE_UNCHANGED`` means the removal happened;
+    ``TREE_MODIFIED``/``TREE_UNRECORDED`` mean nothing was touched and the
+    caller must decide how to report that.
 
     Propagates ``OSError`` from the removal itself (e.g. a permissions
     error, or the directory vanishing between the verdict check and the
