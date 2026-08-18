@@ -22,7 +22,7 @@
           },
           {
             "type": "command",
-            "command": "python3 ~/.claude/scripts/grill.py pending-plan --consume 2>/dev/null"
+            "command": "python3 ~/.claude/scripts/grill.py pending-plan --consume"
           },
           {
             "type": "command",
