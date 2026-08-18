@@ -3340,7 +3340,10 @@ def _remove_tree_manifest_directory(baseline: depart.Baseline, path: Path) -> st
     except OSError as exc:
         return f"unresolved: {exc}"
 
-    verdict = depart.installed_tree_verdict(baseline, path)
+    try:
+        verdict = depart.remove_manifest_tree(baseline, path)
+    except OSError as exc:
+        return f"unresolved: {exc}"
     if verdict == depart.TREE_MODIFIED:
         return (
             "unresolved: tree changed since install — something was added or "
@@ -3353,10 +3356,6 @@ def _remove_tree_manifest_directory(baseline: depart.Baseline, path: Path) -> st
             "it cannot be proven unmodified — left in place; remove it by "
             "hand, or re-run install.sh to record one"
         )
-    try:
-        shutil.rmtree(path)
-    except OSError as exc:
-        return f"unresolved: {exc}"
     return "ok"
 
 
