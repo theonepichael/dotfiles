@@ -427,6 +427,14 @@ because both tools rewrite the file in place once live; the WSL-side VS Code
 `settings.json`/`keybindings.json` are copied for an unrelated reason —
 Windows can't read a WSL-side symlink through `DrvFs`.
 
+Use `--adopt --harness=...` to pull all drifted selected copy-once files back
+into the repo. Adoption requires each repo seed to be tracked and clean, makes
+no `.bak` or history entry, and leaves the seed as an unstaged Git change to
+commit. Missing live files are ignored; empty or unreadable files are skipped.
+For opencode, malformed JSONC and live `xargs *`/`awk *` allowlist bypasses are
+refused rather than written back. `--adopt` cannot be combined with
+`--reseed`, `--rollback`, `--depart`, or `--check-links`.
+
 ## The installer does
 
 ### Both platforms
@@ -441,10 +449,11 @@ Windows can't read a WSL-side symlink through `DrvFs`.
 4. Symlinks every applicable `links.toml` entry (backs up any existing
    non-symlink files to `*.bak`)
 5. Seeds `~/.claude/settings.json` (copy-once — if it already exists, drift from
-   the repo seed is reported in the summary, never overwritten) — only when
-   `claude` is selected
+   the repo seed is reported in the summary, never overwritten unless
+   `--reseed` is passed) — only when `claude` is selected
 6. Seeds `~/.config/opencode/opencode.jsonc` (the bash permission allowlist,
-   profile-specific) the same copy-once way — only when `opencode` is selected
+   profile-specific) the same copy-once way — only when `opencode` is selected;
+   `--adopt` reverses the direction for intentional live edits
 7. Installs vim-plug (if missing)
 8. Bootstraps Neovim plugins (`lazy.nvim` sync) if `nvim` on PATH is >=0.11
 
