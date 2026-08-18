@@ -32,7 +32,9 @@ check() { # check <description> <command...>
 
 manifest_has() { # manifest_has <kind> <field=value> [<field=value> ...]
   python3 - "$MANIFEST" "$@" <<'PY'
-import json, sys
+import json
+import sys
+
 path, kind, *pairs = sys.argv[1:]
 wanted = dict(p.split("=", 1) for p in pairs)
 try:
@@ -57,7 +59,9 @@ PY
 
 manifest_run_count() { # manifest_run_count <N>
   python3 - "$MANIFEST" "$1" <<'PY'
-import json, sys
+import json
+import sys
+
 path, want = sys.argv[1], int(sys.argv[2])
 try:
     lines = open(path, encoding="utf-8").read().splitlines()
@@ -75,6 +79,52 @@ for line in lines:
     if entry.get("kind") == "run":
         count += 1
 sys.exit(0 if count == want else 1)
+PY
+}
+
+strip_ledger_entries() { # strip_ledger_entries <departure.jsonl path> <key> [<key> ...]
+  python3 - "$@" <<'PY'
+import json
+import sys
+
+path, *keys = sys.argv[1:]
+try:
+    lines = open(path, encoding="utf-8").read().splitlines()
+except FileNotFoundError:
+    sys.exit(0)
+kept = []
+for line in lines:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        entry = json.loads(line)
+    except json.JSONDecodeError:
+        kept.append(line)
+        continue
+    if entry.get("key") in keys:
+        continue
+    kept.append(line)
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write("\n".join(kept) + ("\n" if kept else ""))
+PY
+}
+
+baseline_key_guarded() { # baseline_key_guarded <baseline.json path> <key>
+  python3 - "$1" "$2" <<'PY'
+import json
+import sys
+
+path, want_key = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(path, encoding="utf-8"))
+except (FileNotFoundError, json.JSONDecodeError):
+    sys.exit(1)
+for layer in data.get("layers", []):
+    record = layer.get("records", {}).get(want_key)
+    if record is not None:
+        sys.exit(0 if record.get("needs_vscode_guard") else 1)
+sys.exit(1)
 PY
 }
 
@@ -555,6 +605,145 @@ check "depart retry reports exactly one unresolved item, same as before" \
   grep -q "unresolved (1):" /tmp/depart-retry.out
 check "depart retry's owned bucket never re-lists the already-removed vimrc symlink" bash -c \
   "! awk '/^  owned \\(/{f=1;next} /^  [a-z]+ \\(/{f=0} f' /tmp/depart-retry.out | grep -q vimrc"
+
+echo ""
+echo "=== 16. --depart: Windows-side VS Code guard (mocked /mnt/c + tasklist.exe) ==="
+# Self-contained: real WSL interop isn't available in this container, so
+# /mnt/c, the Windows-side `code` CLI, and tasklist.exe are all stubbed.
+# Runs after the full 1-15b lifecycle, on a container that already has one
+# permanently-unresolved item (the systemd watchcommit key) and a retained
+# baseline.json from section 15's incomplete departure -- this section adds
+# to that state rather than assuming a clean machine.
+WIN_USER="$(id -un)"
+FAKE_MNT_C="/mnt/c"
+CODE_SHIM_DIR="$FAKE_MNT_C/Users/$WIN_USER/AppData/Local/vscode-shim"
+VSCODE_USER_DIR="$FAKE_MNT_C/Users/$WIN_USER/AppData/Roaming/Code/User"
+STUB_BIN_DIR="$HOME/.vscode-guard-stubs"
+
+# 16a. Fake Windows layout + code/tasklist.exe stubs on PATH.
+# /mnt is root-owned by default in the test image; the code shim's own
+# resolved path must live under /mnt/ for _vscode_wsl_user_dir's check.
+sudo mkdir -p "$CODE_SHIM_DIR" "$VSCODE_USER_DIR"
+sudo chown -R "$WIN_USER" "$FAKE_MNT_C"
+
+mkdir -p "$STUB_BIN_DIR"
+cat >"$CODE_SHIM_DIR/code" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$CODE_SHIM_DIR/code"
+
+cat >"$STUB_BIN_DIR/tasklist.exe" <<'SH'
+#!/usr/bin/env bash
+if [[ -n "${FAKE_TASKLIST_CODE_RUNNING:-}" ]]; then
+  echo "Code.exe                     1234 Console                    1     50,000 K"
+else
+  echo "INFO: No tasks are running which match the specified criteria."
+fi
+exit 0
+SH
+chmod +x "$STUB_BIN_DIR/tasklist.exe"
+
+ORIGINAL_PATH="$PATH"
+export PATH="$STUB_BIN_DIR:$CODE_SHIM_DIR:$PATH"
+export WSL_DISTRO_NAME=FakeWSL
+
+check "fake code shim resolves on PATH" bash -c 'command -v code >/dev/null'
+check "fake tasklist.exe resolves on PATH" bash -c 'command -v tasklist.exe >/dev/null'
+
+# 16b. Re-run install so seed_vscode_settings seeds both files under the
+# fake Windows user dir and capture_departure_baseline tags them guarded.
+./install.sh --harness=claude >/tmp/vscode-guard-install.out 2>&1
+vscode_install_code=$?
+cat /tmp/vscode-guard-install.out
+check "install with VS Code stub exits 0 or 1" \
+  bash -c "[[ $vscode_install_code -eq 0 || $vscode_install_code -eq 1 ]]"
+check "settings.json seeded under the fake Windows user dir" \
+  bash -c '[[ -f "'"$VSCODE_USER_DIR"'/settings.json" ]]'
+check "keybindings.json seeded under the fake Windows user dir" \
+  bash -c '[[ -f "'"$VSCODE_USER_DIR"'/keybindings.json" ]]'
+check "baseline tags settings.json as VS Code guarded" \
+  baseline_key_guarded "$STATE_DIR/baseline.json" "file:$VSCODE_USER_DIR/settings.json"
+check "baseline tags keybindings.json as VS Code guarded" \
+  baseline_key_guarded "$STATE_DIR/baseline.json" "file:$VSCODE_USER_DIR/keybindings.json"
+
+# 16c. Dry-run preflight while tasklist.exe reports Code.exe running.
+export FAKE_TASKLIST_CODE_RUNNING=1
+./install.sh --depart --dry-run >/tmp/vscode-guard-dry.out 2>&1
+vscode_dry_code=$?
+cat /tmp/vscode-guard-dry.out
+check "depart --dry-run with VS Code running exits 0" \
+  bash -c "[[ $vscode_dry_code -eq 0 ]]"
+check "dry-run preflight flags settings.json as guarded" bash -c \
+  'grep "User/settings.json" /tmp/vscode-guard-dry.out | grep -Fq "Windows VS Code is running"'
+check "dry-run preflight flags keybindings.json as guarded" bash -c \
+  'grep "User/keybindings.json" /tmp/vscode-guard-dry.out | grep -Fq "Windows VS Code is running"'
+
+# 16d. Real depart while still "running" -- guard blocks removal.
+./install.sh --depart --yes >/tmp/vscode-guard-real1.out 2>&1
+vscode_real1_code=$?
+cat /tmp/vscode-guard-real1.out
+check "depart --yes with VS Code running exits 1 (guard blocks removal)" \
+  bash -c "[[ $vscode_real1_code -eq 1 ]]"
+check "settings.json still present (guard blocked removal)" \
+  bash -c '[[ -f "'"$VSCODE_USER_DIR"'/settings.json" ]]'
+check "keybindings.json still present (guard blocked removal)" \
+  bash -c '[[ -f "'"$VSCODE_USER_DIR"'/keybindings.json" ]]'
+# do_depart's "attempted but not completed" listing strips the "unresolved: "
+# prefix off the ledger outcome before printing it (partition(": ")[2]) --
+# assert on the reason text as actually printed, not the raw ledger string.
+check "attempted-but-not-completed lists settings.json as guard-unresolved" bash -c \
+  'grep "User/settings.json" /tmp/vscode-guard-real1.out | grep -Fq "Windows VS Code is running"'
+check "attempted-but-not-completed lists keybindings.json as guard-unresolved" bash -c \
+  'grep "User/keybindings.json" /tmp/vscode-guard-real1.out | grep -Fq "Windows VS Code is running"'
+
+# 16e. Flip to "not running". The dry-run directly confirms the guard
+# condition itself is now clear (annotation gone) -- proving the guard
+# correctly reflects live state, independent of the ledger. A real
+# `--depart --yes` retry does NOT pick this up, though: DepartureLedger.
+# completed_keys() (depart.py:1036) excludes every key it has ever
+# recorded "regardless of outcome" ("a ledger-complete artifact is never
+# mutated again"), so a guard-blocked key from 16d is permanently excluded
+# from execute_file_symlink_phase's owned set on every later call within
+# this departure lifecycle -- a plain retry keeps replaying the stale 16d
+# ledger entry forever, even though VS Code is now closed. That's a real
+# bug in the shipped guard (tracked separately as
+# meta-depart-vscode-guard-permanent-block), not something to route
+# around silently here. To exercise the guard's actual not-running-allows-
+# removal behavior, this simulates a *first* attempt made with VS Code
+# already closed by clearing just these two keys' stale ledger entries
+# directly -- not a generic retry, which the bug above shows doesn't work.
+unset FAKE_TASKLIST_CODE_RUNNING
+./install.sh --depart --dry-run >/tmp/vscode-guard-dry2.out 2>&1
+vscode_dry2_code=$?
+cat /tmp/vscode-guard-dry2.out
+check "depart --dry-run with VS Code not running exits 0" \
+  bash -c "[[ $vscode_dry2_code -eq 0 ]]"
+check "dry-run preflight no longer flags settings.json" bash -c \
+  '! grep "User/settings.json" /tmp/vscode-guard-dry2.out | grep -Fq "Windows VS Code is running"'
+check "dry-run preflight no longer flags keybindings.json" bash -c \
+  '! grep "User/keybindings.json" /tmp/vscode-guard-dry2.out | grep -Fq "Windows VS Code is running"'
+
+strip_ledger_entries "$STATE_DIR/departure.jsonl" \
+  "file:$VSCODE_USER_DIR/settings.json" "file:$VSCODE_USER_DIR/keybindings.json"
+
+./install.sh --depart --yes >/tmp/vscode-guard-real2.out 2>&1
+vscode_real2_code=$?
+cat /tmp/vscode-guard-real2.out
+check "depart --yes with VS Code not running (fresh attempt) still exits 1 (systemd item still unresolved)" \
+  bash -c "[[ $vscode_real2_code -eq 1 ]]"
+check "settings.json removed once the guard genuinely allows it" \
+  bash -c '[[ ! -e "'"$VSCODE_USER_DIR"'/settings.json" ]]'
+check "keybindings.json removed once the guard genuinely allows it" \
+  bash -c '[[ ! -e "'"$VSCODE_USER_DIR"'/keybindings.json" ]]'
+check "baseline.json still retained (departure remains incomplete)" \
+  bash -c '[[ -f "'"$STATE_DIR"'/baseline.json" ]]'
+
+# Restore PATH/env so nothing from this section leaks into whatever runs
+# after it -- no current section relies on is_wsl being false, but this
+# is the only section that mutates either, so it cleans up after itself.
+export PATH="$ORIGINAL_PATH"
+unset WSL_DISTRO_NAME
 
 echo ""
 echo "════════ Scenario summary: $PASS passed, $FAIL failed ════════"
