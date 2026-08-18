@@ -558,6 +558,28 @@ def test_classify_absent_baseline_now_present_is_owned_remove():
     assert c.action == "remove"
 
 
+# ── needs_vscode_guard marker: must never change generic classification ──
+
+
+def test_classify_vscode_guard_marked_absent_baseline_still_absent_is_preserved():
+    """A needs_vscode_guard-tagged key captured absent and recaptured absent
+    still classifies PRESERVED, not UNRESOLVED — a permanent regression
+    guard for the property that the marker rides on the same dict
+    capture_file returns and is never seen by any whole-dict comparison
+    (see the meta-depart-vscode-restore grill plan, decision 7)."""
+    recorded = {"state": "absent", "needs_vscode_guard": True}
+    c = depart.classify_ownership_key("file:/a", recorded, ABSENT)
+    assert c.bucket == "preserved"
+    assert c.action is None
+
+
+def test_classify_vscode_guard_marked_absent_baseline_now_present_is_owned_remove():
+    recorded = {"state": "absent", "needs_vscode_guard": True}
+    c = depart.classify_ownership_key("file:/a", recorded, _present_file())
+    assert c.bucket == "owned"
+    assert c.action == "remove"
+
+
 def test_classify_present_baseline_unchanged_is_preserved():
     recorded = _present_file()
     live = _present_file()

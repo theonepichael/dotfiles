@@ -1040,16 +1040,16 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         ):
             self.assertFalse(ssdc._vscode_process_running())
 
-    def test_vscode_process_running_false_on_timeout(self) -> None:
+    def test_vscode_process_running_none_on_timeout(self) -> None:
         with patch(
             "subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="tasklist.exe", timeout=5),
         ):
-            self.assertFalse(ssdc._vscode_process_running())
+            self.assertIsNone(ssdc._vscode_process_running())
 
-    def test_vscode_process_running_false_when_tasklist_missing(self) -> None:
+    def test_vscode_process_running_none_when_tasklist_missing(self) -> None:
         with patch("subprocess.run", side_effect=FileNotFoundError()):
-            self.assertFalse(ssdc._vscode_process_running())
+            self.assertIsNone(ssdc._vscode_process_running())
 
     # ── _push_vscode_to_live ────────────────────────────────────────────
 
@@ -1168,6 +1168,30 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         self.assertEqual(
             list(self.vscode_user_dir().glob("*.bak.*")),
             [],
+        )
+
+    def test_push_vscode_process_running_unknown_refuses_writes_neither_file(
+        self,
+    ) -> None:
+        # Tightened behavior: an undetermined process check (None) now
+        # refuses the push too, not just a confirmed-running (True) check —
+        # unlike the old collapsed-bool contract, where a timeout/missing
+        # tasklist.exe silently permitted the write.
+        self.write_vscode_seed("settings.json", '{"a": 2}\n')
+        self.write_live_vscode("settings.json", '{"a": 1}\n')
+        self.write_vscode_seed("keybindings.json", "[]\n")
+        self.write_live_vscode("keybindings.json", "[]\n")
+        with (
+            patch.object(ssdc, "_vscode_wsl_user_dir", lambda: self.vscode_user_dir()),
+            patch.object(ssdc, "_vscode_process_running", lambda: None),
+            patch("builtins.input", return_value="y"),
+            patch("sys.stdin.isatty", return_value=True),
+        ):
+            out, code = self.run_push_vscode()
+        self.assertEqual(code, 1)
+        self.assertIn("close it first", out)
+        self.assertEqual(
+            (self.vscode_user_dir() / "settings.json").read_text(), '{"a": 1}\n'
         )
 
     def test_push_vscode_noninteractive_stdin_without_yes_aborts_nothing_written(

@@ -473,7 +473,7 @@ SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/
   - `opencode_drift(seed: Path, live: Path) -> str` — Return a drift description for opencode.jsonc non-cosmetic keys, or "".
   - `vscode_drift(seed: Path, live: Path) -> str` — Describe how a live VS Code settings.json/keybindings.json diverged from its seed, or "" if there's nothing to compare or nothing drifted.
 - Subcommand handlers: `cmd_check`, `cmd_fix`, `cmd_sync_to_seed`, `cmd_push_vscode`
-- Tested by: `claude/scripts/test_settings_seed_drift_check.py`
+- Tested by: `claude/scripts/test_settings_seed_drift_check.py`, `test/test_install.py`
 
 ### `claude/scripts/standup.py`
 

@@ -2725,6 +2725,16 @@ def capture_departure_baseline(ctx: Context, specs: Sequence[LinkSpec]) -> None:
         records[depart.file_key(path)] = depart.capture_file(path)
         _track_ancestors(path)
 
+    vscode_user_dir = _vscode_wsl_user_dir()
+    if vscode_user_dir is not None:
+        for name in ("settings.json", "keybindings.json"):
+            path = vscode_user_dir / name
+            bak = path.with_name(path.name + ".bak")
+            for guarded_path in (path, bak):
+                record = depart.capture_file(guarded_path)
+                record["needs_vscode_guard"] = True
+                records[depart.file_key(guarded_path)] = record
+
     records[depart.file_key(ctx.profile_marker)] = depart.capture_file(
         ctx.profile_marker
     )
@@ -3379,12 +3389,50 @@ def build_package_preflight(ctx: Context) -> list[depart.PackageClassification] 
     )
 
 
+def _vscode_guard_preflight_annotations(
+    ctx: Context, report: dict[str, depart.Classification]
+) -> dict[str, str]:
+    """Display-only: flag guarded VS Code keys headed for removal when
+    Windows VS Code is running or its status couldn't be verified.
+
+    Purely advisory — never touches the stored ``Classification`` objects
+    in ``report`` and never gates anything. The real gate is
+    ``execute_file_symlink_phase``'s own, independent, execution-time check
+    (see its call site for the TOCTOU rationale): this probe only keeps
+    ``--depart --dry-run`` from printing a removal it already knows won't
+    happen, it does not replace that later check.
+    """
+    baseline = depart.load_baseline(ctx.state_dir)
+    if baseline is None:
+        return {}
+    guarded_removals = [
+        key
+        for key, c in report.items()
+        if c.bucket == depart.BUCKET_OWNED
+        and c.action == depart.ACTION_REMOVE
+        and (baseline.value_for(key) or {}).get("needs_vscode_guard")
+    ]
+    if not guarded_removals:
+        return {}
+    from settings_seed_drift_check import _vscode_process_running
+
+    if _vscode_process_running() is False:
+        return {}
+    note = (
+        "Windows VS Code is running (or could not be verified) — this will "
+        "land as unresolved, not removed"
+    )
+    return dict.fromkeys(guarded_removals, note)
+
+
 def _print_preflight_report(
     report: dict[str, depart.Classification],
     package_report: Sequence[depart.PackageClassification] = (),
     quiet: bool = False,
+    guard_annotations: dict[str, str] | None = None,
 ) -> None:
     """Print the full departure preflight, grouped by bucket."""
+    guard_annotations = guard_annotations or {}
     _header("==> Departure preflight", quiet=quiet)
     for bucket in (
         depart.BUCKET_OWNED,
@@ -3402,7 +3450,11 @@ def _print_preflight_report(
             c = report[key]
             action = f" [{c.action}]" if c.action else ""
             line = f"    {key}{action} — {c.reason}"
-            print(PALETTE.warn(line) if warn else line)
+            line_warn = warn
+            if key in guard_annotations:
+                line += f" ({guard_annotations[key]})"
+                line_warn = True
+            print(PALETTE.warn(line) if line_warn else line)
         for pc in sorted(package_lines, key=lambda c: c.key):
             action = f" [{pc.action}]" if pc.action else ""
             line = f"    {pc.key}{action} — {pc.reason}"
@@ -3599,12 +3651,30 @@ def execute_file_symlink_phase(
         path = Path(key.partition(":")[2])
         ledger.record(key, c.action, _execute_remove_symlink(path))
 
+    vscode_running: bool | None = None
+    vscode_checked = False
     for key in sorted(owned):
         c = owned[key]
         if depart.key_type(key) != "file":
             continue
         path = Path(key.partition(":")[2])
         if c.action == depart.ACTION_REMOVE:
+            recorded = baseline.value_for(key) or {}
+            if recorded.get("needs_vscode_guard"):
+                if not vscode_checked:
+                    from settings_seed_drift_check import _vscode_process_running
+
+                    vscode_running = _vscode_process_running()
+                    vscode_checked = True
+                if vscode_running is not False:
+                    ledger.record(
+                        key,
+                        c.action,
+                        "unresolved: Windows VS Code is running (or could "
+                        "not be verified) — close it first, then re-run "
+                        "--depart",
+                    )
+                    continue
             ledger.record(key, c.action, _execute_remove_file(path))
             continue
         recorded = baseline.value_for(key) or {}
@@ -3945,8 +4015,14 @@ def do_depart(ctx: Context) -> int:
         )
         return 2
     package_report = build_package_preflight(ctx) or []
+    guard_annotations = _vscode_guard_preflight_annotations(ctx, report)
 
-    _print_preflight_report(report, package_report, quiet=ctx.opts.quiet)
+    _print_preflight_report(
+        report,
+        package_report,
+        quiet=ctx.opts.quiet,
+        guard_annotations=guard_annotations,
+    )
 
     if ctx.opts.dry_run:
         print(PALETTE.header("Dry run complete — nothing was changed."))
