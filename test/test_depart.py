@@ -274,6 +274,37 @@ def test_record_installed_tree_overwrites_on_reinstall(tmp_path):
     assert depart.installed_tree_verdict(baseline, root) == depart.TREE_UNCHANGED
 
 
+def test_remove_manifest_tree_removes_and_returns_unchanged(tmp_path):
+    root = _installed_tree(tmp_path)
+    baseline = depart.Baseline()
+    depart.record_installed_tree(baseline, root)
+
+    verdict = depart.remove_manifest_tree(baseline, root)
+    assert verdict == depart.TREE_UNCHANGED
+    assert not root.exists()
+
+
+def test_remove_manifest_tree_leaves_modified_tree_in_place(tmp_path):
+    root = _installed_tree(tmp_path)
+    baseline = depart.Baseline()
+    depart.record_installed_tree(baseline, root)
+    (root / "my-own.ttf").write_bytes(b"mine")
+
+    verdict = depart.remove_manifest_tree(baseline, root)
+    assert verdict == depart.TREE_MODIFIED
+    assert root.exists()
+    assert (root / "my-own.ttf").exists()
+
+
+def test_remove_manifest_tree_leaves_unrecorded_tree_in_place(tmp_path):
+    root = _installed_tree(tmp_path)
+    baseline = depart.Baseline()
+
+    verdict = depart.remove_manifest_tree(baseline, root)
+    assert verdict == depart.TREE_UNRECORDED
+    assert root.exists()
+
+
 def test_installed_trees_survive_a_save_load_roundtrip(tmp_path):
     root = _installed_tree(tmp_path)
     baseline = depart.Baseline()

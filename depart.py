@@ -24,6 +24,7 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -405,6 +406,35 @@ def installed_tree_verdict(baseline: Baseline, root: Path) -> str:
     if recorded is None:
         return TREE_UNRECORDED
     return TREE_UNCHANGED if tree_manifest_matches(root, recorded) else TREE_MODIFIED
+
+
+def remove_manifest_tree(baseline: Baseline, path: Path) -> str:
+    """Remove ``path`` wholesale, but only if its :func:`installed_tree_verdict`
+    is ``TREE_UNCHANGED`` — the sole function in this codebase allowed to
+    ``shutil.rmtree`` a tree-manifest-tracked directory (see
+    ``test_depart_removal_guard.py``'s file-wide ban on calling
+    ``shutil.rmtree`` anywhere else). Returns the verdict: ``TREE_UNCHANGED``
+    means the removal happened; ``TREE_MODIFIED``/``TREE_UNRECORDED`` mean
+    nothing was touched and the caller must decide how to report that.
+
+    Propagates ``OSError`` from the removal itself (e.g. a permissions
+    error, or the directory vanishing between the verdict check and the
+    ``rmtree`` call) rather than swallowing it — same contract as
+    ``shutil.rmtree``. Callers must catch it, the way
+    ``install._remove_tree_manifest_directory`` already does.
+
+    No separate existence/symlink precondition is needed here: a
+    ``TREE_UNCHANGED`` verdict already implies ``path`` is a real, existing
+    directory, since :func:`installed_tree_verdict` can only return it when
+    a fresh :func:`capture_tree_manifest` of ``path`` is exactly
+    ``STATE_PRESENT`` and matches a ``STATE_PRESENT`` recorded baseline — an
+    absent, symlinked, or non-directory ``path`` always captures as
+    ``STATE_ABSENT``, which can never equal a ``STATE_PRESENT`` baseline.
+    """
+    verdict = installed_tree_verdict(baseline, path)
+    if verdict == TREE_UNCHANGED:
+        shutil.rmtree(path)
+    return verdict
 
 
 # ── serialization ─────────────────────────────────────────────────────────

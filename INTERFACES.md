@@ -788,6 +788,7 @@ Pristine-state departure mode: baseline capture and ownership tracking.
   - `read_blob(state_dir: Path, digest: str) -> bytes | None` — Read a blob's content back, or None if it's missing/unreadable.
   - `record_installed_tree(baseline: Baseline, root: Path) -> None` — Snapshot ``root`` as the installer just produced it.
   - `installed_tree_verdict(baseline: Baseline, root: Path) -> str` — Classify a wholly installer-owned tree for safe wholesale removal.
+  - `remove_manifest_tree(baseline: Baseline, path: Path) -> str` — Remove ``path`` wholesale, but only if its :func:`installed_tree_verdict` is ``TREE_UNCHANGED`` — the sole function in this codebase allowed to ``shutil.rmtree`` a tree-manifest-tracked directory (see ``test_depart_removal_guard.py``'s file-wide ban on calling ``shutil.rmtree`` anywhere else).
   - `baseline_path(state_dir: Path) -> Path`
   - `baseline_to_dict(baseline: Baseline) -> dict[str, object]`
   - `baseline_from_dict(data: dict[str, object]) -> Baseline`
