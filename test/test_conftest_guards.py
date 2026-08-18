@@ -43,6 +43,10 @@ def test_real_home_write_blocked_without_marker(tmp_path):
 @pytest.mark.allow_production_paths
 def test_real_home_write_allowed_with_marker(tmp_path):
     target = _REAL_HOME / ".claude" / f"conftest-guard-probe-{os.getpid()}.txt"
+    # ~/.claude may not exist yet on a fresh machine/CI runner -- mkdir is
+    # guarded by the same allow_production_paths marker this test already
+    # carries, so it's a safe no-op when the directory is already there.
+    target.parent.mkdir(parents=True, exist_ok=True)
     try:
         target.write_text("cleaned up immediately below")
         assert target.exists()
