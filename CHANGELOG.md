@@ -73,3 +73,13 @@ harness CLIs, flags, or behavior get an entry going forward.
   300s — the previous global default — now applies to every timeout,
   default or overridden, so a large per-backend override can no longer
   recreate the old unbounded-per-backend wait.
+
+## 2026-08-18
+
+### Added
+
+- `install.py`/`install.sh --adopt` copies intentional drift from selected
+  live copy-once seeds back into the repository for Claude, WSL VS Code, and
+  opencode. Adoption requires tracked, clean repo seeds, creates no backup or
+  history entry, normalizes CRLF to LF, and refuses empty, unreadable, dirty,
+  untracked, malformed opencode, or live allowlist-bypass inputs.
