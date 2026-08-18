@@ -24,6 +24,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "claude" / "scripts"))
 
+
+import settings_seed_drift_check  # noqa: E402 — must follow sys.path.insert above
+
 import depart  # noqa: E402 — must follow sys.path.insert above
 import install  # noqa: E402 — must follow sys.path.insert above
 
@@ -2450,6 +2453,38 @@ def test_capture_departure_baseline_skips_seed_destination_when_harness_not_sele
     assert baseline.value_for(depart.file_key(dest)) is None
 
 
+def test_capture_departure_baseline_captures_vscode_files_when_discoverable(
+    home, links, monkeypatch
+):
+    vscode_dir = home / "winappdata"
+    vscode_dir.mkdir()
+    monkeypatch.setattr(install, "_vscode_wsl_user_dir", lambda: vscode_dir)
+    ctx = make_ctx(home, is_wsl=True)
+    install.capture_departure_baseline(ctx, links)
+    baseline = depart.load_baseline(ctx.state_dir)
+
+    for name in (
+        "settings.json",
+        "keybindings.json",
+        "settings.json.bak",
+        "keybindings.json.bak",
+    ):
+        record = baseline.value_for(depart.file_key(vscode_dir / name))
+        assert record == {"state": "absent", "needs_vscode_guard": True}
+
+
+def test_capture_departure_baseline_skips_vscode_files_without_discovery(
+    home, links, monkeypatch
+):
+    monkeypatch.setattr(install, "_vscode_wsl_user_dir", lambda: None)
+    ctx = make_ctx(home, is_wsl=True)
+    install.capture_departure_baseline(ctx, links)
+    baseline = depart.load_baseline(ctx.state_dir)
+
+    for name in ("settings.json", "keybindings.json"):
+        assert baseline.value_for(depart.file_key(home / name)) is None
+
+
 def test_capture_departure_baseline_tree_manifests_font_and_neovim_prefix(home, links):
     ctx = make_ctx(home)
     install.capture_departure_baseline(ctx, links)
@@ -2648,6 +2683,181 @@ def test_rollback_wipe_dry_run_preview_excludes_departure_state(
 
     assert code == 0
     assert f"would remove empty state directory {ctx.state_dir}" in out
+
+
+# ── execute_file_symlink_phase: VS Code process-running guard ──────────────
+
+
+def _vscode_guard_baseline_and_report(guarded_paths, unguarded_path):
+    """A baseline + preflight report with guarded and unguarded owned/remove
+    file: keys, for exercising execute_file_symlink_phase's guard directly
+    without a full install/capture pass."""
+    baseline = depart.Baseline()
+    records = {}
+    for p in (*guarded_paths, unguarded_path):
+        records[depart.file_key(p)] = {"state": "absent"}
+    for p in guarded_paths:
+        records[depart.file_key(p)]["needs_vscode_guard"] = True
+    baseline.add_layer("2024-01-01T00:00:00+00:00", records)
+
+    report = {
+        depart.file_key(p): depart.Classification(
+            depart.BUCKET_OWNED, depart.ACTION_REMOVE, "absent at baseline, now present"
+        )
+        for p in (*guarded_paths, unguarded_path)
+    }
+    return baseline, report
+
+
+def test_execute_file_symlink_phase_removes_guarded_key_when_not_running(
+    home, monkeypatch
+):
+    guarded = home / "settings.json"
+    guarded.write_text("x")
+    unguarded = home / ".vimrc"
+    unguarded.write_text("y")
+    baseline, report = _vscode_guard_baseline_and_report([guarded], unguarded)
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+
+    monkeypatch.setattr(
+        settings_seed_drift_check, "_vscode_process_running", lambda: False
+    )
+    install.execute_file_symlink_phase(make_ctx(home), baseline, report, ledger)
+
+    assert not guarded.exists()
+    assert not unguarded.exists()
+    outcomes = {e["key"]: e["outcome"] for e in ledger.entries()}
+    assert outcomes[depart.file_key(guarded)] == "ok"
+
+
+@pytest.mark.parametrize("running_value", [True, None])
+def test_execute_file_symlink_phase_leaves_guarded_key_unresolved_when_running_or_unknown(
+    home, monkeypatch, running_value
+):
+    guarded = home / "settings.json"
+    guarded.write_text("x")
+    unguarded = home / ".vimrc"
+    unguarded.write_text("y")
+    baseline, report = _vscode_guard_baseline_and_report([guarded], unguarded)
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+
+    monkeypatch.setattr(
+        settings_seed_drift_check, "_vscode_process_running", lambda: running_value
+    )
+    install.execute_file_symlink_phase(make_ctx(home), baseline, report, ledger)
+
+    assert guarded.exists()  # left alone
+    assert not unguarded.exists()  # unaffected — still removed
+    outcomes = {e["key"]: e["outcome"] for e in ledger.entries()}
+    assert outcomes[depart.file_key(guarded)].startswith("unresolved:")
+    assert "VS Code" in outcomes[depart.file_key(guarded)]
+    assert outcomes[depart.file_key(unguarded)] == "ok"
+
+
+def test_execute_file_symlink_phase_checks_process_running_exactly_once(
+    home, monkeypatch
+):
+    guarded_paths = [
+        home / n
+        for n in (
+            "settings.json",
+            "keybindings.json",
+            "settings.json.bak",
+            "keybindings.json.bak",
+        )
+    ]
+    for p in guarded_paths:
+        p.write_text("x")
+    unguarded = home / ".vimrc"
+    unguarded.write_text("y")
+    baseline, report = _vscode_guard_baseline_and_report(guarded_paths, unguarded)
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+
+    calls = []
+
+    def _tracking_check():
+        calls.append(1)
+        return False
+
+    monkeypatch.setattr(
+        settings_seed_drift_check, "_vscode_process_running", _tracking_check
+    )
+    install.execute_file_symlink_phase(make_ctx(home), baseline, report, ledger)
+
+    assert len(calls) == 1
+
+
+def test_execute_file_symlink_phase_never_checks_process_running_when_no_guarded_keys(
+    home, monkeypatch
+):
+    unguarded = home / ".vimrc"
+    unguarded.write_text("y")
+    baseline, report = _vscode_guard_baseline_and_report([], unguarded)
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+
+    def _forbidden():
+        raise AssertionError("process check should not run without guarded keys")
+
+    monkeypatch.setattr(
+        settings_seed_drift_check, "_vscode_process_running", _forbidden
+    )
+    install.execute_file_symlink_phase(make_ctx(home), baseline, report, ledger)
+    assert not unguarded.exists()
+
+
+# ── build_preflight_report: display-only VS Code guard annotation ──────────
+
+
+def test_vscode_guard_preflight_annotation_present_when_running_or_unknown(
+    home, monkeypatch
+):
+    guarded = home / "settings.json"
+    ctx = make_ctx(home)
+    baseline = depart.Baseline()
+    baseline.add_layer(
+        "2024-01-01T00:00:00+00:00",
+        {depart.file_key(guarded): {"state": "absent", "needs_vscode_guard": True}},
+    )
+    depart.save_baseline(ctx.state_dir, baseline)
+    report = {
+        depart.file_key(guarded): depart.Classification(
+            depart.BUCKET_OWNED, depart.ACTION_REMOVE, "absent at baseline, now present"
+        )
+    }
+
+    monkeypatch.setattr(
+        settings_seed_drift_check, "_vscode_process_running", lambda: True
+    )
+    annotations = install._vscode_guard_preflight_annotations(ctx, report)
+
+    assert depart.file_key(guarded) in annotations
+    # Purely display-only: the stored Classification is untouched.
+    assert report[depart.file_key(guarded)] == depart.Classification(
+        depart.BUCKET_OWNED, depart.ACTION_REMOVE, "absent at baseline, now present"
+    )
+
+
+def test_vscode_guard_preflight_annotation_absent_when_not_running(home, monkeypatch):
+    guarded = home / "settings.json"
+    ctx = make_ctx(home)
+    baseline = depart.Baseline()
+    baseline.add_layer(
+        "2024-01-01T00:00:00+00:00",
+        {depart.file_key(guarded): {"state": "absent", "needs_vscode_guard": True}},
+    )
+    depart.save_baseline(ctx.state_dir, baseline)
+    report = {
+        depart.file_key(guarded): depart.Classification(
+            depart.BUCKET_OWNED, depart.ACTION_REMOVE, "absent at baseline, now present"
+        )
+    }
+
+    monkeypatch.setattr(
+        settings_seed_drift_check, "_vscode_process_running", lambda: False
+    )
+    annotations = install._vscode_guard_preflight_annotations(ctx, report)
+
+    assert annotations == {}
 
 
 # ── do_depart: zero-evidence refusal, preflight, confirmation ──────────────

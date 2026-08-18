@@ -1124,7 +1124,7 @@ def _sync_vscode_to_seed(live_path: Path, seed_path: Path, quiet: bool = False) 
 # ── push-vscode: repo -> live (guarded) ──────────────────────────────────────
 
 
-def _vscode_process_running() -> bool:
+def _vscode_process_running() -> bool | None:
     """Best-effort check whether native Windows VS Code (``Code.exe``) is
     currently running, via ``tasklist.exe`` from WSL.
 
@@ -1133,10 +1133,10 @@ def _vscode_process_running() -> bool:
     is localized per-language on Windows, so substring matching on it
     would be unreliable across locales.
 
-    Returns ``False`` (assume not running) if ``tasklist.exe`` isn't found,
-    the call times out, or it errors — this is backup-protected, not a
-    guarantee: :func:`cmd_push_vscode` still writes a timestamped ``.bak``
-    before every live overwrite.
+    Returns ``True`` if confirmed running, ``False`` if confirmed not
+    running, or ``None`` if ``tasklist.exe`` isn't found, the call times
+    out, or it errors — undetermined is distinct from confirmed-not-running
+    so callers can decide how to treat "couldn't check" for themselves.
     """
     try:
         result = subprocess.run(
@@ -1147,7 +1147,7 @@ def _vscode_process_running() -> bool:
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return False
+        return None
     return bool(re.search(r"\bCode\.exe\b", result.stdout, re.IGNORECASE))
 
 
@@ -1411,11 +1411,12 @@ def cmd_push_vscode(dotfiles_root: Path, quiet: bool = False, yes: bool = False)
         cli_common.qprint("settings_seed_drift_check: nothing to push.", quiet=quiet)
         return 0
 
-    if _vscode_process_running():
+    if _vscode_process_running() is not False:
         _print_loud(
             "[settings_seed_drift_check] refusing to push: VS Code appears to "
-            "be running on Windows — close it first, then re-run push-vscode "
-            "(it could clobber this write on its next save)."
+            "be running on Windows, or its status could not be verified — "
+            "close it first, then re-run push-vscode (it could clobber this "
+            "write on its next save)."
         )
         return 1
 

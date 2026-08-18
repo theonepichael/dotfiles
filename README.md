@@ -362,6 +362,15 @@ reverse-dependency probe (`apt-cache rdepends` / `dnf repoquery
 this installer *upgraded* (rather than freshly installed) is downgraded
 back toward its original version instead of removed.
 
+**WSL-only: Windows-side VS Code settings.** Under WSL with a Windows-side
+`code` CLI on PATH, `--depart` also tracks the Windows-side
+`settings.json`/`keybindings.json` this installer seeded (and their
+`.bak` siblings, if `--reseed` ever created one) as **owned**. A preflight
+`owned`/`remove` for one of these files can still land as **unresolved** at
+execution time if native Windows VS Code is running (or its status can't be
+verified) — it's never removed out from under a running editor. Close VS
+Code first to avoid a second `--depart` re-run.
+
 ## Nuclear reset (WSL)
 
 `--depart` cleans up what this installer put on the machine. It is
