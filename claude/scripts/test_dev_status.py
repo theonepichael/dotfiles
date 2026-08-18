@@ -420,6 +420,243 @@ class BacklogTestCase(unittest.TestCase):
         # differ across platforms; presence of any call is sufficient.
         self.assertTrue(fsync_mock.called)
 
+    # ── 14c: fsync/replace/fsync ordering, and the second fsync targets the
+    # containing directory's fd specifically (not just "any two fsyncs") ────
+
+    def test_14c_atomic_write_fsyncs_temp_before_replace_and_dir_after(self):
+        real_open = os.open
+        opened_fds = {}
+
+        def open_side_effect(path, *args, **kwargs):
+            fd = real_open(path, *args, **kwargs)
+            opened_fds[path] = fd
+            return fd
+
+        manager = unittest.mock.Mock()
+        with (
+            patch("os.fsync", wraps=os.fsync) as fsync_mock,
+            patch("os.replace", wraps=os.replace) as replace_mock,
+            patch("os.open", side_effect=open_side_effect) as open_mock,
+        ):
+            manager.attach_mock(fsync_mock, "fsync")
+            manager.attach_mock(replace_mock, "replace")
+            manager.attach_mock(open_mock, "open")
+            dev_status._atomic_write_json(
+                self.items_file,
+                json.dumps({"schema_version": 2, "items": []}),
+                ".items_tmp_",
+            )
+
+        call_strs = [str(c) for c in manager.mock_calls]
+        fsync_positions = [
+            i for i, s in enumerate(call_strs) if s.startswith("call.fsync(")
+        ]
+        replace_positions = [
+            i for i, s in enumerate(call_strs) if s.startswith("call.replace(")
+        ]
+        self.assertEqual(len(fsync_positions), 2, call_strs)
+        self.assertEqual(len(replace_positions), 1, call_strs)
+        self.assertLess(fsync_positions[0], replace_positions[0], call_strs)
+        self.assertGreater(fsync_positions[1], replace_positions[0], call_strs)
+
+        # The second fsync must target the fd os.open returned for the
+        # containing directory, not merely a second, arbitrary fd -- fd
+        # integers get reused by the next open() once a prior one closes,
+        # so a bare "the two fds differ" assertion would be a spurious,
+        # environment-dependent check rather than a real one.
+        dir_fd = opened_fds.get(str(self.data_dir))
+        self.assertIsNotNone(dir_fd, opened_fds)
+        second_fsync_fd = fsync_mock.call_args_list[1].args[0]
+        self.assertEqual(second_fsync_fd, dir_fd)
+
+    # ── 14d: _backlog_mutation bumps rev before its post-yield save, and on
+    # a mid-block exception the rev is still bumped but the save is skipped ──
+
+    def test_14d_backlog_mutation_bumps_rev_before_any_write(self):
+        self.write_items([make_item("my-item")])
+
+        manager = unittest.mock.Mock()
+        with (
+            patch.object(
+                dev_status, "bump_rev", wraps=dev_status.bump_rev
+            ) as bump_mock,
+            patch.object(
+                dev_status, "save_items", wraps=dev_status.save_items
+            ) as save_mock,
+        ):
+            manager.attach_mock(bump_mock, "bump_rev")
+            manager.attach_mock(save_mock, "save_items")
+            with dev_status._backlog_mutation("test", "my-item", None):
+                pass
+
+        call_strs = [str(c) for c in manager.mock_calls]
+        bump_positions = [
+            i for i, s in enumerate(call_strs) if s.startswith("call.bump_rev(")
+        ]
+        save_positions = [
+            i for i, s in enumerate(call_strs) if s.startswith("call.save_items(")
+        ]
+        self.assertEqual(len(bump_positions), 1, call_strs)
+        self.assertEqual(len(save_positions), 1, call_strs)
+        self.assertLess(bump_positions[0], save_positions[0], call_strs)
+
+    def test_14d2_backlog_mutation_exception_bumps_rev_but_skips_save(self):
+        self.write_items([make_item("my-item")])
+
+        with (
+            patch.object(
+                dev_status, "bump_rev", wraps=dev_status.bump_rev
+            ) as bump_mock,
+            patch.object(
+                dev_status, "save_items", wraps=dev_status.save_items
+            ) as save_mock,
+            self.assertRaises(RuntimeError),
+        ):
+            with dev_status._backlog_mutation("test", "my-item", None):
+                raise RuntimeError("boom")
+
+        bump_mock.assert_called_once()
+        save_mock.assert_not_called()
+
+    # ── 14e: the set of commands that bump-and-save manually (outside
+    # _backlog_mutation) is exactly the six known ones -- a future 7th site
+    # must be added here or this fails by name ──────────────────────────────
+
+    def test_14e_manual_mutation_site_list_is_exhaustive(self):
+        candidates = list(dev_status.dispatch.values()) + [
+            dev_status.cmd_pending_add,
+            dev_status.cmd_pending_update,
+            dev_status.cmd_pending_list,
+        ]
+        manual_sites = {
+            fn.__name__
+            for fn in candidates
+            if (
+                "save_items" in fn.__code__.co_names
+                or "save_pending" in fn.__code__.co_names
+            )
+            and "_backlog_mutation" not in fn.__code__.co_names
+        }
+        self.assertEqual(
+            manual_sites,
+            {
+                "cmd_add",
+                "cmd_backfill_gate",
+                "cmd_rename",
+                "cmd_pending_add",
+                "cmd_pending_update",
+                "cmd_prune",
+            },
+        )
+
+    # ── 14f: each of the six manual sites bumps rev before it saves ─────────
+
+    def test_14f_manual_mutation_sites_bump_before_saving(self):
+        cases = [
+            (
+                "cmd_add",
+                dev_status.cmd_add,
+                lambda: _args(json='{"id": "new-item", "summary": "Test"}'),
+                lambda: None,
+            ),
+            (
+                "cmd_backfill_gate",
+                dev_status.cmd_backfill_gate,
+                lambda: _args(apply=True),
+                lambda: self.write_items([make_item("gate-item")]),
+            ),
+            (
+                "cmd_rename",
+                dev_status.cmd_rename,
+                lambda: _args(old_slug="old-name", new_slug="new-name"),
+                lambda: self.write_items([make_item("old-name")]),
+            ),
+            (
+                "cmd_pending_add",
+                dev_status.cmd_pending_add,
+                lambda: _args(
+                    json='{"id": "pend-item", "description": "waiting", "kind": "email"}'
+                ),
+                lambda: None,
+            ),
+            (
+                "cmd_pending_update",
+                dev_status.cmd_pending_update,
+                lambda: _args(id="pend-item", patch='{"status": "reply_received"}'),
+                lambda: self.write_pending(
+                    [
+                        {
+                            "id": "pend-item",
+                            "created": "2026-01-01",
+                            "updated": "2026-01-01",
+                            "status": "waiting_for_reply",
+                            "description": "w",
+                            "kind": "email",
+                        }
+                    ]
+                ),
+            ),
+            (
+                "cmd_prune",
+                dev_status.cmd_prune,
+                lambda: _args(force=True),
+                lambda: self.write_items(
+                    [
+                        make_item(
+                            "done-old",
+                            status="done",
+                            updated=(date.today() - timedelta(days=20)).isoformat(),
+                        )
+                    ]
+                ),
+            ),
+        ]
+
+        for name, func, build_args, seed_fixture in cases:
+            with self.subTest(cmd=name):
+                shutil.rmtree(self.data_dir, ignore_errors=True)
+                seed_fixture()
+
+                manager = unittest.mock.Mock()
+                with (
+                    patch.object(
+                        dev_status, "bump_rev", wraps=dev_status.bump_rev
+                    ) as bump_mock,
+                    patch.object(
+                        dev_status, "save_items", wraps=dev_status.save_items
+                    ) as save_items_mock,
+                    patch.object(
+                        dev_status, "save_pending", wraps=dev_status.save_pending
+                    ) as save_pending_mock,
+                ):
+                    manager.attach_mock(bump_mock, "bump_rev")
+                    manager.attach_mock(save_items_mock, "save_items")
+                    manager.attach_mock(save_pending_mock, "save_pending")
+                    func(build_args())
+
+                self.assertGreaterEqual(bump_mock.call_count, 1, name)
+                self.assertGreaterEqual(
+                    save_items_mock.call_count + save_pending_mock.call_count,
+                    1,
+                    name,
+                )
+
+                call_strs = [str(c) for c in manager.mock_calls]
+                bump_positions = [
+                    i for i, s in enumerate(call_strs) if s.startswith("call.bump_rev(")
+                ]
+                save_positions = [
+                    i
+                    for i, s in enumerate(call_strs)
+                    if s.startswith("call.save_items(")
+                    or s.startswith("call.save_pending(")
+                ]
+                self.assertTrue(bump_positions, (name, call_strs))
+                self.assertTrue(save_positions, (name, call_strs))
+                self.assertLess(
+                    bump_positions[0], min(save_positions), (name, call_strs)
+                )
+
     # ── 15: corrupted JSON fails loudly ──────────────────────────────────────
 
     def test_15_corrupted_json_fails_loudly(self):
