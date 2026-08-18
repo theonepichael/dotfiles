@@ -36,7 +36,7 @@ jobs:
         run: |
           uv run ruff check .
           uv run ruff format --check .
-          uv run --with pytest pytest test/test_install.py test/test_lint.py
+          uv run pytest
 
       - name: Open an autofix pull request
         uses: peter-evans/create-pull-request@v7
