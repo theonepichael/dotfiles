@@ -229,6 +229,29 @@ backlog verbatim.
   (plain-text question, recommendation first per CLAUDE.md's "Judgment
   calls — lead with a recommendation") is correct and needs no change.
 
+  **Re-checked 2026-08-19 against a new CLI feature: still holds, with one
+  untested caveat.** Copilot CLI shipped an `ask_user` tool in its 2026-01-21
+  release (*GitHub Copilot CLI: Plan before you build, steer as you go*),
+  which shows a numbered list of selectable options in the terminal — a real
+  structured-choice surface, not just free text. This could have overturned
+  the finding above. It doesn't, for the way skills invoke it:
+  - The official *Adding agent skills* doc's `allowed-tools` field only
+    documents `shell`/`bash` as tools a skill can request — no `ask_user`.
+  - Live-tested via `copilot -p` (installed CLI 1.0.80): a prompt explicitly
+    instructing the model to "use whatever structured question/choice tool
+    you have available" produced a plain-text question with no tool call
+    (`toolRequests: []`) in both a normal run (this repo's own
+    `~/.copilot/copilot-instructions.md` loaded) and a `--no-custom-instructions`
+    run — the latter's own unprompted words: "No structured choice/selection
+    tool is available in this environment."
+  - **Caveat, not yet tested:** `ask_user` is documented tied to `--plan`/
+    `--mode plan`, a real interactive TUI mode this probe didn't drive (`-p`
+    is non-interactive print mode only). If a live interactive `--plan`
+    session is ever confirmed to expose `ask_user` to a running skill, this
+    entry needs another pass — until then, `-p` mode (what `copilot -p`
+    skill invocations from other tooling use) is confirmed to still have no
+    structured-choice tool.
+
 - **Mid-skill delegation works (2026-08-03 finding).** A throwaway
   `~/.copilot/skills/zz-probe-delegation/SKILL.md` whose body said "now use
   the dashboard skill" produced `skill(zz-probe-delegation)` →
