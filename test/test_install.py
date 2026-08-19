@@ -2749,7 +2749,9 @@ def test_execute_file_symlink_phase_leaves_guarded_key_unresolved_when_running_o
     assert guarded.exists()  # left alone
     assert not unguarded.exists()  # unaffected — still removed
     outcomes = {e["key"]: e["outcome"] for e in ledger.entries()}
-    assert outcomes[depart.file_key(guarded)].startswith("unresolved:")
+    assert outcomes[depart.file_key(guarded)].startswith(
+        install._VSCODE_GUARD_UNRESOLVED_PREFIX
+    )
     assert "VS Code" in outcomes[depart.file_key(guarded)]
     assert outcomes[depart.file_key(unguarded)] == "ok"
 
@@ -2803,6 +2805,98 @@ def test_execute_file_symlink_phase_never_checks_process_running_when_no_guarded
     )
     install.execute_file_symlink_phase(make_ctx(home), baseline, report, ledger)
     assert not unguarded.exists()
+
+
+def _vscode_guard_solo_baseline_and_report(guarded):
+    """A baseline + report for a single guarded owned/remove file: key,
+    for the retry-boundary tests below -- no unguarded companion key."""
+    baseline = depart.Baseline()
+    baseline.add_layer(
+        "2024-01-01T00:00:00+00:00",
+        {depart.file_key(guarded): {"state": "absent", "needs_vscode_guard": True}},
+    )
+    report = {
+        depart.file_key(guarded): depart.Classification(
+            depart.BUCKET_OWNED, depart.ACTION_REMOVE, "absent at baseline, now present"
+        )
+    }
+    return baseline, report
+
+
+def test_execute_file_symlink_phase_retries_guarded_key_after_close(home, monkeypatch):
+    guarded = home / "settings.json"
+    guarded.write_text("x")
+    baseline, report = _vscode_guard_solo_baseline_and_report(guarded)
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    ctx = make_ctx(home)
+    calls: list[bool | None] = []
+
+    def _running_then_closed():
+        result = True if not calls else False
+        calls.append(result)
+        return result
+
+    monkeypatch.setattr(
+        settings_seed_drift_check, "_vscode_process_running", _running_then_closed
+    )
+    install.execute_file_symlink_phase(ctx, baseline, report, ledger)
+    assert guarded.exists()
+    assert depart.file_key(guarded) in ledger.completed_keys()
+
+    install.execute_file_symlink_phase(ctx, baseline, report, ledger)
+    assert not guarded.exists()
+    assert calls == [True, False]  # proves the second call genuinely re-checked
+
+
+def test_execute_file_symlink_phase_does_not_retry_guarded_key_after_unrelated_failure(
+    home, monkeypatch
+):
+    guarded = home / "settings.json"
+    guarded.write_text("x")
+    baseline, report = _vscode_guard_solo_baseline_and_report(guarded)
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    # Simulate a prior attempt that failed for a reason that has nothing to
+    # do with the VS Code guard (matches install._execute_remove_file's own
+    # OSError-outcome shape), not the guard's message.
+    ledger.record(
+        depart.file_key(guarded),
+        depart.ACTION_REMOVE,
+        "unresolved: could not remove file (mock)",
+    )
+
+    monkeypatch.setattr(
+        settings_seed_drift_check, "_vscode_process_running", lambda: False
+    )
+    install.execute_file_symlink_phase(make_ctx(home), baseline, report, ledger)
+    assert guarded.exists()  # never retried -- not a guard-block outcome
+
+
+def test_execute_file_symlink_phase_stays_retryable_after_guard_then_unrelated_failure(
+    home, monkeypatch
+):
+    guarded = home / "settings.json"
+    guarded.write_text("x")
+    baseline, report = _vscode_guard_solo_baseline_and_report(guarded)
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    # A guard block, then a later unrelated failure -- both recorded,
+    # oldest first, matching the ledger's append-only history.
+    ledger.record(
+        depart.file_key(guarded),
+        depart.ACTION_REMOVE,
+        "unresolved [vscode-guard-blocked]: Windows VS Code is running (or "
+        "could not be verified) — close it first, then re-run --depart",
+    )
+    ledger.record(
+        depart.file_key(guarded),
+        depart.ACTION_REMOVE,
+        "unresolved: could not remove file (mock)",
+    )
+
+    monkeypatch.setattr(
+        settings_seed_drift_check, "_vscode_process_running", lambda: False
+    )
+    install.execute_file_symlink_phase(make_ctx(home), baseline, report, ledger)
+    assert not guarded.exists()  # still retryable -- it was guard-blocked at least once
 
 
 # ── build_preflight_report: display-only VS Code guard annotation ──────────

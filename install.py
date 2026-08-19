@@ -3622,6 +3622,9 @@ def execute_service_phase(
     )
 
 
+_VSCODE_GUARD_UNRESOLVED_PREFIX = "unresolved [vscode-guard-blocked]:"
+
+
 def execute_file_symlink_phase(
     ctx: Context,
     baseline: depart.Baseline,
@@ -3634,14 +3637,23 @@ def execute_file_symlink_phase(
     problem ``do_rollback``'s ``restored_dests`` ordering already solves —
     so a paired restore never finds its own soon-to-be-removed symlink
     still occupying the path.
+
+    A key whose ledger history shows it was blocked by the VS Code guard
+    at least once stays retryable across ``done``'s otherwise-permanent
+    exclusion — without this, a guard-blocked key would never be retried
+    even after VS Code closes, contradicting the guard's own "close it
+    first, then re-run --depart" message. Every other outcome (including a
+    non-guard failure on the same guarded key) keeps the ledger's normal
+    never-re-attempted contract.
     """
     done = ledger.completed_keys()
+    guard_retryable = ledger.keys_with_outcome_prefix(_VSCODE_GUARD_UNRESOLVED_PREFIX)
     owned = {
         key: c
         for key, c in report.items()
         if c.bucket == depart.BUCKET_OWNED
         and depart.key_type(key) in ("file", "symlink")
-        and key not in done
+        and (key not in done or key in guard_retryable)
     }
 
     for key in sorted(owned):
@@ -3670,9 +3682,9 @@ def execute_file_symlink_phase(
                     ledger.record(
                         key,
                         c.action,
-                        "unresolved: Windows VS Code is running (or could "
-                        "not be verified) — close it first, then re-run "
-                        "--depart",
+                        f"{_VSCODE_GUARD_UNRESOLVED_PREFIX} Windows VS Code "
+                        "is running (or could not be verified) — close it "
+                        "first, then re-run --depart",
                     )
                     continue
             ledger.record(key, c.action, _execute_remove_file(path))

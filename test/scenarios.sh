@@ -82,34 +82,6 @@ sys.exit(0 if count == want else 1)
 PY
 }
 
-strip_ledger_entries() { # strip_ledger_entries <departure.jsonl path> <key> [<key> ...]
-  python3 - "$@" <<'PY'
-import json
-import sys
-
-path, *keys = sys.argv[1:]
-try:
-    lines = open(path, encoding="utf-8").read().splitlines()
-except FileNotFoundError:
-    sys.exit(0)
-kept = []
-for line in lines:
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        entry = json.loads(line)
-    except json.JSONDecodeError:
-        kept.append(line)
-        continue
-    if entry.get("key") in keys:
-        continue
-    kept.append(line)
-with open(path, "w", encoding="utf-8") as fh:
-    fh.write("\n".join(kept) + ("\n" if kept else ""))
-PY
-}
-
 baseline_key_guarded() { # baseline_key_guarded <baseline.json path> <key>
   python3 - "$1" "$2" <<'PY'
 import json
@@ -698,21 +670,13 @@ check "attempted-but-not-completed lists keybindings.json as guard-unresolved" b
   'grep "User/keybindings.json" /tmp/vscode-guard-real1.out | grep -Fq "Windows VS Code is running"'
 
 # 16e. Flip to "not running". The dry-run directly confirms the guard
-# condition itself is now clear (annotation gone) -- proving the guard
-# correctly reflects live state, independent of the ledger. A real
-# `--depart --yes` retry does NOT pick this up, though: DepartureLedger.
-# completed_keys() (depart.py:1036) excludes every key it has ever
-# recorded "regardless of outcome" ("a ledger-complete artifact is never
-# mutated again"), so a guard-blocked key from 16d is permanently excluded
-# from execute_file_symlink_phase's owned set on every later call within
-# this departure lifecycle -- a plain retry keeps replaying the stale 16d
-# ledger entry forever, even though VS Code is now closed. That's a real
-# bug in the shipped guard (tracked separately as
-# meta-depart-vscode-guard-permanent-block), not something to route
-# around silently here. To exercise the guard's actual not-running-allows-
-# removal behavior, this simulates a *first* attempt made with VS Code
-# already closed by clearing just these two keys' stale ledger entries
-# directly -- not a generic retry, which the bug above shows doesn't work.
+# condition itself is now clear (annotation gone). A real `--depart --yes`
+# retry now also picks this up: execute_file_symlink_phase re-evaluates
+# any key whose ledger history shows a VS-Code-guard-block outcome,
+# regardless of the ledger's general done-state exclusion, so this is a
+# genuine second attempt -- not a ledger-stripped simulation of a first
+# one, which is what this section used to do before the guard's retry
+# behavior was fixed.
 unset FAKE_TASKLIST_CODE_RUNNING
 ./install.sh --depart --dry-run >/tmp/vscode-guard-dry2.out 2>&1
 vscode_dry2_code=$?
@@ -724,13 +688,10 @@ check "dry-run preflight no longer flags settings.json" bash -c \
 check "dry-run preflight no longer flags keybindings.json" bash -c \
   '! grep "User/keybindings.json" /tmp/vscode-guard-dry2.out | grep -Fq "Windows VS Code is running"'
 
-strip_ledger_entries "$STATE_DIR/departure.jsonl" \
-  "file:$VSCODE_USER_DIR/settings.json" "file:$VSCODE_USER_DIR/keybindings.json"
-
 ./install.sh --depart --yes >/tmp/vscode-guard-real2.out 2>&1
 vscode_real2_code=$?
 cat /tmp/vscode-guard-real2.out
-check "depart --yes with VS Code not running (fresh attempt) still exits 1 (systemd item still unresolved)" \
+check "depart --yes with VS Code not running (real retry) still exits 1 (systemd item still unresolved)" \
   bash -c "[[ $vscode_real2_code -eq 1 ]]"
 check "settings.json removed once the guard genuinely allows it" \
   bash -c '[[ ! -e "'"$VSCODE_USER_DIR"'/settings.json" ]]'
