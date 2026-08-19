@@ -46,6 +46,18 @@ it as the target. Otherwise infer it: prefer `grill.py show`'s most recent
 session `plan_path` if one exists, otherwise the plan or proposal visible in
 the current conversation. If neither exists, ask the user what to review.
 
+Whenever the resolved plan has no backing file yet — inline text from the
+invoking message, or the "visible in the current conversation" fallback —
+write it to `~/.claude/data/grill/<topic-slug>-plan.md` first, the same
+central location `grill.py` plans use (never the per-session scratchpad dir
+— it can be gone by the time anything references this path later, e.g. a
+`dev_status.py` `related_files` entry read back in a future session). Use
+that path as `current_plan` for the rest of this skill. Never pass inline
+plan text to `second_opinion.py review`, and never embed full plan text into
+a prose field meant for short descriptions (a `context`/`next_steps`/note
+field on a `dev_status.py` item, etc.) — reference the file path there
+instead.
+
 ## Deriving focus hints
 
 Before each `review` call, read `current_plan` and identify 2-3 short,
@@ -64,7 +76,8 @@ plan changes between rounds (see the revision step below), so the risk
 areas can shift too. The focus file is working scratch, like the plan
 itself mid-loop — it supplements the reviewer's prompt, it doesn't replace
 any of it, and it isn't a deliverable: don't add it to a backlog item's
-`related_files` — that's for the final plan and critique-notes file only.
+`related_files` (that's for the final plan and critique-notes file only,
+per the section below).
 
 Caller check for tooling changes: when `current_plan` modifies a script under
 `claude/scripts/` or a harness skill file (`claude/commands/`, `opencode/skills/`,

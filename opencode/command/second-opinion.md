@@ -73,8 +73,8 @@ plan changes between rounds (see the revision step below), so the risk
 areas can shift too. The focus file is working scratch, like the plan
 itself mid-loop — it supplements the reviewer's prompt, it doesn't replace
 any of it, and it isn't a deliverable: don't add it to a backlog item's
-`related_files` — that's for the final plan and critique-notes file only,
-per the section below.
+`related_files` (that's for the final plan and critique-notes file only,
+per the section below).
 
 Caller check for tooling changes: when `current_plan` modifies a script under
 `claude/scripts/` or a harness skill file (`claude/commands/`, `opencode/skills/`,
