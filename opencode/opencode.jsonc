@@ -56,7 +56,6 @@
       "python3 - *": "allow",
       "pytest *": "allow",
       "ruff *": "allow",
-      "curl *": "allow",
       "lsof *": "allow",
       "ps *": "allow",
       "opencode run*": "allow",
