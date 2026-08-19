@@ -106,11 +106,13 @@ conversation:
   Confirm the model actually exists in opencode's catalog (`opencode
   models`) before invoking — don't assume the version number is right,
   dictation has flubbed it before. From the worktree, hand off
-  non-interactively: `opencode run -m opencode-go/glm-5.2 "Implement <plan
-  path> exactly as written — TDD, run the full suite, then STOP without
-  committing and report the diff."`. GLM never gets the commit gate. Once
-  it reports back, tell the user to point Claude at the worktree to
-  review — that resumes at step 9.
+  non-interactively: `opencode run --auto -m opencode-go/glm-5.2 "Implement
+  <plan path> exactly as written — TDD, run the full suite, then STOP
+  without committing and report the diff."` (`--auto` is required —
+  without it, opencode auto-rejects its own tool-call permission requests
+  in headless mode and silently makes no progress). GLM never gets the
+  commit gate. Once it reports back, tell the user to point Claude at the
+  worktree to review — that resumes at step 9.
 
 For a work-related item, only the first two options are on the table —
 don't offer the opencode/GLM route at all.
