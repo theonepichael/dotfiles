@@ -186,7 +186,7 @@ def _vprint_pool_choice(
 
 
 CRITIQUE_PROMPT = """\
-You are reviewing a plan written by another AI assistant (Claude).
+You are reviewing a plan written by another AI assistant.
 Your job is to find problems, not to summarize or agree.
 
 Respond in plain prose only: you have no tools, so never emit tool-call
