@@ -116,22 +116,61 @@ conversation:
   fresh Copilot session — the SessionStart hook auto-prints `Resume via:
   /backlog-item <slug>`, no manual `/clear` needed (unlike Claude, where
   the user types `/clear` themselves).
-- **opencode/GLM-5.2 — personal projects only, never at work; this user
-  does not use opencode in a work context under any circumstances.**
-  Confirm the model actually exists in opencode's catalog (`opencode
-  models`) before invoking — don't assume the version number is right,
-  dictation has flubbed it before. From the worktree, hand off
-  non-interactively: `cd $(dirname <repo>)/<repo-name>-<slug> && opencode
-  run --auto -m opencode-go/glm-5.2 "Implement <plan path> exactly as
-  written — TDD, run the full suite, then STOP without committing and
-  report the diff."` (`--auto` is required — without it, opencode
-  auto-rejects its own tool-call permission requests in headless mode and
-  silently makes no progress). GLM never gets the commit gate. Once it
-  reports back, review the diff directly in the current Copilot session —
-  that resumes at step 9 here, no second harness to hand off to.
+- **A cheaper Copilot model, same machine.** Ask the user for the specific
+  model id to run — don't parse `copilot help config` output and guess
+  which entry is "the cheap one." State explicitly, before offering this
+  option, that a cheaper-tier model doing unsupervised TDD is a materially
+  weaker executor than the model running this session — step 9's review
+  below is not optional, it's the actual safety net.
 
-For a work-related item, only the first two options are on the table —
-don't offer the opencode/GLM route at all.
+  Model check, two parts, neither skipped: (1) advisory —
+  `PAGER=cat copilot help config` (Copilot has no `models` subcommand;
+  this is the actual lookup), confirm the id appears under the `model:`
+  key's bullet list, don't guess a near match if it's missing; (2)
+  authoritative — the real invocation below, whose own exit code is the
+  definitive signal per the exit-code handling further down.
+
+  Capture the pre-handoff state first: `git -C <worktree> rev-parse
+  HEAD`. Then, as one grouped command so a failing `cd` still lands in the
+  log instead of leaking to this session's stderr: `(cd <worktree> &&
+  timeout -k 30 1800 copilot --model <id> --allow-all-tools -p "Implement
+  <absolute plan path> exactly as written — TDD, run the full suite, then
+  STOP without committing or pushing.") > <logfile> 2>&1`, where
+  `<worktree>` is `$(dirname <repo>)/<repo-name>-<slug>` (see step 1).
+  Clear any pre-existing `<logfile>` first and create it with restrictive
+  permissions (`umask 077` before the redirect, or `chmod 600` right
+  after) — it can hold the child's full transcript on a work machine.
+  1800s is a starting default; raise it for a repo whose own suite runs
+  longer. This branch never gets the commit gate — enforced by the prompt
+  above, verified below, not assumed.
+
+  Exit-code handling once the subprocess returns:
+  - **124**: `timeout` killed it (`-k 30` guarantees the process is
+    actually gone even if it ignored the initial signal) — treat as a
+    failure.
+  - **Any other nonzero exit**: grep a bounded slice of the log (e.g.
+    `tail -n 100`), never the whole file, for an explicit CLI rejection
+    string ("unknown model", "invalid model", an auth error). Found →
+    report it and stop. Not found → don't guess a cause (a failed `cd`, a
+    crash, and an infra failure all look identical here) — report the
+    exit code and log tail verbatim and stop.
+  - **Zero exit**: compare `git -C <worktree> rev-parse HEAD` against the
+    captured pre-handoff SHA before moving on. Moved → the child committed
+    despite the prompt (`--allow-all-tools` auto-approves every tool call,
+    including `git commit` — the prompt is the only enforcement) — treat
+    like the step 9 rejection case below, using the pre-handoff SHA (not
+    `HEAD`) as the reset target. Unchanged → proceed to step 9 as normal;
+    the diff comes from `git -C <worktree> diff` directly, the log isn't
+    needed on a clean run.
+
+  Step 9 rejection/rework path — if review finds the diff unacceptable
+  (or the committed-child case above fired): don't force it forward
+  toward step 10. `git status` the worktree first, then either (a) fully
+  discard via `git -C <worktree> reset --hard <pre-handoff SHA> && git -C
+  <worktree> clean -fd` and retry with an adjusted prompt, or (b) fall
+  back to the "Same session" branch and implement directly. Ask the user
+  explicitly which, and whether to keep the child's partial diff as a
+  starting point or wipe it first — don't pick automatically.
 
 ## 8. Red, green
 Work inside the worktree resolved in step 1 — `cd` there (or use `git -C`)

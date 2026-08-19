@@ -333,7 +333,7 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
 
 gen_second_opinion.py — regenerate the five second-opinion skill copies from one canonical template.
 
-- Installed at: not symlinked by `links.toml`
+- Installed at: `~/.claude/scripts/gen_second_opinion.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): regenerate the five second-opinion skill copies from one template
   - `--quiet/-q`

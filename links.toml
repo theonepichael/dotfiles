@@ -136,6 +136,12 @@ dest = "~/.claude/scripts/gen_claude_completion.py"
 src = "claude/scripts/gen_interfaces.py"
 dest = "~/.claude/scripts/gen_interfaces.py"
 
+# Same rationale as gen_interfaces.py above: repo-maintenance generator,
+# linked so it can be run as ~/.claude/scripts/gen_second_opinion.py.
+[[link]]
+src = "claude/scripts/gen_second_opinion.py"
+dest = "~/.claude/scripts/gen_second_opinion.py"
+
 [[link]]
 src = "claude/scripts/grill.py"
 dest = "~/.claude/scripts/grill.py"
