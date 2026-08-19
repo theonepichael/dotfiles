@@ -1,8 +1,19 @@
 #!/usr/bin/env python3
 """second_opinion.py — one-shot adversarial critique of a plan from a non-Claude
 backend. Single-round by design: the multi-round loop, plan revision, and
-convergence judgment all require LLM reasoning and live in second-opinion.md's
-prose instructions, not here.
+convergence judgment all require LLM reasoning and live in prose instructions,
+not here.
+
+Described by: templates/second_opinion.md.tmpl, the canonical body template
+gen_second_opinion.py generates the five second-opinion skill/command copies
+from (claude/commands/second-opinion.md and its four siblings). Changing this
+script's flags, env vars, or their behavior? Re-read
+templates/second_opinion.md.tmpl and this file's docstring together before
+committing — INTERFACES.md's entry for this module is generated from the
+docstring below, and gen_second_opinion.py --check partially guards the
+template against it (see that script's own docstring), but a behavior change
+with no corresponding flag/name change isn't caught structurally. See
+CLAUDE.md's "Keeping skill docs in sync with their scripts".
 
 Flags
   --quiet, -q      suppress non-essential output

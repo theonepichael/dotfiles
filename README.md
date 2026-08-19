@@ -196,6 +196,12 @@ The shared `~/.claude/scripts/*.py` (dev_status, grill, second_opinion,
 standup, etc.) are symlinked regardless of which harness(es) are selected —
 all four harnesses' skills/hooks call these same paths.
 
+The five `second-opinion` skill/command copies listed above are generated
+from one canonical body template (`templates/second_opinion.md.tmpl`) by
+`claude/scripts/gen_second_opinion.py` — do not hand-edit them; edit the
+template (shared wording) or the script's per-harness parameter table
+(harness-specific wording), then regenerate.
+
 `second_opinion.py review --model-index N` rotates the critique model across
 a per-machine pool configured via `SECOND_OPINION_AGY_MODEL_POOL` /
 `_OPENCODE_MODEL_POOL` / `_COPILOT_MODEL_POOL` (agy, opencode, and copilot

@@ -39,9 +39,10 @@ House style for these interfaces is in `STYLE.md`.
 | [`dotfiles_sync_check.py`](#claudescriptsdotfilessynccheckpy) | SessionStart hook: flag when the dotfiles repo has drifted from the last commit bundled over to a GitHub-blocked work machine. |
 | [`gen_claude_completion.py`](#claudescriptsgenclaudecompletionpy) | Recursively walk `claude --help` and emit a bash completion script. |
 | [`gen_interfaces.py`](#claudescriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
+| [`gen_second_opinion.py`](#claudescriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the five second-opinion skill copies from one canonical template. |
 | [`grill.py`](#claudescriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
 | [`llm_backends.py`](#claudescriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
-| [`second_opinion.py`](#claudescriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in second-opinion.md's prose instructions, not here. |
+| [`second_opinion.py`](#claudescriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
 | [`settings_seed_drift_check.py`](#claudescriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo. |
 | [`standup.py`](#claudescriptsstanduppy) | standup.py — /standup skill CLI: local data gathering. |
 | [`standup_adapters.py`](#claudescriptsstandupadapterspy) | standup_adapters.py — provider-agnostic adapter interfaces for /standup. |
@@ -328,6 +329,34 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
 - Tested by: `claude/scripts/test_gen_interfaces.py`
 
+### `claude/scripts/gen_second_opinion.py`
+
+gen_second_opinion.py — regenerate the five second-opinion skill copies from one canonical template.
+
+- Installed at: not symlinked by `links.toml`
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): regenerate the five second-opinion skill copies from one template
+  - `--quiet/-q`
+  - `--verbose/-v`
+  - `--check` — exit 1 (with diffs on stderr) if any copy, the contract shape, or a guard phrase is stale
+  - `--stdout` — print the rendered copies, write nothing
+  - `--repo-root` — repository root (default: inferred from this script's path)
+- Explicit exit codes: `1`, `2`
+- Depends on: `cli_common.py`
+- Public classes:
+  - `class HarnessParams` — One harness's frontmatter block plus its body placeholder values.
+- Public functions:
+  - `substitutions(params: HarnessParams) -> dict[str, str]` — Map each `{{TOKEN}}` in the template to this harness's value.
+  - `apply_placeholders(text: str, values: dict[str, str]) -> str` — Replace every `{{TOKEN}}` in ``text`` with its harness-specific value.
+  - `render_body(template_text: str, params: HarnessParams) -> str` — Render one harness's body: substitute placeholders, then reflow prose.
+  - `render_file(template_text: str, relpath: str, params: HarnessParams) -> str` — Render one harness's complete file: frontmatter, marker, body.
+  - `render_all(repo_root: Path) -> dict[str, str]` — Render every harness's file, keyed by its repo-relative output path.
+  - `check_contract_shape(repo_root: Path, template_text: str) -> list[str]` — Return problems where a CONTRACT_TOKENS entry is missing from the template.
+  - `check_guard_phrases(repo_root: Path, template_text: str) -> list[str]` — Return problems where a guard phrase drifted out of either source.
+  - `check_row_comments(repo_root: Path) -> list[str]` — Return problems where a HARNESS_TABLE keyword argument has no comment on the line immediately above it.
+  - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
+- Tested by: `claude/scripts/test_gen_second_opinion.py`
+
 ### `claude/scripts/grill.py`
 
 grill.py — grill-me session state CLI. All session mutations go through here.
@@ -413,7 +442,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
 
 ### `claude/scripts/second_opinion.py`
 
-second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in second-opinion.md's prose instructions, not here.
+second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here.
 
 - Installed at: `~/.claude/scripts/second_opinion.py` (all harnesses)
 - Entrypoint: executable, `#!/usr/bin/env python3`

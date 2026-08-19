@@ -10,6 +10,17 @@ harness CLIs, flags, or behavior get an entry going forward.
 - `second_opinion.py` now supports model-pool rotation for **agy** via the
   new `SECOND_OPINION_AGY_MODEL_POOL` env var, matching the existing
   opencode/copilot pools. All three backends share one indexed-pool contract.
+- `claude/scripts/gen_second_opinion.py` — the five hand-maintained
+  `second-opinion` skill/command copies are now generated from one canonical
+  body template (`templates/second_opinion.md.tmpl`) plus a per-harness
+  parameter table, mirroring `gen_interfaces.py`'s generator/`--check`/
+  `--stdout` shape. `--check` also runs a contract-shape check (every
+  `review`/`detect` flag `INTERFACES.md` lists for `second_opinion.py` is
+  named in the template) and a guard-phrase check (a hand-maintained list of
+  exact substrings that must agree between `INTERFACES.md`'s help text and
+  the template, for flags the template makes a specific behavioral claim
+  about). Do not hand-edit the five copies — edit the template or the
+  parameter table and regenerate.
 
 ### Changed (breaking)
 

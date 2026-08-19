@@ -43,6 +43,22 @@ fix genuinely only covers the specific instance (time pressure, unclear root
 cause, etc.), say so explicitly and note what a systemic fix would look
 like, rather than letting the instance-only fix pass as if it were complete.
 
+### Keeping skill docs in sync with their scripts
+
+A flag or subcommand can keep its name while its real behavior changes
+underneath — the `--model-index` bug (silent fallback became a hard error)
+was exactly this: every skill doc that named the flag still compiled and
+still passed a marker check, because nothing re-read the flag's actual
+current behavior. Before committing an edit to any script under
+`claude/scripts/` that a skill doc names (check `INTERFACES.md`'s "Tested
+by"/module entries, or grep `claude/commands/`, `opencode/skills/`,
+`copilot/skills/`, `agy/skills/` for the script's filename), read that
+script's updated `INTERFACES.md` entry and check every skill doc that names
+it for wording that no longer matches the new behavior — fix the doc before
+committing, not after. This is a semantic read, not a marker-substring
+check: a doc can still contain the flag's name and be wrong about what it
+does now.
+
 ### Verification means running it
 
 Don't describe something as "verified," "confirmed working," or "should be
