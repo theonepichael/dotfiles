@@ -29,10 +29,16 @@ that call even when a single-model override (`SECOND_OPINION_<BACKEND>_MODEL`)
 is also set; without `--model-index` the single override (or the backend
 default) applies. An explicit index is a hard error if the selected backend's
 pool is unset/empty or the index is out of range — it no longer silently
-falls back, so always pass it unconditionally rather than checking first.
-If only some backends are pool-configured, automatic selection stops on the
-first priority candidate with a pool config error; use
-`--backend <configured-backend>` to target a working one.
+falls back. Because of that, don't assume a pool is configured: pass
+`--model-index` every round as before, but if that call exits nonzero with a
+`--model-index ... requires ... POOL ...` configuration error (not a
+backend-failure message), retry that same round's call once, identical
+except omitting `--model-index` — this is the safe, always-valid fallback
+(single-model override or backend default), not a skipped round. See the
+loop below for exactly where this retry sits. If only some backends are
+pool-configured, automatic selection stops on the first priority candidate
+with a pool config error; use `--backend <configured-backend>` to target a
+working one.
 
 ## Resolving the target plan
 
@@ -92,6 +98,14 @@ loop:
     critique = second_opinion.py review <current_plan> \
                    [--focus-file <focus-hints-path>] \
                    --model-index <round - 1>   # one call
+    if that call exited nonzero with a "--model-index ... requires
+       ... POOL ..." configuration error (not a backend-failure message):
+        critique = second_opinion.py review <current_plan> \
+                       [--focus-file <focus-hints-path>]   # retry, no index —
+                                                            # no pool configured
+                                                            # for this backend,
+                                                            # not an error to
+                                                            # surface to the user
     show "Round N critique" + critique in chat
 
     if round > 1 and critique raises nothing substantively

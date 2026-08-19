@@ -148,16 +148,16 @@ it trades interactivity for adversarial rigor instead of just guessing.
      a subprocess of itself, redoing what the Task tool already does natively
      and more cheaply. Force `--backend agy` if you go this route.
 
-      `agy` now shares the indexed-pool contract: `--model-index` selects an
-      entry from `SECOND_OPINION_AGY_MODEL_POOL` for that call, just like
-      opencode/copilot. An explicit index is a hard error if the selected
-      backend's pool is unset/empty or the index is out of range, so a
-      pool-configured backend must be named with `--backend` when automatic
-      priority lands on an unconfigured one. Model-pool rotation for all
-      three backends is reachable via `second_opinion.py` called directly, or
-      the `/second-opinion` skill's own iteration loop
-      (`claude/commands/second-opinion.md`), neither of which this skill's
-      `--auto` mode routes through.
+     `agy` now shares the indexed-pool contract: `--model-index` selects an
+     entry from `SECOND_OPINION_AGY_MODEL_POOL` for that call, just like
+     opencode/copilot. An explicit index is a hard error if the selected
+     backend's pool is unset/empty or the index is out of range, so a
+     pool-configured backend must be named with `--backend` when automatic
+     priority lands on an unconfigured one. Model-pool rotation for all
+     three backends is reachable via `second_opinion.py` called directly, or
+     the `/second-opinion` skill's own iteration loop
+     (`claude/commands/second-opinion.md`), neither of which this skill's
+     `--auto` mode routes through.
 
    "Adversarial" here means exactly what `second_opinion.py`'s own
    `CRITIQUE_PROMPT` asks for regardless of which path you use — find
