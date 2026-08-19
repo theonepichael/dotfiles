@@ -136,15 +136,44 @@ remove something.
   `opencode.jsonc` (the bash permission policy, copy-once-and-report-drift
   same as Claude's `settings.json`): the shared workflow scripts
   (`dev_status.py`, `grill.py`, `second_opinion.py`, the drift/sync
-  checks), read-only Git inspection, and this repo's everyday `uv` commands
-  (`uv sync`, `uv run pytest`, `uv run ruff check/format`) are pre-approved;
-  everything else falls through to the catch-all ask, so commits, pushes,
-  destructive filesystem operations, network calls, and process control all
-  require explicit approval. `xargs` and `awk` are removed regardless,
-  since they're allowlist bypasses (each can invoke an arbitrary other
-  command as its own argument), not individually-risky commands worth
-  pre-approving. `opencode` is never installed on a work machine at all —
-  see "Work profile" below.
+  checks), read-only Git inspection, this repo's everyday `uv` commands
+  (`uv sync`, `uv run pytest`, `uv run ruff check/format`), and a
+  read-only system/process/generic-utility inspection tier (`ls`, `cat`,
+  `grep`, `find`, `stat`, `df`, `du`, `jq`, `echo`, `systemctl status`,
+  `lsof`, `ps`, `pgrep`, `ss`, etc. — state-observing, no destructive/
+  network/process-control/commit side effect) are pre-approved; everything
+  else falls through to the catch-all ask, so commits, pushes, destructive
+  filesystem operations, network calls, and process control all require
+  explicit approval. This includes common dev utilities with no documented
+  need in this repo's workflow — `sleep`, `mkdir`, `cp`, `mv`, bare
+  `pytest`/`ruff` (use the documented `uv run` variants), `git add`/
+  `stash`/`branch` — and previously-permitted interactive conveniences
+  will now prompt as a result. `git worktree*` is the highest-frequency
+  instance: `git worktree add` is on this repo's own critical path for
+  every new task (this file's worktree-first policy), so this friction is
+  felt on the very next task, not just in theory — a future re-add
+  requires updating this policy and the matching `_APPROVED_BASH_PATTERNS`
+  literal in `test/test_install.py` together, in the same commit.
+
+  The read-only-utility tier isn't uniformly side-effect-free: `find`
+  (`-delete`/`-exec`), `sed -n` (GNU sed's `e` command), and `env`
+  (`env FOO=bar <command>`) can each run an arbitrary command despite
+  predating this policy's tightening — known, frozen gaps, not silently
+  asserted safe, left alone because fixing them is a separate item.
+
+  `install.py`'s `opencode_bypass_drift` extends this with a curated,
+  install-time-enforced list of 15 stronger bypass patterns — `xargs`/
+  `awk` plus `git --no-pager`, `uv`, `node -e`, `python3 -c/-m/-`,
+  `npm install`/`npx`, `sqlite3`, `opencode run`, `copilot`, `nohup` — each
+  either takes an arbitrary command as its own argument or broadens an
+  otherwise-narrow, already-approved command into a wider category, not
+  individually-risky commands worth pre-approving. This list is a
+  snapshot of known bypass shapes, not a taxonomy: a future bypass-shaped
+  tool not on it (`perl -e`, `ssh`, etc.) isn't automatically caught by
+  either this check or the seed's policy-compliance test — only the next
+  policy review catches that, same as any other undocumented addition.
+  `opencode` is never installed on a work machine at all — see "Work
+  profile" below.
 - **`agy`** — wires config for [Antigravity CLI](https://antigravity.google/docs/cli)
   (Google's Gemini-backed CLI); the binary itself is assumed already
   installed, same as `opencode` — this script only wires its config:

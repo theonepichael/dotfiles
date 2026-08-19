@@ -1698,22 +1698,66 @@ def json_key_drift(seed: dict[str, object], live: dict[str, object]) -> list[str
     return sorted(k for k in set(seed) | set(live) if seed.get(k) != live.get(k))
 
 
+_BYPASS_BASH_PATTERNS = (
+    # Take an arbitrary command as their own argument (awk via
+    # ``system()``), so their presence isn't "individually risky command
+    # a profile could allow" — it defeats the allowlist entirely.
+    "xargs *",
+    "awk *",
+    "sqlite3 *",  # .shell/.system dot-commands run arbitrary shell
+    "nohup *",
+    # Broaden an otherwise-narrow, already-approved command into a wider
+    # category that can reach arbitrary code.
+    "git --no-pager *",  # matches any git subcommand, incl. commit/push
+    "uv *",  # broadens past the 4 named uv commands; `uv run` is arbitrary
+    "python3 -m *",  # any installed module, incl. ones with side effects
+    # Inline arbitrary code evaluation.
+    "node -e *",
+    "python3 -c *",
+    "python3 - *",
+    # Network-fetches and runs lifecycle hooks / arbitrary packages.
+    "npm install*",
+    "npm install",
+    "npx *",
+    # Delegates to a CLI with its own separate permission model, or the
+    # same CLI redirected/auto-approved via specific flags.
+    "opencode run*",  # --auto/--dir make this a real bypass
+    "copilot *",
+)
+
+
 def opencode_bypass_drift(
     seed: dict[str, object], live: dict[str, object]
 ) -> list[str]:
     """Return allowlist-bypass bash patterns present live but not in the seed.
 
-    ``xargs`` and ``awk`` each invoke an arbitrary other command as their
-    own argument (awk via ``system()``), so their presence isn't
-    "individually risky command a profile could allow" — it defeats the
-    allowlist entirely. They're called out separately from the generic
-    top-level key diff because they live nested under ``permission.bash``,
-    where a top-level diff would only say "permission" changed without
-    saying which pattern came back.
+    This is a curated, fixed set — not a generalized "any key live has
+    that seed doesn't" diff. A generalized version would flag a live-only
+    key that's merely narrower than, but already behaviorally covered by,
+    an existing seed glob (e.g. a one-off interactively-approved
+    ``git log --all`` against seed's ``git log*``) as false-positive
+    drift. Every pattern here instead shares one of two properties that
+    makes a legitimate interactive approval unlikely to ever collide with
+    it: it takes an arbitrary command as its own argument (``xargs``,
+    ``awk``, ``sqlite3``'s ``.shell``/``.system``, ``nohup``), or it
+    broadens an otherwise-narrow, already-approved command into a wider
+    category, evaluates code inline, fetches and runs external code, or
+    delegates to a separate CLI/permission model entirely.
+
+    This check is diff-gated (only runs when a caller already detected
+    seed≠live) and deliberately doesn't attempt full policy compliance —
+    only this bypass-shaped subset. It's also a snapshot of known bypass
+    shapes, not a taxonomy: a future bypass-shaped tool not in this tuple
+    (e.g. ``perl -e *``) isn't automatically caught here or by the seed's
+    own policy-compliance test — a policy review has to catch that, same
+    as any other undocumented addition. Full policy compliance for the
+    *seed* itself (not just this bypass subset, and unconditional on any
+    diff existing) is a separate, CI-only pytest check — see
+    ``test/test_install.py``'s ``_APPROVED_BASH_PATTERNS``.
     """
     seed_bash = _bash_permissions(seed)
     live_bash = _bash_permissions(live)
-    return [k for k in ("xargs *", "awk *") if k in live_bash and k not in seed_bash]
+    return [k for k in _BYPASS_BASH_PATTERNS if k in live_bash and k not in seed_bash]
 
 
 def _bash_permissions(config: dict[str, object]) -> dict[str, object]:

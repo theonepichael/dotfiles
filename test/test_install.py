@@ -603,6 +603,151 @@ def test_drift_helpers_on_raw_dicts():
     assert install.opencode_bypass_drift({}, {}) == []
 
 
+def test_opencode_bypass_drift_covers_all_extended_patterns():
+    """Each of the 13 newly-classified patterns triggers, not just xargs/awk."""
+    new_patterns = [
+        "git --no-pager *",
+        "uv *",
+        "node -e *",
+        "python3 -c *",
+        "python3 -m *",
+        "python3 - *",
+        "npm install*",
+        "npm install",
+        "npx *",
+        "sqlite3 *",
+        "opencode run*",
+        "copilot *",
+        "nohup *",
+    ]
+    for pattern in new_patterns:
+        result = install.opencode_bypass_drift(
+            {"permission": {"bash": {}}},
+            {"permission": {"bash": {pattern: "allow"}}},
+        )
+        assert result == [pattern], f"{pattern!r} should trigger bypass drift"
+
+
+def test_opencode_bypass_drift_does_not_catch_unnamed_patterns():
+    """The curated set is a snapshot, not a generalized diff — an unnamed
+    bypass-shaped pattern (perl -e *, not one of the 15) is not flagged.
+    Full-policy compliance is the pytest allowlist-equality test's job."""
+    assert (
+        install.opencode_bypass_drift(
+            {"permission": {"bash": {}}},
+            {"permission": {"bash": {"perl -e *": "allow"}}},
+        )
+        == []
+    )
+
+
+# ── seed policy compliance (allowlist equality) ─────────────────────────────
+
+# Hand-authored from this audit's classification (see
+# ~/.claude/data/grill/meta-opencode-seed-bypass-audit-spec.md) — NOT
+# derived at runtime from the seed file, since that would make the
+# equality assertion below vacuous. Any future legitimate
+# permission.bash change (new script, new KEEP) must update this
+# literal in the same commit, or the test below goes red.
+#
+# Three members are known, frozen bypass-shaped gaps, deliberately left
+# out of this audit's scope (they predate it): `find *` (-delete/-exec
+# run arbitrary commands), `sed -n *` (GNU sed's `e` command executes
+# shell), and `env` (`env FOO=bar <command>` runs an arbitrary trailing
+# command) — same shape as xargs/awk, just not touched here.
+_APPROVED_BASH_PATTERNS = frozenset(
+    {
+        # 5 named shared workflow scripts
+        "python3 ~/.claude/scripts/dev_status.py *",
+        "python3 ~/.claude/scripts/grill.py *",
+        "python3 ~/.claude/scripts/second_opinion.py *",
+        "python3 ~/.claude/scripts/settings_seed_drift_check.py *",
+        "python3 ~/.claude/scripts/dotfiles_sync_check.py *",
+        # read-only git inspection (6 forms x plain/-C *)
+        "git log*",
+        "git status*",
+        "git diff*",
+        "git show*",
+        "git ls-files*",
+        "git check-ignore*",
+        "git -C * log*",
+        "git -C * status*",
+        "git -C * diff*",
+        "git -C * show*",
+        "git -C * ls-files*",
+        "git -C * check-ignore*",
+        # 4 named uv commands
+        "uv sync*",
+        "uv run pytest*",
+        "uv run ruff check*",
+        "uv run ruff format*",
+        # pre-existing generic read-only-utility tier (never documented
+        # in README before this audit)
+        "ls*",
+        "pwd",
+        "which *",
+        "head *",
+        "head",
+        "tail *",
+        "tail",
+        "wc *",
+        "wc",
+        "sort *",
+        "sort",
+        "uniq *",
+        "uniq",
+        "grep *",
+        "rg *",
+        "find *",
+        "file *",
+        "stat *",
+        "du *",
+        "df *",
+        "date*",
+        "whoami*",
+        "env",
+        "printenv*",
+        "cat *",
+        "cat",
+        "sed -n *",
+        "strings *",
+        "readlink *",
+        "jq *",
+        "diff *",
+        "diff",
+        "echo *",
+        "echo",
+        "systemctl status*",
+        "systemctl is-active*",
+        "systemctl is-enabled*",
+        # newly-recognized read-only system/process inspection
+        "lsof *",
+        "ps *",
+        "pgrep *",
+        "ss *",
+    }
+)
+
+
+def test_seed_permission_bash_matches_approved_patterns():
+    """The repo seed's permission.bash allow-set equals the documented
+    policy exactly — this is the unconditional guard against e2363f73's
+    failure mode (a bad rule ported straight into the seed), since it
+    doesn't depend on any seed/live diff existing."""
+    seed = json.loads((REPO_ROOT / "opencode" / "opencode.jsonc").read_text())
+    bash = seed["permission"]["bash"]
+    allow_keys = {k for k, v in bash.items() if v == "allow"}
+    assert allow_keys == _APPROVED_BASH_PATTERNS
+
+
+def test_seed_permission_bash_catch_all_is_ask():
+    """Locks the catch-all's value explicitly — a regression to "deny"
+    would pass the equality test above silently (it's excluded from the
+    literal either way), so this pins it directly."""
+    seed = json.loads((REPO_ROOT / "opencode" / "opencode.jsonc").read_text())
+    assert seed["permission"]["bash"]["*"] == "ask"
+
+
 # ── --reseed ─────────────────────────────────────────────────────────────────
 
 
