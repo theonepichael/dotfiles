@@ -3,6 +3,37 @@
 This repo's internal tooling changes are logged here. Breaking changes to
 harness CLIs, flags, or behavior get an entry going forward.
 
+## 2026-08-19
+
+### Added
+
+- `second_opinion.py` now supports model-pool rotation for **agy** via the
+  new `SECOND_OPINION_AGY_MODEL_POOL` env var, matching the existing
+  opencode/copilot pools. All three backends share one indexed-pool contract.
+
+### Changed (breaking)
+
+- `second_opinion.py review --model-index N` is now a **hard error** when the
+  selected backend has no configured pool (`SECOND_OPINION_<BACKEND>_MODEL_POOL`
+  unset/empty) — previously it silently proceeded with the default model (a
+  no-op for agy, a fallback for opencode/copilot). The error names the exact
+  pool variable and the `--backend` recovery path.
+- `--model-index N` is now **rejected** when `N` is outside the pool's range
+  (`0..len(pool)-1`) instead of wrapping modulo pool length. Previously an
+  out-of-range index silently selected the wrong model.
+- An explicit `--model-index` now selects the pool entry **even when a
+  single-model override** (`SECOND_OPINION_<BACKEND>_MODEL`) is set; without
+  `--model-index` the single override (or backend default) still wins.
+- Automatic backend selection now **stops on the first priority candidate
+  that fails pool validation** (`[agy, opencode, copilot]` order) rather than
+  silently falling through to a later backend — a configuration error is not
+  a fallback trigger. Use `--backend <configured-backend>` to target a
+  working one. Execution failures (a backend runs but errors) still fall
+  through as before.
+- Updated all six `second-opinion` guidance copies, `README.md`,
+  `INTERFACES.md`, and this changelog; `agy` is no longer documented as
+  non-pool-capable.
+
 ## 2026-08-14
 
 ### Changed

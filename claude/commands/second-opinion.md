@@ -21,10 +21,18 @@ second_opinion.py review <plan-file-or-text> \
 ```
 
 `--model-index` is a 0-based index into a per-machine model pool
-(`SECOND_OPINION_OPENCODE_MODEL_POOL`/`_COPILOT_MODEL_POOL`, set by the
-user, not this skill) — round 1 of the loop below is index 0, round 2 is
-index 1, etc. It's a harmless no-op if the user hasn't configured a pool,
-so always pass it unconditionally rather than checking first.
+(`SECOND_OPINION_AGY_MODEL_POOL` / `_OPENCODE_MODEL_POOL` /
+`_COPILOT_MODEL_POOL`, set by the user, not this skill) — round 1 of the
+loop below is index 0, round 2 is index 1, etc. All three backends share
+the same indexed-pool contract. An explicit index selects the pool entry for
+that call even when a single-model override (`SECOND_OPINION_<BACKEND>_MODEL`)
+is also set; without `--model-index` the single override (or the backend
+default) applies. An explicit index is a hard error if the selected backend's
+pool is unset/empty or the index is out of range — it no longer silently
+falls back, so always pass it unconditionally rather than checking first.
+If only some backends are pool-configured, automatic selection stops on the
+first priority candidate with a pool config error; use
+`--backend <configured-backend>` to target a working one.
 
 ## Resolving the target plan
 

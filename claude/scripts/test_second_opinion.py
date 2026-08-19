@@ -27,6 +27,25 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 import second_opinion
 
+# The six model/pool variables that must be isolated from the host so tests
+# never depend on a real SECOND_OPINION_* setting. Derived-independent of the
+# implementation: enumerated here explicitly and asserted against the
+# implementation's mapping so cleanup cannot silently hide a mapping omission.
+EXPECTED_MODEL_ENV_VARS = [
+    "SECOND_OPINION_AGY_MODEL_POOL",
+    "SECOND_OPINION_AGY_MODEL",
+    "SECOND_OPINION_OPENCODE_MODEL_POOL",
+    "SECOND_OPINION_OPENCODE_MODEL",
+    "SECOND_OPINION_COPILOT_MODEL_POOL",
+    "SECOND_OPINION_COPILOT_MODEL",
+]
+
+
+def setUpModule() -> None:
+    """Clear every model/pool variable so the suite is host-independent."""
+    for var in EXPECTED_MODEL_ENV_VARS:
+        os.environ.pop(var, None)
+
 
 def ns(**kwargs: object) -> argparse.Namespace:
     kwargs.setdefault("backend", None)
@@ -38,6 +57,111 @@ def ns(**kwargs: object) -> argparse.Namespace:
 def py(code: str) -> list[str]:
     """Build a command that runs `code` as a Python one-liner."""
     return [sys.executable, "-c", code]
+
+
+class ModelEnvMappingTests(unittest.TestCase):
+    """The _POOL_ENV_VARS table is the single source of truth for pool
+    resolution, the validator's error variable names, and test cleanup."""
+
+    def test_69_mapping_has_exactly_the_expected_pairs(self) -> None:
+        self.assertEqual(
+            second_opinion._POOL_ENV_VARS,
+            {
+                "agy": (
+                    "SECOND_OPINION_AGY_MODEL_POOL",
+                    "SECOND_OPINION_AGY_MODEL",
+                ),
+                "opencode": (
+                    "SECOND_OPINION_OPENCODE_MODEL_POOL",
+                    "SECOND_OPINION_OPENCODE_MODEL",
+                ),
+                "copilot": (
+                    "SECOND_OPINION_COPILOT_MODEL_POOL",
+                    "SECOND_OPINION_COPILOT_MODEL",
+                ),
+            },
+        )
+
+    def test_69b_mapping_yields_exactly_six_expected_vars(self) -> None:
+        flat = [v for pair in second_opinion._POOL_ENV_VARS.values() for v in pair]
+        self.assertEqual(sorted(flat), sorted(EXPECTED_MODEL_ENV_VARS))
+        self.assertEqual(len(flat), 6)
+
+    def test_69c_backend_tables_share_keys_and_order(self) -> None:
+        keys = ["agy", "opencode", "copilot"]
+        self.assertEqual(list(second_opinion.BACKEND_PRIORITY), keys)
+        self.assertEqual(list(second_opinion.BACKEND_RUNNERS.keys()), keys)
+        self.assertEqual(list(second_opinion.BACKEND_LABELS.keys()), keys)
+
+
+class ValidateModelIndexTests(unittest.TestCase):
+    """_validate_model_index is pure: it reads an env mapping (a plain dict)
+    and returns a config-error message or None. cmd_review die()s on a
+    non-None return, before the runner, so an automatic selection does not
+    silently skip to another backend."""
+
+    def test_70_none_index_always_valid(self) -> None:
+        for backend in ("agy", "opencode", "copilot"):
+            self.assertIsNone(second_opinion._validate_model_index(backend, None, {}))
+
+    def test_71_missing_pool_is_error_for_each_backend(self) -> None:
+        for backend, pool_var in (
+            ("agy", "SECOND_OPINION_AGY_MODEL_POOL"),
+            ("opencode", "SECOND_OPINION_OPENCODE_MODEL_POOL"),
+            ("copilot", "SECOND_OPINION_COPILOT_MODEL_POOL"),
+        ):
+            msg = second_opinion._validate_model_index(backend, 0, {})
+            self.assertIsNotNone(msg)
+            self.assertIn(pool_var, msg)
+            self.assertIn(backend, msg)
+
+    def test_72_empty_pool_forms_all_error(self) -> None:
+        for value in ("", "   ", ", , ,"):
+            msg = second_opinion._validate_model_index(
+                "opencode", 0, {"SECOND_OPINION_OPENCODE_MODEL_POOL": value}
+            )
+            self.assertIsNotNone(msg), f"value={value!r}"
+            self.assertIn("SECOND_OPINION_OPENCODE_MODEL_POOL", msg)
+
+    def test_73_single_override_does_not_satisfy_pool_requirement(self) -> None:
+        msg = second_opinion._validate_model_index(
+            "opencode",
+            0,
+            {
+                "SECOND_OPINION_OPENCODE_MODEL_POOL": "",
+                "SECOND_OPINION_OPENCODE_MODEL": "pinned",
+            },
+        )
+        self.assertIsNotNone(msg)
+        self.assertIn("SECOND_OPINION_OPENCODE_MODEL_POOL", msg)
+
+    def test_74_out_of_range_is_error(self) -> None:
+        msg = second_opinion._validate_model_index(
+            "opencode",
+            5,
+            {"SECOND_OPINION_OPENCODE_MODEL_POOL": "a,b,c"},
+        )
+        self.assertIsNotNone(msg)
+        self.assertIn("out of range", msg)
+        self.assertIn("pool has 3 entries", msg)
+        self.assertIn("valid indexes: 0-2", msg)
+
+    def test_75_in_range_with_pool_is_valid(self) -> None:
+        self.assertIsNone(
+            second_opinion._validate_model_index(
+                "opencode", 2, {"SECOND_OPINION_OPENCODE_MODEL_POOL": "a,b,c"}
+            )
+        )
+
+    def test_76_one_entry_pool_accepts_index_zero(self) -> None:
+        self.assertIsNone(
+            second_opinion._validate_model_index(
+                "copilot", 0, {"SECOND_OPINION_COPILOT_MODEL_POOL": "only"}
+            )
+        )
+
+    def test_77_unknown_backend_never_errors(self) -> None:
+        self.assertIsNone(second_opinion._validate_model_index("nope", 3, {}))
 
 
 class ResolvePlanTextTests(unittest.TestCase):
@@ -160,7 +284,7 @@ class ResolvePooledModelTests(unittest.TestCase):
         ):
             os.environ.pop(var, None)
 
-    def test_06a_single_override_wins_regardless_of_pool(self) -> None:
+    def test_06a_single_override_wins_when_no_index(self) -> None:
         with patch.dict(
             os.environ,
             {
@@ -172,7 +296,7 @@ class ResolvePooledModelTests(unittest.TestCase):
                 second_opinion._resolve_pooled_model(
                     "SECOND_OPINION_OPENCODE_MODEL_POOL",
                     "SECOND_OPINION_OPENCODE_MODEL",
-                    2,
+                    None,
                 ),
                 "pinned",
             )
@@ -243,16 +367,18 @@ class ResolvePooledModelTests(unittest.TestCase):
                 "c",
             )
 
-    def test_06g_index_wraps_via_modulo(self) -> None:
+    def test_06g_out_of_range_index_unresolved(self) -> None:
+        # Out-of-range indexes are rejected by _validate_model_index before
+        # the runner; if _resolve_pooled_model is ever reached with one
+        # (validation bypassed), it must not silently wrap -- it returns None.
         with patch.dict(os.environ, {"SECOND_OPINION_OPENCODE_MODEL_POOL": "a,b,c"}):
             self._clear_single_only()
-            self.assertEqual(
+            self.assertIsNone(
                 second_opinion._resolve_pooled_model(
                     "SECOND_OPINION_OPENCODE_MODEL_POOL",
                     "SECOND_OPINION_OPENCODE_MODEL",
                     5,
-                ),
-                "c",
+                )
             )
 
     def test_06h_pool_entries_stripped_of_whitespace(self) -> None:
@@ -523,7 +649,7 @@ class RunOpencodeTests(unittest.TestCase):
             second_opinion.run_opencode("my prompt", model_index=1)
         self.assertEqual(box["cmd"][-3:-1], ["-m", "model-b"])
 
-    def test_40f_pool_index_wraps_via_modulo(self) -> None:
+    def test_40f_pool_index_upper_boundary(self) -> None:
         capture, box = self._capture_cmd()
         with (
             patch.dict(
@@ -535,10 +661,10 @@ class RunOpencodeTests(unittest.TestCase):
             ),
             patch.object(second_opinion, "_run_command", side_effect=capture),
         ):
-            second_opinion.run_opencode("my prompt", model_index=4)
-        self.assertEqual(box["cmd"][-3:-1], ["-m", "model-b"])  # 4 % 3 == 1
+            second_opinion.run_opencode("my prompt", model_index=2)
+        self.assertEqual(box["cmd"][-3:-1], ["-m", "model-c"])
 
-    def test_40g_single_override_wins_over_pool(self) -> None:
+    def test_40g_explicit_index_selects_pool_over_single_override(self) -> None:
         capture, box = self._capture_cmd()
         with (
             patch.dict(
@@ -551,7 +677,7 @@ class RunOpencodeTests(unittest.TestCase):
             patch.object(second_opinion, "_run_command", side_effect=capture),
         ):
             second_opinion.run_opencode("my prompt", model_index=1)
-        self.assertEqual(box["cmd"][-3:-1], ["-m", "pinned-model"])
+        self.assertEqual(box["cmd"][-3:-1], ["-m", "model-b"])
 
     def test_40h_requests_one_retry(self) -> None:
         # opencode's CLI intermittently stalls its event stream (see
@@ -795,14 +921,15 @@ class CmdReviewTests(unittest.TestCase):
         with (
             patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
             patch.object(second_opinion, "BACKEND_RUNNERS", {"agy": spy_runner}),
+            patch.dict(os.environ, {"SECOND_OPINION_AGY_MODEL_POOL": "m0,m1,m2,m3"}),
             patch("sys.stdout", out),
         ):
             second_opinion.cmd_review(ns(plan="text", backend="agy", model_index=2))
         self.assertEqual(captured["model_index"], 2)
 
     def test_64_agy_backend_with_explicit_model_index_succeeds(self) -> None:
-        # agy accepts and ignores model_index (signature symmetry only) --
-        # must not crash.
+        # agy now honors model_index (shared indexed-pool contract) -- a valid
+        # index into a configured pool must not crash.
         out = io.StringIO()
         with (
             patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
@@ -811,10 +938,116 @@ class CmdReviewTests(unittest.TestCase):
                 "BACKEND_RUNNERS",
                 {"agy": lambda p, model_index=None: "agy critique"},
             ),
+            patch.dict(os.environ, {"SECOND_OPINION_AGY_MODEL_POOL": "m0,m1,m2,m3"}),
             patch("sys.stdout", out),
         ):
             second_opinion.cmd_review(ns(plan="text", backend="agy", model_index=3))
         self.assertIn("agy critique", out.getvalue())
+
+    def test_50a_forced_backend_index_missing_pool_dies(self) -> None:
+        err = io.StringIO()
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.dict(os.environ, {}, clear=False),
+            self.assertRaises(SystemExit) as cm,
+            patch("sys.stderr", err),
+        ):
+            second_opinion.cmd_review(ns(plan="text", backend="agy", model_index=0))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("SECOND_OPINION_AGY_MODEL_POOL", err.getvalue())
+        self.assertIn("for backend agy", err.getvalue())
+
+    def test_50b_forced_backend_index_out_of_range_dies(self) -> None:
+        err = io.StringIO()
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.dict(os.environ, {"SECOND_OPINION_AGY_MODEL_POOL": "only"}),
+            self.assertRaises(SystemExit) as cm,
+            patch("sys.stderr", err),
+        ):
+            second_opinion.cmd_review(ns(plan="text", backend="agy", model_index=3))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("out of range", err.getvalue())
+        self.assertIn("pool has 1 entries", err.getvalue())
+        self.assertIn("valid indexes: 0-0", err.getvalue())
+
+    def test_50c_forced_backend_index_pool_used_over_single_override(self) -> None:
+        capture, box = RunOpencodeTests()._capture_cmd()
+        out = io.StringIO()
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.dict(
+                os.environ,
+                {
+                    "SECOND_OPINION_OPENCODE_MODEL_POOL": "x,y",
+                    "SECOND_OPINION_OPENCODE_MODEL": "pinned",
+                },
+            ),
+            patch.object(second_opinion, "_run_command", side_effect=capture),
+            patch("sys.stdout", out),
+        ):
+            second_opinion.cmd_review(
+                ns(plan="text", backend="opencode", model_index=1)
+            )
+        self.assertEqual(box["cmd"][-3:-1], ["-m", "y"])
+
+    def test_50d_automatic_selection_stops_on_first_candidate_config_error(
+        self,
+    ) -> None:
+        # agy is first in priority; an empty agy pool with an explicit index
+        # must stop selection (configuration error), NOT silently fall through
+        # to opencode even though opencode is configured.
+        err = io.StringIO()
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.dict(
+                os.environ, {"SECOND_OPINION_OPENCODE_MODEL_POOL": "only-opencode"}
+            ),
+            self.assertRaises(SystemExit) as cm,
+            patch("sys.stderr", err),
+        ):
+            second_opinion.cmd_review(ns(plan="text", model_index=0))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("SECOND_OPINION_AGY_MODEL_POOL", err.getvalue())
+        self.assertIn("for backend agy", err.getvalue())
+
+    def test_50e_agy_index_resolves_pool_model(self) -> None:
+        captured: dict[str, object] = {}
+        out = io.StringIO()
+
+        def fake_agy(prompt: str, model: str, timeout: int) -> str:
+            captured["model"] = model
+            return "critique"
+
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.dict(os.environ, {"SECOND_OPINION_AGY_MODEL_POOL": "a,b"}),
+            patch.object(second_opinion.llm_backends, "run_agy", side_effect=fake_agy),
+            patch("sys.stdout", out),
+        ):
+            second_opinion.cmd_review(ns(plan="text", backend="agy", model_index=1))
+        self.assertEqual(captured["model"], "b")
+
+    def test_50f_copilot_index_resolves_pool_model(self) -> None:
+        captured: dict[str, object] = {}
+        out = io.StringIO()
+
+        def fake_copilot(prompt: str, model: str | None, timeout: int) -> str:
+            captured["model"] = model
+            return "critique"
+
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.dict(
+                os.environ, {"SECOND_OPINION_COPILOT_MODEL_POOL": "gpt-4,gpt-5"}
+            ),
+            patch.object(
+                second_opinion.llm_backends, "run_copilot", side_effect=fake_copilot
+            ),
+            patch("sys.stdout", out),
+        ):
+            second_opinion.cmd_review(ns(plan="text", backend="copilot", model_index=0))
+        self.assertEqual(captured["model"], "gpt-4")
 
 
 class DieTests(unittest.TestCase):

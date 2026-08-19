@@ -7,22 +7,34 @@ prose instructions, not here.
 Flags
   --quiet, -q      suppress non-essential output
   --verbose, -v    emit extra diagnostic messages to stderr
-  --model-index N  (review only) 0-based index into the opencode/copilot
-                   model pool for this call, e.g. round 1 of a rotation is
-                   index 0, round 2 is index 1. Ignored for agy, and a no-op
-                   for opencode/copilot when no *_MODEL_POOL is set. Must be
-                   non-negative.
+   --model-index N  (review only) 0-based index into the backend model pool
+                    (SECOND_OPINION_<BACKEND>_MODEL_POOL) for this call, e.g.
+                    round 1 of a rotation is index 0, round 2 is index 1.
+                    Supported for agy, opencode, and copilot. An explicit
+                    index selects the pool even when a single-model override
+                    is set, and is a hard error if the selected backend has no
+                    configured pool or the index is out of range — it no
+                    longer silently falls back. Must be non-negative.
 
 Env vars
   SECOND_OPINION_AGY_MODEL          force the agy model (default "Gemini 3.7 Flash (High)")
+  SECOND_OPINION_AGY_MODEL_POOL     comma-separated agy model pool for
+                                    --model-index rotation (default: unset,
+                                    no rotation). SECOND_OPINION_AGY_MODEL, if
+                                    set without --model-index, wins outright
+                                    over the pool; an explicit --model-index
+                                    selects the pool regardless.
   SECOND_OPINION_COPILOT_MODEL      force the Copilot model (default: unset)
   SECOND_OPINION_OPENCODE_MODEL     force the opencode adversary-agent model (default: live config)
   SECOND_OPINION_OPENCODE_MODEL_POOL  comma-separated opencode model pool for
-                                     --model-index rotation (default: unset,
-                                     no rotation). SECOND_OPINION_OPENCODE_MODEL,
-                                     if also set, wins outright over the pool.
+                                      --model-index rotation (default: unset,
+                                      no rotation). SECOND_OPINION_OPENCODE_MODEL,
+                                      if set without --model-index, wins
+                                      outright over the pool; an explicit
+                                      --model-index selects the pool
+                                      regardless.
   SECOND_OPINION_COPILOT_MODEL_POOL   same, for the copilot backend and
-                                     SECOND_OPINION_COPILOT_MODEL.
+                                      SECOND_OPINION_COPILOT_MODEL.
   SECOND_OPINION_TIMEOUT_SECONDS    default per-backend timeout in seconds (default 120)
   SECOND_OPINION_AGY_TIMEOUT_SECONDS      override the timeout for agy calls only
   SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS override the timeout for opencode calls only
@@ -48,6 +60,7 @@ import os
 import shutil
 import signal
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from types import FrameType
 from typing import NoReturn
@@ -110,47 +123,127 @@ def _resolve_timeout(env_var: str) -> int:
     return _parse_positive_int(os.environ.get(env_var, ""), BACKEND_TIMEOUT_SECONDS)
 
 
-# backend -> (pool env var, single-override env var). agy is deliberately
-# absent: it has no pool/rotation behavior.
+# backend -> (pool env var, single-override env var). The single source of
+# truth for pool resolution, the validator's error variable names, and test
+# cleanup. agy joins opencode/copilot under the same indexed-pool contract;
+# its single override is SECOND_OPINION_AGY_MODEL and its pool is
+# SECOND_OPINION_AGY_MODEL_POOL.
 _POOL_ENV_VARS = {
+    "agy": ("SECOND_OPINION_AGY_MODEL_POOL", "SECOND_OPINION_AGY_MODEL"),
     "opencode": ("SECOND_OPINION_OPENCODE_MODEL_POOL", "SECOND_OPINION_OPENCODE_MODEL"),
     "copilot": ("SECOND_OPINION_COPILOT_MODEL_POOL", "SECOND_OPINION_COPILOT_MODEL"),
 }
 
 
-def _env_stripped(var: str) -> str:
-    """Return ``var``'s value stripped of whitespace, or ``""`` if unset/blank."""
-    return (os.environ.get(var) or "").strip()
+def _env_stripped(var: str, env: Mapping[str, str] | None = None) -> str:
+    """Return ``var``'s value stripped of whitespace, or ``""`` if unset/blank.
+
+    Reads from ``env`` when given (a plain dict in tests) and ``os.environ``
+    otherwise, so the pool parser and this helper stay pure and testable
+    without host variables leaking in.
+    """
+    value = os.environ.get(var) if env is None else env.get(var)
+    return (value or "").strip()
 
 
-def _parse_pool(var: str) -> list[str]:
-    """Split ``var``'s comma-separated value into stripped, non-empty entries."""
-    return [m.strip() for m in os.environ.get(var, "").split(",") if m.strip()]
+def _parse_pool(var: str, env: Mapping[str, str] | None = None) -> list[str]:
+    """Split ``var``'s comma-separated value into stripped, non-empty entries.
+
+    Reads from ``env`` when given (a plain dict in tests) and ``os.environ``
+    otherwise; unset/blank/comma-only values yield ``[]``.
+    """
+    raw = os.environ.get(var, "") if env is None else env.get(var, "")
+    return [m.strip() for m in raw.split(",") if m.strip()]
 
 
 def _resolve_pooled_model(
-    pool_env_var: str, single_env_var: str, model_index: int | None
+    pool_env_var: str,
+    single_env_var: str,
+    model_index: int | None,
+    env: Mapping[str, str] | None = None,
 ) -> str | None:
-    """Pick a model for one backend call.
+    """Pick a model for one backend call (opencode/copilot).
 
-    Pure function, no side effects (no logging) — callers that want
-    visibility into the choice log it themselves, once, at the point they
-    call this (see :func:`_vprint_pool_choice`); logging from inside here
-    would fire once per call site per attempt instead of once per attempt.
+    Pure function, no side effects. An explicit ``model_index`` selects the
+    matching ``pool_env_var`` entry for that call — even when
+    ``single_env_var`` is also set (the non-interactive way to choose the pool
+    over a single-model override); :func:`_validate_model_index` has already
+    rejected an out-of-range or missing-pool index before this is reached, so
+    the bounds guard is only a defensive no-op here. With no ``model_index``,
+    ``single_env_var`` wins if set (whitespace-only counts as unset), else the
+    pool's first entry, else ``None`` (the "let the backend pick" default).
 
-    The single-model override env var wins outright if set (whitespace-only
-    counts as unset). Otherwise, if the pool env var is non-empty, pick
-    ``pool[index % len(pool)]`` (index defaults to 0 if ``model_index`` is
-    ``None``). Otherwise ``None`` — today's "let the backend pick" behavior.
+    Reads from ``env`` when given (tests) and ``os.environ`` otherwise. agy
+    uses :func:`_resolve_agy_model` instead, which preserves its pre-pool
+    no-index default.
     """
-    single = _env_stripped(single_env_var)
+    pool = _parse_pool(pool_env_var, env)
+    if model_index is not None:
+        if pool and 0 <= model_index < len(pool):
+            return pool[model_index]
+        return None
+    single = _env_stripped(single_env_var, env)
     if single:
         return single
-    pool = _parse_pool(pool_env_var)
-    if not pool:
+    if pool:
+        return pool[0]
+    return None
+
+
+def _validate_model_index(
+    backend: str, model_index: int | None, env: Mapping[str, str] | None = None
+) -> str | None:
+    """Return a config-error message for ``backend``'s ``model_index``, else ``None``.
+
+    Pure: reads ``env`` (a plain dict in tests) or ``os.environ`` and never
+    prints or exits — the caller ``die``s on a non-``None`` return. An
+    out-of-range or missing-pool index is a configuration error, not a
+    fallback trigger: it must be caught before the runner so an automatic
+    selection does not silently skip to another backend.
+
+    Empty-pool is checked before the range, so a missing pool never produces a
+    ``0--1`` valid-range error. No ``model_index`` (``None``) is always valid.
+    """
+    if model_index is None:
         return None
-    index = model_index if model_index is not None else 0
-    return pool[index % len(pool)]
+    if backend not in _POOL_ENV_VARS:
+        return None
+    pool_var, _ = _POOL_ENV_VARS[backend]
+    pool = _parse_pool(pool_var, env)
+    if not pool:
+        return (
+            f"--model-index {model_index} requires {pool_var} for backend "
+            f"{backend}; set it for pool rotation, use --backend "
+            f"<configured-backend> to bypass priority, or omit --model-index"
+        )
+    if not (0 <= model_index < len(pool)):
+        return (
+            f"--model-index {model_index} out of range for {pool_var}; pool "
+            f"has {len(pool)} entries (valid indexes: 0-{len(pool) - 1})"
+        )
+    return None
+
+
+def _resolve_agy_model(model_index: int | None) -> str:
+    """Pick the agy model for one call.
+
+    No ``model_index``: ``SECOND_OPINION_AGY_MODEL`` if set, else
+    :data:`DEFAULT_AGY_MODEL` — preserves the pre-pool default even when an agy
+    pool is configured (an indexed pool rotation is opt-in per call). With
+    ``model_index``: the entry at that index from
+    ``SECOND_OPINION_AGY_MODEL_POOL``; :func:`_validate_model_index` has already
+    died on a missing-pool or out-of-range index, so the guard here is only
+    reached if validation is bypassed. Falls back to the single override or
+    default when no pool is configured.
+    """
+    single = _env_stripped("SECOND_OPINION_AGY_MODEL")
+    if model_index is None:
+        return single or DEFAULT_AGY_MODEL
+    pool = _parse_pool("SECOND_OPINION_AGY_MODEL_POOL")
+    if pool:
+        idx = model_index if 0 <= model_index < len(pool) else 0
+        return pool[idx]
+    return single or DEFAULT_AGY_MODEL
 
 
 def _vprint_pool_choice(
@@ -168,18 +261,15 @@ def _vprint_pool_choice(
     if backend not in _POOL_ENV_VARS or not verbose:
         return
     pool_var, single_var = _POOL_ENV_VARS[backend]
-    if _env_stripped(single_var):
-        if model_index is not None:
-            cli_common.vprint(
-                f"[second_opinion] {single_var} is set; ignoring --model-index",
-                verbose=verbose,
-            )
+    if model_index is None and _env_stripped(single_var):
         return
     pool = _parse_pool(pool_var)
     if not pool:
         return
     index = model_index if model_index is not None else 0
-    chosen = pool[index % len(pool)]
+    if not (0 <= index < len(pool)):
+        return
+    chosen = pool[index]
     cli_common.vprint(
         f"[second_opinion] {pool_var} -> {chosen} (index {index})", verbose=verbose
     )
@@ -299,13 +389,16 @@ DEFAULT_AGY_MODEL = "Gemini 3.7 Flash (High)"
 def run_agy(prompt: str, *, model_index: int | None = None) -> str:
     """Run the ``agy`` backend and return its critique text.
 
-    An explicit model can be forced via the ``SECOND_OPINION_AGY_MODEL`` env
-    var; unset means :data:`DEFAULT_AGY_MODEL`. ``model_index`` is accepted
-    and ignored — ``agy`` has no pool/rotation behavior; the parameter
-    exists only so every entry in :data:`BACKEND_RUNNERS` shares one calling
-    convention.
+    The model is resolved via :func:`_resolve_agy_model`: without
+    ``--model-index``, ``SECOND_OPINION_AGY_MODEL`` if set, else
+    :data:`DEFAULT_AGY_MODEL` (a configured agy pool does not change the
+    default); with ``--model-index``, the indexed entry from
+    ``SECOND_OPINION_AGY_MODEL_POOL`` (validated by
+    :func:`_validate_model_index`, which dies on a missing pool or out-of-range
+    index). ``model_index`` is no longer ignored — agy now shares the
+    indexed-pool contract.
     """
-    model = os.environ.get("SECOND_OPINION_AGY_MODEL", DEFAULT_AGY_MODEL)
+    model = _resolve_agy_model(model_index)
     return llm_backends.run_agy(
         prompt,
         model=model,
@@ -423,15 +516,16 @@ BACKEND_LABELS = {
 def backend_label(backend: str, *, model_index: int | None = None) -> str:
     """Return ``backend``'s display label, appending the resolved agy/copilot/opencode model if any.
 
-    For ``opencode``/``copilot``, resolution goes through the same
-    :func:`_resolve_pooled_model` the runner uses (single-override env var,
-    else pool + ``model_index``) — one source of truth, so the printed label
-    always matches the model the runner actually used, pool or not.
+    For ``agy``, resolution goes through :func:`_resolve_agy_model`; for
+    ``opencode``/``copilot`` it goes through the same :func:`_resolve_pooled_model`
+    the runner uses (single-override env var when no index, else pool +
+    ``model_index``) — one source of truth, so the printed label always
+    matches the model the runner actually used, pool or not.
     """
     label = BACKEND_LABELS[backend]
     if backend == "agy":
-        model = os.environ.get("SECOND_OPINION_AGY_MODEL")
-        if model and model != DEFAULT_AGY_MODEL:
+        model = _resolve_agy_model(model_index)
+        if model != DEFAULT_AGY_MODEL:
             return f"agy ({model})"
         return label
     if backend == "copilot":
@@ -489,6 +583,10 @@ def cmd_review(args: argparse.Namespace) -> None:
     failures = []
     for backend in candidates:
         _vprint_pool_choice(backend, model_index, verbose=verbose)
+        if model_index is not None:
+            err = _validate_model_index(backend, model_index, os.environ)
+            if err:
+                die(err)
         try:
             critique = BACKEND_RUNNERS[backend](prompt, model_index=model_index)
         except BackendError as exc:
@@ -566,10 +664,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=_non_negative_int,
         default=None,
         metavar="N",
-        help="0-based index into the opencode/copilot model pool "
-        "(SECOND_OPINION_OPENCODE_MODEL_POOL / _COPILOT_MODEL_POOL) for "
-        "this call -- round 1 of a rotation is index 0, round 2 is index "
-        "1, etc. Ignored for agy, and a no-op when no pool is set.",
+        help="0-based index into the backend model pool "
+        "(SECOND_OPINION_{AGY,OPENCODE,COPILOT}_MODEL_POOL) for this call "
+        "-- round 1 of a rotation is index 0, round 2 is index 1, etc. "
+        "Supported for agy/opencode/copilot; an explicit index selects the "
+        "pool even when a single-model override is set, and is a hard error "
+        "if the pool is unset/empty or the index is out of range (was "
+        "previously a silent no-op/fallback).",
     )
 
     return parser

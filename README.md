@@ -196,6 +196,16 @@ The shared `~/.claude/scripts/*.py` (dev_status, grill, second_opinion,
 standup, etc.) are symlinked regardless of which harness(es) are selected —
 all four harnesses' skills/hooks call these same paths.
 
+`second_opinion.py review --model-index N` rotates the critique model across
+a per-machine pool configured via `SECOND_OPINION_AGY_MODEL_POOL` /
+`_OPENCODE_MODEL_POOL` / `_COPILOT_MODEL_POOL` (agy, opencode, and copilot
+all share the same indexed-pool contract). An explicit `--model-index` picks
+the pool entry for that call even when a single-model override
+(`SECOND_OPINION_<BACKEND>_MODEL`) is also set; without it, the override (or
+the backend default) applies. **Breaking:** an explicit `--model-index` is now
+a hard error if the selected backend's pool is unset/empty or the index is
+out of range — it no longer silently falls back to the default model.
+
 ## Work profile
 
 `--profile=work` controls machine-level concerns — with one exception

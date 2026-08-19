@@ -17,6 +17,19 @@ second_opinion.py review <plan-file-or-text> \
                                                   # plan-specific risk hints
 ```
 
+`--model-index N` (optional) is a 0-based index into a per-machine model
+pool (`SECOND_OPINION_AGY_MODEL_...`/`_OPENCODE_MODEL_POOL`/
+`_COPILOT_MODEL_POOL`, set by the user). All three backends share the same
+indexed-pool contract. An explicit index selects the pool entry for that
+call even when a single-model override is also set; without `--model-index`
+the single override (or backend default) applies. An explicit index is a
+hard error if the selected backend's pool is unset/empty or the index is out
+of range — it no longer silently falls back. Automatic selection tries
+backends in fixed priority `[agy, opencode, copilot]` and stops on the first
+candidate with a pool config error, so name a pool-configured backend
+explicitly with `--backend <backend>` when the first priority candidate
+lacks a pool.
+
 ## Resolving the target plan
 
 If the invoking message names an explicit file path or inline plan text
