@@ -4063,6 +4063,18 @@ def do_depart(ctx: Context) -> int:
         )
         return 2
 
+    # A real (non-dry-run) run with no --yes and no keyboard to confirm on
+    # is a guaranteed refusal no matter what the preflight report says, so
+    # check for it before printing that report — otherwise the error that
+    # actually matters ends up buried under a 100+ line dump the user can't
+    # act on anyway.
+    if not ctx.opts.dry_run and not ctx.opts.yes and not sys.stdin.isatty():
+        print(
+            PALETTE.error("refusing a non-interactive real run without --yes"),
+            file=sys.stderr,
+        )
+        return 2
+
     report = build_preflight_report(ctx)
     if report is None:
         print(
@@ -4085,12 +4097,6 @@ def do_depart(ctx: Context) -> int:
         return 0
 
     if not ctx.opts.yes:
-        if not sys.stdin.isatty():
-            print(
-                PALETTE.error("refusing a non-interactive real run without --yes"),
-                file=sys.stderr,
-            )
-            return 2
         print()
         print("Type DEPART to proceed: ", end="", flush=True)
         if _read_confirmation_token() != "DEPART":
