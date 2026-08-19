@@ -105,11 +105,13 @@ conversation:
 - **Different/cheaper model.** Confirm the model actually exists in
   opencode's catalog (`opencode models`) before invoking — don't assume the
   version number is right, dictation has flubbed it before. From the
-  worktree, hand off non-interactively: `opencode run -m <provider/model>
-  "Implement <plan path> exactly as written — TDD, run the full suite, then
-  STOP without committing and report the diff."` An external executor never
-  gets the commit gate. Once it reports back, review — that resumes at
-  step 9.
+  worktree, hand off non-interactively: `opencode run --auto -m
+  <provider/model> "Implement <plan path> exactly as written — TDD, run the
+  full suite, then STOP without committing and report the diff."`
+  (`--auto` is required — without it, opencode auto-rejects its own
+  tool-call permission requests in headless mode and silently makes no
+  progress). An external executor never gets the commit gate. Once it
+  reports back, review — that resumes at step 9.
 
 ## 8. Red, green
 TDD in the worktree: a failing test that proves the gap the plan names,
