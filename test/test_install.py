@@ -3164,6 +3164,23 @@ def test_do_depart_non_tty_real_run_without_yes_exits_2(
     assert "non-interactive" in capsys.readouterr().err
 
 
+def test_do_depart_non_tty_real_run_without_yes_skips_preflight_dump(
+    home, links, offline_install, monkeypatch, capsys
+):
+    """A guaranteed-refusal run shouldn't bury the error under a preflight
+    report the user can't act on anyway -- the error must be the only
+    output, not the last line of a long dump."""
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(False))
+    code = install.do_depart(make_ctx(home))
+    assert code == 2
+    out = capsys.readouterr().out
+    assert "owned (" not in out
+    assert "preserved (" not in out
+
+
 def test_do_depart_yes_bypasses_prompt_entirely(
     home, links, offline_install, monkeypatch, capsys
 ):
