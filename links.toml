@@ -123,6 +123,7 @@ dest = "~/.claude/scripts/llm_backends.py"
 [[link]]
 src = "claude/scripts/dev_status_sync.py"
 dest = "~/.claude/scripts/dev_status_sync.py"
+profile_exclude = ["work"]
 
 [[link]]
 src = "claude/scripts/gen_claude_completion.py"
