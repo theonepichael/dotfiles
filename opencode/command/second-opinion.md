@@ -9,22 +9,33 @@ the script's.
 
 ```
 second_opinion.py detect                        # which backends are present (JSON)
-second_opinion.py review <plan-file-or-text>     # one critique from the
-                                                  # priority-selected backend
+second_opinion.py review <plan-file-or-text> \
+    [--focus-file <path>] \
+    [--model-index N]                            # one critique from the
+                                                  # priority-selected backend,
+                                                  # optionally scoped with
+                                                  # plan-specific risk hints
 ```
 
-`--model-index N` (optional) is a 0-based index into a per-machine model
-pool (`SECOND_OPINION_AGY_MODEL_POOL` / `_OPENCODE_MODEL_POOL` /
-`_COPILOT_MODEL_POOL`, set by the user). All three backends share the same
-indexed-pool contract. An explicit index selects the pool entry for that
-call even when a single-model override is also set; without `--model-index`
-the single override (or backend default) applies. An explicit index is a
-hard error if the selected backend's pool is unset/empty or the index is out
-of range — it no longer silently falls back. Automatic selection tries
-backends in fixed priority `[agy, opencode, copilot]` and stops on the first
-candidate with a pool config error, so name a pool-configured backend
-explicitly with `--backend <backend>` when the first priority candidate
-lacks a pool.
+`--model-index` is a 0-based index into a per-machine model pool
+(`SECOND_OPINION_AGY_MODEL_POOL` / `_OPENCODE_MODEL_POOL` /
+`_COPILOT_MODEL_POOL`, set by the user, not this skill) — round 1 of the
+loop below is index 0, round 2 is index 1, etc. All three backends share
+the same indexed-pool contract. An explicit index selects the pool entry for
+that call even when a single-model override (`SECOND_OPINION_<BACKEND>_MODEL`)
+is also set; without `--model-index` the single override (or the backend
+default) applies. An explicit index is a hard error if the selected backend's
+pool is unset/empty or the index is out of range — it no longer silently
+falls back. Because of that, don't assume a pool is configured: pass
+`--model-index` every round as before, but if that call exits nonzero with a
+`--model-index ... requires ... POOL ...` configuration error (not a
+backend-failure message), retry that same round's call once, identical
+except omitting `--model-index` — this is the safe, always-valid fallback
+(single-model override or backend default), not a skipped round. See the
+loop below for exactly where this retry sits. If only some backends are
+pool-configured, automatic selection stops on the first priority candidate
+with a pool config error; use `--backend <configured-backend>` to target a
+working one.
 
 ## Resolving the target plan
 
@@ -32,6 +43,54 @@ If `$ARGUMENTS` is non-empty, treat it as an explicit file path or inline plan
 text. Otherwise infer it: prefer `grill.py show`'s most recent session
 `plan_path` if one exists, otherwise the plan or proposal visible in the
 current conversation. If neither exists, ask the user what to review.
+
+Whenever the resolved plan has no backing file yet — inline `$ARGUMENTS` text,
+or the "visible in the current conversation" fallback — write it to
+`~/.claude/data/grill/<topic-slug>-plan.md` first, the same central location
+`grill.py` plans use (never the per-session scratchpad dir — it can be gone
+by the time anything references this path later, e.g. a `dev_status.py`
+`related_files` entry read back in a future session). Use that path as
+`current_plan` for the rest of this skill. Never pass inline plan text to
+`second_opinion.py review`, and never embed full plan text into a prose field
+meant for short descriptions (a `context`/`next_steps`/note field on a
+`dev_status.py` item, etc.) — reference the file path there instead.
+
+## Deriving focus hints
+
+Before each `review` call, read `current_plan` and identify 2-3 short,
+concrete risk areas specific to *this* plan's content — not generic advice
+("test your code", "handle errors") but what's actually likely to go wrong
+given what the plan does (e.g. "concurrent writes during the migration
+window", "auth token refresh on the retry path", "the fallback UI state
+when the API times out"). Write them as a short bullet list to
+`<current_plan without its extension>-focus.md` and pass
+`--focus-file <that path>` to `review`. Skip `--focus-file` entirely if
+nothing plan-specific stands out — never write generic filler bullets just
+to have something to pass.
+
+This is a fresh judgment call each round, not a one-time setup step: the
+plan changes between rounds (see the revision step below), so the risk
+areas can shift too. The focus file is working scratch, like the plan
+itself mid-loop — it supplements the reviewer's prompt, it doesn't replace
+any of it, and it isn't a deliverable: don't add it to a backlog item's
+`related_files` — that's for the final plan and critique-notes file only,
+per the section below.
+
+Caller check for tooling changes: when `current_plan` modifies a script under
+`claude/scripts/` or a harness skill file (`claude/commands/`, `opencode/skills/`,
+`copilot/skills/`, `agy/skills/`), grep the repo for that script's callers before
+deriving hints and add a focus hint naming them — e.g. "The plan changes
+`<script>`; verify it against its documented callers in `<paths>` — does the change
+break any caller's documented invocation (flags, env vars, exit behavior)?" A
+non-Claude reviewer won't surface this on its own: the 12 adversarial rounds that
+let the `--model-index` hard-error ship never inspected the skill files that invoke
+the script. Name the callers the grep actually finds, not a generic reminder.
+
+The point of these hints is to sharpen the critique on this plan's actual
+risk surface, not to narrow the reviewer's attention to only what you
+anticipated — the reviewer still receives the full generic adversarial
+prompt regardless, so it stays free to surface things you didn't think to
+flag.
 
 ## Iteration loop
 
@@ -41,7 +100,19 @@ current_plan = <resolved input>
 prior_critique = None
 
 loop:
-    critique = second_opinion.py review <current_plan>   # one call
+    focus_hints = derive 2-3 plan-specific risk bullets from current_plan
+                  (see above), or skip if nothing specific stands out
+    critique = second_opinion.py review <current_plan> \
+                   [--focus-file <focus-hints-path>] \
+                   --model-index <round - 1>   # one call
+    if that call exited nonzero with a "--model-index ... requires
+       ... POOL ..." configuration error (not a backend-failure message):
+        critique = second_opinion.py review <current_plan> \
+                       [--focus-file <focus-hints-path>]   # retry, no index —
+                                                            # no pool configured
+                                                            # for this backend,
+                                                            # not an error to
+                                                            # surface to the user
     show "Round N critique" + critique in chat
 
     if round > 1 and critique raises nothing substantively
@@ -107,6 +178,14 @@ Unresolved: <specific remaining disagreement>.
 Then `question` tool: `Keep the current approach (recommended)` /
 `Use the reviewer's suggestion` / `Let me decide manually`. Never silently
 pick a side when the round cap is hit mid-disagreement.
+
+## Recording it in the backlog
+
+Once the final plan is settled (converged or capped out), apply the shared
+instructions file's "Plans and deliverables get a path on record" backlog
+policy: both the plan's file path and the critique-notes file path end up in
+a tracking item's `related_files`, whether that means creating the item
+(offer first) or updating an existing one.
 
 ## No backend available
 

@@ -11,24 +11,32 @@ the script's.
 ```
 second_opinion.py detect                        # which backends are present (JSON)
 second_opinion.py review <plan-file-or-text> \
-    [--focus-file <path>]                        # one critique from the
+    [--focus-file <path>] \
+    [--model-index N]                            # one critique from the
                                                   # priority-selected backend,
                                                   # optionally scoped with
                                                   # plan-specific risk hints
 ```
 
-`--model-index N` (optional) is a 0-based index into a per-machine model
-pool (`SECOND_OPINION_AGY_MODEL_...`/`_OPENCODE_MODEL_POOL`/
-`_COPILOT_MODEL_POOL`, set by the user). All three backends share the same
-indexed-pool contract. An explicit index selects the pool entry for that
-call even when a single-model override is also set; without `--model-index`
-the single override (or backend default) applies. An explicit index is a
-hard error if the selected backend's pool is unset/empty or the index is out
-of range — it no longer silently falls back. Automatic selection tries
-backends in fixed priority `[agy, opencode, copilot]` and stops on the first
-candidate with a pool config error, so name a pool-configured backend
-explicitly with `--backend <backend>` when the first priority candidate
-lacks a pool.
+`--model-index` is a 0-based index into a per-machine model pool
+(`SECOND_OPINION_AGY_MODEL_POOL` / `_OPENCODE_MODEL_POOL` /
+`_COPILOT_MODEL_POOL`, set by the user, not this skill) — round 1 of the
+loop below is index 0, round 2 is index 1, etc. All three backends share
+the same indexed-pool contract. An explicit index selects the pool entry for
+that call even when a single-model override (`SECOND_OPINION_<BACKEND>_MODEL`)
+is also set; without `--model-index` the single override (or the backend
+default) applies. An explicit index is a hard error if the selected backend's
+pool is unset/empty or the index is out of range — it no longer silently
+falls back. Because of that, don't assume a pool is configured: pass
+`--model-index` every round as before, but if that call exits nonzero with a
+`--model-index ... requires ... POOL ...` configuration error (not a
+backend-failure message), retry that same round's call once, identical
+except omitting `--model-index` — this is the safe, always-valid fallback
+(single-model override or backend default), not a skipped round. See the
+loop below for exactly where this retry sits. If only some backends are
+pool-configured, automatic selection stops on the first priority candidate
+with a pool config error; use `--backend <configured-backend>` to target a
+working one.
 
 ## Resolving the target plan
 
@@ -85,7 +93,16 @@ loop:
     focus_hints = derive 2-3 plan-specific risk bullets from current_plan
                   (see above), or skip if nothing specific stands out
     critique = second_opinion.py review <current_plan> \
-                   [--focus-file <focus-hints-path>]   # one call
+                   [--focus-file <focus-hints-path>] \
+                   --model-index <round - 1>   # one call
+    if that call exited nonzero with a "--model-index ... requires
+       ... POOL ..." configuration error (not a backend-failure message):
+        critique = second_opinion.py review <current_plan> \
+                       [--focus-file <focus-hints-path>]   # retry, no index —
+                                                            # no pool configured
+                                                            # for this backend,
+                                                            # not an error to
+                                                            # surface to the user
     show "Round N critique" + critique in chat
 
     if round > 1 and critique raises nothing substantively
@@ -151,6 +168,14 @@ Unresolved: <specific remaining disagreement>.
 Then `question` tool: `Keep the current approach (recommended)` /
 `Use the reviewer's suggestion` / `Let me decide manually`. Never silently
 pick a side when the round cap is hit mid-disagreement.
+
+## Recording it in the backlog
+
+Once the final plan is settled (converged or capped out), apply the shared
+instructions file's "Plans and deliverables get a path on record" backlog
+policy: both the plan's file path and the critique-notes file path end up in
+a tracking item's `related_files`, whether that means creating the item
+(offer first) or updating an existing one.
 
 ## No backend available
 
