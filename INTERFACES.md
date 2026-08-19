@@ -159,7 +159,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
 
 dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending store.
 
-- Installed at: `~/.claude/scripts/dev_status_sync.py` (all harnesses)
+- Installed at: `~/.claude/scripts/dev_status_sync.py` (not on work)
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): Cross-machine sync for dev_status.py's backlog/pending store.
   - `--quiet/-q`
