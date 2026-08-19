@@ -1041,6 +1041,23 @@ class DepartureLedger:
         """
         return {str(e["key"]) for e in self.entries() if "key" in e}
 
+    def keys_with_outcome_prefix(self, prefix: str) -> set[str]:
+        """Every key with at least one recorded outcome starting with ``prefix``.
+
+        For a feature that wants a subset of its ledger-recorded keys to
+        stay retryable across depart attempts -- unlike this class's
+        default, where every recorded key is done for good regardless of
+        outcome -- record a distinguishing, wording-independent outcome
+        prefix (not a fragment of the user-facing message, which can be
+        reworded independently), then use this at the call site to carve
+        those keys back out of ``completed_keys()``'s exclusion.
+        """
+        return {
+            str(e["key"])
+            for e in self.entries()
+            if "key" in e and str(e.get("outcome", "")).startswith(prefix)
+        }
+
     def record(self, key: str, action: str, outcome: str) -> None:
         entry = {"key": key, "action": action, "outcome": outcome}
         self.path.parent.mkdir(parents=True, exist_ok=True)
