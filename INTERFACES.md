@@ -174,7 +174,9 @@ dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending st
   - `--ssh-timeout` (default: 20.0)
   - `--max-retries` (default: 3)
 - Subcommands:
-  - `sync [--dry-run]` — merge against the other machine
+  - `sync [--dry-run] [--no-artifacts] [--rsync-io-timeout <seconds>]` — merge against the other machine
+    - `--no-artifacts` — skip grill/ artifact transfer (metadata-only sync)
+    - `--rsync-io-timeout` — rsync I/O timeout (defaults to --ssh-timeout)
   - `status` — report divergence without merging
   - `export` — internal: dump local store+rev as JSON
   - `import --if-rev <N>` — internal: write a merged store from stdin
@@ -193,6 +195,13 @@ dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending st
   - `save_sync_base(local_schema: dict[str, object], items: list[dict[str, object]], pending: list[dict[str, object]]) -> None` — Atomically persist the post-sync state as the new base snapshot.
   - `rewrite_related_files_paths(item: dict[str, object], from_home: str, to_home: str) -> dict[str, object]` — Rewrite a leading ``from_home`` prefix on ``related_files.path`` entries.
   - `rewrite_paths_list(items: list[dict[str, object]], from_home: str, to_home: str) -> list[dict[str, object]]` — Apply :func:`rewrite_related_files_paths` across a whole store.
+  - `collect_artifact_paths(items: list[dict[str, object]], home: str) -> list[Path]` — Return distinct, sorted artifact paths to transfer for ``items``.
+  - `remote_has_rsync(host: str, ssh_timeout: float) -> bool` — Preflight: is ``rsync`` available on the remote over SSH?
+  - `push_artifacts(host: str, items: list[dict[str, object]], local_home: str, remote_home: str, ssh_timeout: float, rsync_io_timeout: float, *, quiet: bool, dry_run: bool) -> tuple[int, int]` — Push local ``grill/`` artifacts to ``host``.
+  - `pull_artifacts(host: str, items: list[dict[str, object]], local_home: str, remote_home: str, ssh_timeout: float, rsync_io_timeout: float, *, quiet: bool, dry_run: bool) -> tuple[int, int]` — Pull ``grill/`` artifacts from ``host`` to local.
+  - `assert_artifact_contract(merged: list[dict[str, object]], local_home: str) -> None` — Guard the path-form contract: merged is in *local* form.
+  - `warn_nonlocal_related_paths(items: list[dict[str, object]], local_home: str) -> None` — Warn once if a merged ``grill/`` path was excluded by the resolve guard.
+  - `artifact_preview(merged: list[dict[str, object]], local_home: str, remote_home: str, host: str, *, quiet: bool) -> None` — Print the would-transfer artifact set (no network I/O).
   - `merge_item(item_id: str, base_item: dict[str, object] | None, local_item: dict[str, object] | None, remote_item: dict[str, object] | None, store: str) -> tuple[dict[str, object] | None, dict[str, object] | None]` — Run the per-item 3-way merge (cases 0-6 of the plan).
   - `merge_store(base_list: list[dict[str, object]] | None, local_list: list[dict[str, object]], remote_list: list[dict[str, object]], store: str) -> tuple[list[dict[str, object]], list[dict[str, object]]]` — Merge one store (items.json or pending_items.json) across all ids.
   - `compute_sync(base_items: list[dict[str, object]] | None, base_pending: list[dict[str, object]] | None, local_items: list[dict[str, object]], local_pending: list[dict[str, object]], remote_items: list[dict[str, object]], remote_pending: list[dict[str, object]]) -> SyncComputation` — Run the full merge: per-store 3-way merge, then graph integrity, then write-need.

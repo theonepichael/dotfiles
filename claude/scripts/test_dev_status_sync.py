@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Tests for dev_status_sync.py. Run with: python3 test_dev_status_sync.py"""
 
+import argparse
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -711,7 +713,6 @@ class LocalLockTests(SyncTestCase):
 
 class ExportImportTests(SyncTestCase):
     def _args(self, **overrides):
-        import argparse
 
         ns = argparse.Namespace(
             lock_timeout=5.0,
@@ -789,6 +790,489 @@ class ParserVerbosityTests(unittest.TestCase):
     def test_rejects_quiet_and_verbose_together(self):
         with self.assertRaises(SystemExit):
             sync.build_parser().parse_args(["status", "-q", "-v"])
+
+
+# ── artifact collection (grill/ scope only) ───────────────────────────────────
+
+
+class ArtifactCollectTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.home = Path(self.tmp) / "home"
+        self.grill = self.home / ".claude" / "data" / "grill"
+        self.grill.mkdir(parents=True)
+        self.spec = self.grill / "spec.md"
+        self.spec.write_text("spec")
+        self.vitals = self.grill / "vitals"
+        self.vitals.mkdir()
+        self.proj = self.home / "proj"
+        self.proj.mkdir()
+        (self.proj / "db.ts").write_text("x")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def _item(self, path):
+        return make_item("foo", related_files=[{"path": path}])
+
+    def test_grill_file_collected(self):
+        out = sync.collect_artifact_paths([self._item(str(self.spec))], str(self.home))
+        self.assertEqual(out, [self.spec])
+
+    def test_project_source_excluded(self):
+        out = sync.collect_artifact_paths(
+            [self._item(str(self.proj / "db.ts"))], str(self.home)
+        )
+        self.assertEqual(out, [])
+
+    def test_mixed_store_majority_non_grill(self):
+        items = [self._item(str(self.proj / f"src{i}.py")) for i in range(10)]
+        items.append(self._item(str(self.spec)))
+        out = sync.collect_artifact_paths(items, str(self.home))
+        self.assertEqual(out, [self.spec])
+
+    def test_dedupe_same_path_in_multiple_items(self):
+        out = sync.collect_artifact_paths(
+            [self._item(str(self.spec)), self._item(str(self.spec))], str(self.home)
+        )
+        self.assertEqual(out, [self.spec])
+
+    def test_dotdot_escape_skipped(self):
+        escape = str(self.grill / ".." / "db.ts")
+        out = sync.collect_artifact_paths([self._item(escape)], str(self.home))
+        self.assertEqual(out, [])
+
+    def test_symlink_entry_skipped(self):
+        target = self.proj / "secret.md"
+        target.write_text("s")
+        link = self.grill / "link.md"
+        link.symlink_to(target)
+        out = sync.collect_artifact_paths([self._item(str(link))], str(self.home))
+        self.assertEqual(out, [])
+
+    def test_grill_dir_self_skipped(self):
+        out = sync.collect_artifact_paths([self._item(str(self.grill))], str(self.home))
+        self.assertEqual(out, [])
+
+    def test_directory_under_grill_allowed(self):
+        out = sync.collect_artifact_paths(
+            [self._item(str(self.vitals))], str(self.home)
+        )
+        self.assertEqual(out, [self.vitals])
+
+    def test_malformed_entries_skipped(self):
+        item = {"id": "foo", "related_files": ["notadict", {"note": "nopath"}, 5]}
+        out = sync.collect_artifact_paths([item], str(self.home))
+        self.assertEqual(out, [])
+
+
+class ArtifactContractTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.home = Path(self.tmp) / "home"
+        self.grill = self.home / ".claude" / "data" / "grill"
+        self.grill.mkdir(parents=True)
+        self.spec = self.grill / "spec.md"
+        self.spec.write_text("spec")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_pass_when_grill_path_present_and_collected(self):
+        merged = [make_item("foo", related_files=[{"path": str(self.spec)}])]
+        sync.assert_artifact_contract(merged, str(self.home))  # no raise
+
+    def test_fail_when_local_form_grill_but_not_collected(self):
+        # starts with grill prefix but absent locally -> collect returns empty
+        merged = [
+            make_item("foo", related_files=[{"path": str(self.grill / "missing.md")}])
+        ]
+        with self.assertRaises(AssertionError):
+            sync.assert_artifact_contract(merged, str(self.home))
+
+    def test_no_fail_when_only_non_grill_paths(self):
+        merged = [
+            make_item("foo", related_files=[{"path": str(self.home / "proj" / "x.py")}])
+        ]
+        sync.assert_artifact_contract(merged, str(self.home))  # no raise
+
+
+class ArtifactTransferTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.home = Path(self.tmp) / "home"
+        self.grill = self.home / ".claude" / "data" / "grill"
+        self.grill.mkdir(parents=True)
+        self.spec = self.grill / "spec.md"
+        self.spec.write_text("spec")
+        self.remote = Path(self.tmp) / "remote"
+        self.remote.mkdir()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def _item(self):
+        return make_item("foo", related_files=[{"path": str(self.spec)}])
+
+    def test_push_argv_and_flags(self):
+        with patch("subprocess.run") as run:
+            run.return_value = subprocess.CompletedProcess(None, 0, b"", b"")
+            attempted, failed = sync.push_artifacts(
+                "fedora",
+                [self._item()],
+                str(self.home),
+                str(self.remote),
+                20.0,
+                20.0,
+                quiet=False,
+                dry_run=False,
+            )
+        self.assertEqual(attempted, 1)
+        self.assertEqual(failed, 0)
+        argv = run.call_args[0][0]
+        self.assertIn("-rptDuR", argv)  # -u is folded into the combined flag
+        dests = [a for a in argv if a.startswith("fedora:") and a.endswith("/")]
+        self.assertEqual(len(dests), 1)
+        self.assertTrue(any("/./" in a for a in argv))
+
+    def test_pull_argv_and_flags(self):
+        with patch("subprocess.run") as run:
+            run.return_value = subprocess.CompletedProcess(None, 0, b"", b"")
+            attempted, failed = sync.pull_artifacts(
+                "fedora",
+                [self._item()],
+                str(self.home),
+                str(self.remote),
+                20.0,
+                20.0,
+                quiet=False,
+                dry_run=False,
+            )
+        argv = run.call_args[0][0]
+        self.assertIn("-rptDuR", argv)  # -u is folded into the combined flag
+        self.assertTrue(any(a.startswith("fedora:") for a in argv))
+        self.assertIn(str(self.home) + "/", argv)
+
+    def test_dry_run_no_rsync(self):
+        with patch("subprocess.run") as run:
+            attempted, failed = sync.push_artifacts(
+                "fedora",
+                [self._item()],
+                str(self.home),
+                str(self.remote),
+                20.0,
+                20.0,
+                quiet=False,
+                dry_run=True,
+            )
+        self.assertEqual(attempted, 1)
+        run.assert_not_called()
+
+    def test_missing_local_source_dropped(self):
+        miss = make_item("foo", related_files=[{"path": str(self.grill / "ghost.md")}])
+        with patch("subprocess.run") as run:
+            attempted, failed = sync.push_artifacts(
+                "fedora",
+                [miss],
+                str(self.home),
+                str(self.remote),
+                20.0,
+                20.0,
+                quiet=False,
+                dry_run=False,
+            )
+        self.assertEqual(attempted, 0)
+        run.assert_not_called()
+
+    def test_nonzero_rsync_is_fatal_push(self):
+        with patch("subprocess.run") as run:
+            run.return_value = subprocess.CompletedProcess(None, 23, b"", b"err")
+            with self.assertRaises(sync.SyncFatalError):
+                sync.push_artifacts(
+                    "fedora",
+                    [self._item()],
+                    str(self.home),
+                    str(self.remote),
+                    20.0,
+                    20.0,
+                    quiet=False,
+                    dry_run=False,
+                )
+
+    def test_nonzero_rsync_is_fatal_pull(self):
+        with patch("subprocess.run") as run:
+            run.return_value = subprocess.CompletedProcess(None, 23, b"", b"err")
+            with self.assertRaises(sync.SyncFatalError):
+                sync.pull_artifacts(
+                    "fedora",
+                    [self._item()],
+                    str(self.home),
+                    str(self.remote),
+                    20.0,
+                    20.0,
+                    quiet=False,
+                    dry_run=False,
+                )
+
+    def test_empty_set_no_rsync(self):
+        proj = make_item(
+            "foo", related_files=[{"path": str(self.home / "proj" / "x.py")}]
+        )
+        with patch("subprocess.run") as run:
+            attempted, failed = sync.push_artifacts(
+                "fedora",
+                [proj],
+                str(self.home),
+                str(self.remote),
+                20.0,
+                20.0,
+                quiet=False,
+                dry_run=False,
+            )
+        self.assertEqual((attempted, failed), (0, 0))
+        run.assert_not_called()
+
+    def test_pull_invokes_rsync_even_if_local_exists(self):
+        with patch("subprocess.run") as run:
+            run.return_value = subprocess.CompletedProcess(None, 0, b"", b"")
+            attempted, failed = sync.pull_artifacts(
+                "fedora",
+                [self._item()],
+                str(self.home),
+                str(self.remote),
+                20.0,
+                20.0,
+                quiet=False,
+                dry_run=False,
+            )
+        self.assertEqual(attempted, 1)
+        run.assert_called_once()
+
+
+# ── cmd_sync artifact integration (rsync + ssh mocked) ───────────────────────
+
+
+class ArtifactSyncIntegrationTests(SyncTestCase):
+    def _home_paths(self):
+        local_home = self.data_dir.parent / "localhome"
+        remote_home = self.data_dir.parent / "remotehome"
+        grill = local_home / ".claude" / "data" / "grill"
+        grill.mkdir(parents=True)
+        (grill / "spec.md").write_text("spec")
+        return str(local_home), str(remote_home), str(grill / "spec.md")
+
+    def _args(self, **kw):
+        ns = argparse.Namespace(
+            lock_timeout=5.0,
+            host="fedora",
+            remote_script="x",
+            ssh_timeout=20.0,
+            max_retries=1,
+            user_map={"yanil": "/L", "theon": "/R"},
+            local_user="yanil",
+            remote_user="theon",
+            dry_run=False,
+            quiet=False,
+            verbose=False,
+            no_artifacts=False,
+            rsync_io_timeout=None,
+        )
+        for k, v in kw.items():
+            setattr(ns, k, v)
+        return ns
+
+    def _payload(self, items, pending=None, rev=0):
+        return {
+            "protocol_version": sync.PROTOCOL_VERSION,
+            "schema_version": {"items": 2, "pending_items": 1},
+            "items": items,
+            "pending_items": pending or [],
+            "rev": rev,
+        }
+
+    def _seed_local(self, item):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        dev_status.save_items([item])
+
+    def test_push_before_import_and_pull_before_commit(self):
+        local_home, remote_home, spec = self._home_paths()
+        # local wins the merge (newer updated) so a remote write is needed.
+        local_item = make_item(
+            "foo", updated="2026-03-01", related_files=[{"path": spec}]
+        )
+        remote_item = make_item(
+            "foo", updated="2026-02-01", related_files=[{"path": spec}]
+        )
+        self._seed_local(local_item)
+
+        order = []
+        with (
+            patch.object(
+                sync, "ssh_export", lambda *a, **k: self._payload([remote_item])
+            ),
+            patch.object(sync, "ssh_import", lambda *a, **k: order.append("import")),
+            patch.object(sync, "local_commit", lambda *a, **k: order.append("commit")),
+            patch.object(sync, "remote_has_rsync", lambda *a, **k: True),
+            patch(
+                "subprocess.run",
+                lambda argv, **k: (
+                    order.append("rsync"),
+                    subprocess.CompletedProcess(argv, 0, b"", b""),
+                )[1],
+            ),
+        ):
+            sync.cmd_sync(
+                self._args(user_map={"yanil": local_home, "theon": remote_home})
+            )
+
+        rsync_idx = [i for i, x in enumerate(order) if x == "rsync"]
+        self.assertEqual(len(rsync_idx), 2, order)
+        push_idx, pull_idx = rsync_idx
+        self.assertLess(push_idx, order.index("import"))
+        self.assertLess(pull_idx, order.index("commit"))
+
+    def test_push_failure_prevents_import(self):
+        local_home, remote_home, spec = self._home_paths()
+        item = make_item("foo", related_files=[{"path": spec}])
+        self._seed_local(item)
+        order = []
+
+        def bad_run(argv, **k):
+            return subprocess.CompletedProcess(argv, 23, b"", b"err")
+
+        with (
+            patch.object(sync, "ssh_export", lambda *a, **k: self._payload([item])),
+            patch.object(sync, "ssh_import", lambda *a, **k: order.append("import")),
+            patch.object(sync, "remote_has_rsync", lambda *a, **k: True),
+            patch("subprocess.run", bad_run),
+            self.assertRaises(sync.SyncFatalError),
+        ):
+            sync.cmd_sync(
+                self._args(user_map={"yanil": local_home, "theon": remote_home})
+            )
+        self.assertNotIn("import", order)
+
+    def test_artifacts_run_even_when_json_not_dirty(self):
+        local_home, remote_home, spec = self._home_paths()
+        item = make_item("foo", related_files=[{"path": spec}])
+        self._seed_local(item)
+        order = []
+
+        with (
+            patch.object(sync, "ssh_export", lambda *a, **k: self._payload([item])),
+            patch.object(sync, "ssh_import", lambda *a, **k: order.append("import")),
+            patch.object(sync, "remote_has_rsync", lambda *a, **k: True),
+            patch(
+                "subprocess.run",
+                lambda argv, **k: (
+                    order.append("rsync"),
+                    subprocess.CompletedProcess(argv, 0, b"", b""),
+                )[1],
+            ),
+        ):
+            sync.cmd_sync(
+                self._args(user_map={"yanil": local_home, "theon": remote_home})
+            )
+        # identical remote -> no remote JSON write, but artifacts still transfer
+        self.assertNotIn("import", order)
+        self.assertIn("rsync", order)
+
+    def test_no_artifacts_skips_transfer(self):
+        local_home, remote_home, spec = self._home_paths()
+        item = make_item("foo", related_files=[{"path": spec}])
+        self._seed_local(item)
+        order = []
+
+        with (
+            patch.object(sync, "ssh_export", lambda *a, **k: self._payload([item])),
+            patch.object(sync, "remote_has_rsync", lambda *a, **k: True),
+            patch(
+                "subprocess.run",
+                lambda argv, **k: (
+                    order.append("rsync"),
+                    subprocess.CompletedProcess(argv, 0, b"", b""),
+                )[1],
+            ),
+        ):
+            sync.cmd_sync(
+                self._args(
+                    no_artifacts=True,
+                    user_map={"yanil": local_home, "theon": remote_home},
+                )
+            )
+        self.assertNotIn("rsync", order)
+
+    def test_rsync_unavailable_push_is_fatal(self):
+        local_home, remote_home, spec = self._home_paths()
+        item = make_item("foo", related_files=[{"path": spec}])
+        self._seed_local(item)
+
+        with (
+            patch.object(sync, "ssh_export", lambda *a, **k: self._payload([item])),
+            patch("shutil.which", lambda name: None if name == "rsync" else "/bin/x"),
+            self.assertRaises(sync.SyncFatalError),
+        ):
+            sync.cmd_sync(
+                self._args(user_map={"yanil": local_home, "theon": remote_home})
+            )
+
+    def test_warn_nonlocal_fires_only_on_escape(self):
+        local_home, remote_home, spec = self._home_paths()
+        escape = str(Path(spec).parent / ".." / "secret.md")
+        item = make_item("foo", related_files=[{"path": escape}])
+        self._seed_local(item)
+
+        import io
+
+        buf = io.StringIO()
+        with (
+            patch.object(sync, "ssh_export", lambda *a, **k: self._payload([item])),
+            patch.object(sync, "remote_has_rsync", lambda *a, **k: True),
+            patch(
+                "subprocess.run",
+                lambda argv, **k: subprocess.CompletedProcess(argv, 0, b"", b""),
+            ),
+            patch("sys.stderr", buf),
+        ):
+            sync.cmd_sync(
+                self._args(user_map={"yanil": local_home, "theon": remote_home})
+            )
+        self.assertIn("escaping grill dir", buf.getvalue())
+
+
+class ArtifactPreviewTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.home = Path(self.tmp) / "home"
+        self.grill = self.home / ".claude" / "data" / "grill"
+        self.grill.mkdir(parents=True)
+        self.spec = self.grill / "spec.md"
+        self.spec.write_text("spec")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_preview_lists_grill_artifact(self):
+        import io
+
+        buf = io.StringIO()
+        merged = [make_item("foo", related_files=[{"path": str(self.spec)}])]
+        with patch("sys.stdout", buf):
+            sync.artifact_preview(merged, str(self.home), "/R", "fedora", quiet=False)
+        out = buf.getvalue()
+        self.assertIn("artifacts (1 file", out)
+        self.assertIn(str(self.home) + "/./.claude/data/grill/spec.md", out)
+
+    def test_preview_none_when_no_grill_paths(self):
+        import io
+
+        buf = io.StringIO()
+        merged = [
+            make_item("foo", related_files=[{"path": str(self.home / "proj" / "x.py")}])
+        ]
+        with patch("sys.stdout", buf):
+            sync.artifact_preview(merged, str(self.home), "/R", "fedora", quiet=False)
+        self.assertIn("artifacts: none", buf.getvalue())
 
 
 if __name__ == "__main__":
