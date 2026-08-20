@@ -5,7 +5,9 @@ Always initiated from this machine (desktop-initiated-only): a run performs a
 full bidirectional merge in one command — pulls the remote's state, merges it
 against a local 3-way base snapshot, pushes the merged result back to the
 remote, and saves locally. ``dev_status.py`` itself is not modified; this is a
-standalone bolt-on script, stdlib only.
+standalone bolt-on script, stdlib Python imports; requires ``rsync`` at
+runtime (validated locally via ``shutil.which`` and remotely via a preflight
+before any transfer).
 
 Transport is staged export -> local merge -> import over SSH, reusing
 ``dev_status.py``'s own optimistic-concurrency (``--if-rev``) pattern rather
@@ -13,9 +15,17 @@ than holding a live bidirectional session. See the companion plan document
 for the full design rationale (3-way merge algorithm, conflict log, graph
 integrity pass, path mapping, locking).
 
+In addition to the JSON store, ``sync`` transfers the ``~/.claude/data/grill/``
+files referenced by an item's ``related_files`` (specs, grill plans, critique
+notes) in both directions, guarded by an mtime check so neither side's newer
+edit is clobbered. Project-source ``related_files`` entries (any path outside
+that grill prefix) are never transferred.
+
 Flags
   --quiet, -q    suppress non-essential output
   --verbose, -v  emit extra diagnostic messages to stderr
+  sync --no-artifacts     skip grill/ artifact transfer (metadata-only sync)
+  sync --dry-run          report only; print the would-transfer artifact set
 
 Requires Python 3.12+.
 """
@@ -29,6 +39,7 @@ import os
 import random
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import time
@@ -44,6 +55,17 @@ import cli_common
 import dev_status
 
 PROTOCOL_VERSION = 1
+
+# The one directory this feature ever touches: the grill/ tree under a home
+# prefix (e.g. /home/yanil/.claude/data/grill). Every artifact-collection and
+# transfer rule is scoped to this prefix only — a related_files path pointing
+# at ordinary project source (or anything else under home) is never collected,
+# never rsynced, and never a reason to warn.
+GRILL_SUBPATH = ".claude/data/grill"
+
+# rsync's remote shell, mirroring ssh_run()'s ssh options exactly so transport
+# behavior matches the JSON channel.
+_RSH = "ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2"
 
 SYNC_BASE_FILE = dev_status.DATA_DIR / "_sync-base.json"
 CONFLICT_LOG_FILE = dev_status.DATA_DIR / "_sync-conflicts.jsonl"
@@ -239,6 +261,308 @@ def rewrite_paths_list(
 ) -> list[dict[str, object]]:
     """Apply :func:`rewrite_related_files_paths` across a whole store."""
     return [rewrite_related_files_paths(it, from_home, to_home) for it in items]
+
+
+# ── artifact transfer (~/.claude/data/grill/ files referenced by related_files) ──
+
+
+def _warn(msg: str) -> None:
+    """Emit a non-fatal warning to stderr (never suppressed by --quiet)."""
+    print(f"warn: {msg}", file=sys.stderr)
+
+
+def _related_paths(item: object) -> list[str]:
+    """Extract ``related_files[].path`` string values from a store item."""
+    if not isinstance(item, dict):
+        return []
+    rf = item.get("related_files")
+    if not isinstance(rf, list):
+        return []
+    out: list[str] = []
+    for entry in rf:
+        if isinstance(entry, dict):
+            path = entry.get("path")
+            if isinstance(path, str):
+                out.append(path)
+    return out
+
+
+def collect_artifact_paths(items: list[dict[str, object]], home: str) -> list[Path]:
+    """Return distinct, sorted artifact paths to transfer for ``items``.
+
+    Only ``related_files[]`` paths under ``{home}/.claude/data/grill/`` are
+    in scope — the one directory this session's own tooling writes (specs,
+    grill plans, critique notes, the ``vitals/`` subtree). Everything else
+    under home (project source in its own git repo, dotfiles, ``/tmp``, a
+    worktree directory) is excluded here, not handled as a downstream edge
+    case. Within the grill prefix, symlink entries, ``..``/symlink escapes
+    out of the directory, the grill directory itself, and anything that
+    isn't a regular file or directory are skipped. Escape/symlink/self
+    warnings are emitted by ``warn_nonlocal_related_paths`` (not here, so
+    the transfer stage doesn't double-warn).
+    """
+    out: list[Path] = []
+    seen: set[str] = set()
+    for item in items:
+        for p in _related_paths(item):
+            kind, _ = _grill_classify(p, home)
+            if kind == "out":
+                continue  # out of scope (project source, dotfiles, etc.)
+            if kind == "escape":
+                continue  # warned by warn_nonlocal_related_paths
+            # include
+            resolved = Path(p).resolve()
+            if not (resolved.is_file() or resolved.is_dir()):
+                continue  # not present locally yet (pull will fetch it)
+            if p in seen:
+                continue
+            seen.add(p)
+            out.append(Path(p))
+    return sorted(out, key=lambda x: str(x))
+
+
+def _grill_classify(path_str: str, home: str) -> tuple[str, str | None]:
+    """Classify a ``related_files`` path against the grill scope.
+
+    Returns ``(kind, warning)`` where ``kind`` is one of:
+
+    * ``"out"``     - not under ``{home}/.claude/data/grill/`` (project
+      source, dotfiles, ``/tmp``, a worktree, ...). Correctly out of scope.
+    * ``"escape"``  - raw grill prefix but resolves outside the grill dir,
+      is a symlink, or is the grill dir itself. Excluded; ``warning`` is the
+      message to emit (or ``None`` when no warning is wanted).
+    * ``"include"`` - under grill and resolvable as a real file/dir. In scope
+      for transfer.
+
+    ``home`` here is the *local* home; ``merged`` is always in local form by
+    the time this runs (see ``cmd_sync``), so the prefix check is form-correct.
+    """
+    grill_prefix = f"{home.rstrip('/')}/{GRILL_SUBPATH}/"
+    if not path_str.startswith(grill_prefix):
+        return ("out", None)
+    path = Path(path_str)
+    if path.is_symlink():
+        return ("escape", f"skipping symlinked related_files path: {path_str}")
+    resolved = path.resolve()
+    grill_root = Path(home, GRILL_SUBPATH).resolve()
+    if resolved == grill_root:
+        return ("escape", f"skipping grill-dirself related_files path: {path_str}")
+    if grill_root not in resolved.parents:
+        return (
+            "escape",
+            f"skipping related_files path escaping grill dir: {path_str}",
+        )
+    return ("include", None)
+
+
+def remote_has_rsync(host: str, ssh_timeout: float) -> bool:
+    """Preflight: is ``rsync`` available on the remote over SSH?"""
+    try:
+        proc = subprocess.run(
+            [
+                "ssh",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "ServerAliveInterval=5",
+                "-o",
+                "ServerAliveCountMax=2",
+                host,
+                "command -v rsync",
+            ],
+            capture_output=True,
+            timeout=ssh_timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return proc.returncode == 0
+
+
+def _rel_for_home(path: Path, home: str) -> str:
+    """Relative path of ``path`` under ``home`` (for the rsync ``/./`` anchor)."""
+    return str(path.resolve().relative_to(Path(home).resolve()))
+
+
+def _rsync_argv(srcs: list[str], dest: str, rsync_io_timeout: float) -> list[str]:
+    """Build a single batched rsync argv (no shell — all single args)."""
+    return [
+        "rsync",
+        "-rptDuR",
+        "-e",
+        _RSH,
+        "--timeout",
+        str(rsync_io_timeout),
+        *srcs,
+        dest,
+    ]
+
+
+def _run_rsync(argv: list[str], ssh_timeout: float) -> None:
+    """Run rsync; any non-zero is fatal (we must not commit metadata pointing
+    at a file that failed to arrive)."""
+    try:
+        proc = subprocess.run(
+            argv, capture_output=True, timeout=ssh_timeout, check=False
+        )
+    except subprocess.TimeoutExpired as e:
+        raise SyncFatalError(
+            f"artifact rsync timed out after {ssh_timeout}s: {e}"
+        ) from e
+    if proc.returncode != 0:
+        stderr_text = proc.stderr.decode("utf-8", errors="replace")
+        raise SyncFatalError(
+            f"artifact rsync failed (exit {proc.returncode}): {stderr_text}"
+        )
+
+
+def push_artifacts(
+    host: str,
+    items: list[dict[str, object]],
+    local_home: str,
+    remote_home: str,
+    ssh_timeout: float,
+    rsync_io_timeout: float,
+    *,
+    quiet: bool,
+    dry_run: bool,
+) -> tuple[int, int]:
+    """Push local ``grill/`` artifacts to ``host``. Returns (attempted, failed).
+
+    Pre-filters missing local sources (warned, not attempted — the
+    user-requested graceful case). Empty set short-circuits with ``(0, 0)``
+    and no rsync call. A non-zero rsync is fatal.
+    """
+    paths = collect_artifact_paths(items, local_home)
+    existing: list[Path] = []
+    for p in paths:
+        if p.exists():
+            existing.append(p)
+        else:
+            _warn(f"source missing locally: {p}")
+    attempted = len(existing)
+    if attempted == 0:
+        return (0, 0)
+    rels = sorted({_rel_for_home(p, local_home) for p in existing})
+    srcs = [f"{local_home}/./{rel}" for rel in rels]
+    dest = f"{host}:{remote_home}/"
+    argv = _rsync_argv(srcs, dest, rsync_io_timeout)
+    if dry_run:
+        cli_common.qprint("would rsync (push):", quiet=quiet)
+        cli_common.qprint("  " + " ".join(argv), quiet=quiet)
+        return (attempted, 0)
+    _run_rsync(argv, ssh_timeout)
+    return (attempted, 0)
+
+
+def pull_artifacts(
+    host: str,
+    items: list[dict[str, object]],
+    local_home: str,
+    remote_home: str,
+    ssh_timeout: float,
+    rsync_io_timeout: float,
+    *,
+    quiet: bool,
+    dry_run: bool,
+) -> tuple[int, int]:
+    """Pull ``grill/`` artifacts from ``host`` to local. Returns (attempted, failed).
+
+    Mirrors :func:`push_artifacts` but the source is the remote. No local
+    existence pre-filter — a missing remote source surfaces as a non-zero
+    rsync and correctly aborts rather than committing a broken reference.
+    """
+    paths = collect_artifact_paths(items, local_home)
+    attempted = len(paths)
+    if attempted == 0:
+        return (0, 0)
+    rels = sorted({_rel_for_home(p, local_home) for p in paths})
+    srcs = [f"{host}:{remote_home}/./{rel}" for rel in rels]
+    dest = f"{local_home}/"
+    argv = _rsync_argv(srcs, dest, rsync_io_timeout)
+    if dry_run:
+        cli_common.qprint("would rsync (pull):", quiet=quiet)
+        cli_common.qprint("  " + " ".join(argv), quiet=quiet)
+        return (attempted, 0)
+    _run_rsync(argv, ssh_timeout)
+    return (attempted, 0)
+
+
+def assert_artifact_contract(merged: list[dict[str, object]], local_home: str) -> None:
+    """Guard the path-form contract: merged is in *local* form.
+
+    If the merged store references any local-form ``grill/`` path,
+    ``collect_artifact_paths`` must return them. This FAILS (rather than
+    vacuously passing) if a coding change collects from the remote-form
+    store instead — the silent-empty-transfer regression this item fixes.
+    """
+    # Count only "include"-class paths (raw grill prefix that resolves under
+    # grill and isn't a symlink/self). Escape paths are excluded by design and
+    # warned via warn_nonlocal_related_paths — they must not trip this guard.
+    has_in_scope = any(
+        _grill_classify(str(p), local_home)[0] == "include"
+        for item in merged
+        for p in _related_paths(item)
+    )
+    if not has_in_scope:
+        return
+    assert collect_artifact_paths(merged, local_home), (
+        "artifact contract broken: merged references local-form grill paths "
+        f"but collect_artifact_paths returned empty (home={local_home!r})"
+    )
+
+
+def warn_nonlocal_related_paths(
+    items: list[dict[str, object]], local_home: str
+) -> None:
+    """Warn once if a merged ``grill/`` path was excluded by the resolve guard.
+
+    Only fires for paths that *look* like grill paths but escaped (``..``/
+    symlink) or are the directory itself — never for ordinary project-source
+    ``related_files`` entries, which are correctly out of scope.
+    """
+    grill_prefix = f"{local_home.rstrip('/')}/{GRILL_SUBPATH}/"
+    seen_warnings: set[str] = set()
+    for item in items:
+        for p in _related_paths(item):
+            _, warning = _grill_classify(str(p), local_home)
+            if warning and warning not in seen_warnings:
+                seen_warnings.add(warning)
+                _warn(warning)
+    if len(seen_warnings) > 1:
+        _warn(
+            f"{len(seen_warnings)} related_files path(s) under {grill_prefix} "
+            "excluded by artifact guard (escape/symlink/self) — not transferred"
+        )
+
+
+def artifact_preview(
+    merged: list[dict[str, object]],
+    local_home: str,
+    remote_home: str,
+    host: str,
+    *,
+    quiet: bool,
+) -> None:
+    """Print the would-transfer artifact set (no network I/O)."""
+    collected = collect_artifact_paths(merged, local_home)
+    if not collected:
+        cli_common.qprint(
+            "artifacts: none (no ~/.claude/data/grill/ related_files)", quiet=quiet
+        )
+        return
+    rels = sorted({_rel_for_home(p, local_home) for p in collected})
+    cli_common.qprint(
+        f"artifacts ({len(collected)} file(s) under ~/.claude/data/grill/):",
+        quiet=quiet,
+    )
+    for rel in rels:
+        cli_common.qprint(
+            f"  push  {local_home}/./{rel} -> {host}:{remote_home}/", quiet=quiet
+        )
+        cli_common.qprint(
+            f"  pull  {host}:{remote_home}/./{rel} -> {local_home}/", quiet=quiet
+        )
 
 
 # ── 3-way merge algorithm ──────────────────────────────────────────────────────
@@ -990,12 +1314,25 @@ def cmd_status(args: argparse.Namespace) -> None:
         "status (report only, no writes)",
         quiet=getattr(args, "quiet", False),
     )
+    # Preview only — status performs no network writes beyond the export above.
+    artifact_preview(
+        result.merged_items,
+        local_home,
+        remote_home,
+        args.host,
+        quiet=getattr(args, "quiet", False),
+    )
 
 
 def cmd_sync(args: argparse.Namespace) -> None:
     """``sync``: merge against the other machine (staged export/import)."""
     local_home = args.user_map[args.local_user]
     remote_home = args.user_map[args.remote_user]
+    rsync_io_timeout = (
+        args.rsync_io_timeout
+        if getattr(args, "rsync_io_timeout", None) is not None
+        else args.ssh_timeout
+    )
 
     with local_lock(args.lock_timeout):
         local_items_raw, local_items_schema = _read_store_file(dev_status.ITEMS_FILE)
@@ -1012,6 +1349,8 @@ def cmd_sync(args: argparse.Namespace) -> None:
         attempt = 0
         result: SyncComputation | None = None
         remote_payload: dict[str, object] | None = None
+        push_count = 0
+        pull_count = 0
         while True:
             attempt += 1
             try:
@@ -1056,7 +1395,46 @@ def cmd_sync(args: argparse.Namespace) -> None:
                         "sync --dry-run (no writes)",
                         quiet=getattr(args, "quiet", False),
                     )
+                    if not args.no_artifacts:
+                        artifact_preview(
+                            result.merged_items,
+                            local_home,
+                            remote_home,
+                            args.host,
+                            quiet=getattr(args, "quiet", False),
+                        )
                     return
+
+                # Artifact path-form contract (regression guard) + escape warning.
+                assert_artifact_contract(result.merged_items, local_home)
+                warn_nonlocal_related_paths(result.merged_items, local_home)
+
+                # Artifact transfer is decoupled from the JSON-dirty gate: it runs
+                # whenever there are collectable grill paths and --no-artifacts is
+                # unset. Push FIRST — if it fails, abort before ssh_import so the
+                # remote metadata never references an absent file.
+                if not args.no_artifacts and collect_artifact_paths(
+                    result.merged_items, local_home
+                ):
+                    if shutil.which("rsync") is None or not remote_has_rsync(
+                        args.host, args.ssh_timeout
+                    ):
+                        raise SyncFatalError(
+                            "rsync unavailable locally or on remote; install rsync "
+                            "or pass --no-artifacts (metadata-only sync, artifacts "
+                            "will NOT transfer)"
+                        )
+                    push_attempted, _ = push_artifacts(
+                        args.host,
+                        result.merged_items,
+                        local_home,
+                        remote_home,
+                        args.ssh_timeout,
+                        rsync_io_timeout,
+                        quiet=getattr(args, "quiet", False),
+                        dry_run=False,
+                    )
+                    push_count = push_attempted
 
                 if result.needs_remote_items_write or result.needs_remote_pending_write:
                     outbound_items = rewrite_paths_list(
@@ -1074,6 +1452,24 @@ def cmd_sync(args: argparse.Namespace) -> None:
                         remote_schema,
                         cast(int, remote_payload["rev"]),
                     )
+
+                # Pull (remote -> local) so remote-created/edited files exist
+                # before the local metadata commit.
+                if not args.no_artifacts and collect_artifact_paths(
+                    result.merged_items, local_home
+                ):
+                    pull_attempted, _ = pull_artifacts(
+                        args.host,
+                        result.merged_items,
+                        local_home,
+                        remote_home,
+                        args.ssh_timeout,
+                        rsync_io_timeout,
+                        quiet=getattr(args, "quiet", False),
+                        dry_run=False,
+                    )
+                    pull_count = pull_attempted
+
                 break
             except SyncRetryableError as e:
                 if attempt >= args.max_retries:
@@ -1109,6 +1505,18 @@ def cmd_sync(args: argparse.Namespace) -> None:
             "sync complete",
             quiet=getattr(args, "quiet", False),
         )
+        if not args.no_artifacts:
+            cli_common.qprint(
+                f"artifacts: pushed {push_count}, pulled {pull_count}",
+                quiet=getattr(args, "quiet", False),
+            )
+            artifact_preview(
+                result.merged_items,
+                local_home,
+                remote_home,
+                args.host,
+                quiet=getattr(args, "quiet", False),
+            )
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -1158,6 +1566,18 @@ def build_parser() -> argparse.ArgumentParser:
         "sync", help="merge against the other machine", parents=[verbosity_parent]
     )
     p_sync.add_argument("--dry-run", action="store_true")
+    p_sync.add_argument(
+        "--no-artifacts",
+        action="store_true",
+        help="skip grill/ artifact transfer (metadata-only sync)",
+    )
+    p_sync.add_argument(
+        "--rsync-io-timeout",
+        type=float,
+        default=None,
+        metavar="<seconds>",
+        help="rsync I/O timeout (defaults to --ssh-timeout)",
+    )
     p_sync.set_defaults(func=cmd_sync)
 
     p_status = sub.add_parser(

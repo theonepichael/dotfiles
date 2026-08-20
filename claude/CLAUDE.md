@@ -322,7 +322,11 @@ reconciled with another machine's store, use
 `python3 ~/.claude/scripts/dev_status_sync.py sync` (add `--dry-run` to
 preview, or `status` to check divergence without merging) — a desktop-
 initiated bidirectional merge over SSH. This is a manual, occasional
-operation, not part of the normal add/update/done loop above.
+operation, not part of the normal add/update/done loop above. `sync` also
+transfers the `~/.claude/data/grill/` artifact files referenced by items'
+`related_files` (specs, grill plans, critique notes) via `rsync`, so those
+references don't dangle on the other machine; pass `--no-artifacts` to skip,
+and `--rsync-io-timeout` to bound each rsync call.
 
 ### Pending Items
 
