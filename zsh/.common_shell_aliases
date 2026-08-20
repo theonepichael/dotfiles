@@ -162,8 +162,21 @@ fi
 
 # File listing
 if command -v eza >/dev/null 2>&1; then
-    alias ls="eza --icons"
-    alias ll="eza -la -h --icons"
+    _eza_sorted() {
+        local -a opts=("$@")
+
+        # Hidden files + directories
+        (( ${#${:-.*(N)}} )) && command eza -d "${opts[@]}" .*(N)
+
+        # Visible directories
+        (( ${#${:-*(N/)}} )) && command eza -d "${opts[@]}" *(N/)
+
+        # Visible files
+        (( ${#${:-*(N^/)}} )) && command eza -d "${opts[@]}" *(N^/)
+    }
+
+    alias ls="_eza_sorted --icons"
+    alias ll="_eza_sorted -l -h --icons"
     alias lt="eza --tree --icons"
 else
     echo "warning: eza not installed (falling back to system ls)"
