@@ -392,7 +392,7 @@ def _rsync_argv(srcs: list[str], dest: str, rsync_io_timeout: float) -> list[str
         "-e",
         _RSH,
         "--timeout",
-        str(rsync_io_timeout),
+        str(int(rsync_io_timeout)),
         *srcs,
         dest,
     ]

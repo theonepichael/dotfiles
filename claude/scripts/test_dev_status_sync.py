@@ -931,6 +931,8 @@ class ArtifactTransferTests(unittest.TestCase):
         self.assertEqual(failed, 0)
         argv = run.call_args[0][0]
         self.assertIn("-rptDuR", argv)  # -u is folded into the combined flag
+        tidx = argv.index("--timeout")
+        self.assertEqual(argv[tidx + 1], "20")  # integer, never "20.0"
         dests = [a for a in argv if a.startswith("fedora:") and a.endswith("/")]
         self.assertEqual(len(dests), 1)
         self.assertTrue(any("/./" in a for a in argv))

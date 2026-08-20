@@ -8,6 +8,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
@@ -107,6 +108,28 @@ class BacklogTestCase(unittest.TestCase):
         for p in self._patches:
             p.stop()
         shutil.rmtree(self.tmpdir)
+
+    def test_backlog_lock_reentrant_same_thread_does_not_deadlock(self):
+        # Regression: flock(2) is per-open-file-description, not per-process, so a
+        # nested `with backlog_lock()` in the same thread used to block forever
+        # (the inner open's flock waited on the outer lock held by the same
+        # process). Run the nesting in a worker thread so a deadlock is caught by
+        # a join timeout instead of hanging the whole suite.
+        seen = {}
+
+        def worker():
+            try:
+                with dev_status.backlog_lock():
+                    with dev_status.backlog_lock():
+                        seen["inner"] = True
+            except Exception as e:  # pragma: no cover - defensive
+                seen["error"] = e
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join(timeout=10)
+        self.assertFalse(t.is_alive(), "backlog_lock nested re-entry deadlocked")
+        self.assertTrue(seen.get("inner"), f"unexpected lock outcome: {seen}")
 
     def write_items(self, items):
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -1052,7 +1075,6 @@ class BacklogTestCase(unittest.TestCase):
     # ── 26: concurrent writes serialize, no lost update ───────────────────
 
     def test_26_concurrent_writes_serialize_no_lost_update(self):
-        import threading
 
         self.write_items([make_item("item-a")])
         results = {}

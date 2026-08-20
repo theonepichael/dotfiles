@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
@@ -660,6 +661,18 @@ def save_pending(pending_items: list[PendingItem]) -> None:
     _atomic_write_json(PENDING_FILE, payload, ".pending_tmp_")
 
 
+# flock(2) locks are tied to the open file description, not the process, so a
+# naive nested ``with backlog_lock()`` deadlocks: the inner ``open`` gets a
+# distinct descriptor and its ``flock`` blocks forever waiting on the outer
+# lock held by the same process. A ``threading.RLock`` makes same-thread
+# re-entry a no-op (no second ``flock``) while still blocking other threads,
+# and the single ``flock`` taken on the outermost entry still serializes
+# distinct *processes* as before.
+_backlog_lock_rlock = threading.RLock()
+_backlog_lock_fd: int = -1
+_backlog_lock_count: int = 0
+
+
 @contextmanager
 def backlog_lock() -> Iterator[None]:
     """Hold an exclusive lock over a mutating command's full read-modify-write cycle.
@@ -667,14 +680,27 @@ def backlog_lock() -> Iterator[None]:
     Held across items.json + pending_items.json + _meta.json so two
     concurrent writers (e.g. Claude Code and opencode sharing this store)
     serialize instead of racing.
+
+    Safe to re-enter from the same thread (a nested ``with`` does not
+    deadlock): the underlying ``flock`` is taken once on the outermost entry
+    and released on the innermost exit. Distinct threads/processes still
+    serialize behind the lock.
     """
+    global _backlog_lock_fd, _backlog_lock_count
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with open(LOCK_FILE, "w") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+    with _backlog_lock_rlock:
+        _backlog_lock_count += 1
+        if _backlog_lock_count == 1:
+            _backlog_lock_fd = os.open(str(LOCK_FILE), os.O_WRONLY | os.O_CREAT, 0o644)
+            fcntl.flock(_backlog_lock_fd, fcntl.LOCK_EX)
         try:
             yield
         finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
+            _backlog_lock_count -= 1
+            if _backlog_lock_count == 0:
+                fcntl.flock(_backlog_lock_fd, fcntl.LOCK_UN)
+                os.close(_backlog_lock_fd)
+                _backlog_lock_fd = -1
 
 
 def load_rev() -> int:
