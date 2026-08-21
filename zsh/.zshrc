@@ -119,3 +119,4 @@ export PATH="$HOME/.opencode/bin:$PATH"
 export COLORTERM=truecolor
 
 . "$HOME/.local/bin/env"
+export PATH="$HOME/.bun/bin:$PATH"
