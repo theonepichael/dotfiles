@@ -367,6 +367,13 @@ used for backlog capture.
   git -C <repo> worktree add ../<repo-name>-<slug> -b <slug>
   ```
 
+  A fresh worktree has no installed dependencies — package managers install
+  into an untracked local folder (`node_modules`, `.venv`, `target`, etc.),
+  and worktrees don't share it. Install dependencies right after creating
+  the worktree, before running tests, lint, or a dev/build command. Check
+  the repo's manifest/lock file to find the right install command for its
+  ecosystem.
+
   This sidesteps concurrent-session collisions by construction — repos
   routinely get worked from more than one tool in parallel (Claude Code,
   opencode, Copilot, agy) against the same checkout — instead of detecting
