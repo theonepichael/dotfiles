@@ -1,12 +1,15 @@
 ---
 name: backlog-item
-description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end."
+description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item."
 allowed-tools: shell
 ---
 
 The target item is whatever slug or integer N the user named in their
-prompt (e.g. `/backlog-item 4`, "work on backlog item 4"). If none is
-named, ask which item — never guess.
+prompt (e.g. `/backlog-item 4`, "work on backlog item 4"). If the prompt
+also names `--auto` (with or without a target item), skip straight to the
+`--auto mode` section at the end of this file instead of running the
+numbered steps live. Otherwise, if no target item was named, ask which item
+— never guess.
 
 Work the named item to done, one step at a time. Every user-approval gate
 below (`## 10`, `## 11`) stops and waits for the user — never collapse two
@@ -204,3 +207,61 @@ actually check each criterion from `show <slug|N>` against the diff — don't
 pass it reflexively — then `dev_status.py gate-pass <slug|N>` and retry
 `approve`. Display the full dashboard stdout these print; don't just
 narrate a one-line confirmation.
+
+---
+
+## `--auto` mode
+
+Runs the per-item procedure above end to end with minimal live input — the
+user has explicitly asked for unattended execution. Steps 10 (commit) and 11
+(merge/push/cleanup) always stay live, per item, no exception: the shared
+instructions file's commit-approval rule holds even mid-pipeline. Steps not
+called out below run exactly as written above.
+
+**Invocation.** `--auto` with a slug/N runs just that item under this mode.
+`--auto` alone batch-processes every READY item, in dashboard order; any IN
+PROGRESS item is resumed first via the existing step 1–2 logic; BLOCKED
+items are skipped by construction (never READY). The queue is fixed at the
+start of the run — items added to READY mid-run aren't picked up until a
+later invocation. Loop the modified per-item procedure below across the
+queue.
+
+1. **Step 3 (Branch)** — repo ambiguity (multiple named, or none) can't be
+   guessed. Skip the item, queue an end-of-run digest entry noting why, and
+   continue the batch.
+2. **Step 4 (Baseline)** — a truly trivial failing baseline (a one-liner,
+   no investigation needed) still folds in per the shared instructions
+   file's existing exception. Anything needing real investigation: draft
+   the backlog-item `add` JSON for it, queue it in the digest (never add
+   silently), skip implementing on top of a broken baseline, and move to
+   the next item.
+3. **Step 5 (Spec or plan)** — when handing off to the `spec` skill, state
+   explicitly in the task that this backlog-item run is `--auto`: if
+   spec's own step 3 escalates into `grill-me` for a genuinely open design
+   branch, tell it to run that inner session as `grill-me --auto` too,
+   rather than stopping for live Q&A.
+4. **Step 6 (Critique)** — runs unconditionally, no ask: always send the
+   resulting plan/spec through `second-opinion` before implementing.
+5. **Step 7 (Handoff)** — always resolves to "same session, now," no ask —
+   no dispatch to a cheaper session or model.
+6. **Steps 8–9 (Red/green, Verify)** — on failure, retry up to 2 times
+   before giving up. Still failing: skip the item, queue a digest entry
+   describing the failure, and continue the batch.
+7. **Proactive-capture protocols** — every "offer, never do silently"
+   trigger from the shared instructions file that would otherwise fire
+   mid-run (baseline-failure backlog offers, proactive backlog capture,
+   pending-item tracking, rejected-idea capture) queues into the digest
+   instead.
+8. **Steps 10–11** — unchanged, always live, per item, exactly as written
+   above.
+9. **Step 12 (Close)** — unchanged; `review`/`approve`/`gate-pass` is
+   already agent-performed self-verification against stored gate criteria,
+   not a user-facing ask.
+
+**End of run.** When the queue is exhausted (or the single item completes),
+show a dashboard-style summary of every item processed — done, skipped
+(with reason), or failed after retries — then walk the accumulated digest
+in one pass, asking in plain text for each queued item exactly as its
+originating shared-instructions protocol specifies (a backlog `add`, a
+`pending add`, an `out-of-scope add`), stating a recommendation first and
+confirming or declining each in turn.
