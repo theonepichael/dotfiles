@@ -416,8 +416,8 @@ src = "claude/scripts/statusline.py"
 dest = "~/.claude/scripts/statusline.py"
 
 # ── macOS-only configs ───────────────────────────────────────────────────
-# .zprofile carries the Homebrew shellenv; on Linux, secrets and NVM are
-# sourced from .zshrc instead.
+# .zprofile carries the Homebrew shellenv (mac-only). Secrets and NVM are
+# sourced from .zshrc unconditionally, on every platform.
 
 [[link]]
 src = "zsh/.zprofile"

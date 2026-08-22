@@ -101,10 +101,8 @@ if command -v zoxide >/dev/null 2>&1; then
     eval "$(zoxide init zsh)"
 fi
 
-# bun completions
 [ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"
 
-# bun
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
 
@@ -112,7 +110,6 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 # Added by Antigravity CLI installer
 export PATH="$HOME/.local/bin:$PATH"
 
-# opencode
 export PATH="$HOME/.opencode/bin:$PATH"
 
 # Enable richer colors
