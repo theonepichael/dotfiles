@@ -3,6 +3,21 @@
 This repo's internal tooling changes are logged here. Breaking changes to
 harness CLIs, flags, or behavior get an entry going forward.
 
+## 2026-08-22
+
+### Added
+
+- `scripts/opencode_skills_sync.py` — a standalone, commit-only daemon that
+  mirrors `~/.config/opencode/skills` (which is not itself a git repo) into
+  a second dotfiles worktree on its own branch (`opencode-skills-live`), so
+  a skill authored directly there is captured automatically instead of
+  being lost if it's deleted before ever being promoted into
+  `dotfiles/opencode/skills`. Skips skills already curated via the existing
+  symlink pattern. Never calls `git push`/`fetch`/`pull` — no code path in
+  the module reaches a remote. Ships with
+  `systemd/opencode-skills-sync.service` and `links.toml` wiring
+  (`~/.local/bin/opencode-skills-sync`), Linux personal machines only.
+
 ## 2026-08-19
 
 ### Added
