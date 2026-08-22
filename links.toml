@@ -416,6 +416,23 @@ dest = "~/Library/LaunchAgents/com.user.watchcommit.plist"
 platform = "mac"
 profile_exclude = ["work"]
 
+# ── opencode-skills-sync (personal machines only) ─────────────────────────
+# Mirrors ~/.config/opencode/skills into a commit-only local branch so a
+# skill authored directly there isn't lost if it's later deleted without
+# ever being promoted into dotfiles/opencode/skills. Never pushes.
+
+[[link]]
+src = "scripts/opencode_skills_sync.py"
+dest = "~/.local/bin/opencode-skills-sync"
+platform = "linux"
+profile_exclude = ["work"]
+
+[[link]]
+src = "systemd/opencode-skills-sync.service"
+dest = "~/.config/systemd/user/opencode-skills-sync.service"
+platform = "linux"
+profile_exclude = ["work"]
+
 [[link]]
 src = "claude/scripts/watchcommit_activity.py"
 dest = "~/.claude/scripts/watchcommit_activity.py"
