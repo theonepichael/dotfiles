@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Block a commit that lets a skill/command doc drift from the backing
+# script's real CLI contract (dev_status.py/grill.py/standup.py and any
+# other script gen_interfaces.py discovers), or that leaves INTERFACES.md
+# itself stale. See claude/scripts/gen_interfaces.py --check for the two
+# distinct exit codes this checks for (1 = stale file, 3 = doc drift).
+set -uo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+output="$(python3 "$repo_root/claude/scripts/gen_interfaces.py" --check --repo-root "$repo_root" 2>&1)"
+status=$?
+
+if [ "$status" -eq 0 ]; then
+    exit 0
+fi
+
+echo "$output" >&2
+echo "" >&2
+case "$status" in
+    1) echo "pre-commit: INTERFACES.md is stale -- run the command above, then re-stage and commit." >&2 ;;
+    3) echo "pre-commit: a skill/command doc drifted from its script's real CLI contract -- edit the doc(s) named above." >&2 ;;
+esac
+exit "$status"
