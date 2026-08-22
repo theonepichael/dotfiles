@@ -1,5 +1,5 @@
 ---
-description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, grill-me plan, second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end."
+description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end."
 ---
 
 Work the named item to done, one step at a time. The target item is
@@ -38,24 +38,22 @@ fresh worktree before touching anything (CLAUDE.md's "Baseline tests before
 starting code work").
 
 ## 5. Spec or plan
-Default: load the `spec` skill via opencode's native skill tool
+Load the `spec` skill via opencode's native skill tool
 (`skill({ name: "spec" })`) with the item's context/next_steps as the task.
-Let it draft and save the spec (its steps 1–4), but decline its own step 4
-generation offer — step 7 below owns the handoff decision, same as the
-grill-me case this replaces for well-scoped items.
+Let it draft and save the spec end-to-end (its steps 1–4) — including its
+own internal escalation to `grill-me` if a field's design is genuinely
+open; `spec`'s step 3 owns that handoff and the resume-after entirely,
+there is nothing to orchestrate here. Decline spec's own step 4 generation
+offer — step 7 below owns the handoff decision.
 
-If `spec`'s own step 3 escalates — a genuinely open design branch, not just
-a missing fact — load the `grill-me` skill (`skill({ name: "grill-me" })`)
-for that decision instead, with the item's context/next_steps as topic. Let
-it own its full protocol — Q&A, --verify, clear-and-go — don't hand-roll
-`grill.py` calls here. Take the clear-and-go offer seriously if grill-me
-runs: this user's default is a hardened plan handed to a cheaper executor,
-not continuing in-session. Decline grill-me's own clear-and-go offer too,
-for the same reason as `spec`'s.
+Once spec records its artifact path, add it to the item's related_files if
+missing (CLAUDE.md's "Plans and deliverables get a path on record"). If
+`spec` delegated into `grill-me` along the way, that session's `plan_path`
+is already cited from the spec's Context field — don't also record it as a
+second, competing artifact.
 
-Once whichever skill ran records its artifact path (spec path or
-`plan_path`), add it to the item's related_files if missing (CLAUDE.md's
-"Plans and deliverables get a path on record").
+Once spec is saved, add its path to the item's related_files if missing
+(CLAUDE.md's "Plans and deliverables get a path on record").
 
 ### Architecture capture (new modules only)
 

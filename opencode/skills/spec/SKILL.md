@@ -23,7 +23,9 @@ For each field you can't confidently fill, ask one at a time. When the plausible
 
 ## 3. Escalate real decisions — don't resolve them here
 
-A missing fact gets asked directly (step 2). A genuinely open branch — multiple viable designs, unclear tradeoffs, a decision that cascades into others — gets named and handed to the `grill-me` skill instead: tell the user (or the delegating caller) which field is blocked and why, and wait for that decision before drafting it. Never interrogate architecture inline in a spec.
+A missing fact gets asked directly (step 2). A genuinely open branch — multiple viable designs, unclear tradeoffs, a decision that cascades into others — gets handed to the `grill-me` skill: invoke it for that specific decision, with the blocked field's question as topic. Let it own its full protocol — Q&A, `--verify`, executor-readiness — don't hand-roll `grill.py` calls here. Decline grill-me's own clear-and-go offer — drafting isn't done yet, so grill-me resolving the branch doesn't get to be the last word.
+
+Grill-me resolving the branch is a precursor, not a replacement: once its session concludes with the decision settled, resume here at step 1 with that field now answered — grill-me settles the open branch, this step never redoes that work, it only drafts the field with the now-known answer. Never interrogate architecture inline in a spec. Cite grill-me's `plan_path` from this spec's own Context field as the decision record behind that field — the spec, not grill-me's plan, is the artifact a caller (e.g. `backlog-item`) records.
 
 ## 4. Save and confirm
 

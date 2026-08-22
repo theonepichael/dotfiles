@@ -23,7 +23,30 @@ For each field you can't confidently fill, ask one at a time, applying the share
 
 ## 3. Escalate real decisions — don't resolve them here
 
-A missing fact gets asked directly (step 2). A genuinely open branch — multiple viable designs, unclear tradeoffs, a decision that cascades into others — gets named and handed to the `grill-me` skill instead: tell the user which field is blocked and why, and wait for that decision before drafting it. Never interrogate architecture inline in a spec.
+A missing fact gets asked directly (step 2). A genuinely open branch — multiple viable designs, unclear tradeoffs, a decision that cascades into others — gets handed to the `grill-me` skill: use it for that specific decision, with the blocked field's question as topic. Let it own its full protocol — Q&A, `--verify`, executor-readiness. Decline grill-me's own clear-and-go offer — drafting isn't done yet, so grill-me resolving the branch doesn't get to be the last word.
+
+**This inner delegation is a suspend-and-return, same discipline as any
+other skill-to-skill handoff on agy** — running grill-me's SKILL.md body in
+this same conversation risks the same context-drift a longer sub-session
+always risks here. Print a literal checkpoint marker before delegating
+(`[CHECKPOINT: suspending spec at step 3 for grill-me on field <field>;
+resume drafting at step 1 when it finishes]`), let grill-me run to actual
+completion including its own end-of-session steps, then re-read this
+file's own step 1 by absolute path before resuming — don't rely on
+recalling it. If this spec is being drafted for a tracked backlog item,
+also persist the return pointer the way `backlog-item`'s own delegation
+does: `dev_status.py update <slug> '{"next_steps": "Resume backlog-item at
+step 5 (spec drafting, field <field>) after grill-me finishes - <original
+next_steps>"}'`.
+
+Grill-me resolving the branch is a precursor, not a replacement: once its
+session concludes with the decision settled, resume here at step 1 with
+that field now answered — grill-me settles the open branch, this step
+never redoes that work, it only drafts the field with the now-known
+answer. Never interrogate architecture inline in a spec. Cite grill-me's
+`plan_path` from this spec's own Context field as the decision record
+behind that field — the spec, not grill-me's plan, is the artifact a
+caller (e.g. `backlog-item`) records.
 
 ## 4. Save and confirm
 

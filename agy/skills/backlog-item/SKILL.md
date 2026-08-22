@@ -42,43 +42,38 @@ fresh worktree before touching anything (the shared instructions file's
 "Baseline tests before starting code work").
 
 ## 5. Spec or plan
-Default: delegate to the spec skill with the item's context/next_steps as
-the task. Let it draft and save the spec (its steps 1–4), but decline its
-own step 4 generation offer — step 7 below owns the handoff decision, same
-as the grill-me case this replaces for well-scoped items.
+Delegate to the spec skill with the item's context/next_steps as the task.
+Let it draft and save the spec end-to-end (its steps 1–4) — including its
+own internal escalation to grill-me if a field's design is genuinely open;
+spec's step 3 owns that handoff and the resume-after entirely, including
+its own suspend-and-return discipline for that inner delegation. There is
+nothing to orchestrate here. Decline spec's own step 4 generation offer —
+step 7 below owns the handoff decision.
 
-If the spec skill's own step 3 escalates — a genuinely open design branch,
-not just a missing fact — switch to the grill-me skill for that decision
-instead, with the item's context/next_steps as topic. Let it own its full
-protocol — Q&A, `--verify`, clear-and-go — don't hand-roll `grill.py` calls
-here. Take the clear-and-go offer seriously if grill-me runs: this user's
-default is a hardened plan handed to a cheaper executor, not continuing
-in-session. Decline grill-me's own clear-and-go offer too, for the same
-reason as spec's.
-
-**Delegating into either skill is a suspend-and-return, not a fire-and-forget
+**Delegating into spec is a suspend-and-return, not a fire-and-forget
 reference** — agy has no discrete "Skill" tool call; the model activates a
 referenced skill by reading and following its SKILL.md body directly using
-normal tool access, which means a long sub-conversation inside spec or
-grill-me can push this procedure's own state out of effective attention.
-Before delegating:
+normal tool access, which means a long sub-conversation inside spec (and,
+inside that, potentially grill-me) can push this procedure's own state out
+of effective attention. Before delegating:
 1. Print a literal checkpoint marker: `[CHECKPOINT: suspending backlog-item
-   at step 5 for the spec skill; resume at step 6 when it finishes]`
-   (substitute the actual skill and return step).
+   at step 5 for the spec skill; resume at step 6 when it finishes]`.
 2. Persist the same return pointer somewhere that outlives the chat
    transcript — this harness and agy both auto-compress context under
    length pressure, so the marker alone isn't enough: `dev_status.py
    update <slug> '{"next_steps": "Resume backlog-item at step 6 after the
    spec skill finishes - <original next_steps preserved/appended>"}'`.
-3. Run the delegated skill's protocol to actual completion, including its
-   own end-of-session steps.
+3. Run spec's protocol to actual completion, including any inner grill-me
+   delegation and spec's own end-of-session steps.
 4. On return, read `~/.gemini/antigravity-cli/skills/backlog-item/SKILL.md`'s
    own step 6 text by its literal absolute path before acting — don't rely
    on recalling it from earlier in the conversation.
 
-Once whichever skill ran records its artifact path (spec path or
-`plan_path`), add it to the item's related_files if missing (the shared
-instructions file's "Plans and deliverables get a path on record").
+Once spec records its artifact path, add it to the item's related_files if
+missing (the shared instructions file's "Plans and deliverables get a path
+on record"). If spec delegated into grill-me along the way, that session's
+`plan_path` is already cited from the spec's Context field — don't also
+record it as a second, competing artifact.
 
 ### Architecture capture (new modules only)
 

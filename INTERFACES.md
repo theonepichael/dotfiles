@@ -680,7 +680,7 @@ the file existing in the repo; the description is the canonical
 | `/spec` | yes | yes | yes | yes |
 | `/standup` | yes | yes | yes | yes |
 
-- **`/backlog-item`** — Runs a dev_status.py backlog item end-to-end: resolve, worktree, grill-me plan, second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end.
+- **`/backlog-item`** — Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end.
   - Source: `claude/commands/backlog-item.md`
   - Installed at: `~/.claude/commands/backlog-item.md` (claude)
 - **`/dashboard`** — surfaces backlog and pending items as a dashboard. use when the user says 'dashboard', 'what's pending', 'show backlog', 'where we at', 'what am i working on', 'open items', or any variant of checking current work status. Renamed from /status to avoid colliding with Claude Code's built-in /status (plan usage/rate-limit view) — a naming collision with a built-in command can silently break custom command loading. (session start is covered by a SessionStart hook — do not run this again unprompted.)
@@ -948,19 +948,19 @@ named doc, not regenerating this file.
 
 | Doc | Status |
 | --- | --- |
-| `agy/skills/backlog-item/SKILL.md` | OK |
 | `agy/skills/grill-me/SKILL.md` | OK |
 | `agy/skills/second-opinion/SKILL.md` | OK |
-| `claude/commands/backlog-item.md` | OK |
 | `claude/commands/grill-me.md` | OK |
 | `claude/commands/second-opinion.md` | OK |
+| `claude/commands/spec.md` | OK |
 | `copilot/skills/grill-me/SKILL.md` | OK |
 | `copilot/skills/second-opinion/SKILL.md` | OK |
-| `opencode/command/backlog-item.md` | OK |
 | `opencode/command/grill-me.md` | OK |
 | `opencode/command/second-opinion.md` | OK |
+| `opencode/command/spec.md` | OK |
 | `opencode/skills/grill-me/SKILL.md` | OK |
 | `opencode/skills/second-opinion/SKILL.md` | OK |
+| `opencode/skills/spec/SKILL.md` | OK |
 
 ### `standup.py`
 
@@ -1000,5 +1000,5 @@ new one, `--check` catches it the same as any other stale content.
 | `/make-skill` | `grill-me` |
 | `/second-opinion` | — |
 | `/skill-map` | — |
-| `/spec` | `grill-me`, `second-opinion` |
+| `/spec` | `backlog-item`, `grill-me`, `second-opinion` |
 | `/standup` | `dashboard` |
