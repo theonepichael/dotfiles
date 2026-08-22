@@ -1472,6 +1472,60 @@ def render_doc_drift_section(coverage: dict[str, dict[str, bool]]) -> list[str]:
     return lines
 
 
+_SKILL_MENTION_RE_CACHE: dict[str, re.Pattern[str]] = {}
+
+
+def _skill_mention_pattern(name: str) -> re.Pattern[str]:
+    """Return (and cache) the whole-word mention pattern for a skill name."""
+    if name not in _SKILL_MENTION_RE_CACHE:
+        _SKILL_MENTION_RE_CACHE[name] = re.compile(
+            rf"(?<![\w-]){re.escape(name)}(?![\w-])"
+        )
+    return _SKILL_MENTION_RE_CACHE[name]
+
+
+def extract_skill_mentions(source: Path, names: Sequence[str]) -> list[str]:
+    """Return which other skill names this skill's own file text mentions.
+
+    A whole-word match only — this is deliberately conservative (a hyphen or
+    letter on either side disqualifies it) so a short name like `spec`
+    doesn't false-positive on "specific" or "specification".
+    """
+    text = source.read_text(encoding="utf-8")
+    mentioned = []
+    for other in names:
+        if other == source.stem:
+            continue
+        if _skill_mention_pattern(other).search(text):
+            mentioned.append(other)
+    return mentioned
+
+
+def render_skill_graph_section(repo_root: Path) -> list[str]:
+    """Render which skill mentions which other skills, by name, in its own text."""
+    names = sorted(
+        path.stem for path in (repo_root / "claude" / "commands").glob("*.md")
+    )
+    lines = [
+        "Built by scanning each `claude/commands/*.md` skill's own text for",
+        "whole-word mentions of the other skills' names (frontmatter",
+        "description included). This regenerates with the rest of the file,",
+        "so it cannot silently drift the way hand-written relationship notes",
+        "could — if a skill stops mentioning another, or starts mentioning a",
+        "new one, `--check` catches it the same as any other stale content.",
+        "",
+        "| Skill | Mentions |",
+        "| --- | --- |",
+    ]
+    for name in names:
+        source = repo_root / "claude" / "commands" / f"{name}.md"
+        mentions = extract_skill_mentions(source, names)
+        cell = ", ".join(f"`{m}`" for m in mentions) if mentions else "—"
+        lines.append(f"| `/{name}` | {cell} |")
+    lines.append("")
+    return lines
+
+
 def build_document(repo_root: Path) -> str:
     """Build the complete INTERFACES.md text for ``repo_root``."""
     return build_document_and_drift(repo_root)[0]
@@ -1529,6 +1583,8 @@ def build_document_and_drift(repo_root: Path) -> tuple[str, list[DriftProblem]]:
     problems, coverage = check_doc_drift(repo_root, modules)
     lines += ["---", "", "## 5. Skill/command doc contract coverage", ""]
     lines += render_doc_drift_section(coverage)
+    lines += ["---", "", "## 6. Skill cross-reference graph", ""]
+    lines += render_skill_graph_section(repo_root)
     return "\n".join(lines).rstrip("\n") + "\n", problems
 
 

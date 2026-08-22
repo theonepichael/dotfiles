@@ -942,6 +942,30 @@ class DocDriftTests(unittest.TestCase):
             self.assertIn("--fast", result.stderr)
 
 
+class SkillMentionTests(unittest.TestCase):
+    def write(self, name: str, text: str) -> Path:
+        directory = Path(tempfile.mkdtemp())
+        target = directory / f"{name}.md"
+        target.write_text(text, encoding="utf-8")
+        return target
+
+    def test_plain_whole_word_mention_is_found(self) -> None:
+        source = self.write("backlog-item", "See also /spec for details.\n")
+        self.assertEqual(
+            gi.extract_skill_mentions(source, ["backlog-item", "spec"]), ["spec"]
+        )
+
+    def test_mention_inside_a_longer_word_is_not_found(self) -> None:
+        source = self.write("backlog-item", "Write a specific specification.\n")
+        self.assertEqual(
+            gi.extract_skill_mentions(source, ["backlog-item", "spec"]), []
+        )
+
+    def test_skill_never_mentions_itself(self) -> None:
+        source = self.write("spec", "This is the spec skill. Use /spec.\n")
+        self.assertEqual(gi.extract_skill_mentions(source, ["spec", "grill-me"]), [])
+
+
 def scripts_path(root: Path, name: str) -> Path:
     """Return the path to a script under ``root``'s ``SCRIPTS_DIR``."""
     return root / gi.SCRIPTS_DIR / name

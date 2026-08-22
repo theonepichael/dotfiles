@@ -344,6 +344,8 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `validate_invocation(cli: CliSpec, tokens: list[str]) -> list[str]` — Walk one invocation's tokens against ``cli``; return problem strings.
   - `check_doc_drift(repo_root: Path, modules: Sequence[ModuleInterface]) -> tuple[list[DriftProblem], dict[str, dict[str, bool]]]` — Validate every doc's shown invocations against each module's ``CliSpec``.
   - `render_doc_drift_section(coverage: dict[str, dict[str, bool]]) -> list[str]` — Render the per-script per-doc coverage summary, sorted for determinism.
+  - `extract_skill_mentions(source: Path, names: Sequence[str]) -> list[str]` — Return which other skill names this skill's own file text mentions.
+  - `render_skill_graph_section(repo_root: Path) -> list[str]` — Render which skill mentions which other skills, by name, in its own text.
   - `build_document(repo_root: Path) -> str` — Build the complete INTERFACES.md text for ``repo_root``.
   - `build_document_and_drift(repo_root: Path) -> tuple[str, list[DriftProblem]]` — Build INTERFACES.md text alongside the doc-drift problems found.
   - `anchor(relpath: str) -> str` — Return the GitHub heading anchor for a module section.
@@ -658,6 +660,7 @@ the file existing in the repo; the description is the canonical
 | `/grill-me` | yes | yes | yes | yes |
 | `/make-skill` | yes | yes | yes | yes |
 | `/second-opinion` | yes | yes | yes | yes |
+| `/skill-map` | yes | — | — | — |
 | `/spec` | yes | yes | yes | yes |
 | `/standup` | yes | yes | yes | yes |
 
@@ -676,6 +679,9 @@ the file existing in the repo; the description is the canonical
 - **`/second-opinion`** — Send a plan to a non-Claude model for adversarial critique, then iterate — revise, re-send, repeat — until the critique stops surfacing anything new or a round cap is hit. Use when the user wants a second opinion, an outside critique, or to stress-test a plan against a different model.
   - Source: `claude/commands/second-opinion.md`
   - Installed at: `~/.claude/commands/second-opinion.md` (claude)
+- **`/skill-map`** — Shows how the dotfiles skills connect and flags any skill mentioned by another that no longer exists. Use when the user says "skill map", "show the skill map", "which skill for X", or asks how the skills chain together.
+  - Source: `claude/commands/skill-map.md`
+  - Installed at: `~/.claude/commands/skill-map.md` (claude)
 - **`/spec`** — Turn a vague coding task into a structured specification (objective, context, inputs, output format, constraints, evaluation criteria, edge cases, verification steps) before generation begins. Use when the user wants to formalize a task, write a spec, or invokes /spec.
   - Source: `claude/commands/spec.md`
   - Installed at: `~/.claude/commands/spec.md` (claude)
@@ -916,6 +922,12 @@ named doc, not regenerating this file.
 | `opencode/command/standup.md` | OK |
 | `opencode/skills/second-opinion/SKILL.md` | OK |
 
+### `gen_interfaces.py`
+
+| Doc | Status |
+| --- | --- |
+| `claude/commands/skill-map.md` | OK |
+
 ### `grill.py`
 
 | Doc | Status |
@@ -952,3 +964,25 @@ named doc, not regenerating this file.
 | `copilot/skills/grill-me/SKILL.md` | OK |
 | `opencode/command/grill-me.md` | OK |
 | `opencode/skills/grill-me/SKILL.md` | OK |
+
+---
+
+## 6. Skill cross-reference graph
+
+Built by scanning each `claude/commands/*.md` skill's own text for
+whole-word mentions of the other skills' names (frontmatter
+description included). This regenerates with the rest of the file,
+so it cannot silently drift the way hand-written relationship notes
+could — if a skill stops mentioning another, or starts mentioning a
+new one, `--check` catches it the same as any other stale content.
+
+| Skill | Mentions |
+| --- | --- |
+| `/backlog-item` | `dashboard`, `grill-me`, `second-opinion`, `spec` |
+| `/dashboard` | — |
+| `/grill-me` | `second-opinion` |
+| `/make-skill` | `grill-me` |
+| `/second-opinion` | — |
+| `/skill-map` | — |
+| `/spec` | `grill-me`, `second-opinion` |
+| `/standup` | `dashboard` |
