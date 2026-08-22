@@ -996,7 +996,7 @@ new one, `--check` catches it the same as any other stale content.
 | --- | --- |
 | `/backlog-item` | `dashboard`, `grill-me`, `second-opinion`, `spec` |
 | `/dashboard` | — |
-| `/grill-me` | `second-opinion` |
+| `/grill-me` | `second-opinion`, `spec` |
 | `/make-skill` | `grill-me` |
 | `/second-opinion` | — |
 | `/skill-map` | — |

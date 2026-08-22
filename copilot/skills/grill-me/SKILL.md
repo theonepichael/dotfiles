@@ -127,3 +127,13 @@ it trades interactivity for adversarial rigor instead of just guessing.
    `--verify` immediately afterward rather than asking first, and say so plainly
    in the plan's header (topic, "resolved via adversarial critique — no live
    user Q&A", and that verify then ran against it).
+
+5. If this session was started with `--backlog-slug` (the batch-backlog-items
+   case — a freestanding topic session with no item behind it skips this step
+   entirely): once `--verify` is settled, hand off to the `spec` skill with
+   this session's resolved decisions and plan.md as input, declining spec's
+   own step 4 generation offer. `spec.md` becomes the artifact this item's
+   `related_files` records; cite this session's `plan_path` from spec's
+   Context field as the decision record behind it — spec is final, this plan
+   is the precursor, the same relationship default mode's escalation case has
+   (`spec.md` step 3).

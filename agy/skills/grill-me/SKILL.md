@@ -126,3 +126,29 @@ it trades interactivity for adversarial rigor instead of just guessing.
    `--verify` immediately afterward rather than asking first, and say so plainly
    in the plan's header (topic, "resolved via adversarial critique — no live
    user Q&A", and that verify then ran against it).
+
+5. If this session was started with `--backlog-slug` (the batch-backlog-items
+   case — a freestanding topic session with no item behind it skips this step
+   entirely): once `--verify` is settled, delegate to the spec skill with this
+   session's resolved decisions and plan.md as input, declining spec's own
+   step 4 generation offer.
+
+   **Delegating into spec is a suspend-and-return, not a fire-and-forget
+   reference** — agy has no discrete "Skill" tool call; the model activates a
+   referenced skill by reading and following its SKILL.md body directly using
+   normal tool access, and a long sub-conversation inside spec (and, inside
+   that, potentially a nested grill-me delegation for an unrelated field) can
+   push this session's own state out of effective attention. Before
+   delegating:
+   1. Print a literal checkpoint marker: `[CHECKPOINT: suspending grill-me
+      --auto at step 5 for the spec skill; grill-me itself has nothing left
+      to resume once spec confirms its save — this is the last step]`.
+   2. Run spec's protocol to actual completion, including any inner grill-me
+      delegation and spec's own end-of-session steps.
+   3. On return, confirm spec recorded its artifact path and that the item's
+      `related_files` cites it (CLAUDE.md's "Plans and deliverables get a
+      path on record"). `spec.md` becomes the artifact this item's
+      `related_files` records; spec's own Context field cites this session's
+      `plan_path` as the decision record behind it — spec is final, this
+      plan is the precursor, the same relationship default mode's escalation
+      case has (`spec.md` step 3). End the grill-me session here.
