@@ -1,22 +1,18 @@
 " .vimrc - Sensible Vim Configuration for macOS
-" Last updated: April 2025
 
 " ===========================================================================
 " Basic Settings
 " ===========================================================================
 " Note: 'nocompatible' is automatically set when a .vimrc is found, so removed
 
-" Enable file type detection, plugins, and indentation
 if has('filetype')
   filetype plugin indent on
 endif
 
-" Enable syntax highlighting if available
 if has('syntax')
   syntax enable
 endif
 
-" Set default encoding to UTF-8
 set encoding=utf-8
 
 " Allow buffer switching without saving
@@ -31,7 +27,7 @@ set history=1000
 " More undo levels
 set undolevels=1000
 
-" Detect file changes more quickly (only appears once now)
+" Detect file changes more quickly
 set updatetime=300
 
 " Brief highlight on yank (requires Vim 8.0.1394+)
@@ -98,44 +94,44 @@ endfunction
 " ===========================================================================
 " UI Configuration
 " ===========================================================================
-set number              " Show line numbers
-set relativenumber      " Show relative line numbers
-set ruler               " Show the cursor position
-set showcmd             " Show incomplete commands
-set noshowmode            " Show current mode
-set laststatus=2        " Always show status line
-set wildmenu            " Visual autocomplete for command menu
-set wildmode=list:longest,full  " Command-line completion mode
-set showmatch           " Highlight matching parentheses/brackets
+set number
+set relativenumber
+set ruler
+set showcmd
+set noshowmode
+set laststatus=2
+set wildmenu
+set wildmode=list:longest,full
+set showmatch
 set scrolloff=3         " Keep 3 lines above/below cursor
 set sidescrolloff=5     " Keep 5 columns left/right of cursor
 set backspace=indent,eol,start  " Make backspace work as expected
-set noerrorbells        " No error bells
+set noerrorbells
 set visualbell          " Use visual bell (no beeping)
-set mouse=a             " Enable mouse in all modes
-set wrap                " Wrap long lines
+set mouse=a
+set wrap
 set linebreak           " Wrap at word boundaries
-set colorcolumn=80      " Highlight column 80
+set colorcolumn=80
 set cursorline
 
 " ===========================================================================
 " Search Settings
 " ===========================================================================
-set incsearch           " Search as characters are entered
-set hlsearch            " Highlight search matches
-set ignorecase          " Ignore case when searching
+set incsearch
+set hlsearch
+set ignorecase
 set smartcase           " Override ignorecase when search contains uppercase
 
 " ===========================================================================
 " Indentation & Tabs
 " ===========================================================================
 set expandtab           " Use spaces instead of tabs
-set tabstop=4           " Tab is 4 spaces
-set softtabstop=4       " Tab key inserts 4 spaces
-set shiftwidth=4        " >> indents by 4 spaces
+set tabstop=4
+set softtabstop=4
+set shiftwidth=4
 set shiftround          " Round indent to multiple of shiftwidth
-set autoindent          " Auto-indent new lines
-set smartindent         " Smart auto-indenting
+set autoindent
+set smartindent
 
 " ===========================================================================
 " Leader Key & Shortcuts
@@ -155,9 +151,6 @@ nnoremap <leader>wq :wq<CR>
 
 " Use 'ii' to exit insert mode quickly
 inoremap ii <Esc>
-
-" Now that split navigation uses leader keys, we don't need
-" the separate mapping for clearing highlights
 
 " Quick split creation
 nnoremap <leader>v :vsplit<CR>
@@ -229,7 +222,6 @@ function! SetCursorStyle()
   endif
 endfunction
 
-" Apply cursor settings
 call SetCursorStyle()
 
 " ===========================================================================
@@ -294,7 +286,6 @@ set ttyfast             " Faster terminal connections
 " ===========================================================================
 " Color Scheme & Aesthetics
 " ===========================================================================
-" Try to use a dark color scheme if available
 " If you have a preferred color scheme, uncomment and replace 'desert'
 " colorscheme desert
 
@@ -341,12 +332,12 @@ call plug#begin('~/.vim/plugged')
 
 " Declare the list of plugins
 " Uncomment or add plugins you want to use
-Plug 'tpope/vim-sensible'             " Sensible defaults
-Plug 'tpope/vim-commentary'           " Easy commenting
-" Plug 'preservim/nerdtree'             " File explorer
-" Plug 'ctrlpvim/ctrlp.vim'             " Fuzzy finder
-Plug 'vim-airline/vim-airline'        " Status line
-Plug 'catppuccin/vim', { 'as': 'catppuccin' } " Catppuccin theme
+Plug 'tpope/vim-sensible'
+Plug 'tpope/vim-commentary'
+" Plug 'preservim/nerdtree'
+" Plug 'ctrlpvim/ctrlp.vim'
+Plug 'vim-airline/vim-airline'
+Plug 'catppuccin/vim', { 'as': 'catppuccin' }
 
 " List ends here. Plugins become visible to Vim after this call
 call plug#end()
@@ -371,7 +362,7 @@ endif
 " ===========================================================================
 " End of Configuration
 " ===========================================================================
-" Add a reminder to install plugins on first run
+" Auto-install any plugins not yet present on first run
 if len(filter(values(g:plugs), '!isdirectory(v:val.dir)'))
   autocmd VimEnter * PlugInstall --sync | source $MYVIMRC
 endif

@@ -595,16 +595,13 @@ def _atomic_write_json(path: Path, payload: str, prefix: str) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=DATA_DIR, prefix=prefix)
     try:
-        # Write, flush, and fsync the temp file before renaming it into place.
         with os.fdopen(fd, "w") as f:
             f.write(payload)
             f.flush()
             os.fsync(f.fileno())
 
-        # Atomically replace the destination with the temp file.
         os.replace(tmp_path, path)
 
-        # Ensure the directory entry for the new file is durably written.
         dir_fd = None
         try:
             dir_fd = os.open(str(DATA_DIR), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
