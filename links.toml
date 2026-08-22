@@ -96,6 +96,11 @@ dest = "~/.claude/commands/spec.md"
 harness = "claude"
 
 [[link]]
+src = "claude/commands/to-tickets.md"
+dest = "~/.claude/commands/to-tickets.md"
+harness = "claude"
+
+[[link]]
 src = "claude/commands/skill-map.md"
 dest = "~/.claude/commands/skill-map.md"
 harness = "claude"
@@ -129,6 +134,10 @@ dest = "~/.claude/scripts/llm_backends.py"
 src = "claude/scripts/dev_status_sync.py"
 dest = "~/.claude/scripts/dev_status_sync.py"
 profile_exclude = ["work"]
+
+[[link]]
+src = "claude/scripts/to_tickets_runner.py"
+dest = "~/.claude/scripts/to_tickets_runner.py"
 
 [[link]]
 src = "claude/scripts/gen_claude_completion.py"
@@ -253,6 +262,11 @@ dest = "~/.copilot/skills/spec/SKILL.md"
 harness = "copilot"
 
 [[link]]
+src = "copilot/skills/to-tickets/SKILL.md"
+dest = "~/.copilot/skills/to-tickets/SKILL.md"
+harness = "copilot"
+
+[[link]]
 src = "copilot/aliases.zsh"
 dest = "~/.copilot_aliases"
 harness = "copilot"
@@ -291,6 +305,11 @@ harness = "opencode"
 [[link]]
 src = "opencode/command/spec.md"
 dest = "~/.config/opencode/commands/spec.md"
+harness = "opencode"
+
+[[link]]
+src = "opencode/command/to-tickets.md"
+dest = "~/.config/opencode/commands/to-tickets.md"
 harness = "opencode"
 
 [[link]]
@@ -366,6 +385,11 @@ harness = "agy"
 [[link]]
 src = "agy/skills/spec/SKILL.md"
 dest = "~/.gemini/antigravity-cli/skills/spec/SKILL.md"
+harness = "agy"
+
+[[link]]
+src = "agy/skills/to-tickets/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/to-tickets/SKILL.md"
 harness = "agy"
 
 [[link]]

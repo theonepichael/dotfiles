@@ -47,6 +47,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`standup.py`](#claudescriptsstanduppy) | standup.py — /standup skill CLI: local data gathering. |
 | [`standup_adapters.py`](#claudescriptsstandupadapterspy) | standup_adapters.py — provider-agnostic adapter interfaces for /standup. |
 | [`statusline.py`](#claudescriptsstatuslinepy) | Claude Code status line: render the model name and a color-coded context window usage bar with the used percentage, from the JSON session payload Claude Code pipes to this script on stdin. |
+| [`to_tickets_runner.py`](#claudescriptstoticketsrunnerpy) | to_tickets_runner.py — create a linked batch of dev_status.py backlog items from a confirmed vertical-slice/tracer-bullet ticket breakdown. |
 | [`vitals_promotion.py`](#claudescriptsvitalspromotionpy) | vitals-promotion.py — mechanical vitals-promotion pass over grill session data. |
 | [`watchcommit_activity.py`](#claudescriptswatchcommitactivitypy) | Print watchcommit's last known background pull/commit/push, so a session (or wc-status) can tell daemon-driven git state changes from manual ones instead of only seeing a clean/up-to-date working tree. |
 
@@ -166,7 +167,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
 - Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_render`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
-- Tested by: `claude/scripts/test_dev_status.py`, `claude/scripts/test_dev_status_sync.py`
+- Tested by: `claude/scripts/test_dev_status.py`, `claude/scripts/test_dev_status_sync.py`, `claude/scripts/test_to_tickets_runner.py`
 
 ### `claude/scripts/dev_status_sync.py`
 
@@ -606,6 +607,34 @@ Claude Code status line: render the model name and a color-coded context window 
 - Explicit exit codes: `0`
 - Tested by: `claude/scripts/test_statusline.py`
 
+### `claude/scripts/to_tickets_runner.py`
+
+to_tickets_runner.py — create a linked batch of dev_status.py backlog items from a confirmed vertical-slice/tracer-bullet ticket breakdown.
+
+- Installed at: `~/.claude/scripts/to_tickets_runner.py` (all harnesses)
+- Entrypoint: executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Create a linked batch of dev_status.py backlog items from a confirmed ticket breakdown.
+- Subcommands:
+  - `run <batch_file>` — create every ticket in a batch file
+    - `batch_file` — path to the batch JSON file
+- Explicit exit codes: `1`
+- Depends on: `dev_status.py`
+- Exceptions:
+  - `class BatchError(Exception)` — A problem with the batch itself: bad schema, a cycle, an unknown slug.
+  - `class SlugCollisionError(Exception)` — A drafted slug collides with an unrelated, pre-existing item.
+- Public classes:
+  - `class Ticket(TypedDict)`
+- Public functions:
+  - `load_batch(path: Path) -> list[Ticket]` — Load and validate the batch file at ``path``.
+  - `compute_order(tickets: list[Ticket], index: dev_status.BacklogIndex) -> list[str]` — Compute a safe creation order for ``tickets`` from their ``blocked_by`` edges.
+  - `load_state(batch_path: Path) -> dict[str, object] | None` — Load the state file for ``batch_path``, or ``None`` if absent/unreadable.
+  - `write_state(batch_path: Path, state: dict[str, object]) -> None` — Atomically write ``state`` to ``batch_path``'s state file.
+  - `delete_state(batch_path: Path) -> None` — Remove ``batch_path``'s state file, if any.
+  - `run(batch_path: Path) -> list[str]` — Create every ticket in ``batch_path``'s batch, resuming if interrupted before.
+  - `build_parser() -> argparse.ArgumentParser`
+- Subcommand handlers: `cmd_run`
+- Tested by: `claude/scripts/test_to_tickets_runner.py`
+
 ### `claude/scripts/vitals_promotion.py`
 
 vitals-promotion.py — mechanical vitals-promotion pass over grill session data.
@@ -679,6 +708,7 @@ the file existing in the repo; the description is the canonical
 | `/skill-map` | yes | — | — | — |
 | `/spec` | yes | yes | yes | yes |
 | `/standup` | yes | yes | yes | yes |
+| `/to-tickets` | yes | yes | yes | yes |
 
 - **`/backlog-item`** — Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item.
   - Source: `claude/commands/backlog-item.md`
@@ -704,6 +734,9 @@ the file existing in the repo; the description is the canonical
 - **`/standup`** — Gather assigned work, chat signal, calendar events, pending replies, git commits, and backlog activity into a daily standup draft, saved to a dated file. Use when the user says 'standup', 'prep for standup', or wants their daily status pulled together.
   - Source: `claude/commands/standup.md`
   - Installed at: `~/.claude/commands/standup.md` (claude)
+- **`/to-tickets`** — Decompose a plan or spec into multiple linked dev_status.py backlog items — vertical-slice/tracer-bullet tickets joined by blocked_by edges — after confirming the breakdown with the user. Use when the user wants a plan broken into tickets, wants a spec turned into backlog items, or invokes /to-tickets.
+  - Source: `claude/commands/to-tickets.md`
+  - Installed at: `~/.claude/commands/to-tickets.md` (claude)
 
 ---
 
@@ -971,6 +1004,15 @@ named doc, not regenerating this file.
 | `copilot/skills/standup/SKILL.md` | OK |
 | `opencode/command/standup.md` | OK |
 
+### `to_tickets_runner.py`
+
+| Doc | Status |
+| --- | --- |
+| `agy/skills/to-tickets/SKILL.md` | OK |
+| `claude/commands/to-tickets.md` | OK |
+| `copilot/skills/to-tickets/SKILL.md` | OK |
+| `opencode/command/to-tickets.md` | OK |
+
 ### `vitals_promotion.py`
 
 | Doc | Status |
@@ -1002,3 +1044,4 @@ new one, `--check` catches it the same as any other stale content.
 | `/skill-map` | — |
 | `/spec` | `backlog-item`, `grill-me`, `second-opinion` |
 | `/standup` | `dashboard` |
+| `/to-tickets` | `grill-me`, `second-opinion`, `spec` |
