@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# wc-guard — wrap a command that deliberately leaves ~/dotfiles in a
+# temporary/broken state on purpose, so watchcommit (scripts/watchcommit.py)
+# can't auto-commit/push it mid-edit.
+#
+# Usage: wc-guard <command> [args...]
+#
+# Unlike wc-pause/wc-resume, wc-guard never touches the pause-file itself —
+# it only ever creates/removes its own file, named by its own PID, under
+# $STATE_DIR/guard-pids. watchcommit's is_paused() checks both the
+# pause-file and any live, identity-verified wc-guard registration, so
+# there's no shared state for two overlapping wc-guard runs to race on, and
+# no "was this pause mine or a human's" question to get wrong.
+#
+# Self-healing: if wc-guard is killed (SIGKILL, can't be trapped), the stale
+# PID file left behind is harmless — watchcommit's next poll compares the
+# live process's actual start-time against the one recorded here, and a
+# dead (or, after enough time, PID-reused) entry simply fails that check.
+set -u
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/watchcommit"
+GUARD_PID_DIR="$STATE_DIR/guard-pids"
+
+if [ "$#" -eq 0 ]; then
+    echo "usage: wc-guard <command> [args...]" >&2
+    exit 2
+fi
+
+mkdir -p "$GUARD_PID_DIR"
+start_time=$(cut -d' ' -f22 "/proc/$$/stat" 2>/dev/null || echo "0")
+echo "$start_time" >"$GUARD_PID_DIR/$$"
+
+cleanup() { rm -f "$GUARD_PID_DIR/$$"; }
+trap cleanup EXIT INT TERM
+
+"$@"
+exit $?

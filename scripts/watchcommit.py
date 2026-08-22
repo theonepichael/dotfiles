@@ -37,6 +37,14 @@ push is recorded (timestamp + resulting SHA) in the last-activity state file,
 so a session or `wc-status` can tell daemon-driven git state changes from
 manual ones instead of only seeing a clean/up-to-date working tree. Read by
 `wc-status` and the Claude Code SessionStart hook (watchcommit_activity.py).
+
+Automated pause (opt-in, for scripts): `wc-guard <command>` (scripts/wc-guard)
+wraps a command that deliberately leaves the repo in a temporary/broken state
+on purpose (e.g. a script proving a staleness check works) so watchcommit
+can't auto-commit it mid-edit. Unlike wc-pause/wc-resume, wc-guard never
+touches the pause-file itself — it registers its own PID under
+$STATE_DIR/guard-pids while running, and is_paused() below checks both the
+pause-file and any live, identity-verified wc-guard registration.
 """
 
 import json
@@ -60,6 +68,7 @@ STATE_DIR = (
 PAUSE_FILE = STATE_DIR / "paused"
 AGENTS_STATE_FILE = STATE_DIR / "agents-active"
 ACTIVITY_STATE_FILE = STATE_DIR / "last-activity.json"
+GUARD_PID_DIR = STATE_DIR / "guard-pids"
 
 # Active-agent detection (opt-out). Linux /proc primary; non-Linux = silent
 # no-op (manual wc-pause still works there). No psutil in v1.
@@ -103,6 +112,44 @@ def has_unpushed_commits(repo: Path) -> bool:
     there's still a local commit sitting there waiting to go out."""
     result = git(repo, "rev-list", "@{u}..HEAD")
     return bool(result.stdout.strip())
+
+
+def _proc_start_time(pid: int) -> str | None:
+    """Field 22 of /proc/<pid>/stat (process start time). Used, not just a
+    bare PID, to tell a live wc-guard apart from an unrelated process that
+    later reused the same PID — same identity-check spirit as
+    agent_active()'s name+marker check. None on any read failure (dead/
+    reaped process, non-Linux, permission error) — fail-safe like the rest
+    of this module's /proc handling."""
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().split()[21]
+    except (OSError, IndexError):
+        return None
+
+
+def guard_active() -> bool:
+    """True if any $STATE_DIR/guard-pids/<pid> entry names a currently-alive
+    process whose recorded start-time matches. wc-guard writes these on
+    entry and removes its own on exit (even via SIGKILL's next-poll self-
+    heal — a stale entry just fails the start-time comparison here, no
+    sweep or cleanup step required on this side)."""
+    if not GUARD_PID_DIR.exists():
+        return False
+    for entry in GUARD_PID_DIR.iterdir():
+        if not entry.name.isdigit():
+            continue
+        recorded = entry.read_text().strip()
+        actual = _proc_start_time(int(entry.name))
+        if actual is not None and actual == recorded:
+            return True
+    return False
+
+
+def is_paused() -> bool:
+    """True if a human paused manually (PAUSE_FILE) or a wc-guard-wrapped
+    command is currently running. wc-guard never touches PAUSE_FILE itself —
+    this is the only place the two signals are combined."""
+    return PAUSE_FILE.exists() or guard_active()
 
 
 def _resolve_agent_names() -> frozenset[str]:
@@ -379,12 +426,13 @@ def main() -> None:
 
     while True:
         try:
-            if PAUSE_FILE.exists():
-                # Pause guard — the touch-file is managed by wc-pause /
-                # wc-resume shell helpers (or a manual `touch`/`rm`). Skipping
-                # the cycle here holds the daemon back from racing any manual
-                # git history surgery. Logged via stderr so journalctl shows
-                # the gap alongside the regular commit lines.
+            if is_paused():
+                # Pause guard — either the touch-file (managed by wc-pause /
+                # wc-resume, or a manual `touch`/`rm`) or a live wc-guard
+                # registration. Skipping the cycle here holds the daemon back
+                # from racing any manual git history surgery or a script's
+                # deliberate temporary breakage. Logged via stderr so
+                # journalctl shows the gap alongside the regular commit lines.
                 print(f"[watchcommit] paused ({PAUSE_FILE})", file=sys.stderr)
             else:
                 agents = agent_active(repo)

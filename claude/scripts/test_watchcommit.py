@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -415,6 +416,79 @@ class AgentDetectionIntegrationTestCase(unittest.TestCase):
         ours = [a for a in agents if a.pid == proc.pid]
         self.assertEqual(
             ours, [], "non-agent python3 subprocess must not trigger detection"
+        )
+
+
+class GuardActiveTestCase(unittest.TestCase):
+    """Unit tests for guard_active()/is_paused() — the wc-guard side of the
+    watchcommit-can-auto-commit-mid-edit fix. wc-guard itself never touches
+    PAUSE_FILE; watchcommit is the one that ORs the two signals together."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="wc-guard-active-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        # matches wc-guard's own resolution rule ($XDG_STATE_HOME/watchcommit)
+        # so the real-subprocess test below and Python-side patches agree.
+        self.xdg_state_home = self.tmp
+        state_dir = self.tmp / "watchcommit"
+        self.pause_file = state_dir / "paused"
+        self.guard_pid_dir = state_dir / "guard-pids"
+        self.enterContext(patch.object(watchcommit, "STATE_DIR", state_dir))
+        self.enterContext(patch.object(watchcommit, "PAUSE_FILE", self.pause_file))
+        self.enterContext(
+            patch.object(watchcommit, "GUARD_PID_DIR", self.guard_pid_dir)
+        )
+
+    def _own_start_time(self) -> str:
+        return Path(f"/proc/{os.getpid()}/stat").read_text().split()[21]
+
+    def test_no_state_not_paused(self) -> None:
+        self.assertFalse(watchcommit.guard_active())
+        self.assertFalse(watchcommit.is_paused())
+
+    def test_live_process_with_matching_start_time_is_active(self) -> None:
+        self.guard_pid_dir.mkdir(parents=True)
+        (self.guard_pid_dir / str(os.getpid())).write_text(self._own_start_time())
+        self.assertTrue(watchcommit.guard_active())
+        self.assertTrue(watchcommit.is_paused())
+
+    def test_mismatched_start_time_not_active(self) -> None:
+        # simulates PID reuse: this PID is alive, but the recorded
+        # start-time doesn't match — must not be treated as our guard.
+        self.guard_pid_dir.mkdir(parents=True)
+        (self.guard_pid_dir / str(os.getpid())).write_text("999999999")
+        self.assertFalse(watchcommit.guard_active())
+
+    def test_dead_pid_not_active(self) -> None:
+        # a PID that certainly doesn't exist right now.
+        self.guard_pid_dir.mkdir(parents=True)
+        (self.guard_pid_dir / "999999").write_text("123")
+        self.assertFalse(watchcommit.guard_active())
+
+    def test_pause_file_alone_is_paused(self) -> None:
+        self.pause_file.parent.mkdir(parents=True, exist_ok=True)
+        self.pause_file.touch()
+        self.assertFalse(watchcommit.guard_active())
+        self.assertTrue(watchcommit.is_paused())
+
+    def test_real_wc_guard_subprocess_marks_active(self) -> None:
+        wc_guard = Path(__file__).parent.parent.parent / "scripts" / "wc-guard"
+        env = {**os.environ, "XDG_STATE_HOME": str(self.xdg_state_home)}
+        proc = subprocess.Popen([str(wc_guard), "sleep", "5"], env=env)
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        try:
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and not watchcommit.guard_active():
+                time.sleep(0.05)
+            self.assertTrue(watchcommit.guard_active(), "guard never registered")
+        finally:
+            proc.kill()
+            proc.wait(timeout=2)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and watchcommit.guard_active():
+            time.sleep(0.05)
+        self.assertFalse(
+            watchcommit.guard_active(), "guard_active stayed True after kill"
         )
 
 

@@ -426,6 +426,18 @@ that can't be made to fail first isn't verifying anything.
   writer mid-run and abort it partway through mutating state — this has
   already happened and cost live symlinks. Redirect to a file and read the
   file instead.
+- On a machine running watchcommit (personal, non-work), wrap any command
+  you run yourself that deliberately leaves a watched repo (`~/dotfiles`)
+  in a broken or temporary state on purpose — a test/demo script proving a
+  staleness check works, a deliberate mid-refactor pause, anything the user
+  hasn't reviewed yet — in `wc-guard <command>` (`scripts/wc-guard`,
+  installed to `~/.local/bin/wc-guard`). Without it, watchcommit's 90s poll
+  can auto-commit and auto-push the broken state to `main` before anyone
+  reviews it, with an LLM-written commit message that makes the breakage
+  look intentional — this already happened once (commit `cd0bad8`, fixed
+  forward in `60401d2`). A plain edit you intend to keep doesn't need the
+  wrapper; this is specifically for state that is deliberately, temporarily
+  wrong.
 
 ## Scripts
 

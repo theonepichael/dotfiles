@@ -400,6 +400,11 @@ dest = "~/.local/bin/watchcommit"
 profile_exclude = ["work"]
 
 [[link]]
+src = "scripts/wc-guard"
+dest = "~/.local/bin/wc-guard"
+profile_exclude = ["work"]
+
+[[link]]
 src = "systemd/watchcommit.service"
 dest = "~/.config/systemd/user/watchcommit.service"
 platform = "linux"
