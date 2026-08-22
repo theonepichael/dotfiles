@@ -25,11 +25,11 @@ For each field you can't confidently fill, ask one at a time, applying CLAUDE.md
 
 ## 3. Escalate real decisions — don't resolve them here
 
-A missing fact gets asked directly (step 2). A genuinely open branch — multiple viable designs, unclear tradeoffs, a decision that cascades into others — gets named and handed to `/grillme` instead: tell the user which field is blocked and why, and wait for that decision before drafting it. Never interrogate architecture inline in a spec.
+A missing fact gets asked directly (step 2). A genuinely open branch — multiple viable designs, unclear tradeoffs, a decision that cascades into others — gets named and handed to `/grill-me` instead: tell the user which field is blocked and why, and wait for that decision before drafting it. Never interrogate architecture inline in a spec.
 
 ## 4. Save and confirm
 
-Write the spec to `~/.claude/data/grill/<topic-slug>-spec.md` (the same central location grillme/second-opinion use for plan artifacts — never a per-session scratchpad). Show it to the user. Apply CLAUDE.md's "plans and deliverables get a path on record" backlog convention if this is tracked work.
+Write the spec to `~/.claude/data/grill/<topic-slug>-spec.md` (the same central location grill-me/second-opinion use for plan artifacts — never a per-session scratchpad). Show it to the user. Apply CLAUDE.md's "plans and deliverables get a path on record" backlog convention if this is tracked work.
 
 Then ask, via AskUserQuestion: "Start generation against this spec now?" — `Yes (recommended)` / `No, stop here`. If a delegating caller declined this offer up front (e.g. it owns the handoff decision itself), skip the ask and stop after saving — report the spec path back to the caller.
 

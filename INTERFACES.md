@@ -984,5 +984,5 @@ new one, `--check` catches it the same as any other stale content.
 | `/make-skill` | `grill-me` |
 | `/second-opinion` | — |
 | `/skill-map` | — |
-| `/spec` | `second-opinion` |
+| `/spec` | `grill-me`, `second-opinion` |
 | `/standup` | `dashboard` |
