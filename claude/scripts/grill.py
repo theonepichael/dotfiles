@@ -26,7 +26,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from datetime import date, datetime
 from pathlib import Path
-from typing import NoReturn, TypedDict, cast
+from typing import NoReturn, NotRequired, TypedDict, cast
 
 import cli_common
 
@@ -36,7 +36,7 @@ SCHEMA_VERSION = 1
 VALID_SOURCES = {"user", "defaulted", "assumed", "tested"}
 VALID_RESULTS = {"VERIFIED", "DISPUTED", "UNVERIFIABLE"}
 EVIDENCE_REQUIRED = {"VERIFIED", "DISPUTED"}
-REVISABLE_FIELDS = {"question", "decision", "reasoning", "source"}
+REVISABLE_FIELDS = {"question", "decision", "reasoning", "source", "depends_on"}
 ID_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 ID_MIN, ID_MAX = 2, 48
 
@@ -67,6 +67,7 @@ class Decision(TypedDict):
     decision: str | None
     source: str | None
     verdict: Verdict | None
+    depends_on: NotRequired[list[str]]
 
 
 class Session(TypedDict):
@@ -355,6 +356,77 @@ def is_open(decision: Decision) -> bool:
     return decision.get("decision") is None
 
 
+def _validate_depends_on(
+    session: Session, owner_id: str, raw: object, context: str
+) -> list[str]:
+    """Validate and normalize a ``depends_on`` array from a JSON patch.
+
+    Type-checks (must be a list of strings), dedupes (order-preserving),
+    rejects self-reference, format-validates each id, and rejects any id
+    not already present as a decision in ``session``. All-or-nothing: exits
+    via :func:`die` before returning on any failure, so the caller must
+    finish this call before mutating ``session["decisions"]``.
+
+    Args:
+        session: The session to check referenced ids against.
+        owner_id: The id of the decision ``raw`` will be attached to.
+        raw: The decoded ``depends_on`` value from a JSON patch.
+        context: Command name to prefix onto any error message.
+    """
+    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+        die(context, "'depends_on' must be a list of strings")
+    raw_ids = cast(list[str], raw)
+
+    deduped: list[str] = []
+    for dep_id in raw_ids:
+        if dep_id not in deduped:
+            deduped.append(dep_id)
+
+    if owner_id in deduped:
+        die(context, f"'depends_on' cannot reference its own id '{owner_id}'")
+
+    for dep_id in deduped:
+        validate_decision_id(dep_id, context)
+
+    existing_ids = {d["id"] for d in session["decisions"]}
+    bad = [dep_id for dep_id in deduped if dep_id not in existing_ids]
+    if bad:
+        die(
+            context,
+            f"'depends_on' references unknown decision id(s): {', '.join(bad)}",
+        )
+
+    return deduped
+
+
+def _would_cycle(session: Session, owner_id: str, new_depends_on: list[str]) -> bool:
+    """Return whether setting ``owner_id``'s ``depends_on`` to ``new_depends_on``
+    would introduce a cycle.
+
+    DFS from each id in ``new_depends_on``, following each visited
+    decision's already-stored ``depends_on`` edges, checking whether
+    ``owner_id`` is reachable. Keeps a ``seen`` set of visited nodes so a
+    cycle elsewhere in the graph — reachable during the walk but not
+    involving ``owner_id`` — terminates the walk instead of looping
+    forever. A dangling id (absent from the session) has no outgoing edges
+    and is simply a dead end.
+    """
+    by_id = {d["id"]: d for d in session["decisions"]}
+    seen: set[str] = set()
+    stack = list(new_depends_on)
+    while stack:
+        current = stack.pop()
+        if current == owner_id:
+            return True
+        if current in seen:
+            continue
+        seen.add(current)
+        dep = by_id.get(current)
+        if dep is not None:
+            stack.extend(dep.get("depends_on", []))
+    return False
+
+
 def confirm(context: str, session: Session, detail: str, verbose: bool = False) -> None:
     """Echo a mutating command's outcome to stderr."""
     cli_common.vprint(f"[{context}] {session['slug']}: {detail}", verbose=verbose)
@@ -363,6 +435,44 @@ def confirm(context: str, session: Session, detail: str, verbose: bool = False) 
 def touch(session: Session) -> None:
     """Stamp ``session['updated']`` with the current timestamp, in place."""
     session["updated"] = now()
+
+
+def frontier(session: Session) -> DecisionList:
+    """Return every open decision whose dependencies are all resolved.
+
+    A dependency is resolved when it points to a decided decision, or to an
+    id absent from the session entirely (dangling — e.g. from
+    ``rm --force``). Preserves the order decisions already appear in
+    ``session["decisions"]``.
+
+    This direct-only check (no explicit multi-hop graph walk) is
+    transitively correct by construction: :func:`is_open` already reflects
+    a decision's full resolved state, so a decision two hops back stays
+    correctly gating until every hop between it and the one being checked
+    is itself decided.
+    """
+    by_id = {d["id"]: d for d in session["decisions"]}
+    result: DecisionList = []
+    for d in session["decisions"]:
+        if not is_open(d):
+            continue
+        blocked = any(
+            (dep := by_id.get(dep_id)) is not None and is_open(dep)
+            for dep_id in d.get("depends_on", [])
+        )
+        if not blocked:
+            result.append(d)
+    return result
+
+
+def _dangling_deps(decision: Decision, session: Session) -> list[str]:
+    """Return which of ``decision``'s ``depends_on`` ids are absent from ``session``."""
+    existing_ids = {d["id"] for d in session["decisions"]}
+    return [
+        dep_id
+        for dep_id in decision.get("depends_on", [])
+        if dep_id not in existing_ids
+    ]
 
 
 # ── render ────────────────────────────────────────────────────────────────────
@@ -493,6 +603,12 @@ def cmd_ask(args: argparse.Namespace) -> None:
         if any(d["id"] == decision_id for d in decisions):
             die("ask", f"duplicate decision id: {decision_id}")
 
+        depends_on: list[str] = []
+        if "depends_on" in patch:
+            depends_on = _validate_depends_on(
+                session, decision_id, patch["depends_on"], "ask"
+            )
+
         decisions.append(
             {
                 "id": decision_id,
@@ -501,6 +617,7 @@ def cmd_ask(args: argparse.Namespace) -> None:
                 "decision": None,
                 "source": None,
                 "verdict": None,
+                "depends_on": depends_on,
             }
         )
         touch(session)
@@ -537,6 +654,7 @@ def cmd_decide(args: argparse.Namespace) -> None:
 
     reasoning_given = "reasoning" in patch
     reasoning = _text(patch, "reasoning").strip()
+    depends_on_given = "depends_on" in patch
 
     with session_lock(slug):
         session = load_session(slug)
@@ -546,6 +664,17 @@ def cmd_decide(args: argparse.Namespace) -> None:
         if existing is not None:
             if not is_open(existing):
                 die("decide", f"'{decision_id}' is already decided — use revise")
+            if depends_on_given:
+                validated = _validate_depends_on(
+                    session, decision_id, patch["depends_on"], "decide"
+                )
+                if _would_cycle(session, decision_id, validated):
+                    die(
+                        "decide",
+                        "'depends_on' would introduce a cycle involving "
+                        f"'{decision_id}'",
+                    )
+                existing["depends_on"] = validated
             existing["decision"] = decision_text
             existing["source"] = source
             if question:
@@ -558,6 +687,11 @@ def cmd_decide(args: argparse.Namespace) -> None:
                     "decide",
                     "'question' is required for a decision point not registered via ask",
                 )
+            depends_on: list[str] = []
+            if depends_on_given:
+                depends_on = _validate_depends_on(
+                    session, decision_id, patch["depends_on"], "decide"
+                )
             decisions.append(
                 {
                     "id": decision_id,
@@ -566,6 +700,7 @@ def cmd_decide(args: argparse.Namespace) -> None:
                     "decision": decision_text,
                     "source": source,
                     "verdict": None,
+                    "depends_on": depends_on,
                 }
             )
 
@@ -615,9 +750,24 @@ def cmd_revise(args: argparse.Namespace) -> None:
             die(
                 "revise", f"'{args.decision_id}' is still open — resolve it with decide"
             )
+
+        new_depends_on: list[str] | None = None
+        if "depends_on" in patch:
+            new_depends_on = _validate_depends_on(
+                session, args.decision_id, patch["depends_on"], "revise"
+            )
+            if _would_cycle(session, args.decision_id, new_depends_on):
+                die(
+                    "revise",
+                    "'depends_on' would introduce a cycle involving "
+                    f"'{args.decision_id}'",
+                )
+
         cast(dict[str, object], decision).update(normalized)
+        if new_depends_on is not None:
+            decision["depends_on"] = new_depends_on
         note = ""
-        if decision.get("verdict"):
+        if decision.get("verdict") and normalized:
             decision["verdict"] = None
             note = " (verdict reset — re-verify)"
         touch(session)
@@ -631,11 +781,29 @@ def cmd_revise(args: argparse.Namespace) -> None:
 
 
 def cmd_rm(args: argparse.Namespace) -> None:
-    """Handle ``rm``: remove a decision point from a session."""
+    """Handle ``rm``: remove a decision point from a session.
+
+    Refuses to remove a decision still named in another decision's
+    ``depends_on`` (referential integrity), unless ``--force`` is passed —
+    in which case the referencing decision's ``depends_on`` entry goes
+    dangling on purpose, which :func:`frontier` already treats as resolved.
+    """
     slug = _resolve_slug(args.session, "rm")
     with session_lock(slug):
         session = load_session(slug)
         decision = find_decision(session, args.decision_id, "rm")
+        if not getattr(args, "force", False):
+            referencing = [
+                d["id"]
+                for d in session["decisions"]
+                if args.decision_id in d.get("depends_on", [])
+            ]
+            if referencing:
+                die(
+                    "rm",
+                    f"'{args.decision_id}' is still depended on by: "
+                    f"{', '.join(referencing)} — use --force to remove anyway",
+                )
         session["decisions"].remove(decision)
         state = "open" if is_open(decision) else "decided"
         touch(session)
@@ -785,16 +953,54 @@ def cmd_pending_plan(args: argparse.Namespace) -> None:
         print("    this flag is already cleared.)")
 
 
+def _print_frontier_item(d: Decision, session: Session, verbose: bool) -> None:
+    """Print one decision in ``next``/``frontier``'s shared one-line format."""
+    print(f"{d['id']}: {d['question']}")
+    if d.get("reasoning"):
+        print(f"  context: {d['reasoning']}")
+    for dep_id in _dangling_deps(d, session):
+        cli_common.vprint(
+            f"note: '{d['id']}' depends_on '{dep_id}', which no longer exists "
+            "— treating as resolved",
+            verbose=verbose,
+        )
+
+
 def cmd_next(args: argparse.Namespace) -> None:
-    """Handle ``next``: print the first open decision point, if any."""
+    """Handle ``next``: print the first frontier-ready open decision, if any."""
     session = resolve_session(args.session, "next")
-    for d in session["decisions"]:
-        if is_open(d):
-            print(f"{d['id']}: {d['question']}")
-            if d.get("reasoning"):
-                print(f"  context: {d['reasoning']}")
-            return
-    print("(no open questions)")
+    open_count = sum(1 for d in session["decisions"] if is_open(d))
+    if open_count == 0:
+        print("(no open questions)")
+        return
+    ready = frontier(session)
+    if not ready:
+        print(f"({open_count} open, all blocked)")
+        return
+    _print_frontier_item(ready[0], session, getattr(args, "verbose", False))
+
+
+def cmd_frontier(args: argparse.Namespace) -> None:
+    """Handle ``frontier``: print the batch of currently-askable open decisions.
+
+    A decision is "currently-askable" once every id it names in
+    ``depends_on`` is either decided or absent from the session (see
+    :func:`frontier`) — this is what lets `grill-me`'s Q&A loop batch a
+    deterministic, script-computed set of questions per round instead of
+    trusting the model's own informal judgment of dependency order.
+    """
+    session = resolve_session(args.session, "frontier")
+    verbose = getattr(args, "verbose", False)
+    open_count = sum(1 for d in session["decisions"] if is_open(d))
+    if open_count == 0:
+        print("(no open questions)")
+        return
+    ready = frontier(session)
+    if not ready:
+        print(f"({open_count} open, all blocked)")
+        return
+    for d in ready:
+        _print_frontier_item(d, session, verbose)
 
 
 def cmd_render(args: argparse.Namespace) -> None:
@@ -843,7 +1049,7 @@ def main() -> None:
         dest="cmd",
         metavar=(
             "{new,ask,decide,revise,rm,verdict,plan,mark-pending-execution,"
-            "pending-plan,next,render,list,show}"
+            "pending-plan,next,frontier,render,list,show}"
         ),
     )
 
@@ -861,7 +1067,9 @@ def main() -> None:
     p = sub.add_parser(
         "ask", help="register an open decision point", parents=[verbosity_parent]
     )
-    p.add_argument("json", metavar='\'{"id", "question", ["reasoning"]}\'')
+    p.add_argument(
+        "json", metavar='\'{"id", "question", ["reasoning"], ["depends_on"]}\''
+    )
     add_session_flag(p)
 
     p = sub.add_parser(
@@ -871,7 +1079,10 @@ def main() -> None:
     )
     p.add_argument(
         "json",
-        metavar='\'{"id", "decision", ["question"], ["reasoning"], ["source"]}\'',
+        metavar=(
+            '\'{"id", "decision", ["question"], ["reasoning"], ["source"], '
+            '["depends_on"]}\''
+        ),
     )
     add_session_flag(p)
 
@@ -881,7 +1092,7 @@ def main() -> None:
         parents=[verbosity_parent],
     )
     p.add_argument("decision_id")
-    p.add_argument("patch", metavar='\'{"decision": "..."}\'')
+    p.add_argument("patch", metavar='\'{"decision": "...", ["depends_on"]}\'')
     add_session_flag(p)
 
     p = sub.add_parser(
@@ -890,6 +1101,11 @@ def main() -> None:
         parents=[verbosity_parent],
     )
     p.add_argument("decision_id")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="bypass the referential-integrity check (dangling depends_on allowed)",
+    )
     add_session_flag(p)
 
     p = sub.add_parser(
@@ -935,7 +1151,14 @@ def main() -> None:
 
     p = sub.add_parser(
         "next",
-        help="print the first open decision point",
+        help="print the first frontier-ready open decision point",
+        parents=[verbosity_parent],
+    )
+    add_session_flag(p)
+
+    p = sub.add_parser(
+        "frontier",
+        help="print the batch of currently-askable (dependency-resolved) open decisions",
         parents=[verbosity_parent],
     )
     add_session_flag(p)
@@ -970,6 +1193,7 @@ def main() -> None:
         "mark-pending-execution": cmd_mark_pending_execution,
         "pending-plan": cmd_pending_plan,
         "next": cmd_next,
+        "frontier": cmd_frontier,
         "render": cmd_render,
         "list": cmd_list,
         "show": cmd_show,

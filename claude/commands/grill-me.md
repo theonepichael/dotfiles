@@ -12,12 +12,12 @@ by the recorded decision points.
 
 ```
 grill.py new '{"topic": "..."}'                          # start session, prints slug
-grill.py ask '{"id", "question", ["reasoning"]}'         # register an open decision point
-grill.py decide '{"id", "decision", ["question"], ["source"]}'  # resolve one
+grill.py ask '{"id", "question", ["reasoning"], ["depends_on"]}'  # register an open decision point
+grill.py decide '{"id", "decision", ["question"], ["source"], ["depends_on"]}'  # resolve one
 grill.py revise <id> '{"decision": "..."}'               # amend (resets its verdict)
 grill.py verdict <id> '{"result", "evidence"}'           # record verification result
 grill.py plan <path>                                     # record plan artifact location
-grill.py next / render / show / list                     # resume point / status / raw JSON
+grill.py next / frontier / render / show / list          # resume point / askable batch / status / raw JSON
 ```
 
 All commands default to the most recent session; pass `--session <slug>` otherwise.
@@ -45,9 +45,9 @@ Then check `grill.py list` for an existing session matching the topic. If one ma
 
 **Q&A loop:**
 
-1. Identify the top-level decisions and unknowns. Register each one immediately with `ask` (id + question) so nothing is lost if the session is cut short. Order by dependency — resolve blockers before dependent decisions. New decision points surfaced by later answers get `ask`ed as they appear.
+1. Identify the top-level decisions and unknowns. Register each one immediately with `ask` (id + question) so nothing is lost if the session is cut short. When one decision genuinely can't be answered before another is settled, register that dependency explicitly via `ask`'s `depends_on` field (a list of the ids it waits on) — this is what `frontier` (step 2) uses to compute the safe-to-ask batch, instead of you having to judge ordering yourself. New decision points surfaced by later answers get `ask`ed as they appear, with `depends_on` set the same way whenever they depend on something still open.
 
-2. Batch every open question whose answer doesn't depend on another still-open question — the **frontier** — into one round, and ask all of them within the same turn rather than revealing one, waiting, then revealing the next. For a question with 2–4 enumerable options, use `AskUserQuestion` (batch up to 4 per call, applying CLAUDE.md's recommendation-first convention to each); for a genuinely open-ended question, state it in plain text with your recommended answer, listed alongside the others in the same message. If the frontier has more than 4 enumerable-choice questions, split across multiple `AskUserQuestion` calls, still within the same turn. A question whose answer depends on another still-open question waits for a later round, not this one. Wait for the user's response to the whole round before opening the next one.
+2. Run `grill.py frontier` to get the batch of currently-askable questions — every open decision whose `depends_on` ids are all resolved (decided, or never registered) — and ask all of them within the same turn rather than revealing one, waiting, then revealing the next. For a question with 2–4 enumerable options, use `AskUserQuestion` (batch up to 4 per call, applying CLAUDE.md's recommendation-first convention to each); for a genuinely open-ended question, state it in plain text with your recommended answer, listed alongside the others in the same message. If the frontier has more than 4 enumerable-choice questions, split across multiple `AskUserQuestion` calls, still within the same turn. A question whose answer depends on another still-open question won't appear until a later round — `frontier` handles that, you don't need to track it yourself. Wait for the user's response to the whole round before opening the next one.
 
 3. When the user answers a round (they may answer several questions in one message), handle each answered question the same way:
    - If the answer is consistent and resolves the question, record it — `decide` with source `user`.
