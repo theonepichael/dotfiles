@@ -391,13 +391,14 @@ grill.py — grill-me session state CLI. All session mutations go through here.
   - `--verbose/-v`
 - Subcommands:
   - `new '{"topic": "..."}'` — create a session
-  - `ask '{"id", "question", ["reasoning"]}' [--session <SESSION>]` — register an open decision point
+  - `ask '{"id", "question", ["reasoning"], ["depends_on"]}' [--session <SESSION>]` — register an open decision point
     - `--session/-s` — session slug or unique substring (default: most recent)
-  - `decide '{"id", "decision", ["question"], ["reasoning"], ["source"]}' [--session <SESSION>]` — resolve an open decision point (or add+decide in one shot)
+  - `decide '{"id", "decision", ["question"], ["reasoning"], ["source"], ["depends_on"]}' [--session <SESSION>]` — resolve an open decision point (or add+decide in one shot)
     - `--session/-s` — session slug or unique substring (default: most recent)
-  - `revise <decision_id> '{"decision": "..."}' [--session <SESSION>]` — amend a decision (resets its verdict)
+  - `revise <decision_id> '{"decision": "...", ["depends_on"]}' [--session <SESSION>]` — amend a decision (resets its verdict)
     - `--session/-s` — session slug or unique substring (default: most recent)
-  - `rm <decision_id> [--session <SESSION>]` — remove a decision point from a session
+  - `rm <decision_id> [--force] [--session <SESSION>]` — remove a decision point from a session
+    - `--force` — bypass the referential-integrity check (dangling depends_on allowed)
     - `--session/-s` — session slug or unique substring (default: most recent)
   - `verdict <decision_id> '{"result": "VERIFIED|DISPUTED|UNVERIFIABLE", "evidence": "..."}' [--session <SESSION>]` — record a verification verdict
     - `--session/-s` — session slug or unique substring (default: most recent)
@@ -408,7 +409,9 @@ grill.py — grill-me session state CLI. All session mutations go through here.
     - `--session/-s` — session slug or unique substring (default: most recent)
   - `pending-plan [--consume]` — print (and optionally consume) the most recent pending-execution plan
     - `--consume` — clear pending_execution on the printed session (one-shot)
-  - `next [--session <SESSION>]` — print the first open decision point
+  - `next [--session <SESSION>]` — print the first frontier-ready open decision point
+    - `--session/-s` — session slug or unique substring (default: most recent)
+  - `frontier [--session <SESSION>]` — print the batch of currently-askable (dependency-resolved) open decisions
     - `--session/-s` — session slug or unique substring (default: most recent)
   - `render [--session <SESSION>]` — print session status as markdown
     - `--session/-s` — session slug or unique substring (default: most recent)
@@ -441,8 +444,9 @@ grill.py — grill-me session state CLI. All session mutations go through here.
   - `is_open(decision: Decision) -> bool` — Return whether ``decision`` has not yet been decided.
   - `confirm(context: str, session: Session, detail: str, verbose: bool = False) -> None` — Echo a mutating command's outcome to stderr.
   - `touch(session: Session) -> None` — Stamp ``session['updated']`` with the current timestamp, in place.
+  - `frontier(session: Session) -> DecisionList` — Return every open decision whose dependencies are all resolved.
   - `render_markdown(session: Session) -> str` — Render a session's status as a Markdown document.
-- Subcommand handlers: `cmd_new`, `cmd_ask`, `cmd_decide`, `cmd_revise`, `cmd_rm`, `cmd_verdict`, `cmd_plan`, `cmd_mark_pending_execution`, `cmd_pending_plan`, `cmd_next`, `cmd_render`, `cmd_list`, `cmd_show`
+- Subcommand handlers: `cmd_new`, `cmd_ask`, `cmd_decide`, `cmd_revise`, `cmd_rm`, `cmd_verdict`, `cmd_plan`, `cmd_mark_pending_execution`, `cmd_pending_plan`, `cmd_next`, `cmd_frontier`, `cmd_render`, `cmd_list`, `cmd_show`
 - Tested by: `claude/scripts/test_grill.py`
 
 ### `claude/scripts/llm_backends.py`

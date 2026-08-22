@@ -638,6 +638,476 @@ class GrillTestCase(unittest.TestCase):
             grill.cmd_pending_plan(ns(consume=False))
         self.assertNotIn("/backlog-item", out.getvalue())
 
+    # ── depends_on / frontier ────────────────────────────────────────────────
+
+    def ask(self, slug: str | None = None, **fields: object) -> None:
+        payload = {
+            "id": "token-storage",
+            "question": "Where do tokens live?",
+            **fields,
+        }
+        with patch("sys.stderr", io.StringIO()):
+            grill.cmd_ask(ns(json=json.dumps(payload), session=slug))
+
+    def test_22_ask_accepts_and_stores_depends_on(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="token-storage", question="Where?")
+        self.ask(
+            slug,
+            id="ttl-length",
+            question="How long?",
+            depends_on=["token-storage"],
+        )
+        decision = grill.find_decision(grill.load_session(slug), "ttl-length", "test")
+        self.assertEqual(decision["depends_on"], ["token-storage"])
+
+    def test_22b_ask_defaults_depends_on_to_empty_list(self) -> None:
+        slug = self.new_session()
+        self.ask(slug)
+        decision = grill.find_decision(
+            grill.load_session(slug), "token-storage", "test"
+        )
+        self.assertEqual(decision["depends_on"], [])
+
+    def test_22c_decide_create_path_accepts_depends_on(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="token-storage", question="Where?")
+        self.decide(
+            slug, id="ttl-length", question="How long?", depends_on=["token-storage"]
+        )
+        decision = grill.find_decision(grill.load_session(slug), "ttl-length", "test")
+        self.assertEqual(decision["depends_on"], ["token-storage"])
+
+    def test_23_depends_on_rejects_unknown_id(self) -> None:
+        slug = self.new_session()
+        err = io.StringIO()
+        with patch("sys.stderr", err), self.assertRaises(SystemExit):
+            grill.cmd_ask(
+                ns(
+                    json=json.dumps(
+                        {
+                            "id": "token-storage",
+                            "question": "Where?",
+                            "depends_on": ["nonexistent"],
+                        }
+                    ),
+                    session=slug,
+                )
+            )
+        self.assertIn("unknown decision id", err.getvalue())
+        self.assertEqual(grill.load_session(slug)["decisions"], [])
+
+    def test_23b_depends_on_rejects_self_reference(self) -> None:
+        slug = self.new_session()
+        err = io.StringIO()
+        with patch("sys.stderr", err), self.assertRaises(SystemExit):
+            grill.cmd_ask(
+                ns(
+                    json=json.dumps(
+                        {
+                            "id": "token-storage",
+                            "question": "Where?",
+                            "depends_on": ["token-storage"],
+                        }
+                    ),
+                    session=slug,
+                )
+            )
+        self.assertIn("own id", err.getvalue())
+
+    def test_23c_depends_on_bare_string_rejected(self) -> None:
+        slug = self.new_session()
+        err = io.StringIO()
+        with patch("sys.stderr", err), self.assertRaises(SystemExit):
+            grill.cmd_ask(
+                ns(
+                    json=json.dumps(
+                        {
+                            "id": "token-storage",
+                            "question": "Where?",
+                            "depends_on": "token-storage",
+                        }
+                    ),
+                    session=slug,
+                )
+            )
+        self.assertIn("must be a list of strings", err.getvalue())
+
+    def test_23d_depends_on_deduped_order_preserving(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="token-storage", question="Where?")
+        self.ask(slug, id="second", question="Second?")
+        self.ask(
+            slug,
+            id="third",
+            question="Third?",
+            depends_on=["token-storage", "second", "token-storage"],
+        )
+        decision = grill.find_decision(grill.load_session(slug), "third", "test")
+        self.assertEqual(decision["depends_on"], ["token-storage", "second"])
+
+    def test_24_decide_existing_updates_depends_on(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="token-storage", question="Where?")
+        self.ask(slug, id="ttl-length", question="How long?")
+        self.decide(slug, id="ttl-length", depends_on=["token-storage"])
+        decision = grill.find_decision(grill.load_session(slug), "ttl-length", "test")
+        self.assertEqual(decision["depends_on"], ["token-storage"])
+
+    def test_24b_decide_existing_omitted_depends_on_preserved(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="token-storage", question="Where?")
+        self.ask(
+            slug, id="ttl-length", question="How long?", depends_on=["token-storage"]
+        )
+        self.decide(slug, id="ttl-length")
+        decision = grill.find_decision(grill.load_session(slug), "ttl-length", "test")
+        self.assertEqual(decision["depends_on"], ["token-storage"])
+
+    def test_25_decide_existing_rejects_cycle(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="decision-a", question="A?")
+        self.ask(slug, id="decision-b", question="B?", depends_on=["decision-a"])
+        err = io.StringIO()
+        with patch("sys.stderr", err), self.assertRaises(SystemExit):
+            grill.cmd_decide(
+                ns(
+                    json=json.dumps(
+                        {
+                            "id": "decision-a",
+                            "decision": "chosen",
+                            "depends_on": ["decision-b"],
+                        }
+                    ),
+                    session=slug,
+                )
+            )
+        self.assertIn("cycle", err.getvalue())
+
+    def test_26_revise_sets_depends_on(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="token-storage", question="Where?")
+        self.decide(slug, id="token-storage")
+        self.ask(slug, id="ttl-length", question="How long?")
+        self.decide(slug, id="ttl-length")
+        with patch("sys.stderr", io.StringIO()):
+            grill.cmd_revise(
+                ns(
+                    decision_id="ttl-length",
+                    patch=json.dumps({"depends_on": ["token-storage"]}),
+                    session=slug,
+                )
+            )
+        decision = grill.find_decision(grill.load_session(slug), "ttl-length", "test")
+        self.assertEqual(decision["depends_on"], ["token-storage"])
+
+    def test_26b_revise_rejects_cycle(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="decision-a", question="A?")
+        self.decide(slug, id="decision-a")
+        self.ask(slug, id="decision-b", question="B?", depends_on=["decision-a"])
+        self.decide(slug, id="decision-b")
+        err = io.StringIO()
+        with patch("sys.stderr", err), self.assertRaises(SystemExit):
+            grill.cmd_revise(
+                ns(
+                    decision_id="decision-a",
+                    patch=json.dumps({"depends_on": ["decision-b"]}),
+                    session=slug,
+                )
+            )
+        self.assertIn("cycle", err.getvalue())
+
+    def test_26c_revise_depends_on_does_not_reset_verdict(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="token-storage", question="Where?")
+        self.decide(slug, id="token-storage")
+        self.ask(slug, id="ttl-length", question="How long?")
+        self.decide(slug, id="ttl-length")
+        with patch("sys.stderr", io.StringIO()):
+            grill.cmd_verdict(
+                ns(
+                    decision_id="ttl-length",
+                    json=json.dumps({"result": "VERIFIED", "evidence": "checked"}),
+                    session=slug,
+                )
+            )
+            grill.cmd_revise(
+                ns(
+                    decision_id="ttl-length",
+                    patch=json.dumps({"depends_on": ["token-storage"]}),
+                    session=slug,
+                )
+            )
+        decision = grill.find_decision(grill.load_session(slug), "ttl-length", "test")
+        self.assertIsNotNone(decision["verdict"])
+
+    def test_26d_revise_unrelated_field_with_stored_dangling_dep_succeeds(
+        self,
+    ) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="token-storage", question="Where?")
+        self.ask(
+            slug, id="ttl-length", question="How long?", depends_on=["token-storage"]
+        )
+        with patch("sys.stderr", io.StringIO()):
+            grill.cmd_rm(ns(decision_id="token-storage", session=slug, force=True))
+        with patch("sys.stderr", io.StringIO()):
+            grill.cmd_revise(
+                ns(
+                    decision_id="ttl-length",
+                    patch=json.dumps({"question": "How long exactly?"}),
+                    session=slug,
+                )
+            )
+        decision = grill.find_decision(grill.load_session(slug), "ttl-length", "test")
+        self.assertEqual(decision["question"], "How long exactly?")
+
+    def test_27_session_without_depends_on_key_behaves_as_empty(self) -> None:
+        slug = self.new_session()
+        session = grill.load_session(slug)
+        session["decisions"].append(
+            {
+                "id": "legacy",
+                "question": "Legacy?",
+                "reasoning": "",
+                "decision": None,
+                "source": None,
+                "verdict": None,
+            }
+        )
+        grill.save_session(session)
+        session = grill.load_session(slug)
+        decision = grill.find_decision(session, "legacy", "test")
+        self.assertEqual(decision.get("depends_on", []), [])
+        ready = grill.frontier(session)
+        self.assertIn("legacy", [d["id"] for d in ready])
+
+    def test_28_ask_bad_id_among_good_aborts_atomically(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="token-storage", question="Where?")
+        err = io.StringIO()
+        with patch("sys.stderr", err), self.assertRaises(SystemExit):
+            self.ask(
+                slug,
+                id="ttl-length",
+                question="How long?",
+                depends_on=["token-storage", "nonexistent"],
+            )
+        session = grill.load_session(slug)
+        self.assertEqual(len(session["decisions"]), 1)
+
+    def test_29_rm_rejects_when_referenced(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="token-storage", question="Where?")
+        self.ask(
+            slug, id="ttl-length", question="How long?", depends_on=["token-storage"]
+        )
+        err = io.StringIO()
+        with patch("sys.stderr", err), self.assertRaises(SystemExit):
+            grill.cmd_rm(ns(decision_id="token-storage", session=slug, force=False))
+        self.assertIn("still depended on by", err.getvalue())
+        self.assertIn("ttl-length", err.getvalue())
+
+    def test_29b_rm_succeeds_when_unreferenced(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="token-storage", question="Where?")
+        with patch("sys.stderr", io.StringIO()):
+            grill.cmd_rm(ns(decision_id="token-storage", session=slug, force=False))
+        self.assertEqual(grill.load_session(slug)["decisions"], [])
+
+    def test_29c_rm_force_bypasses_and_dangles(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="decision-c", question="C?")
+        self.ask(slug, id="decision-b", question="B?", depends_on=["decision-c"])
+        self.ask(slug, id="decision-a", question="A?", depends_on=["decision-b"])
+        err = io.StringIO()
+        with patch("sys.stderr", err), self.assertRaises(SystemExit):
+            grill.cmd_rm(ns(decision_id="decision-c", session=slug, force=False))
+        self.assertIn("decision-b", err.getvalue())
+        with patch("sys.stderr", io.StringIO()):
+            grill.cmd_rm(ns(decision_id="decision-c", session=slug, force=True))
+        session = grill.load_session(slug)
+        self.assertNotIn("decision-c", [d["id"] for d in session["decisions"]])
+        b = grill.find_decision(session, "decision-b", "test")
+        self.assertEqual(b["depends_on"], ["decision-c"])
+
+    def test_30_frontier_3_chain_direct_only_check(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="decision-a", question="A?")
+        self.ask(slug, id="decision-b", question="B?", depends_on=["decision-a"])
+        self.ask(slug, id="decision-c", question="C?", depends_on=["decision-b"])
+        session = grill.load_session(slug)
+        self.assertEqual([d["id"] for d in grill.frontier(session)], ["decision-a"])
+
+        self.decide(slug, id="decision-a")
+        session = grill.load_session(slug)
+        self.assertEqual([d["id"] for d in grill.frontier(session)], ["decision-b"])
+
+        self.decide(slug, id="decision-b")
+        session = grill.load_session(slug)
+        self.assertEqual([d["id"] for d in grill.frontier(session)], ["decision-c"])
+
+    def test_31_revise_cycle_3_node_transitive(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="decision-a", question="A?")
+        self.decide(slug, id="decision-a")
+        self.ask(slug, id="decision-b", question="B?", depends_on=["decision-a"])
+        self.decide(slug, id="decision-b")
+        self.ask(slug, id="decision-c", question="C?", depends_on=["decision-b"])
+        self.decide(slug, id="decision-c")
+        err = io.StringIO()
+        with patch("sys.stderr", err), self.assertRaises(SystemExit):
+            grill.cmd_revise(
+                ns(
+                    decision_id="decision-a",
+                    patch=json.dumps({"depends_on": ["decision-c"]}),
+                    session=slug,
+                )
+            )
+        self.assertIn("cycle", err.getvalue())
+
+    def test_31b_revise_unrelated_pre_existing_cycle_terminates(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="decision-a", question="A?")
+        self.decide(slug, id="decision-a")
+        self.ask(slug, id="decision-x", question="X?")
+        self.decide(slug, id="decision-x")
+        self.ask(slug, id="decision-y", question="Y?")
+        self.decide(slug, id="decision-y")
+        session = grill.load_session(slug)
+        x = grill.find_decision(session, "decision-x", "test")
+        y = grill.find_decision(session, "decision-y", "test")
+        x["depends_on"] = ["decision-y"]
+        y["depends_on"] = ["decision-x"]
+        grill.save_session(session)
+
+        with patch("sys.stderr", io.StringIO()):
+            grill.cmd_revise(
+                ns(
+                    decision_id="decision-a",
+                    patch=json.dumps({"depends_on": ["decision-x"]}),
+                    session=slug,
+                )
+            )
+        session = grill.load_session(slug)
+        a = grill.find_decision(session, "decision-a", "test")
+        self.assertEqual(a["depends_on"], ["decision-x"])
+
+    def test_32_dangling_dependency_note_via_frontier_and_next(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="decision-a", question="A?")
+        self.ask(slug, id="decision-b", question="B?", depends_on=["decision-a"])
+        with patch("sys.stderr", io.StringIO()):
+            grill.cmd_rm(ns(decision_id="decision-a", session=slug, force=True))
+
+        session = grill.load_session(slug)
+        b = grill.find_decision(session, "decision-b", "test")
+        self.assertEqual(grill._dangling_deps(b, session), ["decision-a"])
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            grill.cmd_frontier(ns(session=slug, verbose=True))
+        self.assertIn("decision-b", out.getvalue())
+        self.assertIn("no longer exists", err.getvalue())
+
+        out2 = io.StringIO()
+        err2 = io.StringIO()
+        with patch("sys.stdout", out2), patch("sys.stderr", err2):
+            grill.cmd_next(ns(session=slug, verbose=True))
+        self.assertIn("decision-b", out2.getvalue())
+        self.assertIn("no longer exists", err2.getvalue())
+
+    def test_33_frontier_returns_no_deps_and_all_decided(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="decision-a", question="A?")
+        self.decide(slug, id="decision-a")
+        self.ask(slug, id="decision-b", question="B?", depends_on=["decision-a"])
+        self.ask(slug, id="decision-c", question="C?")
+        session = grill.load_session(slug)
+        ready = {d["id"] for d in grill.frontier(session)}
+        self.assertEqual(ready, {"decision-b", "decision-c"})
+
+    def test_33b_frontier_excludes_open_dependency(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="decision-a", question="A?")
+        self.ask(slug, id="decision-b", question="B?", depends_on=["decision-a"])
+        session = grill.load_session(slug)
+        ready = {d["id"] for d in grill.frontier(session)}
+        self.assertEqual(ready, {"decision-a"})
+
+    def test_33c_frontier_includes_dangling_dependency(self) -> None:
+        slug = self.new_session()
+        session = grill.load_session(slug)
+        session["decisions"].append(
+            {
+                "id": "decision-b",
+                "question": "B?",
+                "reasoning": "",
+                "decision": None,
+                "source": None,
+                "verdict": None,
+                "depends_on": ["ghost"],
+            }
+        )
+        grill.save_session(session)
+        session = grill.load_session(slug)
+        ready = {d["id"] for d in grill.frontier(session)}
+        self.assertEqual(ready, {"decision-b"})
+
+    def test_33d_frontier_prints_no_open_questions(self) -> None:
+        slug = self.new_session()
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            grill.cmd_frontier(ns(session=slug, verbose=False))
+        self.assertIn("(no open questions)", out.getvalue())
+
+    def test_33e_frontier_prints_all_blocked_distinct_message(self) -> None:
+        slug = self.new_session()
+        session = grill.load_session(slug)
+        session["decisions"] = [
+            {
+                "id": "decision-a",
+                "question": "A?",
+                "reasoning": "",
+                "decision": None,
+                "source": None,
+                "verdict": None,
+                "depends_on": ["decision-b"],
+            },
+            {
+                "id": "decision-b",
+                "question": "B?",
+                "reasoning": "",
+                "decision": None,
+                "source": None,
+                "verdict": None,
+                "depends_on": ["decision-a"],
+            },
+        ]
+        grill.save_session(session)
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            grill.cmd_frontier(ns(session=slug, verbose=False))
+        self.assertIn("(2 open, all blocked)", out.getvalue())
+
+    def test_34_next_returns_first_frontier_item_not_first_open(self) -> None:
+        slug = self.new_session()
+        self.ask(slug, id="decision-a", question="A?")
+        self.ask(slug, id="decision-b", question="B?", depends_on=["decision-a"])
+        session = grill.load_session(slug)
+        by_id = {d["id"]: d for d in session["decisions"]}
+        # reorder so the blocked decision (b) precedes the frontier-ready one (a)
+        session["decisions"] = [by_id["decision-b"], by_id["decision-a"]]
+        grill.save_session(session)
+
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            grill.cmd_next(ns(session=slug, verbose=False))
+        self.assertIn("decision-a", out.getvalue())
+        self.assertNotIn("decision-b:", out.getvalue())
+
 
 class ParserVerbosityTests(unittest.TestCase):
     def test_flags_parse_after_every_leaf_subcommand(self) -> None:
@@ -653,6 +1123,7 @@ class ParserVerbosityTests(unittest.TestCase):
             "mark-pending-execution": ("cmd_mark_pending_execution", []),
             "pending-plan": ("cmd_pending_plan", []),
             "next": ("cmd_next", []),
+            "frontier": ("cmd_frontier", []),
             "render": ("cmd_render", []),
             "list": ("cmd_list", []),
             "show": ("cmd_show", []),
