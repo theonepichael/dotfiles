@@ -280,11 +280,11 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
 - CLI (`argparse`): regenerate INTERFACES.md from the harness sources
   - `--quiet/-q`
   - `--verbose/-v`
-  - `--check` — exit 1 (with a diff on stderr) if the file on disk is stale
+  - `--check` — exit 3 (with a report on stderr) if a doc's shown command example no longer matches its script, else exit 1 if the file on disk is stale
   - `--stdout` — print the document, write nothing
   - `--repo-root` — repository root (default: inferred from this script's path)
   - `--output`
-- Explicit exit codes: `1`, `2`
+- Explicit exit codes: `1`, `2`, `3`
 - Depends on: `cli_common.py`
 - Public classes:
   - `class CliArgument` — One ``add_argument`` call, reduced to what a reader needs.
@@ -294,6 +294,8 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `class LinkTarget` — One ``links.toml`` destination for a repo file, plus the gates on it.
   - `class ModuleInterface` — Everything statically known about one Python module.
   - `class HelperSpec` — A module function that adds arguments to a parser passed as its first arg.
+  - `class DocInvocation` — One doc's code-span example of running a target script.
+  - `class DriftProblem` — One doc invocation using a subcommand/flag the script doesn't have.
 - Public functions:
   - `first_paragraph(text: str | None) -> str` — Collapse the first blank-line-delimited paragraph of ``text`` to one line.
   - `first_sentence(text: str | None) -> str | None` — Return the first sentence of ``text``, or ``None`` when it is empty.
@@ -333,7 +335,17 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `is_generated_artifact(relpath: str) -> bool` — Report whether a path is build output or a dotfile rather than a source.
   - `tracked_files(repo_root: Path) -> set[str] | None` — Return every git-tracked path under ``repo_root``, or None if unavailable.
   - `render_assets(repo_root: Path, links: LinkTable, tracked: set[str] | None = None) -> list[str]` — Render the non-Python, non-skill harness assets and where they install.
+  - `discover_doc_paths(repo_root: Path) -> list[Path]` — Return every skill/command doc across the four harnesses, sorted.
+  - `code_regions(text: str) -> list[str]` — Return every inline code span and fenced code block's inner text.
+  - `tokenize_invocation_line(line: str) -> list[str]` — Shell-tokenize one line, after stripping argparse-usage brackets.
+  - `invocation_tokens(tokens: list[str], script_basename: str) -> list[str] | None` — Return the token stream starting at ``script_basename``, or None.
+  - `find_invocations(doc_paths: Sequence[Path], repo_root: Path, script_basename: str) -> list[DocInvocation]` — Scan every doc for code-span invocations of ``script_basename``.
+  - `flag_takes_value(argument: CliArgument) -> bool` — Report whether ``argument`` consumes a following token as its value.
+  - `validate_invocation(cli: CliSpec, tokens: list[str]) -> list[str]` — Walk one invocation's tokens against ``cli``; return problem strings.
+  - `check_doc_drift(repo_root: Path, modules: Sequence[ModuleInterface]) -> tuple[list[DriftProblem], dict[str, dict[str, bool]]]` — Validate every doc's shown invocations against each module's ``CliSpec``.
+  - `render_doc_drift_section(coverage: dict[str, dict[str, bool]]) -> list[str]` — Render the per-script per-doc coverage summary, sorted for determinism.
   - `build_document(repo_root: Path) -> str` — Build the complete INTERFACES.md text for ``repo_root``.
+  - `build_document_and_drift(repo_root: Path) -> tuple[str, list[DriftProblem]]` — Build INTERFACES.md text alongside the doc-drift problems found.
   - `anchor(relpath: str) -> str` — Return the GitHub heading anchor for a module section.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
 - Tested by: `claude/scripts/test_gen_interfaces.py`
@@ -870,3 +882,73 @@ Pristine-state departure mode: baseline capture and ownership tracking.
   - `build_service_record(*, enabled: bool | None, active: bool | None, linger: bool | None) -> dict[str, object]` — Build a ``service:`` record from already-probed values.
   - `classify_service(recorded: dict[str, object] | None, live: dict[str, object]) -> Classification` — Classify the watchcommit service/linger key.
 - Tested by: `test/test_depart.py`, `test/test_depart_transactions.py`, `test/test_install.py`
+
+---
+
+## 5. Skill/command doc contract coverage
+
+For each backing script below, every skill/command doc that shows an
+example of running it, and whether that example's subcommand and
+flags still match the script's real CLI contract. A doc with no shown
+invocation of a given script is not listed. `--check` exits `3` (not
+`1`) when this section would change, since the fix is editing the
+named doc, not regenerating this file.
+
+### `dev_status.py`
+
+| Doc | Status |
+| --- | --- |
+| `agy/skills/backlog-item/SKILL.md` | OK |
+| `agy/skills/dashboard/SKILL.md` | OK |
+| `agy/skills/second-opinion/SKILL.md` | OK |
+| `agy/skills/standup/SKILL.md` | OK |
+| `claude/commands/backlog-item.md` | OK |
+| `claude/commands/dashboard.md` | OK |
+| `claude/commands/second-opinion.md` | OK |
+| `claude/commands/standup.md` | OK |
+| `copilot/skills/backlog-item/SKILL.md` | OK |
+| `copilot/skills/dashboard/SKILL.md` | OK |
+| `copilot/skills/second-opinion/SKILL.md` | OK |
+| `copilot/skills/standup/SKILL.md` | OK |
+| `opencode/command/backlog-item.md` | OK |
+| `opencode/command/dashboard.md` | OK |
+| `opencode/command/second-opinion.md` | OK |
+| `opencode/command/standup.md` | OK |
+| `opencode/skills/second-opinion/SKILL.md` | OK |
+
+### `grill.py`
+
+| Doc | Status |
+| --- | --- |
+| `agy/skills/backlog-item/SKILL.md` | OK |
+| `agy/skills/grill-me/SKILL.md` | OK |
+| `agy/skills/second-opinion/SKILL.md` | OK |
+| `claude/commands/backlog-item.md` | OK |
+| `claude/commands/grill-me.md` | OK |
+| `claude/commands/second-opinion.md` | OK |
+| `copilot/skills/grill-me/SKILL.md` | OK |
+| `copilot/skills/second-opinion/SKILL.md` | OK |
+| `opencode/command/backlog-item.md` | OK |
+| `opencode/command/grill-me.md` | OK |
+| `opencode/command/second-opinion.md` | OK |
+| `opencode/skills/grill-me/SKILL.md` | OK |
+| `opencode/skills/second-opinion/SKILL.md` | OK |
+
+### `standup.py`
+
+| Doc | Status |
+| --- | --- |
+| `agy/skills/standup/SKILL.md` | OK |
+| `claude/commands/standup.md` | OK |
+| `copilot/skills/standup/SKILL.md` | OK |
+| `opencode/command/standup.md` | OK |
+
+### `vitals_promotion.py`
+
+| Doc | Status |
+| --- | --- |
+| `agy/skills/grill-me/SKILL.md` | OK |
+| `claude/commands/grill-me.md` | OK |
+| `copilot/skills/grill-me/SKILL.md` | OK |
+| `opencode/command/grill-me.md` | OK |
+| `opencode/skills/grill-me/SKILL.md` | OK |

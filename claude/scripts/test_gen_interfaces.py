@@ -14,6 +14,7 @@ parsed with ast.parse, exactly as the generator does it.
 """
 
 import ast
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -737,6 +738,213 @@ class RealSourceTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIsNone(gi.extract_cli(ast.parse(source), ""))
+
+
+DEV_STATUS_START_FIXTURE = """
+    import argparse
+
+    def main() -> None:
+        parser = argparse.ArgumentParser(prog="dev_status")
+        sub = parser.add_subparsers(dest="command")
+        start = sub.add_parser("start")
+        start.add_argument("id", metavar="<slug|N>")
+        start.add_argument("--if-rev", metavar="<N>")
+        start.add_argument("--quiet", "-q", action="store_true")
+        sub.add_parser("show")
+"""
+# A second subcommand ("show") keeps cli.subcommands non-empty when a test
+# below drops "start" -- an empty list is indistinguishable from a script
+# that never had subcommands (validate_invocation then validates top-level
+# options instead), which real scripts never hit since they don't drop
+# every subcommand at once.
+
+
+class DocDriftTests(unittest.TestCase):
+    """Regression tests for the doc<->script contract-drift check."""
+
+    def start_cli(self) -> gi.CliSpec:
+        return cli_of(DEV_STATUS_START_FIXTURE)
+
+    def test_matching_invocation_has_no_problems(self) -> None:
+        cli = self.start_cli()
+        tokens = ["dev_status.py", "start", "5", "--if-rev", "3"]
+        self.assertEqual(gi.validate_invocation(cli, tokens), [])
+
+    def test_removed_subcommand_is_flagged(self) -> None:
+        cli = self.start_cli()
+        cli.subcommands = [sc for sc in cli.subcommands if sc.path != ("start",)]
+        problems = gi.validate_invocation(cli, ["dev_status.py", "start", "5"])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("start", problems[0])
+
+    def test_removed_flag_under_a_resolved_subcommand_is_flagged(self) -> None:
+        cli = self.start_cli()
+        for sc in cli.subcommands:
+            sc.arguments = [a for a in sc.arguments if "--if-rev" not in a.label]
+        problems = gi.validate_invocation(
+            cli, ["dev_status.py", "start", "5", "--if-rev", "3"]
+        )
+        self.assertEqual(len(problems), 1)
+        self.assertIn("--if-rev", problems[0])
+
+    def test_double_dash_delimiter_stops_flag_scanning(self) -> None:
+        cli = self.start_cli()
+        tokens = ["dev_status.py", "start", "5", "--", "--not-a-real-flag"]
+        self.assertEqual(gi.validate_invocation(cli, tokens), [])
+
+    def test_negative_number_flag_value_is_not_misread_as_a_flag(self) -> None:
+        cli = self.start_cli()
+        tokens = ["dev_status.py", "start", "5", "--if-rev", "-3"]
+        self.assertEqual(gi.validate_invocation(cli, tokens), [])
+
+    def test_inline_equals_flag_value_is_recognised(self) -> None:
+        cli = self.start_cli()
+        tokens = ["dev_status.py", "start", "5", "--if-rev=3"]
+        self.assertEqual(gi.validate_invocation(cli, tokens), [])
+
+    def test_flag_takes_value_distinguishes_boolean_from_valued_flags(self) -> None:
+        cli = self.start_cli()
+        start = subcommand(cli, "start")
+        by_label = {a.label: a for a in start.arguments}
+        self.assertFalse(gi.flag_takes_value(by_label["--quiet/-q"]))
+        self.assertTrue(gi.flag_takes_value(by_label["--if-rev"]))
+
+    def test_interpreter_and_path_qualified_invocations_are_matched(self) -> None:
+        self.assertIsNotNone(
+            gi.invocation_tokens(["python3", "dev_status.py", "show"], "dev_status.py")
+        )
+        self.assertIsNotNone(
+            gi.invocation_tokens(
+                ["python3", "~/.claude/scripts/dev_status.py", "show"], "dev_status.py"
+            )
+        )
+        self.assertIsNotNone(
+            gi.invocation_tokens(
+                ["DEVSTATUS_AGENT=1", "python3", "dev_status.py", "show"],
+                "dev_status.py",
+            )
+        )
+
+    def test_non_invocation_shell_command_is_not_matched(self) -> None:
+        self.assertIsNone(
+            gi.invocation_tokens(["cp", "dev_status.py", "backup_dir"], "dev_status.py")
+        )
+        self.assertIsNone(
+            gi.invocation_tokens(["nano", "dev_status.py"], "dev_status.py")
+        )
+
+    def test_bracket_wrapped_flag_is_tokenized_as_a_real_flag(self) -> None:
+        tokens = gi.tokenize_invocation_line("standup.py fetch [--date YYYY-MM-DD]")
+        self.assertEqual(tokens, ["standup.py", "fetch", "--date", "YYYY-MM-DD"])
+
+    def test_coverage_section_is_sorted_regardless_of_input_order(self) -> None:
+        coverage = {
+            "standup.py": {"z-doc.md": True, "a-doc.md": False},
+            "dev_status.py": {"m-doc.md": True},
+        }
+        lines = gi.render_doc_drift_section(coverage)
+        script_headings = [line for line in lines if line.startswith("### ")]
+        self.assertEqual(script_headings, ["### `dev_status.py`", "### `standup.py`"])
+        doc_rows = [line for line in lines if line.startswith("| `")]
+        self.assertEqual(doc_rows[1], "| `a-doc.md` | MISSING |")
+        self.assertEqual(doc_rows[2], "| `z-doc.md` | OK |")
+
+    def test_repo_current_docs_have_zero_drift(self) -> None:
+        links = gi.load_link_table(REPO_ROOT)
+        modules = [
+            gi.analyze_module(
+                REPO_ROOT / gi.SCRIPTS_DIR / name, REPO_ROOT, set(), links
+            )
+            for name in ("dev_status.py", "grill.py", "standup.py")
+        ]
+        problems, coverage = gi.check_doc_drift(REPO_ROOT, modules)
+        self.assertEqual(problems, [])
+        self.assertGreater(sum(len(docs) for docs in coverage.values()), 0)
+
+    def _write_synthetic_repo(self, root: Path, doc_invocation: str) -> None:
+        scripts = root / gi.SCRIPTS_DIR
+        scripts.mkdir(parents=True)
+        (scripts / "foo.py").write_text(
+            textwrap.dedent(
+                '''\
+                #!/usr/bin/env python3
+                """foo.py — test fixture."""
+                import argparse
+
+                def main() -> None:
+                    parser = argparse.ArgumentParser(prog="foo")
+                    sub = parser.add_subparsers(dest="command")
+                    run = sub.add_parser("run")
+                    run.add_argument("--slow", action="store_true")
+
+                if __name__ == "__main__":
+                    main()
+                '''
+            ),
+            encoding="utf-8",
+        )
+        commands = root / "claude" / "commands"
+        commands.mkdir(parents=True)
+        (commands / "foo.md").write_text(doc_invocation, encoding="utf-8")
+        for harness in ("copilot", "opencode", "agy"):
+            (root / harness).mkdir()
+
+    def test_synthetic_repo_with_matching_doc_has_no_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_synthetic_repo(root, "Use `foo.py run --slow` to go.\n")
+            links = gi.load_link_table(root)
+            module = gi.analyze_module(
+                scripts_path(root, "foo.py"), root, {"foo"}, links
+            )
+            problems, _ = gi.check_doc_drift(root, [module])
+            self.assertEqual(problems, [])
+
+    def test_synthetic_repo_with_a_drifted_flag_is_caught(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_synthetic_repo(root, "Use `foo.py run --fast` to go.\n")
+            links = gi.load_link_table(root)
+            module = gi.analyze_module(
+                scripts_path(root, "foo.py"), root, {"foo"}, links
+            )
+            problems, _ = gi.check_doc_drift(root, [module])
+            self.assertEqual(len(problems), 1)
+            self.assertIn("--fast", problems[0].detail)
+
+    @pytest.mark.allow_real_subprocess
+    def test_check_exits_3_for_doc_drift_even_when_the_file_is_also_stale(
+        self,
+    ) -> None:
+        """A stale INTERFACES.md must never mask a doc-drift finding under
+        it (round 3 caught this: rendering the coverage section into a
+        document that also differs from disk could make the generic
+        stale-file exit 1 fire first and hide the real, differently-fixed
+        doc-drift problem underneath it)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_synthetic_repo(root, "Use `foo.py run --fast` to go.\n")
+            # deliberately no INTERFACES.md on disk -- the file is "stale"
+            # (missing) *and* a doc has drifted, at the same time
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / gi.SCRIPTS_DIR / "gen_interfaces.py"),
+                    "--check",
+                    "--repo-root",
+                    str(root),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 3, result.stderr)
+            self.assertIn("--fast", result.stderr)
+
+
+def scripts_path(root: Path, name: str) -> Path:
+    """Return the path to a script under ``root``'s ``SCRIPTS_DIR``."""
+    return root / gi.SCRIPTS_DIR / name
 
 
 class GeneratedDocumentTests(unittest.TestCase):

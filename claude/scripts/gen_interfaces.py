@@ -23,8 +23,14 @@ documented. See :func:`tracked_files` for why that filter is load-bearing.
 
 Usage:
     python3 claude/scripts/gen_interfaces.py            rewrite INTERFACES.md
-    python3 claude/scripts/gen_interfaces.py --check    exit 1 if it is stale
+    python3 claude/scripts/gen_interfaces.py --check    exit 1/3 if it is stale
     python3 claude/scripts/gen_interfaces.py --stdout   print, write nothing
+
+Section 5 of the generated document cross-references each backing script's
+real CLI contract against every skill/command doc's shown example of running
+it (a doc→script invocation check: does the doc's copy-pasteable command
+still use subcommands/flags the script actually has). ``--check`` treats a
+mismatch there as a distinct failure from a stale file — see Exit codes.
 
 Flags: --check, --stdout, --repo-root <path>, --output <path>,
 --quiet/-q, --verbose/-v.
@@ -32,8 +38,10 @@ Env vars: none.
 Files read: <repo>/links.toml and every file under claude/, copilot/,
 opencode/, agy/.
 Files written: <repo>/INTERFACES.md (skipped by --check and --stdout).
-Exit codes: 0 success; 1 --check found drift; 2 bad usage or unreadable
-input.
+Exit codes: 0 success; 1 --check found the file itself stale (fix: rerun
+without --check); 2 bad usage or unreadable input; 3 --check found a doc's
+shown command example drifted from its script's real CLI contract (fix:
+edit the named doc, not this file).
 
 Requires Python 3.12+.
 """
@@ -42,6 +50,7 @@ import argparse
 import ast
 import difflib
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -1207,8 +1216,272 @@ def render_assets(
     return lines
 
 
+# ── skill/command doc contract drift ────────────────────────────────────────
+
+DOC_DRIFT_CHECK_EXCLUDE = frozenset({"second_opinion.py"})
+"""Scripts checked elsewhere already.
+
+``second_opinion.py``'s skill/command docs are already validated by
+``gen_second_opinion.py --check`` (a narrower, earlier version of this same
+idea). Checking it again here would double-cover it, not add safety.
+"""
+
+SHELL_PROMPT_TOKENS = frozenset({"$", "#", "&&", ";", "|", "|&"})
+INTERPRETER_PREFIXES = frozenset({"python3", "python", "uv", "run", "bun", "node"})
+
+_CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
+_FENCED_BLOCK_RE = re.compile(r"```[a-zA-Z0-9]*\n(.*?)```", re.DOTALL)
+_ENV_ASSIGNMENT_RE = re.compile(r"[A-Z_][A-Z0-9_]*=\S*")
+_COMMAND_SHAPED_RE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+@dataclass
+class DocInvocation:
+    """One doc's code-span example of running a target script."""
+
+    doc: str
+    raw: str
+    tokens: list[str]
+
+
+@dataclass
+class DriftProblem:
+    """One doc invocation using a subcommand/flag the script doesn't have."""
+
+    script: str
+    doc: str
+    invocation: str
+    detail: str
+
+
+def discover_doc_paths(repo_root: Path) -> list[Path]:
+    """Return every skill/command doc across the four harnesses, sorted."""
+    paths: list[Path] = []
+    for harness in HARNESS_DIRS:
+        base = repo_root / harness
+        paths += (base / "commands").glob("*.md")
+        paths += (base / "command").glob("*.md")
+        paths += (base / "skills").glob("*/SKILL.md")
+    return sorted(set(paths))
+
+
+def code_regions(text: str) -> list[str]:
+    """Return every inline code span and fenced code block's inner text."""
+    regions = [m.group(1) for m in _CODE_SPAN_RE.finditer(text)]
+    regions += [m.group(1) for m in _FENCED_BLOCK_RE.finditer(text)]
+    return regions
+
+
+def tokenize_invocation_line(line: str) -> list[str]:
+    """Shell-tokenize one line, after stripping argparse-usage brackets.
+
+    ``[--date YYYY-MM-DD]`` is optionality markup doc authors copy from
+    ``--help`` output, never literal shell syntax; left in place it breaks
+    flag-token recognition (the leading ``[`` makes ``[--date`` fail the
+    "starts with a hyphen" check).
+    """
+    line = line.replace("[", "").replace("]", "")
+    try:
+        return shlex.split(line, posix=True)
+    except ValueError:
+        return line.split()
+
+
+def invocation_tokens(tokens: list[str], script_basename: str) -> list[str] | None:
+    """Return the token stream starting at ``script_basename``, or None.
+
+    Strips known shell-prompt/separator tokens, interpreter/runner prefixes,
+    and ``NAME=VALUE`` environment assignments from the front, then requires
+    the script's basename as the next token — rejecting lines where the
+    script name is not effectively first (``cp dev_status.py backup_dir``)
+    while still matching ``$ dev_status.py show 5`` or
+    ``python3 ~/.claude/scripts/dev_status.py show 5``.
+    """
+    for index, token in enumerate(tokens):
+        if Path(token).name == script_basename:
+            return tokens[index:]
+        if token in SHELL_PROMPT_TOKENS or token in INTERPRETER_PREFIXES:
+            continue
+        if _ENV_ASSIGNMENT_RE.fullmatch(token):
+            continue
+        return None
+    return None
+
+
+def find_invocations(
+    doc_paths: Sequence[Path], repo_root: Path, script_basename: str
+) -> list[DocInvocation]:
+    """Scan every doc for code-span invocations of ``script_basename``."""
+    found: list[DocInvocation] = []
+    for doc_path in doc_paths:
+        text = doc_path.read_text(encoding="utf-8", errors="replace")
+        if script_basename not in text:
+            continue
+        relpath = doc_path.relative_to(repo_root).as_posix()
+        for region in code_regions(text):
+            for raw_line in region.splitlines():
+                line = raw_line.rstrip("\\").strip()
+                if not line or script_basename not in line:
+                    continue
+                tokens = tokenize_invocation_line(line)
+                matched = invocation_tokens(tokens, script_basename)
+                if matched is not None:
+                    found.append(DocInvocation(doc=relpath, raw=line, tokens=matched))
+    return found
+
+
+def flag_takes_value(argument: CliArgument) -> bool:
+    """Report whether ``argument`` consumes a following token as its value.
+
+    Inferred from the already-extracted ``usage`` text rather than
+    re-deriving it: a valueless flag renders as just the flag name
+    (``[--quiet]``), while a value-taking one always has a trailing
+    metavar or choice set separated by a space (``[--if-rev <N>]``,
+    ``[--date YYYY-MM-DD]``, ``[--status {open,closed}]``), whether or not
+    the metavar itself uses angle brackets.
+    """
+    return " " in argument.usage.strip("[]")
+
+
+def validate_invocation(cli: CliSpec, tokens: list[str]) -> list[str]:
+    """Walk one invocation's tokens against ``cli``; return problem strings.
+
+    Left to right, not bucketed into "subcommand tokens" and "flag tokens"
+    upfront — bucketing loses the adjacency between a flag and its value
+    (e.g. the ``5`` in ``start 4 --if-rev 5`` would land in the wrong
+    bucket). Consumes a subcommand path to a leaf first, then walks the
+    remaining tokens one at a time, consuming a value-taking flag's next
+    token as its value rather than validating it in its own right.
+    """
+    rest = tokens[1:]
+    path: tuple[str, ...] = ()
+    leaf: Subcommand | None = None
+    valid_args: list[CliArgument]
+
+    if cli.subcommands:
+        known_paths = {sc.path for sc in cli.subcommands}
+        by_path = {sc.path: sc for sc in cli.subcommands}
+        consumed = 0
+        while consumed < len(rest) and not rest[consumed].startswith("-"):
+            candidate = path + (rest[consumed],)
+            if any(known[: len(candidate)] == candidate for known in known_paths):
+                path = candidate
+                leaf = by_path.get(path)
+                consumed += 1
+                continue
+            break
+        if path and leaf is None:
+            return [f"unknown subcommand path {' '.join(path)!r}"]
+        if not path:
+            if (
+                rest
+                and not rest[0].startswith("-")
+                and _COMMAND_SHAPED_RE.fullmatch(rest[0])
+            ):
+                return [f"unknown subcommand {rest[0]!r}"]
+            valid_args = cli.options
+        else:
+            rest = rest[consumed:]
+            valid_args = leaf.arguments if leaf else []
+    else:
+        valid_args = cli.options
+
+    flags: dict[str, CliArgument] = {}
+    for argument in valid_args:
+        for name in argument.label.split("/"):
+            flags[name] = argument
+
+    problems: list[str] = []
+    index = 0
+    while index < len(rest):
+        token = rest[index]
+        if token == "--":
+            break
+        if token.startswith("-"):
+            name, _, inline_value = token.partition("=")
+            argument = flags.get(name)
+            if argument is None:
+                where = " ".join(path) or "(top level)"
+                problems.append(f"unknown flag {name!r} for {where!r}")
+                index += 1
+                continue
+            index += 2 if (flag_takes_value(argument) and not inline_value) else 1
+        else:
+            index += 1
+    return problems
+
+
+def check_doc_drift(
+    repo_root: Path, modules: Sequence[ModuleInterface]
+) -> tuple[list[DriftProblem], dict[str, dict[str, bool]]]:
+    """Validate every doc's shown invocations against each module's ``CliSpec``.
+
+    Returns the concrete problems found, plus a per-script per-doc
+    OK/missing summary for the rendered coverage section.
+    """
+    doc_paths = discover_doc_paths(repo_root)
+    problems: list[DriftProblem] = []
+    coverage: dict[str, dict[str, bool]] = {}
+    for module in modules:
+        if module.cli is None:
+            continue
+        script = Path(module.relpath).name
+        if script in DOC_DRIFT_CHECK_EXCLUDE:
+            continue
+        invocations = find_invocations(doc_paths, repo_root, script)
+        if not invocations:
+            continue
+        per_doc_ok: dict[str, bool] = {}
+        for invocation in invocations:
+            ok = per_doc_ok.get(invocation.doc, True)
+            for issue in validate_invocation(module.cli, invocation.tokens):
+                problems.append(
+                    DriftProblem(
+                        script=script,
+                        doc=invocation.doc,
+                        invocation=invocation.raw,
+                        detail=issue,
+                    )
+                )
+                ok = False
+            per_doc_ok[invocation.doc] = ok
+        coverage[script] = per_doc_ok
+    return problems, coverage
+
+
+def render_doc_drift_section(coverage: dict[str, dict[str, bool]]) -> list[str]:
+    """Render the per-script per-doc coverage summary, sorted for determinism."""
+    lines = [
+        "For each backing script below, every skill/command doc that shows an",
+        "example of running it, and whether that example's subcommand and",
+        "flags still match the script's real CLI contract. A doc with no shown",
+        "invocation of a given script is not listed. `--check` exits `3` (not",
+        "`1`) when this section would change, since the fix is editing the",
+        "named doc, not regenerating this file.",
+        "",
+    ]
+    for script in sorted(coverage):
+        lines.append(f"### `{script}`")
+        lines.append("")
+        lines.append("| Doc | Status |")
+        lines.append("| --- | --- |")
+        for doc in sorted(coverage[script]):
+            status = "OK" if coverage[script][doc] else "MISSING"
+            lines.append(f"| `{doc}` | {status} |")
+        lines.append("")
+    return lines
+
+
 def build_document(repo_root: Path) -> str:
     """Build the complete INTERFACES.md text for ``repo_root``."""
+    return build_document_and_drift(repo_root)[0]
+
+
+def build_document_and_drift(repo_root: Path) -> tuple[str, list[DriftProblem]]:
+    """Build INTERFACES.md text alongside the doc-drift problems found.
+
+    A single pass so ``--check`` doesn't re-parse every script twice.
+    """
     links = load_link_table(repo_root)
     script_dir = repo_root / SCRIPTS_DIR
     modules_paths = sorted(
@@ -1252,7 +1525,11 @@ def build_document(repo_root: Path) -> str:
         ]
         for module in entrypoints:
             lines += render_module(module)
-    return "\n".join(lines).rstrip("\n") + "\n"
+
+    problems, coverage = check_doc_drift(repo_root, modules)
+    lines += ["---", "", "## 5. Skill/command doc contract coverage", ""]
+    lines += render_doc_drift_section(coverage)
+    return "\n".join(lines).rstrip("\n") + "\n", problems
 
 
 def anchor(relpath: str) -> str:
@@ -1278,7 +1555,10 @@ def main() -> None:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="exit 1 (with a diff on stderr) if the file on disk is stale",
+        help=(
+            "exit 3 (with a report on stderr) if a doc's shown command example "
+            "no longer matches its script, else exit 1 if the file on disk is stale"
+        ),
     )
     parser.add_argument(
         "--stdout", action="store_true", help="print the document, write nothing"
@@ -1305,12 +1585,26 @@ def main() -> None:
         sys.exit(2)
     output = args.output or repo_root / OUTPUT_NAME
 
-    document = build_document(repo_root)
+    document, drift_problems = build_document_and_drift(repo_root)
 
     if args.stdout:
         sys.stdout.write(document)
         return
     if args.check:
+        if drift_problems:
+            for problem in drift_problems:
+                print(
+                    f"[gen_interfaces] doc drift — edit `{problem.doc}`: "
+                    f"`{problem.invocation}` -> {problem.detail}",
+                    file=sys.stderr,
+                )
+            print(
+                "[gen_interfaces] the script's real CLI contract is the source "
+                "of truth — update the doc(s) above, do not regenerate "
+                f"{output.name} to fix this",
+                file=sys.stderr,
+            )
+            sys.exit(3)
         current = output.read_text(encoding="utf-8") if output.is_file() else ""
         if current == document:
             cli_common.qprint(
