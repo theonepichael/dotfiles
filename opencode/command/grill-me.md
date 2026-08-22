@@ -45,19 +45,19 @@ Then check `grill.py list` for an existing session matching the topic. If one ma
 
 1. Identify the top-level decisions and unknowns. Register each one immediately with `ask` (id + question) so nothing is lost if the session is cut short. Order by dependency — resolve blockers before dependent decisions. New decision points surfaced by later answers get `ask`ed as they appear.
 
-2. Ask one question at a time. When the plausible answers are enumerable (2–4 real options), use the `question` tool with your recommendation as the first option, labeled "(Recommended)". When the question is genuinely open-ended, ask in plain text:
+2. Batch every open question whose answer doesn't depend on another still-open question — the **frontier** — into one round, and ask all of them within the same turn rather than revealing one, waiting, then revealing the next. For each question in the round: when the plausible answers are enumerable (2–4 real options), use the `question` tool with your recommendation as the first option, labeled "(Recommended)"; when genuinely open-ended, ask in plain text:
    - State the question directly.
    - Give your recommended answer with brief reasoning.
-   - Wait for the user's response.
+   A question whose answer depends on another still-open question waits for a later round, not this one. Wait for the user's response to the whole round before opening the next one.
 
-3. When the user answers:
-   - If the answer is consistent and resolves the question, record it — `decide` with source `user` — and move to the next.
+3. When the user answers a round (they may answer several questions in one message), handle each answered question the same way:
+   - If the answer is consistent and resolves the question, record it — `decide` with source `user`.
    - If the answer is vague, push back and ask them to be specific.
    - If the answer introduces inconsistencies or new risks, name them and keep drilling.
    - If the user defers ("whatever you think", "you decide"), record your recommendation via `decide` with source `defaulted`.
    - If you can settle the question yourself by running actual code (a scoped script, existing tests, a REPL check) rather than asking, do that first and record it — `decide` with source `tested`, noting what you ran and observed in the reasoning field. Cite the specific file, function, constant, or line checked — not just that a check happened. This is distinct from `user` (the person didn't state it) and from `--verify` mode (which re-checks decisions after the fact) — it's confirming a decision inline, during the Q&A loop itself. Once `decide` is recorded, immediately follow with `grill.py verdict <id> '{"result": "VERIFIED", "evidence": "..."}'` using the same observation just gathered — don't leave the check recorded only in reasoning; the evidence string should restate what was actually run or checked, not just repeat the decision.
 
-4. A branch is resolved when the answer generates no new questions. Keep drilling until every open question is decided. Two distinct early exits — the user's words pick which:
+4. A branch is resolved when the answer generates no new questions. Newly surfaced questions get `ask`ed immediately (step 1) and join the next round's frontier once their own dependencies clear. Keep opening rounds until every open question is decided. Two distinct early exits — the user's words pick which:
    - **Pause** ("let's stop here", "I need to step away", "we'll come back to this", or a forced interruption cutting the session short) — stop without deciding anything. Open questions stay open for a later resume; no plan is written. Offer a backlog item with session slug in `context`, `next_steps` pointing at `grill.py next`.
    - **Wrap up** ("wrap it up", "just finish it", "that's enough") — `decide` each remaining open question with your best-guess answer and source `assumed`, then conclude normally.
 
