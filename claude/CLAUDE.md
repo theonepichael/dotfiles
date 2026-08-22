@@ -136,11 +136,14 @@ Omit related_files if there is nothing meaningful to put in them (use []).
 
 #### Checking for blocker relationships at add-time
 
-`add` and `pending add` print a one-line reminder to stderr after a
-successful add, when other READY or IN PROGRESS items exist — the items
-themselves are already visible in that same command's dashboard output
-just above it. Read them and judge, semantically, whether any listed item
-has a blocker relationship with the one just added, in either direction.
+`add` and `pending add` print one or more reminder lines to stderr after a
+successful add: a blocker-relationship reminder when other READY or IN
+PROGRESS items exist — the items themselves are already visible in that
+same command's dashboard output just above it — and, separately, an
+out-of-scope reminder when any rejected concept is on file (see "Proactive
+capture: rejected ideas" below). Read the blocker-relevant items and judge,
+semantically, whether any listed item has a blocker relationship with the
+one just added, in either direction.
 
 **Use `block`, not `update`, to record it.** `update`'s `blocked_by` patch
 is a raw replacement (`item.update(patch)`) with no existence check and no
@@ -204,6 +207,38 @@ it — it can't make you notice something you never put into words in the first 
 Protocol: draft the full add JSON yourself, then offer it as one line —
 ``Add to backlog? `ajhp-<slug>` — <summary>`` — and run the add only on confirmation.
 At most one offer per distinct item; if declined, don't re-offer it.
+
+#### Proactive capture: rejected ideas
+
+Offer to record a rejection (never record silently) whenever a `grill-me`,
+`second-opinion`, or planning discussion reaches an explicit "skip this
+concept"/"not doing this" verdict — the agent's own verdict or the user's,
+and even when the user only declines to object rather than stating it
+outright. This mirrors the Proactive capture rule above: the trigger is the
+verdict itself, not a phrase the user has to say — in practice, a user
+rarely announces "this is out of scope"; the agent reaches that verdict
+during planning and the user just doesn't object.
+
+Protocol: draft a concept slug, a short reason (written to a scratch file
+per this file's Shell Command Safety section — never inlined into a
+single-quoted shell string), and, if applicable, which backlog item the
+concept came from. Offer it as one line — ``Record as out-of-scope?
+`<concept-slug>` — <one-line reason>`` — and run `out-of-scope add` only on
+confirmation. At most one offer per distinct concept; if declined, don't
+re-offer it.
+
+```bash
+python3 ~/.claude/scripts/dev_status.py out-of-scope add <concept-slug> --reason-file <path> [--related-item <backlog-slug>]
+python3 ~/.claude/scripts/dev_status.py out-of-scope list
+python3 ~/.claude/scripts/dev_status.py out-of-scope show <concept-slug>
+python3 ~/.claude/scripts/dev_status.py out-of-scope link <concept-slug> <backlog-slug>
+python3 ~/.claude/scripts/dev_status.py out-of-scope unlink <concept-slug> <backlog-slug>
+python3 ~/.claude/scripts/dev_status.py out-of-scope remove <concept-slug>
+```
+
+`out-of-scope` is unrelated to `reject <id> <feedback>` below — `reject`
+sends an in-review backlog item back for rework; `out-of-scope` records an
+idea declined outright, independent of any single item's review cycle.
 
 To update, start, or complete an item — pass the integer directly to the script.
 **Do not look up the slug in your context; the script resolves numbers internally.**

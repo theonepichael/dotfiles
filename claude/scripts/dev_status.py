@@ -47,6 +47,10 @@ MACHINE_ID_FILE = DATA_DIR / "_machine_id"
 RECAP_CACHE_FILE = DATA_DIR / "recap-cache.json"
 RECAP_REGEN_LOCK_FILE = DATA_DIR / "recap-regen.lock"
 
+OUT_OF_SCOPE_DIR = Path.home() / ".claude" / "data" / "backlog-out-of-scope"
+OUT_OF_SCOPE_INDEX_FILE = OUT_OF_SCOPE_DIR / "index.json"
+OUT_OF_SCOPE_LOCK_FILE = OUT_OF_SCOPE_DIR / ".out-of-scope.lock"
+
 # ── recap tuning knobs ──────────────────────────────────────────────────────
 RECAP_TTL_SECONDS = 30 * 60
 RECAP_STALE_MAX_HOURS = 24
@@ -127,7 +131,7 @@ SUBCOMMANDS = (
     "prune",
     "recap",
 )
-RESERVED_SLUGS = set(SUBCOMMANDS) | {"pending", "all", "help", "new"}
+RESERVED_SLUGS = set(SUBCOMMANDS) | {"pending", "out-of-scope", "all", "help", "new"}
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)+$")
 SLUG_MIN, SLUG_MAX = 3, 40
 
@@ -578,22 +582,24 @@ def load_items() -> list[BacklogItem]:
 
 
 def _atomic_write_json(path: Path, payload: str, prefix: str) -> None:
-    """Write serialized JSON to ``path`` via a temp file + ``os.replace``.
+    """Write text to ``path`` via a temp file in its directory + ``os.replace``.
 
-    Shared by every writer of the backlog data files. Cleans up the temp
-    file on failure so a crash mid-write never leaves debris behind or
-    corrupts the destination.
+    Shared by every writer of the backlog data files (and, despite the
+    name, any other text this module writes atomically — the payload need
+    not be JSON). Cleans up the temp file on failure so a crash mid-write
+    never leaves debris behind or corrupts the destination.
 
     Ensures the temp file is fsynced before rename and the containing
     directory is fsynced after the rename so the replace is durable.
 
     Args:
         path: Destination file path.
-        payload: Already-serialized JSON text to write.
+        payload: Already-serialized text to write.
         prefix: Prefix for the temporary file created alongside ``path``.
     """
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=DATA_DIR, prefix=prefix)
+    directory = path.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=prefix)
     try:
         with os.fdopen(fd, "w") as f:
             f.write(payload)
@@ -604,7 +610,9 @@ def _atomic_write_json(path: Path, payload: str, prefix: str) -> None:
 
         dir_fd = None
         try:
-            dir_fd = os.open(str(DATA_DIR), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            dir_fd = os.open(
+                str(directory), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            )
             os.fsync(dir_fd)
         finally:
             if dir_fd is not None:
@@ -698,6 +706,40 @@ def backlog_lock() -> Iterator[None]:
                 fcntl.flock(_backlog_lock_fd, fcntl.LOCK_UN)
                 os.close(_backlog_lock_fd)
                 _backlog_lock_fd = -1
+
+
+_out_of_scope_lock_rlock = threading.RLock()
+_out_of_scope_lock_fd: int = -1
+_out_of_scope_lock_count: int = 0
+
+
+@contextmanager
+def out_of_scope_lock() -> Iterator[None]:
+    """Hold an exclusive lock over an out-of-scope command's read-modify-write cycle.
+
+    Mirrors :func:`backlog_lock` exactly (same reentrant-per-thread,
+    serialize-across-processes shape) but over its own lock file, scoped to
+    ``~/.claude/data/backlog-out-of-scope/`` -- unrelated to
+    ``LOCK_FILE``/``backlog_lock()``, which guards the separate
+    items.json/pending_items.json store.
+    """
+    global _out_of_scope_lock_fd, _out_of_scope_lock_count
+    OUT_OF_SCOPE_DIR.mkdir(parents=True, exist_ok=True)
+    with _out_of_scope_lock_rlock:
+        _out_of_scope_lock_count += 1
+        if _out_of_scope_lock_count == 1:
+            _out_of_scope_lock_fd = os.open(
+                str(OUT_OF_SCOPE_LOCK_FILE), os.O_WRONLY | os.O_CREAT, 0o644
+            )
+            fcntl.flock(_out_of_scope_lock_fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            _out_of_scope_lock_count -= 1
+            if _out_of_scope_lock_count == 0:
+                fcntl.flock(_out_of_scope_lock_fd, fcntl.LOCK_UN)
+                os.close(_out_of_scope_lock_fd)
+                _out_of_scope_lock_fd = -1
 
 
 def load_rev() -> int:
@@ -969,6 +1011,55 @@ def _blocker_check_reminder(
         return
     cli_common.qprint(
         f"[{cmd}] check the READY/IN PROGRESS items above for blocker relationships",
+        quiet=(quiet or _agent_quiet()),
+        file=err,
+    )
+
+
+def _load_out_of_scope_index() -> dict[str, dict[str, object]]:
+    """Load the out-of-scope concept index, or ``{}`` if it doesn't exist yet."""
+    if not OUT_OF_SCOPE_INDEX_FILE.exists():
+        return {}
+    return cast(
+        dict[str, dict[str, object]], json.loads(OUT_OF_SCOPE_INDEX_FILE.read_text())
+    )
+
+
+def _save_out_of_scope_index(index: dict[str, dict[str, object]]) -> None:
+    """Atomically persist the out-of-scope concept index."""
+    payload = json.dumps(index, indent=2)
+    _atomic_write_json(OUT_OF_SCOPE_INDEX_FILE, payload, ".oos_index_tmp_")
+
+
+def _out_of_scope_md_path(slug: str) -> Path:
+    """Path to a concept's freeform-reason markdown file."""
+    return OUT_OF_SCOPE_DIR / f"{slug}.md"
+
+
+def _out_of_scope_check_reminder(
+    cmd: str, *, err: TextIO | None = None, quiet: bool = False
+) -> None:
+    """Print a one-line stderr reminder to check the out-of-scope knowledge base.
+
+    Fires after a successful ``add``/``pending add`` when at least one
+    rejected concept is on file. No matching heuristic, same as
+    :func:`_blocker_check_reminder` -- the caller (human or agent) makes the
+    judgment call.
+
+    Args:
+        cmd: Command name to prefix onto the reminder.
+        err: Stream to print to; defaults to ``sys.stderr``.
+        quiet: Suppress the reminder (combined with :func:`_agent_quiet`).
+    """
+    if err is None:
+        err = sys.stderr
+    index = _load_out_of_scope_index()
+    if not index:
+        return
+    cli_common.qprint(
+        f"[{cmd}] {len(index)} rejected concept(s) on file — check "
+        "~/.claude/data/backlog-out-of-scope/ (or 'out-of-scope list') for "
+        "a match before proceeding",
         quiet=(quiet or _agent_quiet()),
         file=err,
     )
@@ -2430,6 +2521,7 @@ def cmd_add(args: argparse.Namespace) -> None:
         render(items, pending_items, rev=new_rev)
     _maybe_dispatch_recap_regen()
     _blocker_check_reminder(items, slug, cmd="add", quiet=args.quiet)
+    _out_of_scope_check_reminder("add", quiet=args.quiet)
 
 
 def cmd_update(args: argparse.Namespace) -> None:
@@ -2977,6 +3069,170 @@ def cmd_unblock(args: argparse.Namespace) -> None:
         m.item["updated"] = today()
 
 
+def _read_reason_file(path_str: str) -> str:
+    """Read and validate a ``--reason-file`` argument's content.
+
+    Exits with status 1 after a distinct stderr message for each of:
+    missing path, a directory, an unreadable file, or empty/whitespace-only
+    content.
+    """
+    path = Path(path_str).expanduser()
+    if not path.exists():
+        print(f"[out-of-scope] reason file not found: {path}", file=sys.stderr)
+        sys.exit(1)
+    if not path.is_file():
+        print(
+            f"[out-of-scope] reason file is not a regular file: {path}", file=sys.stderr
+        )
+        sys.exit(1)
+    try:
+        text = path.read_text()
+    except OSError as e:
+        print(f"[out-of-scope] reason file unreadable: {path} ({e})", file=sys.stderr)
+        sys.exit(1)
+    if not text.strip():
+        print(f"[out-of-scope] reason file is empty: {path}", file=sys.stderr)
+        sys.exit(1)
+    return text
+
+
+def cmd_out_of_scope_add(args: argparse.Namespace) -> None:
+    """Handle ``out-of-scope add``: record a rejected concept."""
+    slug = args.concept_slug
+    err = validate_slug(slug, "out-of-scope add")
+    if err:
+        print(err, file=sys.stderr)
+        sys.exit(1)
+
+    reason = _read_reason_file(args.reason_file)
+    related_items = list(args.related_item or [])
+
+    with out_of_scope_lock():
+        index = _load_out_of_scope_index()
+        md_path = _out_of_scope_md_path(slug)
+        if slug in index or md_path.exists():
+            print(
+                f"[out-of-scope add] '{slug}' already exists — use "
+                "'out-of-scope link' to add a referencing item, or "
+                "'out-of-scope remove' first to start over",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        if related_items:
+            item_index = build_index(load_items())
+            for related in related_items:
+                if related not in item_index:
+                    print(
+                        f"[out-of-scope add] related-item not found: {related}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+
+        rejected = today()
+        content = f"# {slug}\n\nRejected: {rejected}\n\n{reason}"
+        _atomic_write_json(md_path, content, f".oos_{slug}_tmp_")
+        index[slug] = {"rejected": rejected, "related_items": related_items}
+        _save_out_of_scope_index(index)
+
+
+def cmd_out_of_scope_link(args: argparse.Namespace) -> None:
+    """Handle ``out-of-scope link``: reference a backlog item from a rejected concept."""
+    slug = args.concept_slug
+    backlog_slug = args.backlog_slug
+    with out_of_scope_lock():
+        index = _load_out_of_scope_index()
+        if slug not in index:
+            print(f"[out-of-scope link] not found: {slug}", file=sys.stderr)
+            sys.exit(1)
+        if backlog_slug not in build_index(load_items()):
+            print(
+                f"[out-of-scope link] not a current backlog slug: {backlog_slug}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        related = cast(list[str], index[slug].setdefault("related_items", []))
+        if backlog_slug not in related:
+            related.append(backlog_slug)
+            _save_out_of_scope_index(index)
+
+
+def cmd_out_of_scope_unlink(args: argparse.Namespace) -> None:
+    """Handle ``out-of-scope unlink``: remove a backlog-item reference."""
+    slug = args.concept_slug
+    backlog_slug = args.backlog_slug
+    with out_of_scope_lock():
+        index = _load_out_of_scope_index()
+        if slug not in index:
+            print(f"[out-of-scope unlink] not found: {slug}", file=sys.stderr)
+            sys.exit(1)
+
+        related = cast(list[str], index[slug].setdefault("related_items", []))
+        if backlog_slug in related:
+            related.remove(backlog_slug)
+            _save_out_of_scope_index(index)
+
+
+def cmd_out_of_scope_remove(args: argparse.Namespace) -> None:
+    """Handle ``out-of-scope remove``: delete a rejected concept's record."""
+    slug = args.concept_slug
+    with out_of_scope_lock():
+        index = _load_out_of_scope_index()
+        md_path = _out_of_scope_md_path(slug)
+        had_entry = slug in index
+        had_md = md_path.exists()
+        if not had_entry and not had_md:
+            print(f"[out-of-scope remove] not found: {slug}", file=sys.stderr)
+            sys.exit(1)
+
+        if had_md:
+            md_path.unlink(missing_ok=True)
+        if had_entry:
+            index.pop(slug, None)
+            _save_out_of_scope_index(index)
+
+
+def cmd_out_of_scope_list(args: argparse.Namespace) -> None:
+    """Handle ``out-of-scope list``: list rejected concepts, newest-first."""
+    index = _load_out_of_scope_index()
+    if not index:
+        print("[out-of-scope] no rejected concepts on file", file=sys.stderr)
+        return
+    entries = sorted(
+        index.items(), key=lambda kv: kv[1].get("rejected", ""), reverse=True
+    )
+    for slug, entry in entries:
+        rejected = entry.get("rejected", "?")
+        count = len(cast(list[str], entry.get("related_items", [])))
+        print(f"{slug}  rejected {rejected}  related_items={count}")
+
+
+def cmd_out_of_scope_show(args: argparse.Namespace) -> None:
+    """Handle ``out-of-scope show``: print a rejected concept's full record."""
+    slug = args.concept_slug
+    index = _load_out_of_scope_index()
+    md_path = _out_of_scope_md_path(slug)
+    entry = index.get(slug)
+    if entry is None and not md_path.exists():
+        print(f"[out-of-scope show] not found: {slug}", file=sys.stderr)
+        sys.exit(1)
+
+    if md_path.exists():
+        print(md_path.read_text())
+    else:
+        print(f"[out-of-scope show] warning: '{slug}.md' is missing", file=sys.stderr)
+
+    if entry is not None:
+        related = cast(list[str], entry.get("related_items", []))
+        print(f"related_items: {', '.join(related) if related else '(none)'}")
+    else:
+        print(
+            f"[out-of-scope show] warning: '{slug}' has no index.json entry",
+            file=sys.stderr,
+        )
+
+
 def cmd_pending_add(args: argparse.Namespace) -> None:
     """Handle ``pending add``: track a new waiting-on-someone-else item.
 
@@ -3067,6 +3323,7 @@ def cmd_pending_add(args: argparse.Namespace) -> None:
         render(backlog_items, pending_items, rev=new_rev)
     _maybe_dispatch_recap_regen()
     _blocker_check_reminder(backlog_items, None, cmd="pending add", quiet=args.quiet)
+    _out_of_scope_check_reminder("pending add", quiet=args.quiet)
 
 
 def cmd_pending_update(args: argparse.Namespace) -> None:
@@ -3558,6 +3815,65 @@ def build_parser() -> argparse.ArgumentParser:
     # name.
     parser.pending_parser = pending  # type: ignore[attr-defined]
 
+    # Same nested-subparser shape as `pending` above, and the same reason
+    # for omitting `parents=[verbosity_parent]` at this intermediate level.
+    out_of_scope = sub.add_parser(
+        "out-of-scope",
+        help=(
+            "record/browse rejected feature concepts (distinct from "
+            "'reject', which sends an in-review item back for rework)"
+        ),
+    )
+    oos_sub = out_of_scope.add_subparsers(dest="oos_cmd")
+
+    oos_add = oos_sub.add_parser(
+        "add", help="record a rejected concept", parents=[verbosity_parent]
+    )
+    oos_add.add_argument("concept_slug", metavar="<concept-slug>")
+    oos_add.add_argument(
+        "--reason-file", dest="reason_file", required=True, metavar="<path>"
+    )
+    oos_add.add_argument(
+        "--related-item",
+        dest="related_item",
+        action="append",
+        metavar="<backlog-slug>",
+    )
+
+    oos_link = oos_sub.add_parser(
+        "link",
+        help="reference a backlog item from a rejected concept",
+        parents=[verbosity_parent],
+    )
+    oos_link.add_argument("concept_slug", metavar="<concept-slug>")
+    oos_link.add_argument("backlog_slug", metavar="<backlog-slug>")
+
+    oos_unlink = oos_sub.add_parser(
+        "unlink",
+        help="remove a backlog-item reference from a rejected concept",
+        parents=[verbosity_parent],
+    )
+    oos_unlink.add_argument("concept_slug", metavar="<concept-slug>")
+    oos_unlink.add_argument("backlog_slug", metavar="<backlog-slug>")
+
+    oos_remove = oos_sub.add_parser(
+        "remove", help="delete a rejected concept's record", parents=[verbosity_parent]
+    )
+    oos_remove.add_argument("concept_slug", metavar="<concept-slug>")
+
+    oos_sub.add_parser(
+        "list", help="list rejected concepts, newest-first", parents=[verbosity_parent]
+    )
+
+    oos_show = oos_sub.add_parser(
+        "show",
+        help="print a rejected concept's full record",
+        parents=[verbosity_parent],
+    )
+    oos_show.add_argument("concept_slug", metavar="<concept-slug>")
+
+    parser.out_of_scope_parser = out_of_scope  # type: ignore[attr-defined]
+
     return parser
 
 
@@ -3586,6 +3902,20 @@ def main() -> None:
             pending_dispatch[args.pending_cmd](args)
         else:
             parser.pending_parser.print_help()  # type: ignore[attr-defined]
+            sys.exit(1)
+    elif args.cmd == "out-of-scope":
+        oos_dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
+            "add": cmd_out_of_scope_add,
+            "link": cmd_out_of_scope_link,
+            "unlink": cmd_out_of_scope_unlink,
+            "remove": cmd_out_of_scope_remove,
+            "list": cmd_out_of_scope_list,
+            "show": cmd_out_of_scope_show,
+        }
+        if args.oos_cmd in oos_dispatch:
+            oos_dispatch[args.oos_cmd](args)
+        else:
+            parser.out_of_scope_parser.print_help()  # type: ignore[attr-defined]
             sys.exit(1)
     elif args.cmd in dispatch:
         dispatch[args.cmd](args)

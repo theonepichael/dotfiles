@@ -114,6 +114,14 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `pending update <slug|N> '{"status": "reply_received", ...}' [--if-rev <N>]` — merge a JSON patch into an existing pending item
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
   - `pending list` — list pending items as JSON lines
+  - `out-of-scope` — record/browse rejected feature concepts (distinct from 'reject', which sends an in-review item back for rework)
+  - `out-of-scope add <concept-slug> --reason-file <path> [--related-item <backlog-slug>]` — record a rejected concept
+    - `--reason-file` (required)
+  - `out-of-scope link <concept-slug> <backlog-slug>` — reference a backlog item from a rejected concept
+  - `out-of-scope unlink <concept-slug> <backlog-slug>` — remove a backlog-item reference from a rejected concept
+  - `out-of-scope remove <concept-slug>` — delete a rejected concept's record
+  - `out-of-scope list` — list rejected concepts, newest-first
+  - `out-of-scope show <concept-slug>` — print a rejected concept's full record
 - Environment: `DEVSTATUS_AGENT`, `DEVSTATUS_RECAP_AGY_MODEL`, `DEVSTATUS_RECAP_DISABLE`, `DEVSTATUS_RECAP_TIMEOUT_SECONDS`
 - Filesystem constants:
   - `DATA_DIR = Path.home() / '.claude' / 'data' / 'backlog'`
@@ -125,6 +133,9 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `MACHINE_ID_FILE = DATA_DIR / '_machine_id'`
   - `RECAP_CACHE_FILE = DATA_DIR / 'recap-cache.json'`
   - `RECAP_REGEN_LOCK_FILE = DATA_DIR / 'recap-regen.lock'`
+  - `OUT_OF_SCOPE_DIR = Path.home() / '.claude' / 'data' / 'backlog-out-of-scope'`
+  - `OUT_OF_SCOPE_INDEX_FILE = OUT_OF_SCOPE_DIR / 'index.json'`
+  - `OUT_OF_SCOPE_LOCK_FILE = OUT_OF_SCOPE_DIR / '.out-of-scope.lock'`
 - Explicit exit codes: `1`
 - Depends on: `cli_common.py`, `llm_backends.py`
 - Public classes:
@@ -139,6 +150,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `load_pending() -> list[PendingItem]` — Load all pending items from :data:`PENDING_FILE`.
   - `save_pending(pending_items: list[PendingItem]) -> None` — Atomically persist ``pending_items`` to :data:`PENDING_FILE`.
   - `backlog_lock() -> Iterator[None]` — Hold an exclusive lock over a mutating command's full read-modify-write cycle.
+  - `out_of_scope_lock() -> Iterator[None]` — Hold an exclusive lock over an out-of-scope command's read-modify-write cycle.
   - `load_rev() -> int` — Read the current revision counter.
   - `bump_rev() -> int` — Increment and persist the revision counter.
   - `build_index(items: list[BacklogItem]) -> BacklogIndex` — Build a slug → item lookup for ``items``.
@@ -153,7 +165,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `read_journal_entries(within_hours: float | None = None, *, verbose: bool = False) -> list[dict[str, object]]` — Read journal entries, optionally filtered to the last ``within_hours``.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
-- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_render`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
+- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_render`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
 - Tested by: `claude/scripts/test_dev_status.py`, `claude/scripts/test_dev_status_sync.py`
 
 ### `claude/scripts/dev_status_sync.py`

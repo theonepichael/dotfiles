@@ -75,6 +75,9 @@ class BacklogTestCase(unittest.TestCase):
         self.machine_id_file = self.data_dir / "_machine_id"
         self.recap_cache_file = self.data_dir / "recap-cache.json"
         self.recap_regen_lock_file = self.data_dir / "recap-regen.lock"
+        self.out_of_scope_dir = Path(self.tmpdir) / "backlog-out-of-scope"
+        self.out_of_scope_index_file = self.out_of_scope_dir / "index.json"
+        self.out_of_scope_lock_file = self.out_of_scope_dir / ".out-of-scope.lock"
         self._patches = [
             patch.object(dev_status, "DATA_DIR", self.data_dir),
             patch.object(dev_status, "ITEMS_FILE", self.items_file),
@@ -86,6 +89,13 @@ class BacklogTestCase(unittest.TestCase):
             patch.object(dev_status, "RECAP_CACHE_FILE", self.recap_cache_file),
             patch.object(
                 dev_status, "RECAP_REGEN_LOCK_FILE", self.recap_regen_lock_file
+            ),
+            patch.object(dev_status, "OUT_OF_SCOPE_DIR", self.out_of_scope_dir),
+            patch.object(
+                dev_status, "OUT_OF_SCOPE_INDEX_FILE", self.out_of_scope_index_file
+            ),
+            patch.object(
+                dev_status, "OUT_OF_SCOPE_LOCK_FILE", self.out_of_scope_lock_file
             ),
         ]
         for p in self._patches:
@@ -3924,6 +3934,363 @@ class BacklogTestCase(unittest.TestCase):
     def test_r53_parser_rejects_quiet_and_verbose_together(self):
         with self.assertRaises(SystemExit):
             dev_status.build_parser().parse_args(["render", "-q", "-v"])
+
+    # ── out-of-scope knowledge base ──────────────────────────────────────────
+
+    def write_reason_file(self, text="Rejected: not worth the added complexity."):
+        path = Path(self.tmpdir) / "reason.txt"
+        path.write_text(text)
+        return str(path)
+
+    def test_oos_01_add_creates_md_and_index_entry(self):
+        reason_path = self.write_reason_file("Because X, per decision doc Y.")
+        dev_status.cmd_out_of_scope_add(
+            _args(concept_slug="skip-thing", reason_file=reason_path, related_item=None)
+        )
+        md_text = (self.out_of_scope_dir / "skip-thing.md").read_text()
+        self.assertIn("# skip-thing", md_text)
+        self.assertIn("Because X, per decision doc Y.", md_text)
+        index = json.loads(self.out_of_scope_index_file.read_text())
+        self.assertIn("skip-thing", index)
+        self.assertEqual(index["skip-thing"]["related_items"], [])
+
+    def test_oos_02_add_with_related_items_validates_existence(self):
+        self.write_items([make_item("real-item")])
+        reason_path = self.write_reason_file()
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_out_of_scope_add(
+                _args(
+                    concept_slug="skip-thing",
+                    reason_file=reason_path,
+                    related_item=["ghost-item"],
+                )
+            )
+        self.assertIn("ghost-item", err.getvalue())
+        self.assertFalse(self.out_of_scope_index_file.exists())
+
+        dev_status.cmd_out_of_scope_add(
+            _args(
+                concept_slug="skip-thing",
+                reason_file=reason_path,
+                related_item=["real-item"],
+            )
+        )
+        index = json.loads(self.out_of_scope_index_file.read_text())
+        self.assertEqual(index["skip-thing"]["related_items"], ["real-item"])
+
+    def test_oos_03_add_duplicate_slug_rejected_without_clobbering(self):
+        reason_path = self.write_reason_file("original reason")
+        dev_status.cmd_out_of_scope_add(
+            _args(concept_slug="skip-thing", reason_file=reason_path, related_item=None)
+        )
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_out_of_scope_add(
+                _args(
+                    concept_slug="skip-thing",
+                    reason_file=self.write_reason_file("clobbering reason"),
+                    related_item=None,
+                )
+            )
+        self.assertIn("already exists", err.getvalue())
+        self.assertIn(
+            "original reason", (self.out_of_scope_dir / "skip-thing.md").read_text()
+        )
+
+    def test_oos_04_add_rejects_half_existing_state(self):
+        # Only the .md file present, no index entry (e.g. from a prior crash) --
+        # `add` must still refuse rather than silently clobbering it.
+        self.out_of_scope_dir.mkdir(parents=True)
+        (self.out_of_scope_dir / "skip-thing.md").write_text("orphaned")
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_out_of_scope_add(
+                _args(
+                    concept_slug="skip-thing",
+                    reason_file=self.write_reason_file(),
+                    related_item=None,
+                )
+            )
+        self.assertIn("already exists", err.getvalue())
+
+    def test_oos_05_reason_file_missing_rejected(self):
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_out_of_scope_add(
+                _args(
+                    concept_slug="skip-thing",
+                    reason_file=str(Path(self.tmpdir) / "nope.txt"),
+                    related_item=None,
+                )
+            )
+        self.assertIn("not found", err.getvalue())
+
+    def test_oos_06_reason_file_is_directory_rejected(self):
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_out_of_scope_add(
+                _args(
+                    concept_slug="skip-thing",
+                    reason_file=self.tmpdir,
+                    related_item=None,
+                )
+            )
+        self.assertIn("not a regular file", err.getvalue())
+
+    def test_oos_07_reason_file_empty_rejected(self):
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_out_of_scope_add(
+                _args(
+                    concept_slug="skip-thing",
+                    reason_file=self.write_reason_file("   \n  "),
+                    related_item=None,
+                )
+            )
+        self.assertIn("empty", err.getvalue())
+
+    def test_oos_08_link_appends_and_is_idempotent(self):
+        self.write_items([make_item("real-item")])
+        dev_status.cmd_out_of_scope_add(
+            _args(
+                concept_slug="skip-thing",
+                reason_file=self.write_reason_file(),
+                related_item=None,
+            )
+        )
+        dev_status.cmd_out_of_scope_link(
+            _args(concept_slug="skip-thing", backlog_slug="real-item")
+        )
+        dev_status.cmd_out_of_scope_link(
+            _args(concept_slug="skip-thing", backlog_slug="real-item")
+        )
+        index = json.loads(self.out_of_scope_index_file.read_text())
+        self.assertEqual(index["skip-thing"]["related_items"], ["real-item"])
+
+    def test_oos_09_link_rejects_unknown_backlog_slug(self):
+        dev_status.cmd_out_of_scope_add(
+            _args(
+                concept_slug="skip-thing",
+                reason_file=self.write_reason_file(),
+                related_item=None,
+            )
+        )
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_out_of_scope_link(
+                _args(concept_slug="skip-thing", backlog_slug="3")
+            )
+        self.assertIn("not a current backlog slug", err.getvalue())
+
+    def test_oos_10_link_rejects_missing_concept(self):
+        self.write_items([make_item("real-item")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_out_of_scope_link(
+                _args(concept_slug="ghost-concept", backlog_slug="real-item")
+            )
+        self.assertIn("not found", err.getvalue())
+
+    def test_oos_11_link_rejects_when_only_md_file_exists(self):
+        # Half-existing state (Round 3 fix): the .md file is present but the
+        # index entry isn't -- `link` must not index into a missing entry.
+        self.write_items([make_item("real-item")])
+        self.out_of_scope_dir.mkdir(parents=True)
+        (self.out_of_scope_dir / "skip-thing.md").write_text("orphaned")
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_out_of_scope_link(
+                _args(concept_slug="skip-thing", backlog_slug="real-item")
+            )
+        self.assertIn("not found", err.getvalue())
+
+    def test_oos_12_unlink_removes_and_is_noop_when_absent(self):
+        self.write_items([make_item("real-item")])
+        dev_status.cmd_out_of_scope_add(
+            _args(
+                concept_slug="skip-thing",
+                reason_file=self.write_reason_file(),
+                related_item=["real-item"],
+            )
+        )
+        dev_status.cmd_out_of_scope_unlink(
+            _args(concept_slug="skip-thing", backlog_slug="real-item")
+        )
+        index = json.loads(self.out_of_scope_index_file.read_text())
+        self.assertEqual(index["skip-thing"]["related_items"], [])
+        # Second unlink of the same, now-absent slug is a no-op, not an error.
+        dev_status.cmd_out_of_scope_unlink(
+            _args(concept_slug="skip-thing", backlog_slug="real-item")
+        )
+
+    def test_oos_13_remove_deletes_both_halves(self):
+        dev_status.cmd_out_of_scope_add(
+            _args(
+                concept_slug="skip-thing",
+                reason_file=self.write_reason_file(),
+                related_item=None,
+            )
+        )
+        dev_status.cmd_out_of_scope_remove(_args(concept_slug="skip-thing"))
+        self.assertFalse((self.out_of_scope_dir / "skip-thing.md").exists())
+        index = json.loads(self.out_of_scope_index_file.read_text())
+        self.assertNotIn("skip-thing", index)
+
+    def test_oos_14_remove_tolerates_half_existing_state(self):
+        self.out_of_scope_dir.mkdir(parents=True)
+        (self.out_of_scope_dir / "skip-thing.md").write_text("orphaned")
+        dev_status.cmd_out_of_scope_remove(_args(concept_slug="skip-thing"))
+        self.assertFalse((self.out_of_scope_dir / "skip-thing.md").exists())
+
+    def test_oos_15_remove_rejects_when_neither_half_exists(self):
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_out_of_scope_remove(_args(concept_slug="ghost-concept"))
+        self.assertIn("not found", err.getvalue())
+
+    def test_oos_16_list_empty_prints_informational_message(self):
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_out_of_scope_list(_args())
+        self.assertIn("no rejected concepts", err.getvalue())
+
+    def test_oos_17_list_shows_entries_newest_first(self):
+        with patch.object(dev_status, "today", return_value="2026-01-01"):
+            dev_status.cmd_out_of_scope_add(
+                _args(
+                    concept_slug="old-one",
+                    reason_file=self.write_reason_file(),
+                    related_item=None,
+                )
+            )
+        with patch.object(dev_status, "today", return_value="2026-06-01"):
+            dev_status.cmd_out_of_scope_add(
+                _args(
+                    concept_slug="new-one",
+                    reason_file=self.write_reason_file(),
+                    related_item=None,
+                )
+            )
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.cmd_out_of_scope_list(_args())
+        lines = out.getvalue().splitlines()
+        self.assertTrue(lines[0].startswith("new-one"))
+        self.assertTrue(lines[1].startswith("old-one"))
+
+    def test_oos_18_show_reports_missing_md_mismatch(self):
+        dev_status.cmd_out_of_scope_add(
+            _args(
+                concept_slug="skip-thing",
+                reason_file=self.write_reason_file(),
+                related_item=None,
+            )
+        )
+        (self.out_of_scope_dir / "skip-thing.md").unlink()
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_out_of_scope_show(_args(concept_slug="skip-thing"))
+        self.assertIn("missing", err.getvalue())
+
+    def test_oos_19_show_rejects_when_neither_half_exists(self):
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_out_of_scope_show(_args(concept_slug="ghost-concept"))
+        self.assertIn("not found", err.getvalue())
+
+    def test_oos_20_reminder_fires_from_add_when_concept_exists(self):
+        dev_status.cmd_out_of_scope_add(
+            _args(
+                concept_slug="skip-thing",
+                reason_file=self.write_reason_file(),
+                related_item=None,
+            )
+        )
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_add(_args(json='{"id": "my-feature", "summary": "x"}'))
+        self.assertIn("rejected concept(s) on file", err.getvalue())
+
+    def test_oos_21_reminder_silent_when_no_concepts_exist(self):
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_add(_args(json='{"id": "my-feature", "summary": "x"}'))
+        self.assertNotIn("rejected concept", err.getvalue())
+
+    def test_oos_22_reminder_fires_from_pending_add_when_concept_exists(self):
+        dev_status.cmd_out_of_scope_add(
+            _args(
+                concept_slug="skip-thing",
+                reason_file=self.write_reason_file(),
+                related_item=None,
+            )
+        )
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_pending_add(
+                _args(
+                    json='{"id": "wait-thing", "description": "waiting", "kind": "email"}'
+                )
+            )
+        self.assertIn("rejected concept(s) on file", err.getvalue())
+
+    def test_oos_23_reminder_quiet_suppresses(self):
+        dev_status.cmd_out_of_scope_add(
+            _args(
+                concept_slug="skip-thing",
+                reason_file=self.write_reason_file(),
+                related_item=None,
+            )
+        )
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_add(
+                _args(json='{"id": "my-feature", "summary": "x"}', quiet=True)
+            )
+        self.assertNotIn("rejected concept", err.getvalue())
+
+    def test_oos_24_lock_serializes_concurrent_link_calls(self):
+        self.write_items([make_item("item-a"), make_item("item-b")])
+        dev_status.cmd_out_of_scope_add(
+            _args(
+                concept_slug="skip-thing",
+                reason_file=self.write_reason_file(),
+                related_item=None,
+            )
+        )
+        errors = []
+
+        def link(slug):
+            try:
+                dev_status.cmd_out_of_scope_link(
+                    _args(concept_slug="skip-thing", backlog_slug=slug)
+                )
+            except Exception as e:  # pragma: no cover - defensive
+                errors.append(e)
+
+        threads = [
+            threading.Thread(target=link, args=("item-a",)),
+            threading.Thread(target=link, args=("item-b",)),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+        self.assertFalse(any(t.is_alive() for t in threads))
+        self.assertEqual(errors, [])
+        index = json.loads(self.out_of_scope_index_file.read_text())
+        self.assertEqual(
+            sorted(index["skip-thing"]["related_items"]), ["item-a", "item-b"]
+        )
+
+    def test_oos_25_parser_out_of_scope_add_parses(self):
+        args = dev_status.build_parser().parse_args(
+            ["out-of-scope", "add", "skip-thing", "--reason-file", "/tmp/r.txt"]
+        )
+        self.assertEqual(args.oos_cmd, "add")
+        self.assertEqual(args.concept_slug, "skip-thing")
+        self.assertEqual(args.reason_file, "/tmp/r.txt")
 
 
 # ── arg helper ────────────────────────────────────────────────────────────────
