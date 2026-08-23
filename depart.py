@@ -1307,7 +1307,7 @@ def classify_package_transactions(
     return results
 
 
-# ── service/linger (watchcommit) ────────────────────────────────────────
+# ── service/linger ──────────────────────────────────────────────────────
 
 ACTION_DISABLE = "disable"
 

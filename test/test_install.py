@@ -122,7 +122,7 @@ def offline_install(monkeypatch):
         "install_linux_packages",
         "install_node",
         "capture_service_baseline",
-        "enable_watchcommit_service",
+        "enable_managed_services",
         "load_watchcommit_agent",
         "import_rectangle_prefs",
         "set_caps_lock_to_escape",
@@ -1668,13 +1668,14 @@ def _disable_systemctl(monkeypatch):
     """Make the watchcommit-wipe gate see systemd --user as unavailable.
 
     Only safe for tests with no unit symlink on disk at all (the no-manifest
-    cases below, which never call ``run_install``): ``_wipe_watchcommit``
+    cases below, which never call ``run_install``): ``_wipe_service``
     checks ``unit_path.is_symlink()`` before ever calling ``have()``, so
     with no symlink this never fires and never touches ``run_command``.
-    Tests that *do* run a real install first (``links.toml`` records a real
-    watchcommit.service symlink for personal+linux, and ``offline_install``
-    only stubs the install-time ``enable_watchcommit_service`` call, not the
-    symlink itself) must use ``_watchcommit_available`` instead — forcing
+    Tests that *do* run a real install first (``links.toml`` records real
+    watchcommit.service/opencode-skills-sync.service symlinks for
+    personal+linux, and ``offline_install`` only stubs the install-time
+    ``enable_managed_services`` call, not the symlinks themselves) must use
+    ``_watchcommit_available`` instead — forcing
     systemd "unavailable" against a real unit symlink is a genuine anomaly
     (SKIPPED, exit 1) by design, not a quiet no-op, so it would wrongly
     fail unrelated assertions about backup deletion or nvim-dir sweeping.
@@ -1683,15 +1684,25 @@ def _disable_systemctl(monkeypatch):
 
 
 def _watchcommit_available(monkeypatch, *, probe_ok=True, disable_ok=True):
-    """Stub systemd as available and record the calls _wipe_watchcommit makes."""
+    """Stub systemd as available and record the calls _wipe_managed_services makes.
+
+    Recognizes a disable call for any unit in ``install.MANAGED_SERVICES``
+    (not just watchcommit's) — stays strict otherwise: a disable call naming
+    an unrecognized unit still raises, same as any other unexpected command.
+    """
     calls: list[list[str]] = []
+    units = {service.unit for service in install.MANAGED_SERVICES}
 
     def _stub(cmd, *, shell=False, capture=False):
         argv = list(cmd)
         calls.append(argv)
         if argv == ["systemctl", "--user", "show-environment"]:
             return install.CommandResult(probe_ok)
-        if argv == ["systemctl", "--user", "disable", "--now", "watchcommit.service"]:
+        if (
+            len(argv) == 5
+            and argv[:4] == ["systemctl", "--user", "disable", "--now"]
+            and argv[4] in units
+        ):
             return install.CommandResult(disable_ok)
         raise AssertionError(f"unexpected command: {argv!r}")
 
@@ -1792,6 +1803,25 @@ def test_wipe_disables_watchcommit_service(home, links, offline_install, monkeyp
 
     assert install.do_rollback(make_ctx(home, wipe=True)) == 0
     assert ["systemctl", "--user", "disable", "--now", "watchcommit.service"] in calls
+
+
+def test_wipe_disables_opencode_skills_sync_service(
+    home, links, offline_install, monkeypatch
+):
+    install.run_install(make_ctx(home, harnesses=("claude",)), links)
+    unit = home / ".config" / "systemd" / "user" / "opencode-skills-sync.service"
+    assert unit.is_symlink()
+
+    calls = _watchcommit_available(monkeypatch)
+
+    assert install.do_rollback(make_ctx(home, wipe=True)) == 0
+    assert [
+        "systemctl",
+        "--user",
+        "disable",
+        "--now",
+        "opencode-skills-sync.service",
+    ] in calls
 
 
 def test_wipe_dry_run_previews_watchcommit_disable(
@@ -3855,36 +3885,46 @@ def test_execute_departure_skips_runtime_phase_after_package_halt(home, monkeypa
 # ── service/linger execution, end to end through do_depart ─────────────────
 
 
+def _fresh_managed_services_live(*, linger=False):
+    """Initial per-unit + shared-linger state for _watchcommit_run_command.
+
+    Linger is one shared, top-level value (a single machine-wide toggle,
+    not owned by any one service) while enabled/active are tracked
+    per-unit under ``"units"``.
+    """
+    return {
+        "units": {
+            service.unit: {"enabled": False, "active": False}
+            for service in install.MANAGED_SERVICES
+        },
+        "linger": linger,
+    }
+
+
 def _watchcommit_run_command(live, *, other_enabled_units=""):
-    """A run_command fake covering watchcommit's full enable/disable + linger cycle."""
+    """A run_command fake covering every MANAGED_SERVICES unit's full
+    enable/disable + linger cycle. ``live`` is the shape returned by
+    :func:`_fresh_managed_services_live` — routes each command to its own
+    unit's state (never a value shared across units) so a bug that
+    hardcodes one unit inside the generalized install.py loop surfaces as
+    a test failure instead of being masked by the other unit's state.
+    """
+    units = live["units"]
 
     def run(cmd, **kwargs):
         if cmd == ["systemctl", "--user", "show-environment"]:
             return install.CommandResult(True, "")
-        if cmd == ["systemctl", "--user", "is-enabled", "watchcommit.service"]:
-            return install.CommandResult(
-                live["enabled"], "enabled" if live["enabled"] else "disabled"
-            )
-        if cmd == ["systemctl", "--user", "is-active", "watchcommit.service"]:
-            return install.CommandResult(
-                live["active"], "active" if live["active"] else "inactive"
-            )
+        if cmd == ["systemctl", "--user", "daemon-reload"]:
+            return install.CommandResult(True)
         if cmd == ["loginctl", "show-user", "testuser", "--property=Linger"]:
             return install.CommandResult(
                 True, "Linger=yes" if live["linger"] else "Linger=no"
             )
-        if cmd == ["systemctl", "--user", "daemon-reload"]:
-            return install.CommandResult(True)
-        if cmd == ["systemctl", "--user", "enable", "--now", "watchcommit.service"]:
-            live["enabled"] = True
-            live["active"] = True
-            return install.CommandResult(True)
         if cmd == ["loginctl", "enable-linger", "testuser"]:
             live["linger"] = True
             return install.CommandResult(True)
-        if cmd == ["systemctl", "--user", "disable", "--now", "watchcommit.service"]:
-            live["enabled"] = False
-            live["active"] = False
+        if cmd == ["loginctl", "disable-linger", "testuser"]:
+            live["linger"] = False
             return install.CommandResult(True)
         if cmd == [
             "systemctl",
@@ -3894,15 +3934,38 @@ def _watchcommit_run_command(live, *, other_enabled_units=""):
             "--no-legend",
         ]:
             return install.CommandResult(True, other_enabled_units)
-        if cmd == ["loginctl", "disable-linger", "testuser"]:
-            live["linger"] = False
+        if len(cmd) == 4 and cmd[:3] == ["systemctl", "--user", "is-enabled"]:
+            unit = cmd[3]
+            if unit not in units:
+                raise AssertionError(f"unexpected command: {cmd!r}")
+            enabled = units[unit]["enabled"]
+            return install.CommandResult(enabled, "enabled" if enabled else "disabled")
+        if len(cmd) == 4 and cmd[:3] == ["systemctl", "--user", "is-active"]:
+            unit = cmd[3]
+            if unit not in units:
+                raise AssertionError(f"unexpected command: {cmd!r}")
+            active = units[unit]["active"]
+            return install.CommandResult(active, "active" if active else "inactive")
+        if len(cmd) == 5 and cmd[:4] == ["systemctl", "--user", "enable", "--now"]:
+            unit = cmd[4]
+            if unit not in units:
+                raise AssertionError(f"unexpected command: {cmd!r}")
+            units[unit]["enabled"] = True
+            units[unit]["active"] = True
+            return install.CommandResult(True)
+        if len(cmd) == 5 and cmd[:4] == ["systemctl", "--user", "disable", "--now"]:
+            unit = cmd[4]
+            if unit not in units:
+                raise AssertionError(f"unexpected command: {cmd!r}")
+            units[unit]["enabled"] = False
+            units[unit]["active"] = False
             return install.CommandResult(True)
         raise AssertionError(f"unexpected command: {cmd!r}")
 
     return run
 
 
-def test_depart_disables_watchcommit_and_restores_linger(
+def test_depart_disables_both_managed_services_and_restores_linger(
     home, links, monkeypatch, capsys
 ):
     for name in (
@@ -3918,19 +3981,37 @@ def test_depart_disables_watchcommit_and_restores_linger(
         monkeypatch.setattr(install, name, lambda *a, **k: None)
     monkeypatch.setattr(install, "install_npm_harness", lambda *a, **k: None)
 
-    live = {"enabled": False, "active": False, "linger": False}
+    live = _fresh_managed_services_live()
     monkeypatch.setattr(install, "run_command", _watchcommit_run_command(live))
     monkeypatch.setattr(install, "have", lambda name: name in ("systemctl", "loginctl"))
     monkeypatch.setattr(install, "_current_user", lambda: "testuser")
 
     ctx = make_ctx(home, harnesses=("claude",))
     install.run_install(ctx, links)
-    assert live == {"enabled": True, "active": True, "linger": True}
+    assert all(unit["enabled"] and unit["active"] for unit in live["units"].values())
+    assert live["linger"] is True
 
+    calls: list[list[str]] = []
+    real_run = install.run_command
+
+    def counting_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(install, "run_command", counting_run)
     code = install.do_depart(make_ctx(home, yes=True))
 
     assert code == 0
-    assert live == {"enabled": False, "active": False, "linger": False}
+    assert all(
+        not unit["enabled"] and not unit["active"] for unit in live["units"].values()
+    )
+    assert live["linger"] is False
+    assert calls.count(["loginctl", "disable-linger", "testuser"]) == 1
+
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
+    assert not any(
+        str(e.get("outcome", "")).startswith("unresolved") for e in ledger.entries()
+    )
 
 
 def test_depart_preserves_linger_when_other_units_depend_on_it(
@@ -3949,7 +4030,7 @@ def test_depart_preserves_linger_when_other_units_depend_on_it(
         monkeypatch.setattr(install, name, lambda *a, **k: None)
     monkeypatch.setattr(install, "install_npm_harness", lambda *a, **k: None)
 
-    live = {"enabled": False, "active": False, "linger": False}
+    live = _fresh_managed_services_live()
     run = _watchcommit_run_command(
         live, other_enabled_units="some-other-timer.timer enabled\n"
     )
@@ -3962,9 +4043,92 @@ def test_depart_preserves_linger_when_other_units_depend_on_it(
 
     code = install.do_depart(make_ctx(home, yes=True))
 
-    assert code == 1  # incomplete: linger left enabled is reported unresolved
-    assert live["enabled"] is False  # watchcommit itself was still disabled
-    assert live["linger"] is True  # but linger was correctly preserved
+    # Both units are still fully departed (linger is a separate, decoupled
+    # concern — see install-multi-service-depart-adopt-spec.md's Design
+    # decision): the "other unit depends on linger" case is advisory-only
+    # now, not a ledger-tainting failure, so depart still reports success.
+    assert code == 0
+    assert all(
+        not unit["enabled"] and not unit["active"] for unit in live["units"].values()
+    )
+    assert live["linger"] is True  # linger correctly preserved
+
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
+    assert not any(
+        str(e.get("outcome", "")).startswith("unresolved") for e in ledger.entries()
+    )
+
+
+def test_reconcile_linger_self_heals_on_a_later_depart_after_a_transient_failure(
+    home, links, monkeypatch, capsys
+):
+    """A failed loginctl disable-linger on one --depart run must not
+    permanently strand linger enabled: _reconcile_linger recomputes its
+    eligibility from live state on every call, not from what this run's
+    per-service loop did, so a later --depart run with nothing new to
+    disable (both units' ledger keys already complete) still retries and
+    succeeds once the underlying problem clears.
+
+    A departure with *nothing else* left unresolved finalizes and deletes
+    the baseline/ledger entirely (do_depart's _finalize_departure_state) —
+    correct behavior, not a bug — which would leave no state for a second
+    --depart call to retry against at all. This test pre-seeds one
+    unrelated, permanently-unresolved ledger entry (standing in for any
+    real unresolved item — a font-tree conflict, a guarded VS Code file,
+    etc.) purely to keep the baseline alive across two --depart
+    invocations, so the *services'* own self-healing retry behavior can
+    actually be observed independent of that unrelated item's fate.
+    """
+    for name in (
+        "install_mac_packages",
+        "install_linux_packages",
+        "install_node",
+        "load_watchcommit_agent",
+        "import_rectangle_prefs",
+        "set_caps_lock_to_escape",
+        "install_vim_plug",
+        "bootstrap_neovim",
+    ):
+        monkeypatch.setattr(install, name, lambda *a, **k: None)
+    monkeypatch.setattr(install, "install_npm_harness", lambda *a, **k: None)
+
+    live = _fresh_managed_services_live()
+    base_run = _watchcommit_run_command(live)
+    disable_linger_calls = {"count": 0}
+
+    def flaky_run(cmd, **kwargs):
+        if cmd == ["loginctl", "disable-linger", "testuser"]:
+            disable_linger_calls["count"] += 1
+            if disable_linger_calls["count"] == 1:
+                return install.CommandResult(False)  # transient failure, once
+        return base_run(cmd, **kwargs)
+
+    monkeypatch.setattr(install, "run_command", flaky_run)
+    monkeypatch.setattr(install, "have", lambda name: name in ("systemctl", "loginctl"))
+    monkeypatch.setattr(install, "_current_user", lambda: "testuser")
+
+    ctx = make_ctx(home, harnesses=("claude",))
+    install.run_install(ctx, links)
+
+    ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
+    ledger.record("contrived:unrelated", "noop", "unresolved: kept alive for this test")
+
+    first_code = install.do_depart(make_ctx(home, yes=True))
+    assert first_code == 1  # the contrived unrelated item keeps this incomplete
+    assert all(
+        not unit["enabled"] and not unit["active"] for unit in live["units"].values()
+    )
+    assert live["linger"] is True  # disable-linger failed — still on
+    assert not any(
+        str(e.get("outcome", "")).startswith("unresolved")
+        for e in ledger.entries()
+        if e.get("key") != "contrived:unrelated"
+    )  # both services still recorded "ok" despite the linger failure
+
+    second_code = install.do_depart(make_ctx(home, yes=True))
+    assert second_code == 1  # the contrived item is permanently stuck, by design
+    assert live["linger"] is False  # but linger self-healed: retried and succeeded
+    assert disable_linger_calls["count"] == 2
 
 
 # ── --check-links: read-only links.toml audit ──────────────────────────────

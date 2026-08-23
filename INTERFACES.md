@@ -818,6 +818,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `class Context` — Everything a step needs: paths, options, history, and the skip tally.
   - `class CommandResult` — Outcome of one external command: whether it succeeded, and its stdout.
   - `class LinkSpec` — One row of ``links.toml``: a repo file and where it gets linked.
+  - `class ManagedService` — One systemd --user service this installer enables/disables/tracks.
 - Public functions:
   - `color_enabled(stream: object) -> bool` — Return whether ANSI codes should be emitted to ``stream``.
   - `detect_wsl(system: str) -> bool` — Return whether this is a WSL kernel (as opposed to native Linux).
@@ -843,8 +844,8 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `seed_file(ctx: Context, seed: Path, dest: Path, *, skip_label: str, drift: Callable[[Path, Path], str], adopt_drift: Callable[[str, str], str] | None = None, adopt_blocker: Callable[[Context, Path, Path, str, str], str | None] | None = None) -> str` — Copy ``seed`` to ``dest`` once, or report drift if it's already there.
   - `seed_claude_settings(ctx: Context) -> tuple[str, str]` — Seed ~/.claude/settings.json, if Claude Code was selected.
   - `seed_opencode_config(ctx: Context) -> tuple[str, str]` — Seed ~/.config/opencode/opencode.jsonc, if opencode was selected.
-  - `capture_service_baseline(ctx: Context) -> None` — Capture watchcommit service/linger state, immediately before :func:`enable_watchcommit_service` runs — capturing any later would record the post-install enabled state as baseline and departure would never disable anything.
-  - `enable_watchcommit_service(ctx: Context) -> None` — Enable and start watchcommit's systemd --user unit (Linux, non-work).
+  - `capture_service_baseline(ctx: Context) -> None` — Capture every managed service's service/linger state, immediately before :func:`enable_managed_services` runs — capturing any later would record the post-install enabled state as baseline and departure would never disable anything.
+  - `enable_managed_services(ctx: Context) -> None` — Enable and start every managed systemd --user unit (Linux, non-work).
   - `load_watchcommit_agent(ctx: Context) -> None` — (Re)load watchcommit's launchd agent (macOS, non-work).
   - `import_rectangle_prefs(ctx: Context) -> None` — Import the repo's Rectangle window-manager preferences.
   - `set_caps_lock_to_escape(ctx: Context) -> None` — Remap Caps Lock to Escape by rewriting the ByHost GlobalPreferences plist.
@@ -859,7 +860,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `print_summary(ctx: Context, settings: tuple[str, str], opencode: tuple[str, str], vscode: Sequence[tuple[str, tuple[str, str]]] = ()) -> None` — Print the loud end-of-run summary: skips, drift, and next steps.
   - `build_preflight_report(ctx: Context) -> dict[str, depart.Classification] | None` — Classify every tracked ownership key, or None if there's no baseline.
   - `build_package_preflight(ctx: Context) -> list[depart.PackageClassification] | None` — Classify every requested/introduced package, or None if there's no baseline.
-  - `execute_service_phase(ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> None` — Disable+stop the owned watchcommit service, restoring linger if safe.
+  - `execute_service_phase(ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> None` — Disable+stop every owned managed service, then reconcile linger once.
   - `execute_file_symlink_phase(ctx: Context, baseline: depart.Baseline, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Execute every owned ``file:``/``symlink:`` action, in pinned order.
   - `execute_directory_phase(ctx: Context, baseline: depart.Baseline, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Execute every owned ``directory:`` action, deepest-path-first.
   - `execute_runtime_phase(ctx: Context, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Remove the NVM root wholesale, if owned and not already done.

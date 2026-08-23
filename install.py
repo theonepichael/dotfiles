@@ -141,7 +141,8 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=per
               --rollback concern (reverses every run recorded in the
               history file, not just the most recent one) or manual cleanup.
   --profile   personal (default) or work. Controls machine-level concerns:
-              excludes watchcommit, excludes personal API-key setup, seeds
+              excludes every personal-only managed service (watchcommit,
+              opencode-skills-sync), excludes personal API-key setup, seeds
               tightened settings where a profile-specific variant exists
               (settings.work.json), and excludes opencode entirely — it is
               never installed on a work machine, regardless of --harness.
@@ -161,7 +162,7 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=per
               Also sweeps untracked state the installer creates but never
               records in its history — Neovim's XDG state dirs
               (~/.local/share/nvim, ~/.local/state/nvim, ~/.cache/nvim) and,
-              on Linux, the watchcommit systemd --user service (disabled
+              on Linux, every managed systemd --user service (disabled
               and stopped). These are NOT where a Neovim binary itself
               belongs — a self-contained Neovim install (its share/nvim/
               runtime tree) must live outside ~/.local/share/nvim (e.g.
@@ -2363,7 +2364,25 @@ def seed_opencode_config(ctx: Context) -> tuple[str, str]:
 
 # ── services ──────────────────────────────────────────────────────────────────
 
-_WATCHCOMMIT_SERVICE_KEY = "watchcommit.service"
+
+@dataclass(frozen=True)
+class ManagedService:
+    """One systemd --user service this installer enables/disables/tracks.
+
+    ``name`` feeds ``depart.service_key("systemd", name)`` for baseline and
+    ledger lookups; ``unit`` is the literal systemctl unit name used in
+    every systemctl-facing command. These are deliberately two different
+    strings, not one — see the depart preflight/execute call sites below.
+    """
+
+    name: str
+    unit: str
+
+
+MANAGED_SERVICES = [
+    ManagedService(name="watchcommit", unit="watchcommit.service"),
+    ManagedService(name="opencode-skills-sync", unit="opencode-skills-sync.service"),
+]
 
 
 def _probe_systemctl_word(word: str, cmd: list[str]) -> bool | None:
@@ -2397,21 +2416,21 @@ def _probe_linger(user: str) -> bool | None:
     return None
 
 
-def _capture_live_watchcommit_service(ctx: Context) -> dict[str, object]:
+def _capture_live_service(ctx: Context, service: ManagedService) -> dict[str, object]:
     """Fresh is-enabled/is-active/linger probe, for capture or classification."""
     enabled = _probe_systemctl_word(
-        "enabled", ["systemctl", "--user", "is-enabled", _WATCHCOMMIT_SERVICE_KEY]
+        "enabled", ["systemctl", "--user", "is-enabled", service.unit]
     )
     active = _probe_systemctl_word(
-        "active", ["systemctl", "--user", "is-active", _WATCHCOMMIT_SERVICE_KEY]
+        "active", ["systemctl", "--user", "is-active", service.unit]
     )
     linger = _probe_linger(_current_user())
     return depart.build_service_record(enabled=enabled, active=active, linger=linger)
 
 
 def capture_service_baseline(ctx: Context) -> None:
-    """Capture watchcommit service/linger state, immediately before
-    :func:`enable_watchcommit_service` runs — capturing any later would
+    """Capture every managed service's service/linger state, immediately
+    before :func:`enable_managed_services` runs — capturing any later would
     record the post-install enabled state as baseline and departure would
     never disable anything.
     """
@@ -2422,38 +2441,37 @@ def capture_service_baseline(ctx: Context) -> None:
         or ctx.departure_baseline is None
     ):
         return
-    key = depart.service_key("systemd", "watchcommit")
     stamp = datetime.now().astimezone().isoformat(timespec="seconds")
-    ctx.departure_baseline.add_layer(
-        stamp, {key: _capture_live_watchcommit_service(ctx)}
-    )
+    layer = {
+        depart.service_key("systemd", service.name): _capture_live_service(ctx, service)
+        for service in MANAGED_SERVICES
+    }
+    ctx.departure_baseline.add_layer(stamp, layer)
 
 
-def enable_watchcommit_service(ctx: Context) -> None:
-    """Enable and start watchcommit's systemd --user unit (Linux, non-work)."""
-    if not ctx.is_linux or ctx.opts.profile == "work":
-        return
+def _enable_service(ctx: Context, service: ManagedService) -> None:
+    """Enable and start one managed systemd --user unit (Linux, non-work)."""
     if (
         not have("systemctl")
         or not run_command(["systemctl", "--user", "show-environment"], capture=True).ok
     ):
         ctx.reporter.skip(
-            "watchcommit service",
+            f"{service.name} service",
             "systemd --user unavailable (enable systemd in /etc/wsl.conf?)",
         )
         return
     if ctx.opts.dry_run:
         _preview(
-            "would enable+start watchcommit systemd user service, "
+            f"would enable+start {service.name} systemd user service, "
             f"enable-linger for {_current_user()}",
             quiet=ctx.opts.quiet,
         )
         return
-    _header("==> Enabling watchcommit systemd user service...", quiet=ctx.opts.quiet)
+    _header(
+        f"==> Enabling {service.name} systemd user service...", quiet=ctx.opts.quiet
+    )
     run_command(["systemctl", "--user", "daemon-reload"])
-    if run_command(
-        ["systemctl", "--user", "enable", "--now", "watchcommit.service"]
-    ).ok:
+    if run_command(["systemctl", "--user", "enable", "--now", service.unit]).ok:
         # Without lingering, the service dies when the last WSL/SSH session
         # closes — enable-linger keeps the user manager (and this unit) up.
         if not run_command(
@@ -2465,7 +2483,17 @@ def enable_watchcommit_service(ctx: Context) -> None:
                 quiet=ctx.opts.quiet,
             )
     else:
-        ctx.reporter.skip("watchcommit service", "systemctl --user enable --now failed")
+        ctx.reporter.skip(
+            f"{service.name} service", "systemctl --user enable --now failed"
+        )
+
+
+def enable_managed_services(ctx: Context) -> None:
+    """Enable and start every managed systemd --user unit (Linux, non-work)."""
+    if not ctx.is_linux or ctx.opts.profile == "work":
+        return
+    for service in MANAGED_SERVICES:
+        _enable_service(ctx, service)
 
 
 def _current_user() -> str:
@@ -2884,9 +2912,9 @@ def do_rollback(ctx: Context) -> int:
 
     Under ``--wipe``, backups are deleted instead of restored, and untracked
     state the installer creates but never records in the manifest (Neovim's
-    XDG state dirs, the Linux watchcommit service) is swept too — even when
-    no manifest exists at all, e.g. a second ``--wipe`` run after the first
-    already consumed it.
+    XDG state dirs, every Linux systemd unit in ``MANAGED_SERVICES``) is
+    swept too — even when no manifest exists at all, e.g. a second
+    ``--wipe`` run after the first already consumed it.
 
     Returns:
         Exit status — 1 if any step was skipped, else 0.
@@ -2895,7 +2923,7 @@ def do_rollback(ctx: Context) -> int:
     swept = False
 
     if ctx.opts.wipe:
-        swept = _wipe_watchcommit(ctx, skips) or swept
+        swept = _wipe_managed_services(ctx, skips) or swept
         swept = _wipe_neovim_dirs(ctx, skips) or swept
 
     manifest = ctx.manifest
@@ -2921,7 +2949,7 @@ def do_rollback(ctx: Context) -> int:
     if ctx.opts.wipe:
         header_msg += (
             " — wipe mode: original configs discarded, not restored; "
-            "untracked Neovim/watchcommit state swept"
+            "untracked Neovim/managed-service state swept"
         )
     _header(header_msg, quiet=ctx.opts.quiet)
 
@@ -3009,8 +3037,8 @@ def _report_skips_and_exit(skips: Reporter) -> int:
     return 0
 
 
-def _wipe_watchcommit(ctx: Context, skips: Reporter) -> bool:
-    """Disable+stop the Linux watchcommit systemd --user unit, under --wipe.
+def _wipe_service(ctx: Context, skips: Reporter, service: ManagedService) -> bool:
+    """Disable+stop one managed Linux systemd --user unit, under --wipe.
 
     Gated on live filesystem state, not manifest entries — simpler than
     scanning history, and it's what makes this work even when no manifest
@@ -3023,7 +3051,7 @@ def _wipe_watchcommit(ctx: Context, skips: Reporter) -> bool:
     """
     if not (ctx.opts.wipe and ctx.is_linux):
         return False
-    unit_path = ctx.home / ".config" / "systemd" / "user" / "watchcommit.service"
+    unit_path = ctx.home / ".config" / "systemd" / "user" / service.unit
     if not unit_path.is_symlink():
         return False
 
@@ -3033,27 +3061,33 @@ def _wipe_watchcommit(ctx: Context, skips: Reporter) -> bool:
     ):
         skips.note(
             f"{unit_path} exists but systemd --user is unavailable — "
-            "could not disable the watchcommit service"
+            f"could not disable the {service.name} service"
         )
         return True
 
     if ctx.opts.dry_run:
         _preview(
-            "would disable+stop the watchcommit systemd user service (wipe)",
+            f"would disable+stop the {service.name} systemd user service (wipe)",
             quiet=ctx.opts.quiet,
         )
         return True
 
-    if run_command(
-        ["systemctl", "--user", "disable", "--now", "watchcommit.service"]
-    ).ok:
+    if run_command(["systemctl", "--user", "disable", "--now", service.unit]).ok:
         cli_common.qprint(
-            "  disabled+stopped watchcommit systemd user service",
+            f"  disabled+stopped {service.name} systemd user service",
             quiet=ctx.opts.quiet,
         )
     else:
-        skips.note("could not disable+stop the watchcommit systemd user service")
+        skips.note(f"could not disable+stop the {service.name} systemd user service")
     return True
+
+
+def _wipe_managed_services(ctx: Context, skips: Reporter) -> bool:
+    """Disable+stop every managed Linux systemd --user unit, under --wipe."""
+    swept = False
+    for service in MANAGED_SERVICES:
+        swept = _wipe_service(ctx, skips, service) or swept
+    return swept
 
 
 def _wipe_neovim_dirs(ctx: Context, skips: Reporter) -> bool:
@@ -3415,11 +3449,12 @@ def build_preflight_report(ctx: Context) -> dict[str, depart.Classification] | N
     _apply_rc_file_reclassification(ctx, baseline, report)
     _apply_symlink_pair_reclassification(baseline, live, report)
 
-    service_key = depart.service_key("systemd", "watchcommit")
-    if service_key in baseline.all_keys():
-        report[service_key] = depart.classify_service(
-            baseline.value_for(service_key), _capture_live_watchcommit_service(ctx)
-        )
+    for service in MANAGED_SERVICES:
+        service_key = depart.service_key("systemd", service.name)
+        if service_key in baseline.all_keys():
+            report[service_key] = depart.classify_service(
+                baseline.value_for(service_key), _capture_live_service(ctx, service)
+            )
     return report
 
 
@@ -3601,8 +3636,8 @@ def _maybe_consume_bak(dest: Path, baseline: depart.Baseline) -> None:
         pass  # best-effort cleanup — never fails the restore itself
 
 
-def _other_enabled_user_units(exclude: str) -> list[str] | None:
-    """Every enabled systemd ``--user`` unit other than ``exclude``.
+def _other_enabled_user_units(exclude: frozenset[str]) -> list[str] | None:
+    """Every enabled systemd ``--user`` unit other than those in ``exclude``.
 
     None if the listing probe itself failed/is unavailable — callers must
     treat that as "can't prove it's safe," never as an empty list.
@@ -3618,52 +3653,95 @@ def _other_enabled_user_units(exclude: str) -> list[str] | None:
     units = []
     for line in result.stdout.splitlines():
         parts = line.split()
-        if parts and parts[0] != exclude:
+        if parts and parts[0] not in exclude:
             units.append(parts[0])
     return units
 
 
-def _execute_service_disable(recorded: dict[str, object]) -> str:
-    """Disable+stop watchcommit, and restore linger unless other units need it."""
+def _execute_service_disable(service: ManagedService) -> str:
+    """Disable+stop one managed service's systemd --user unit.
+
+    Unit-level only — linger is a separate, machine-wide concern handled by
+    :func:`_reconcile_linger` outside the departure ledger (see
+    install-multi-service-depart-adopt-spec.md's Design decision: bundling
+    linger into a single service's outcome breaks once more than one
+    service can be departed in the same run).
+    """
     if not have("systemctl"):
         return "unresolved: systemd --user unavailable"
-    if not run_command(
-        ["systemctl", "--user", "disable", "--now", _WATCHCOMMIT_SERVICE_KEY]
-    ).ok:
+    if not run_command(["systemctl", "--user", "disable", "--now", service.unit]).ok:
         return "unresolved: systemctl --user disable --now failed"
-
-    if recorded.get("linger") is False:
-        others = _other_enabled_user_units(exclude=_WATCHCOMMIT_SERVICE_KEY)
-        if others is None:
-            return "unresolved: could not check for other enabled systemd --user units"
-        if others:
-            return (
-                "unresolved: linger left enabled — other systemd --user units "
-                f"depend on it ({', '.join(others)})"
-            )
-        if not run_command(
-            ["loginctl", "disable-linger", _current_user()], capture=True
-        ).ok:
-            return "unresolved: loginctl disable-linger failed"
     return "ok"
+
+
+def _reconcile_linger(ctx: Context, baseline: depart.Baseline) -> None:
+    """Best-effort, not ledger-tracked: restore linger once nothing managed
+    still needs it.
+
+    Runs unconditionally at the end of every :func:`execute_service_phase`
+    call. Eligibility is recomputed from live state every call (not from
+    "did this run's loop just disable something"), so a failed attempt
+    self-heals on a later ``--depart`` invocation with no persisted flag
+    needed. Never raises, never returns an outcome, never affects
+    ``do_depart``'s exit code — a failure here is advisory only, matching
+    the existing install-time ``loginctl enable-linger`` failure precedent
+    in :func:`_enable_service`.
+    """
+    if not ctx.is_linux:
+        return
+    eligible_off = frozenset(
+        service.unit
+        for service in MANAGED_SERVICES
+        if (recorded := baseline.value_for(depart.service_key("systemd", service.name)))
+        is not None
+        and recorded.get("linger") is False
+        and _capture_live_service(ctx, service).get("enabled") is False
+    )
+    if not eligible_off:
+        return
+
+    others = _other_enabled_user_units(exclude=eligible_off)
+    if others is None:
+        cli_common.qprint(
+            "  note: could not check for other enabled systemd --user units — "
+            "linger left as-is",
+            quiet=ctx.opts.quiet,
+        )
+        return
+    if others:
+        cli_common.qprint(
+            "  note: linger left enabled — other systemd --user units depend "
+            f"on it ({', '.join(others)})",
+            quiet=ctx.opts.quiet,
+        )
+        return
+    if not run_command(
+        ["loginctl", "disable-linger", _current_user()], capture=True
+    ).ok:
+        cli_common.qprint(
+            "  note: loginctl disable-linger failed", quiet=ctx.opts.quiet
+        )
 
 
 def execute_service_phase(
     ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger
 ) -> None:
-    """Disable+stop the owned watchcommit service, restoring linger if safe."""
-    key = depart.service_key("systemd", "watchcommit")
-    if key in ledger.completed_keys():
-        return
-    recorded = baseline.value_for(key)
-    if recorded is None:
-        return  # never captured (e.g. a work-profile install) — nothing to check
-    c = depart.classify_service(recorded, _capture_live_watchcommit_service(ctx))
-    if c.bucket != depart.BUCKET_OWNED:
-        return
-    ledger.record(
-        key, c.action or depart.ACTION_DISABLE, _execute_service_disable(recorded or {})
-    )
+    """Disable+stop every owned managed service, then reconcile linger once."""
+    for service in MANAGED_SERVICES:
+        key = depart.service_key("systemd", service.name)
+        if key in ledger.completed_keys():
+            continue
+        recorded = baseline.value_for(key)
+        if recorded is None:
+            continue  # never captured (e.g. a work-profile install) — nothing to check
+        c = depart.classify_service(recorded, _capture_live_service(ctx, service))
+        if c.bucket != depart.BUCKET_OWNED:
+            continue
+        ledger.record(
+            key, c.action or depart.ACTION_DISABLE, _execute_service_disable(service)
+        )
+
+    _reconcile_linger(ctx, baseline)
 
 
 _VSCODE_GUARD_UNRESOLVED_PREFIX = "unresolved [vscode-guard-blocked]:"
@@ -4445,7 +4523,7 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
         set_caps_lock_to_escape(ctx)
         load_watchcommit_agent(ctx)
     capture_service_baseline(ctx)
-    enable_watchcommit_service(ctx)
+    enable_managed_services(ctx)
 
     install_vim_plug(ctx)
     bootstrap_neovim(ctx)
