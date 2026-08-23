@@ -51,6 +51,10 @@
           {
             "type": "command",
             "command": "python3 ~/.claude/scripts/watchcommit_activity.py 2>/dev/null"
+          },
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/opencode_skills_sync_activity.py 2>/dev/null"
           }
         ]
       }
