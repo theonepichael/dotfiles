@@ -133,6 +133,21 @@ wc-status() {
     fi
 }
 
+# opencode-skills-sync pause/resume — same touch-file pattern as
+# wc-pause/wc-resume/wc-status above, targeting opencode_skills_sync.py's own
+# STATE_DIR/PAUSE_FILE (scripts/opencode_skills_sync.py). No agent-active or
+# last-activity concepts here — this daemon doesn't have them.
+oc-pause()  { mkdir -p "${XDG_STATE_HOME:-$HOME/.local/state}/opencode-skills-sync" && touch "${XDG_STATE_HOME:-$HOME/.local/state}/opencode-skills-sync/paused" && echo "opencode-skills-sync paused"; }
+oc-resume() { rm -f "${XDG_STATE_HOME:-$HOME/.local/state}/opencode-skills-sync/paused" && echo "opencode-skills-sync resumed"; }
+oc-status() {
+    local state="${XDG_STATE_HOME:-$HOME/.local/state}/opencode-skills-sync"
+    if [ -f "${state}/paused" ]; then
+        echo "opencode-skills-sync paused"
+    else
+        echo "opencode-skills-sync running"
+    fi
+}
+
 # ============================================================================
 # ALIASES
 # ============================================================================
