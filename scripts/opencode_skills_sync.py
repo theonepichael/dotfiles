@@ -21,13 +21,19 @@ Commit-only, by construction: no code path in this module ever invokes
 local branch of the second worktree until someone deliberately promotes one
 out. A tick with no actual changes does not create an empty commit.
 
-Env vars: none.
+Pause mechanism: if the touch-file at $XDG_STATE_HOME/opencode-skills-sync/
+paused (or ~/.local/state/opencode-skills-sync/paused if XDG_STATE_HOME is
+unset) exists, a tick is skipped entirely -- mirrors watchcommit.py's
+PAUSE_FILE pattern. No daemon restart needed to toggle.
+
+Env vars: XDG_STATE_HOME (optional, for the pause touch-file location).
 Files written: <dest-worktree>/opencode/skills-live/ (mirrored skill
 copies), plus git objects/commits inside <dest-worktree>/.git.
 Exit codes: the polling loop in main() never exits non-zero on a tick
 error -- it logs to stderr and keeps polling; Ctrl-C exits 0.
 """
 
+import os
 import shutil
 import subprocess
 import sys
@@ -39,6 +45,12 @@ SOURCE_DEFAULT = Path.home() / ".config" / "opencode" / "skills"
 DEST_DEFAULT = Path.home() / "dotfiles-opencode-skills"
 MIRROR_RELPATH = Path("opencode") / "skills-live"
 COMMIT_MESSAGE = "chore(opencode): snapshot live skills"
+
+STATE_DIR = (
+    Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
+    / "opencode-skills-sync"
+)
+PAUSE_FILE = STATE_DIR / "paused"
 
 
 def git(repo: Path, *args: str) -> subprocess.CompletedProcess:
@@ -110,6 +122,15 @@ def run_tick(source: Path, dest_worktree: Path) -> bool:
     return commit_if_changed(dest_worktree)
 
 
+def maybe_run_tick(source: Path, dest_worktree: Path) -> bool:
+    """run_tick(), unless PAUSE_FILE exists -- mirrors watchcommit.py's
+    is_paused() gate. Returns False for a skipped tick."""
+    if PAUSE_FILE.exists():
+        print(f"[opencode-skills-sync] paused ({PAUSE_FILE})", file=sys.stderr)
+        return False
+    return run_tick(source, dest_worktree)
+
+
 def main() -> None:
     source = Path(sys.argv[1]).expanduser() if len(sys.argv) > 1 else SOURCE_DEFAULT
     dest_worktree = (
@@ -123,7 +144,7 @@ def main() -> None:
 
     while True:
         try:
-            if run_tick(source, dest_worktree):
+            if maybe_run_tick(source, dest_worktree):
                 print("[opencode-skills-sync] committed a snapshot")
         except KeyboardInterrupt:
             print("\n[opencode-skills-sync] stopped")

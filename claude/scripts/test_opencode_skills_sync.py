@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import pytest
@@ -182,6 +183,53 @@ class CommitStepTestCase(unittest.TestCase):
         committed_again = opencode_skills_sync.run_tick(self.source, self.dest)
         self.assertFalse(committed_again)
         self.assertEqual(after_first, self.head())
+
+
+class PauseTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="ocss-test-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.source = self.tmp / "source"
+        self.source.mkdir()
+        self.dest = self.tmp / "dest-worktree"
+        init_repo(self.dest)
+        state_dir = self.tmp / "state"
+        self.pause_file = state_dir / "paused"
+        self.enterContext(
+            unittest.mock.patch.object(opencode_skills_sync, "STATE_DIR", state_dir)
+        )
+        self.enterContext(
+            unittest.mock.patch.object(
+                opencode_skills_sync, "PAUSE_FILE", self.pause_file
+            )
+        )
+
+    def head(self) -> str:
+        return sh(self.dest, "git", "rev-parse", "HEAD").stdout.strip()
+
+    def test_paused_tick_is_skipped(self) -> None:
+        self.pause_file.parent.mkdir(parents=True, exist_ok=True)
+        self.pause_file.touch()
+        (self.source / "one").mkdir()
+        (self.source / "one" / "SKILL.md").write_text("x")
+
+        before = self.head()
+        committed = opencode_skills_sync.maybe_run_tick(self.source, self.dest)
+        self.assertFalse(committed)
+        self.assertEqual(before, self.head())
+        self.assertFalse((self.dest / "opencode" / "skills-live" / "one").exists())
+
+    def test_tick_resumes_once_pause_file_removed(self) -> None:
+        self.pause_file.parent.mkdir(parents=True, exist_ok=True)
+        self.pause_file.touch()
+        (self.source / "one").mkdir()
+        (self.source / "one" / "SKILL.md").write_text("x")
+        opencode_skills_sync.maybe_run_tick(self.source, self.dest)
+
+        self.pause_file.unlink()
+        committed = opencode_skills_sync.maybe_run_tick(self.source, self.dest)
+        self.assertTrue(committed)
+        self.assertTrue((self.dest / "opencode" / "skills-live" / "one").exists())
 
 
 class NoRemoteCallsTestCase(unittest.TestCase):
