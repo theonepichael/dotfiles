@@ -205,9 +205,9 @@ def load_session(slug: str) -> Session:
         The decoded session.
 
     Raises:
-        SystemExit: If the file is missing, contains invalid JSON, or has
-            an unrecognized schema version. Exits with status 1 after
-            printing a diagnostic to stderr.
+        SystemExit: If the file is missing, contains invalid JSON, isn't a
+            JSON object, or has an unrecognized schema version. Exits with
+            status 1 after printing a diagnostic to stderr.
     """
     path = session_path(slug)
     try:
@@ -215,6 +215,13 @@ def load_session(slug: str) -> Session:
     except json.JSONDecodeError as e:
         print(
             f"session file corrupted at {path}; fix or restore from backup. ({e})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not isinstance(data, dict):
+        print(
+            f"session file at {path} is not a JSON object (found {type(data).__name__}); "
+            "check file or remove it from the sessions directory.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -915,13 +922,18 @@ def cmd_pending_plan(args: argparse.Namespace) -> None:
     ``mark-pending-execution`` in a prior conversation surfaces automatically at
     the next session's start. Silent (no output) when nothing is pending, which
     is the common case — this must stay side-effect-free noise on every other
-    session start.
+    session start. A single unreadable or non-session file in ``DATA_DIR``
+    must not block the scan: ``load_session`` prints its own diagnostic and
+    exits, so that's caught per-slug and skipped here rather than propagated.
     """
-    pending = [
-        session
-        for slug in all_session_slugs()
-        if (session := load_session(slug)).get("pending_execution")
-    ]
+    pending = []
+    for slug in all_session_slugs():
+        try:
+            session = load_session(slug)
+        except SystemExit:
+            continue
+        if session.get("pending_execution"):
+            pending.append(session)
     if not pending:
         return
 
