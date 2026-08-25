@@ -179,6 +179,20 @@ main, push, and clean up the worktree?" — then merge locally, push, `git
 worktree remove`, `git branch -d` on that single approval. Work-related or
 ambiguous: ask separately for merge and for push — never bundle.
 
+**`git worktree remove` fails with "Directory not empty"?** A dev server
+(or other long-running process) launched against this worktree during step
+9 — e.g. via the `run` skill's smoke-check pattern — can outlive the port
+kill that pattern documents: killing the port's listener doesn't always
+reap a wrapper's child process (a `bun run dev` parent whose `node .../next
+dev` child keeps the worktree as its cwd). `git worktree remove` then fails
+partway, and can strip the worktree's git-admin metadata (it drops out of
+`git worktree list`) while leaving the directory on disk — a second
+`remove` won't find it. Find what's still holding it open with `lsof +D
+<worktree-path>`, `kill` those exact PIDs (never a broad `pkill -f` — it
+can match unrelated processes, including the agent's own), then remove the
+orphaned directory directly (`rm -rf <worktree-path>`) and retry
+`git branch -d`.
+
 ## 12. Close
 `dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
 `done` on an in-review item. If `approve` refuses citing an unmet gate,
