@@ -108,10 +108,13 @@ If every step is mechanical, leave the gate unset (inert by default) —
 don't call `gate-set` for a step breakdown with no judgment calls in it.
 
 ## 6. Critique
-Offer the second-opinion skill against the resulting plan or spec file,
+If step 5 set a gate (judgment steps present), run the second-opinion
+skill against the resulting plan or spec file unconditionally, no ask,
 using the same suspend-and-return framing as step 5 (checkpoint marker,
-persisted return pointer, absolute-path re-read on return). Recommended:
-yes — critique the plan before committing to an executor.
+persisted return pointer, absolute-path re-read on return) — critique the
+plan before committing to an executor. If step 5 left the gate unset (all
+steps mechanical), skip this step; a critique adds nothing to a rote
+transformation.
 
 ## 7. Handoff
 Decide who implements the plan — ask if it isn't already obvious from the
@@ -221,9 +224,10 @@ from point 3 below.
    spec's own step 3 escalates into `grill-me` for a genuinely open design
    branch, that inner session should also run `grill-me --auto` rather than
    stopping for live Q&A.
-4. **Step 6 (Critique)** — runs unconditionally, no ask: always send the
-   resulting plan/spec through `second-opinion` before implementing (same
-   suspend-and-return framing as step 6 already requires).
+4. **Step 6 (Critique)** — no ask either way, per the updated step 6 rule:
+   runs unconditionally when a gate was set, skipped when the item is
+   all-mechanical (same suspend-and-return framing as step 6 already
+   requires when it does run).
 5. **Step 7 (Handoff)** — always resolves to "same session, now," no ask —
    no dispatch to a cheaper session or model.
 6. **Steps 8–9 (Red/green, Verify)** — on failure, retry up to 2 times
