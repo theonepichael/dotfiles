@@ -535,18 +535,22 @@ check "depart --dry-run changed nothing (vimrc symlink still present)" \
 ./install.sh --depart --yes >/tmp/depart-real.out 2>&1
 depart_real_code=$?
 cat /tmp/depart-real.out
-# This container has no systemd (no systemctl on PATH), so the watchcommit
-# service/linger probe always comes back "unknown" and the departure
-# always finishes with that one unresolved item — exit 1, not 0. That's
-# the correct, specified behavior (systemd --user unavailable marks
+# This container has no systemd (no systemctl on PATH), so every managed
+# service's probe always comes back "unknown" and the departure always
+# finishes with those services unresolved — exit 1, not 0. That's the
+# correct, specified behavior (systemd --user unavailable marks
 # service/linger unresolved, never treated as already-clean), not a test
-# bug: verify it's *specifically* the service key, nothing else.
-check "depart exits 1 (only the systemd-unavailable service key unresolved)" \
+# bug: verify it's *specifically* the two systemd service keys, nothing
+# else. Two, not one, since opencode-skills-sync.service joined
+# watchcommit.service in MANAGED_SERVICES (2026-08-22) — update this count
+# again if a future service joins that list.
+check "depart exits 1 (only the systemd-unavailable service keys unresolved)" \
   bash -c "[[ $depart_real_code -eq 1 ]]"
-check "preflight reports exactly one unresolved item" \
-  grep -q "unresolved (1):" /tmp/depart-real.out
-check "depart's only unresolved item is the watchcommit service key" bash -c \
-  'grep -A1 "unresolved (1):" /tmp/depart-real.out | grep -q "service:systemd/watchcommit"'
+check "preflight reports exactly two unresolved items" \
+  grep -q "unresolved (2):" /tmp/depart-real.out
+check "depart's unresolved items are the two systemd service keys" bash -c \
+  'grep -A2 "unresolved (2):" /tmp/depart-real.out | grep -q "service:systemd/watchcommit" &&
+   grep -A2 "unresolved (2):" /tmp/depart-real.out | grep -q "service:systemd/opencode-skills-sync"'
 check "depart removed the vimrc symlink" bash -c '[[ ! -e ~/.vimrc ]]'
 check "depart removed the zshrc symlink" bash -c '[[ ! -e ~/.zshrc ]]'
 check "depart removed the claude settings.json copy" bash -c '[[ ! -e ~/.claude/settings.json ]]'
@@ -563,18 +567,18 @@ check "baseline.json and blobs are retained (departure was incomplete)" \
   bash -c '[[ -f "'"$STATE_DIR"'/baseline.json" ]]'
 
 echo ""
-echo "=== 15b. Retrying --depart with the one unresolved item still there is a no-op ==="
+echo "=== 15b. Retrying --depart with the two unresolved items still there is a no-op ==="
 # Nothing left for the file/directory/package/runtime phases to do (the
 # ledger already marked every actionable item complete on the previous
-# run) — this should re-report the exact same single unresolved item
+# run) — this should re-report the exact same two unresolved items
 # without erroring or re-attempting anything already done.
 ./install.sh --depart --yes >/tmp/depart-retry.out 2>&1
 depart_retry_code=$?
 cat /tmp/depart-retry.out
-check "depart retry still exits 1 (same unresolved service key)" \
+check "depart retry still exits 1 (same unresolved service keys)" \
   bash -c "[[ $depart_retry_code -eq 1 ]]"
-check "depart retry reports exactly one unresolved item, same as before" \
-  grep -q "unresolved (1):" /tmp/depart-retry.out
+check "depart retry reports exactly two unresolved items, same as before" \
+  grep -q "unresolved (2):" /tmp/depart-retry.out
 check "depart retry's owned bucket never re-lists the already-removed vimrc symlink" bash -c \
   "! awk '/^  owned \\(/{f=1;next} /^  [a-z]+ \\(/{f=0} f' /tmp/depart-retry.out | grep -q vimrc"
 
@@ -582,9 +586,10 @@ echo ""
 echo "=== 16. --depart: Windows-side VS Code guard (mocked /mnt/c + tasklist.exe) ==="
 # Self-contained: real WSL interop isn't available in this container, so
 # /mnt/c, the Windows-side `code` CLI, and tasklist.exe are all stubbed.
-# Runs after the full 1-15b lifecycle, on a container that already has one
-# permanently-unresolved item (the systemd watchcommit key) and a retained
-# baseline.json from section 15's incomplete departure -- this section adds
+# Runs after the full 1-15b lifecycle, on a container that already has two
+# permanently-unresolved items (the systemd watchcommit and
+# opencode-skills-sync service keys) and a retained baseline.json from
+# section 15's incomplete departure -- this section adds
 # to that state rather than assuming a clean machine.
 WIN_USER="$(id -un)"
 FAKE_MNT_C="/mnt/c"
@@ -705,6 +710,100 @@ check "baseline.json still retained (departure remains incomplete)" \
 # is the only section that mutates either, so it cleans up after itself.
 export PATH="$ORIGINAL_PATH"
 unset WSL_DISTRO_NAME
+
+echo ""
+echo "=== 17. dir=true directory-glob rows (Fidelity local-skill-fork mechanism) ==="
+# Exercises the new links.toml dir=true row type end to end against a real
+# $HOME: per-file symlink creation (including a nested file), hidden/junk
+# file filtering, automatic orphan cleanup on a plain re-run, --check-links,
+# --rollback, and the destination-collision abort. The real repo does not
+# ship a concrete dir=true row yet (deferred until a real local/ checkout
+# exists), so this section appends one to this container's own throwaway
+# copy of links.toml for its own duration, then restores the original.
+LOCAL_CMDS="$DOTFILES/local/claude/commands"
+DEST="$HOME/.claude/scenario-local-commands"
+mkdir -p "$LOCAL_CMDS/sub"
+echo "foo" >"$LOCAL_CMDS/foo.md"
+echo "bar" >"$LOCAL_CMDS/sub/bar.md"
+echo "junk" >"$LOCAL_CMDS/.DS_Store"
+echo "junk" >"$LOCAL_CMDS/foo.md.swp"
+
+cp "$DOTFILES/links.toml" /tmp/links.toml.bak
+restore_links_toml() { cp /tmp/links.toml.bak "$DOTFILES/links.toml"; }
+trap restore_links_toml EXIT
+
+cat >>"$DOTFILES/links.toml" <<'TOML'
+
+[[link]]
+src = "local/claude/commands"
+dir = true
+dest = "~/.claude/scenario-local-commands"
+harness = "claude"
+TOML
+
+./install.sh --harness=claude >/tmp/dirtrue-install.out 2>&1
+dirtrue_code=$?
+cat /tmp/dirtrue-install.out
+check "dir=true install exits 0 or 1" bash -c "[[ $dirtrue_code -eq 0 || $dirtrue_code -eq 1 ]]"
+check "foo.md symlinked" bash -c '[[ "$(readlink -f "'"$DEST"'/foo.md")" == "'"$LOCAL_CMDS"'/foo.md" ]]'
+check "nested sub/bar.md symlinked" bash -c '[[ "$(readlink -f "'"$DEST"'/sub/bar.md")" == "'"$LOCAL_CMDS"'/sub/bar.md" ]]'
+check ".DS_Store NOT symlinked" bash -c '[[ ! -e "'"$DEST"'/.DS_Store" ]]'
+check "foo.md.swp NOT symlinked" bash -c '[[ ! -e "'"$DEST"'/foo.md.swp" ]]'
+
+echo ""
+echo "--- 17b. Deleting a local file, plain re-run auto-removes its orphaned symlink ---"
+rm "$LOCAL_CMDS/foo.md"
+./install.sh --harness=claude >/tmp/dirtrue-cleanup.out 2>&1
+cat /tmp/dirtrue-cleanup.out
+check "orphan cleanup message printed" grep -q "removed orphaned symlink" /tmp/dirtrue-cleanup.out
+check "foo.md symlink actually gone" bash -c '[[ ! -e "'"$DEST"'/foo.md" ]]'
+check "bar.md symlink survives (still known)" bash -c '[[ -e "'"$DEST"'/sub/bar.md" ]]'
+
+echo ""
+echo "--- 17c. --check-links reports clean after cleanup ---"
+./install.sh --check-links --harness=claude >/tmp/dirtrue-checklinks.out 2>&1
+checklinks_code=$?
+cat /tmp/dirtrue-checklinks.out
+check "--check-links exits 0 (nothing orphaned/broken left)" bash -c "[[ $checklinks_code -eq 0 ]]"
+
+echo ""
+echo "--- 17d. A destination collision between two entries aborts, no symlink created ---"
+mkdir -p "$LOCAL_CMDS"
+echo "same" >"$LOCAL_CMDS/collide.md"
+cat >>"$DOTFILES/links.toml" <<'TOML'
+
+[[link]]
+src = "claude/CLAUDE.md"
+dest = "~/.claude/scenario-local-commands/collide.md"
+harness = "claude"
+TOML
+./install.sh --harness=claude >/tmp/dirtrue-collision.out 2>&1
+collision_code=$?
+cat /tmp/dirtrue-collision.out
+check "collision aborts with exit 2" bash -c "[[ $collision_code -eq 2 ]]"
+check "collision names both sources" bash -c \
+  'grep -q "claude/CLAUDE.md" /tmp/dirtrue-collision.out && grep -q "local/claude/commands/collide.md" /tmp/dirtrue-collision.out'
+check "no symlink created at the colliding destination" bash -c '[[ ! -e "'"$DEST"'/collide.md" ]]'
+check "collision left the still-good sub/bar.md symlink untouched" bash -c '[[ -e "'"$DEST"'/sub/bar.md" ]]'
+
+echo ""
+echo "--- 17e. --rollback reverts the dir=true-expanded symlink ---"
+restore_links_toml
+cat >>"$DOTFILES/links.toml" <<'TOML'
+
+[[link]]
+src = "local/claude/commands"
+dir = true
+dest = "~/.claude/scenario-local-commands"
+harness = "claude"
+TOML
+./install.sh --rollback >/tmp/dirtrue-rollback.out 2>&1
+cat /tmp/dirtrue-rollback.out
+check "sub/bar.md symlink removed by rollback" bash -c '[[ ! -e "'"$DEST"'/sub/bar.md" ]]'
+
+restore_links_toml
+trap - EXIT
+rm -rf "$LOCAL_CMDS" "$DEST"
 
 echo ""
 echo "════════ Scenario summary: $PASS passed, $FAIL failed ════════"
