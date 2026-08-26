@@ -475,6 +475,41 @@ class BacklogTestCase(unittest.TestCase):
         self.assertEqual(len(blocked_by_lines), 1)
         self.assertIn("waiting on Angela to reply", blocked_by_lines[0])
 
+    @staticmethod
+    def _section_lines(rendered, section_name):
+        lines = rendered.splitlines()
+        start = next(i for i, line in enumerate(lines) if f"─ {section_name} ─" in line)
+        end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith("└─"))
+        return lines[start:end]
+
+    def test_12c_render_in_progress_with_blocker_shows_hint(self):
+        items = [
+            make_item(
+                "in-progress-item", status="in-progress", blocked_by=["blocker-item"]
+            ),
+            make_item("blocker-item", status="open"),
+        ]
+        self.write_items(items)
+
+        out, err = io.StringIO(), io.StringIO()
+        dev_status.render(items, [], out=out, err=err)
+
+        section = self._section_lines(out.getvalue(), "IN PROGRESS")
+        blocked_by_lines = [line for line in section if "↳ blocked by:" in line]
+        self.assertEqual(len(blocked_by_lines), 1)
+        self.assertIn("blocker-item", blocked_by_lines[0])
+
+    def test_12d_render_in_progress_without_blocker_shows_no_hint(self):
+        items = [make_item("in-progress-item", status="in-progress")]
+        self.write_items(items)
+
+        out, err = io.StringIO(), io.StringIO()
+        dev_status.render(items, [], out=out, err=err)
+
+        section = self._section_lines(out.getvalue(), "IN PROGRESS")
+        blocked_by_lines = [line for line in section if "↳ blocked by:" in line]
+        self.assertEqual(blocked_by_lines, [])
+
     # ── 13: numbering is 1..N globally, contiguous ───────────────────────────
 
     def test_13_numbering_contiguous(self):

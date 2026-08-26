@@ -1409,6 +1409,7 @@ def render(
     add_section(
         "IN PROGRESS",
         in_progress,
+        show_blockers=True,
         show_age=True,
         show_priority=True,
         color_code="in_progress",
