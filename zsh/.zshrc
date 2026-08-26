@@ -60,6 +60,14 @@ export PATH
 [[ -f ~/.secrets ]] && source ~/.secrets
 
 # ============================================================================
+# LOCAL OVERRIDES
+# ============================================================================
+# ~/.zshrc.local is never tracked or seeded by this repo — put any
+# machine-specific lines (work-only sources, etc.) there instead of here.
+
+[[ -f ~/.zshrc.local ]] && source ~/.zshrc.local
+
+# ============================================================================
 # COMMON ALIASES
 # ============================================================================
 
