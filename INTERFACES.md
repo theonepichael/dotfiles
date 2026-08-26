@@ -837,8 +837,10 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `load_links(path: Path) -> list[LinkSpec]` — Parse ``links.toml`` into an ordered list of link specs.
   - `link_applies(spec: LinkSpec, ctx: Context) -> bool` — Return whether ``spec`` should be linked for this run's machine/options.
   - `expand_dest(dest: str, home: Path) -> Path` — Expand a ``links.toml`` destination against ``home``.
+  - `iter_concrete_links(spec: LinkSpec, ctx: Context) -> Iterator[tuple[Path, Path, str]]` — Expand one ``links.toml`` row into concrete ``(src, dest, relative_src)`` triples.
+  - `gather_links(ctx: Context, specs: Sequence[LinkSpec]) -> list[tuple[Path, Path, str, bool]]` — Expand every ``links.toml`` row into concrete triples, once per run.
   - `symlink(ctx: Context, src: Path, dest: Path) -> bool` — Link ``dest`` → ``src``, backing up whatever non-symlink is in the way.
-  - `install_symlinks(ctx: Context, specs: Sequence[LinkSpec]) -> None` — Link every applicable ``links.toml`` entry.
+  - `install_symlinks(ctx: Context, links: Sequence[tuple[Path, Path, str, bool]]) -> None` — Link every applicable expanded ``links.toml`` entry.
   - `json_key_drift(seed: dict[str, object], live: dict[str, object]) -> list[str]` — Return the top-level keys whose values differ between seed and live.
   - `opencode_bypass_drift(seed: dict[str, object], live: dict[str, object]) -> list[str]` — Return allowlist-bypass bash patterns present live but not in the seed.
   - `describe_settings_drift(seed: Path, live: Path) -> str` — Describe how a live settings.json diverged from its seed.

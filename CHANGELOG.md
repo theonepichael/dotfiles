@@ -3,6 +3,29 @@
 This repo's internal tooling changes are logged here. Breaking changes to
 harness CLIs, flags, or behavior get an entry going forward.
 
+## 2026-08-26
+
+### Added
+
+- `links.toml` gains a `dir = true` row type: `src` is globbed recursively
+  instead of linked as one file, giving each file under it (skipping
+  dotfiles and editor swap/backup junk) its own symlink under `dest`. Built
+  for the Fidelity local-skill-fork mechanism (permanent, one-way,
+  never-git-tracked skill additions under a gitignored `local/` directory)
+  but usable by any future row needing the same shape. A `dir=true` row and
+  another entry that expand to the same destination abort the run with a
+  collision error instead of one silently winning.
+
+### Changed (breaking)
+
+- A plain `install.py` run (not just `--check-links`) now automatically
+  removes any manifest-recorded symlink that no current `links.toml` entry
+  produces — its manifest entry and now-possibly-empty parent directory too
+  — and prints each removal. Previously an orphaned symlink was only ever
+  reported via `--check-links`, never removed automatically. Scoped
+  strictly to that case: a broken-source, wrong-target, or not-a-symlink
+  destination is unaffected and stays human-reviewed via `--check-links`.
+
 ## 2026-08-22
 
 ### Added
