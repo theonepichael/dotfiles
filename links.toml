@@ -20,6 +20,18 @@
 #   profile_exclude  (optional) list of profiles the entry is skipped on,
 #                    e.g. ["work"] for watchcommit, which auto-pushes to a
 #                    personal remote and has no place on work hardware.
+#   dir              (optional) true to glob `src` as a directory instead of
+#                    linking it as one file: every file under it (recursive,
+#                    skipping dotfiles and editor swap/backup junk) gets its
+#                    own symlink under `dest`, and a file removed from `src`
+#                    has its symlink cleaned up automatically on the next
+#                    plain install. This is an *addition* mechanism, not an
+#                    override one — a `dir=true` row producing the same
+#                    destination as another entry aborts the run rather than
+#                    silently picking a winner. Used for the Fidelity
+#                    local-skill-fork mechanism (`local/...`, gitignored,
+#                    profile_exclude = ["personal"]); absent = a normal
+#                    single-file row.
 #
 # Order is preserved: entries are processed top to bottom, so the install
 # log (and the rollback that replays it in reverse) reads in this order.

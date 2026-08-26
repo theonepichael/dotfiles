@@ -28,6 +28,7 @@ Requires Python 3.12+.
 """
 
 import argparse
+import contextlib
 import json
 import os
 import platform
@@ -38,7 +39,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -427,6 +428,40 @@ class Manifest:
             if isinstance(parsed, dict):
                 entries.append(parsed)
         return entries
+
+    def remove_symlink_entries(self, dests: set[Path]) -> None:
+        """Drop every recorded ``symlink-created`` entry for the given destinations.
+
+        Used by the automatic orphan-cleanup pass: those symlinks are gone
+        from disk, so leaving their entries would make a later
+        ``--rollback`` try (harmlessly, but confusingly) to remove
+        something that no longer exists. A whole-file rewrite rather than
+        an append, since this drops entries instead of adding one — same
+        temp-file + ``os.replace`` convention as :func:`_adopt_file`.
+        """
+        if self.dry_run or not self.path.is_file():
+            return
+        dest_strs = {str(d) for d in dests}
+        kept = [
+            entry
+            for entry in self.entries()
+            if not (
+                entry.get("kind") == "symlink-created"
+                and entry.get("dest") in dest_strs
+            )
+        ]
+        fd, temp_name = tempfile.mkstemp(prefix=".history.jsonl-", dir=self.path.parent)
+        temp_path = Path(temp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                for entry in kept:
+                    handle.write(json.dumps(entry) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, self.path)
+        except OSError:
+            temp_path.unlink(missing_ok=True)
+            raise
 
     def has_backup(self, dest: Path) -> bool:
         """Return whether a ``file-backed-up`` entry exists for ``dest``.
@@ -1478,9 +1513,10 @@ class LinkSpec:
     platform: str | None = None
     wsl: str | None = None
     profile_exclude: tuple[str, ...] = ()
+    dir: bool = False
 
 
-_LINK_FIELDS = {"src", "dest", "harness", "platform", "wsl", "profile_exclude"}
+_LINK_FIELDS = {"src", "dest", "harness", "platform", "wsl", "profile_exclude", "dir"}
 
 
 def load_links(path: Path) -> list[LinkSpec]:
@@ -1532,6 +1568,9 @@ def load_links(path: Path) -> list[LinkSpec]:
             profile not in VALID_PROFILES for profile in excluded
         ):
             raise ValueError(f"{path}: entry {index} has invalid profile_exclude")
+        dir_flag = row.get("dir", False)
+        if not isinstance(dir_flag, bool):
+            raise TypeError(f"{path}: entry {index} has non-bool 'dir'")
         specs.append(
             LinkSpec(
                 src=row["src"],
@@ -1540,6 +1579,7 @@ def load_links(path: Path) -> list[LinkSpec]:
                 platform=os_gate,
                 wsl=wsl,
                 profile_exclude=tuple(excluded),
+                dir=dir_flag,
             )
         )
     return specs
@@ -1572,6 +1612,83 @@ def expand_dest(dest: str, home: Path) -> Path:
     if dest.startswith("~/"):
         return home / dest[2:]
     return Path(dest)
+
+
+_JUNK_SUFFIXES = ("~", ".swp", ".swo", ".tmp")
+
+
+def iter_concrete_links(
+    spec: LinkSpec, ctx: Context
+) -> Iterator[tuple[Path, Path, str]]:
+    """Expand one ``links.toml`` row into concrete ``(src, dest, relative_src)`` triples.
+
+    A normal row (``dir`` unset) yields exactly one triple, unchanged from
+    today. A ``dir=true`` row recursively globs its source directory,
+    skipping plain subdirectory entries (walked into, never linked
+    themselves) and junk — dotfiles and editor swap/backup files — so
+    those never get symlinked in. A missing, empty, or unreadable source
+    directory yields nothing, with no error and no special-casing: see the
+    plan's cleanup design for why "can't confirm" and "confirmed empty"
+    are deliberately not distinguished.
+    """
+    src_root = ctx.dotfiles / spec.src
+    dest_root = expand_dest(spec.dest, ctx.home)
+    if not spec.dir:
+        yield src_root, dest_root, spec.src
+        return
+    try:
+        candidates = sorted(src_root.rglob("*"))
+    except OSError:
+        return
+    for path in candidates:
+        if not (path.is_file() or path.is_symlink()):
+            continue
+        if path.name.startswith(".") or path.name.endswith(_JUNK_SUFFIXES):
+            continue
+        relative = path.relative_to(src_root)
+        yield path, dest_root / relative, f"{spec.src}/{relative}"
+
+
+def gather_links(
+    ctx: Context, specs: Sequence[LinkSpec]
+) -> list[tuple[Path, Path, str, bool]]:
+    """Expand every ``links.toml`` row into concrete triples, once per run.
+
+    Computed for every spec regardless of whether it applies to this run's
+    machine/harness selection — the fourth element flags that separately.
+    Creation and collision-detection only look at the applicable triples;
+    orphan-detection's "still expected" set spans every triple regardless,
+    so a harness/platform-gated row is never misreported as removed. This
+    single pass feeds all three, rather than each recomputing its own
+    expansion independently.
+    """
+    result: list[tuple[Path, Path, str, bool]] = []
+    for spec in specs:
+        applicable = link_applies(spec, ctx)
+        for src, dest, rel in iter_concrete_links(spec, ctx):
+            result.append((src, dest, rel, applicable))
+    return result
+
+
+def _find_link_collision(
+    links: Sequence[tuple[Path, Path, str, bool]],
+) -> tuple[Path, str, str] | None:
+    """Return ``(dest, first_src, second_src)`` for the first destination two
+    distinct applicable sources claim, or None.
+
+    Only applicable (this-run) triples are considered — a row merely gated
+    off on this machine has nothing written this run, so it cannot collide
+    with anything.
+    """
+    claimed: dict[Path, str] = {}
+    for _src, dest, rel, applicable in links:
+        if not applicable:
+            continue
+        seen = claimed.get(dest)
+        if seen is not None and seen != rel:
+            return dest, seen, rel
+        claimed.setdefault(dest, rel)
+    return None
 
 
 def symlink(ctx: Context, src: Path, dest: Path) -> bool:
@@ -1672,11 +1789,16 @@ def _vscode_wsl_user_dir() -> Path | None:
     return win_user_dir / "AppData" / "Roaming" / "Code" / "User"
 
 
-def install_symlinks(ctx: Context, specs: Sequence[LinkSpec]) -> None:
-    """Link every applicable ``links.toml`` entry.
+def install_symlinks(
+    ctx: Context, links: Sequence[tuple[Path, Path, str, bool]]
+) -> None:
+    """Link every applicable expanded ``links.toml`` entry.
 
-    The WSL VS Code case isn't handled here even though it's a symlink
-    candidate everywhere else: see ``seed_vscode_settings``.
+    ``links`` is a pre-gathered expansion (see :func:`gather_links`) rather
+    than the raw specs, so a ``dir=true`` row's files are already individual
+    triples by the time this runs. The WSL VS Code case isn't handled here
+    even though it's a symlink candidate everywhere else: see
+    ``seed_vscode_settings``.
     """
     _header("==> Symlinking dotfiles...", quiet=ctx.opts.quiet)
 
@@ -1685,10 +1807,10 @@ def install_symlinks(ctx: Context, specs: Sequence[LinkSpec]) -> None:
             "  watchcommit: excluded (work profile)", quiet=ctx.opts.quiet
         )
 
-    for spec in specs:
-        if not link_applies(spec, ctx):
+    for src, dest, _rel, applicable in links:
+        if not applicable:
             continue
-        symlink(ctx, ctx.dotfiles / spec.src, expand_dest(spec.dest, ctx.home))
+        symlink(ctx, src, dest)
 
 
 # ── copy-once seeds and drift detection ───────────────────────────────────────
@@ -4314,9 +4436,9 @@ def _is_dotfiles_checkout(root: Path) -> bool:
 
 
 def _check_applicable_links(
-    ctx: Context, specs: Sequence[LinkSpec]
+    ctx: Context, links: Sequence[tuple[Path, Path, str, bool]]
 ) -> tuple[dict[str, list[str]], dict[Path, int]]:
-    """Classify every applicable ``links.toml`` entry that has something on disk.
+    """Classify every applicable expanded entry that has something on disk.
 
     Entries whose destination does not exist at all are silently fine: that
     is simply a link this machine has not installed (yet), not a defect.
@@ -4332,11 +4454,9 @@ def _check_applicable_links(
     """
     findings: dict[str, list[str]] = {bucket: [] for bucket in CHECK_BUCKETS}
     foreign: dict[Path, int] = {}
-    for spec in specs:
-        if not link_applies(spec, ctx):
+    for src, dest, rel, applicable in links:
+        if not applicable:
             continue
-        src = ctx.dotfiles / spec.src
-        dest = expand_dest(spec.dest, ctx.home)
         if not dest.is_symlink() and not dest.exists():
             continue
 
@@ -4355,7 +4475,7 @@ def _check_applicable_links(
 
         target = _link_target(dest)
         if not _same_path(target, src):
-            other_root = _implied_repo_root(target, spec.src)
+            other_root = _implied_repo_root(target, rel)
             same_file_other_checkout = (
                 other_root is not None
                 and not _same_path(other_root, ctx.dotfiles)
@@ -4386,19 +4506,20 @@ def _check_applicable_links(
     return findings, foreign
 
 
-def _check_orphaned_links(
-    ctx: Context, specs: Sequence[LinkSpec], findings: dict[str, list[str]]
-) -> None:
-    """Add manifest-recorded symlinks that links.toml no longer produces.
+def _find_orphaned_links(
+    ctx: Context, links: Sequence[tuple[Path, Path, str, bool]]
+) -> list[Path]:
+    """Return manifest-recorded symlink destinations no current entry produces.
 
-    Compared against *every* entry's destination rather than only the
-    applicable ones: an entry that is merely gated off on this machine
-    (a mac-only link seen from Linux, a harness not selected this run) has
-    not been removed from links.toml, so its recorded destination is not an
+    Compared against *every* triple's destination rather than only the
+    applicable ones: a triple that is merely gated off on this machine (a
+    mac-only link seen from Linux, a harness not selected this run) has not
+    been removed from links.toml, so its recorded destination is not an
     orphan — reporting it as one would be a false positive on every
-    cross-platform machine.
+    cross-platform machine, or on a run scoped to a different harness.
     """
-    known = {expand_dest(spec.dest, ctx.home) for spec in specs}
+    known = {dest for _src, dest, _rel, _applicable in links}
+    orphans: list[Path] = []
     seen: set[Path] = set()
     for entry in ctx.manifest.entries():
         if entry.get("kind") != "symlink-created":
@@ -4411,6 +4532,17 @@ def _check_orphaned_links(
         # or the user, already cleaned it up.
         if not dest.is_symlink() and not dest.exists():
             continue
+        orphans.append(dest)
+    return orphans
+
+
+def _check_orphaned_links(
+    ctx: Context,
+    links: Sequence[tuple[Path, Path, str, bool]],
+    findings: dict[str, list[str]],
+) -> None:
+    """Add manifest-recorded symlinks that links.toml no longer produces."""
+    for dest in _find_orphaned_links(ctx, links):
         if dest.is_symlink():
             detail = f"still symlinked → {_link_target(dest)}"
         else:
@@ -4419,6 +4551,55 @@ def _check_orphaned_links(
             f"{ctx.display(dest)} — recorded by a past install run, but no "
             f"links.toml entry produces it anymore; {detail}"
         )
+
+
+def _cleanup_orphaned_links(
+    ctx: Context, links: Sequence[tuple[Path, Path, str, bool]]
+) -> None:
+    """Remove every orphaned symlink this run finds, plus its manifest entry.
+
+    Runs on every plain install, not just ``--check-links``. Scoped
+    strictly to the ORPHANED bucket — a broken-source, wrong-target, or
+    not-a-symlink destination indicates something actually inconsistent,
+    not "nothing wants this anymore," and stays human-reviewed via
+    ``--check-links``. Removing an orphaned symlink only deletes the
+    pointer, never real content, so this is safe to do without asking.
+    """
+    orphans = _find_orphaned_links(ctx, links)
+    if not orphans:
+        return
+
+    if ctx.opts.dry_run:
+        for dest in orphans:
+            _preview(
+                f"would remove orphaned symlink: {ctx.display(dest)}",
+                quiet=ctx.opts.quiet,
+            )
+        return
+
+    removed: list[Path] = []
+    for dest in orphans:
+        try:
+            dest.unlink()
+        except OSError:
+            continue
+        removed.append(dest)
+        cli_common.qprint(
+            PALETTE.ok(f"  removed orphaned symlink: {ctx.display(dest)}"),
+            quiet=ctx.opts.quiet,
+        )
+        with contextlib.suppress(OSError):
+            dest.parent.rmdir()
+
+    if removed:
+        try:
+            ctx.manifest.remove_symlink_entries(set(removed))
+        except OSError:
+            ctx.reporter.skip(
+                "orphan cleanup manifest update",
+                "could not rewrite the history file — the symlinks were "
+                "still removed, but a future --rollback may reference them",
+            )
 
 
 def do_check_links(ctx: Context) -> int:
@@ -4450,8 +4631,9 @@ def do_check_links(ctx: Context) -> int:
         ctx = replace(ctx, opts=replace(ctx.opts, harnesses=VALID_HARNESSES))
 
     specs = load_links(ctx.dotfiles / "links.toml")
-    findings, foreign = _check_applicable_links(ctx, specs)
-    _check_orphaned_links(ctx, specs, findings)
+    links = gather_links(ctx, specs)
+    findings, foreign = _check_applicable_links(ctx, links)
+    _check_orphaned_links(ctx, links, findings)
 
     _header("==> links.toml audit (read-only)", quiet=ctx.opts.quiet)
     for root, count in sorted(foreign.items()):
@@ -4491,7 +4673,29 @@ def do_check_links(ctx: Context) -> int:
 
 
 def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
-    """Run every install step in order and return the process exit status."""
+    """Run every install step in order and return the process exit status.
+
+    Refuses to start — before anything is mutated — if two distinct
+    sources would claim the same destination (design point 3 of the
+    Fidelity local-skill-fork plan): a structural inconsistency in
+    links.toml itself, not a step that failed at runtime, so this is the
+    one place install.py's "nothing aborts the run" rule doesn't apply —
+    it never entered the run to begin with, same as a malformed
+    links.toml already refuses in ``main`` before reaching here.
+    """
+    links = gather_links(ctx, specs)
+    collision = _find_link_collision(links)
+    if collision is not None:
+        dest, first, second = collision
+        print(
+            PALETTE.error(
+                f"{ctx.display(dest)} would be linked by both {first!r} and "
+                f"{second!r} — rename one of them and re-run"
+            ),
+            file=sys.stderr,
+        )
+        return 2
+
     capture_departure_baseline(ctx, specs)
     ctx.manifest.init_run(ctx.opts.profile, quiet=ctx.opts.quiet)
     if ctx.opts.dry_run:
@@ -4513,7 +4717,8 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
     install_npm_harness(ctx, "claude", "Claude Code", "@anthropic-ai/claude-code")
     install_npm_harness(ctx, "copilot", "Copilot CLI", "@github/copilot")
 
-    install_symlinks(ctx, specs)
+    install_symlinks(ctx, links)
+    _cleanup_orphaned_links(ctx, links)
     opencode_drift = seed_opencode_config(ctx)
     settings_drift = seed_claude_settings(ctx)
     vscode_drift = seed_vscode_settings(ctx)
@@ -4559,7 +4764,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if opts.check_links:
         try:
             return do_check_links(ctx)
-        except ValueError as exc:
+        except (ValueError, TypeError) as exc:
             print(
                 PALETTE.error(f"could not read the symlink table: {exc}"),
                 file=sys.stderr,
@@ -4583,7 +4788,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         specs = load_links(ctx.dotfiles / "links.toml")
-    except ValueError as exc:
+    except (ValueError, TypeError) as exc:
         print(
             PALETTE.error(f"could not read the symlink table: {exc}"), file=sys.stderr
         )

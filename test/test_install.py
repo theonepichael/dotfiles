@@ -4609,3 +4609,364 @@ def test_implied_repo_root_requires_a_full_tail_match():
     assert install._implied_repo_root(Path("/a/b/other/.zshrc"), "zsh/.zshrc") is None
     assert install._implied_repo_root(Path("/zsh/.zshrc"), "zsh/.zshrc") == Path("/")
     assert install._implied_repo_root(Path("/zsh"), "zsh/.zshrc") is None
+
+
+# ── dir=true directory-glob rows (Fidelity local-skill-fork mechanism) ─────────
+
+
+def test_load_links_accepts_dir_true(tmp_path):
+    toml = tmp_path / "links.toml"
+    toml.write_text('[[link]]\nsrc = "local/x"\ndest = "~/x"\ndir = true\n')
+
+    specs = install.load_links(toml)
+
+    assert specs == [install.LinkSpec(src="local/x", dest="~/x", dir=True)]
+
+
+def test_load_links_rejects_non_bool_dir(tmp_path):
+    toml = tmp_path / "links.toml"
+    toml.write_text('[[link]]\nsrc = "local/x"\ndest = "~/x"\ndir = "yes"\n')
+
+    with pytest.raises(TypeError, match="dir"):
+        install.load_links(toml)
+
+
+@pytest.fixture
+def dir_repo(tmp_path):
+    """A throwaway dotfiles repo with a work-only ``dir=true`` row.
+
+    Mirrors the real design: the row is scoped to profile="work" so it's a
+    no-op on personal, and its source directory starts empty — individual
+    tests populate it.
+    """
+    repo = tmp_path / "dir-repo"
+    (repo / "local" / "claude" / "commands").mkdir(parents=True)
+    (repo / "install.py").write_text("# stub\n")
+    (repo / "links.toml").write_text(
+        '[[link]]\nsrc = "local/claude/commands"\ndir = true\n'
+        'dest = "~/.claude/commands"\nprofile_exclude = ["personal"]\n'
+    )
+    return repo
+
+
+def dir_repo_ctx(home, dir_repo, *, profile="work", **kwargs):
+    return make_ctx(home, dotfiles=dir_repo, profile=profile, **kwargs)
+
+
+def dir_true_spec(**overrides):
+    fields = {
+        "src": "local/claude/commands",
+        "dest": "~/.claude/commands",
+        "dir": True,
+        "profile_exclude": ("personal",),
+    }
+    fields.update(overrides)
+    return install.LinkSpec(**fields)
+
+
+def test_dir_true_row_personal_profile_skips_entirely(home, dir_repo, offline_install):
+    (dir_repo / "local" / "claude" / "commands" / "foo.md").write_text("foo\n")
+    ctx = dir_repo_ctx(home, dir_repo, profile="personal")
+
+    install.run_install(ctx, [dir_true_spec()])
+
+    assert not (home / ".claude" / "commands").exists()
+    assert history(ctx) == [] or kinds(ctx, "symlink-created") == []
+
+
+def test_dir_true_row_creates_symlink_per_file_including_nested(
+    home, dir_repo, offline_install
+):
+    root = dir_repo / "local" / "claude" / "commands"
+    (root / "foo.md").write_text("foo\n")
+    (root / "sub").mkdir()
+    (root / "sub" / "bar.md").write_text("bar\n")
+    ctx = dir_repo_ctx(home, dir_repo)
+
+    install.run_install(ctx, [dir_true_spec()])
+
+    dest_root = home / ".claude" / "commands"
+    assert (dest_root / "foo.md").resolve() == (root / "foo.md").resolve()
+    assert (dest_root / "sub" / "bar.md").resolve() == (
+        root / "sub" / "bar.md"
+    ).resolve()
+    assert len(kinds(ctx, "symlink-created")) == 2
+
+
+def test_dir_true_row_missing_source_dir_no_error_zero_links(
+    home, dir_repo, offline_install
+):
+    import shutil as _shutil
+
+    _shutil.rmtree(dir_repo / "local" / "claude" / "commands")
+    ctx = dir_repo_ctx(home, dir_repo)
+
+    install.run_install(ctx, [dir_true_spec()])
+
+    assert not (home / ".claude" / "commands").exists()
+    assert kinds(ctx, "symlink-created") == []
+
+
+def test_dir_true_row_rerun_no_duplicate_manifest_entries(
+    home, dir_repo, offline_install
+):
+    (dir_repo / "local" / "claude" / "commands" / "foo.md").write_text("foo\n")
+    ctx = dir_repo_ctx(home, dir_repo)
+
+    install.run_install(ctx, [dir_true_spec()])
+    install.run_install(ctx, [dir_true_spec()])
+
+    assert len(kinds(ctx, "symlink-created")) == 1
+
+
+def test_dir_true_row_filters_hidden_and_junk_files(home, dir_repo, offline_install):
+    root = dir_repo / "local" / "claude" / "commands"
+    (root / "foo.md").write_text("foo\n")
+    (root / ".DS_Store").write_text("junk\n")
+    (root / "foo.md.swp").write_text("junk\n")
+    ctx = dir_repo_ctx(home, dir_repo)
+
+    install.run_install(ctx, [dir_true_spec()])
+
+    dest_root = home / ".claude" / "commands"
+    assert {p.name for p in dest_root.iterdir()} == {"foo.md"}
+
+
+def test_dir_true_row_full_subdirectory_deletion_cleans_up_all_symlinks(
+    home, dir_repo, offline_install, capsys
+):
+    root = dir_repo / "local" / "claude" / "commands"
+    (root / "foo.md").write_text("foo\n")
+    (root / "bar.md").write_text("bar\n")
+    ctx = dir_repo_ctx(home, dir_repo)
+    install.run_install(ctx, [dir_true_spec()])
+    assert len(kinds(ctx, "symlink-created")) == 2
+
+    import shutil as _shutil
+
+    _shutil.rmtree(root)
+    capsys.readouterr()
+
+    install.run_install(ctx, [dir_true_spec()])
+
+    out = capsys.readouterr().out
+    dest_root = home / ".claude" / "commands"
+    assert not (dest_root / "foo.md").exists()
+    assert not (dest_root / "bar.md").exists()
+    assert not dest_root.exists(), "now-empty parent directory should be pruned"
+    assert kinds(ctx, "symlink-created") == []
+    assert out.count("removed orphaned symlink") == 2
+
+
+def test_plain_install_auto_removes_orphaned_symlink_and_prints_it(
+    home, dir_repo, offline_install, capsys
+):
+    root = dir_repo / "local" / "claude" / "commands"
+    (root / "foo.md").write_text("foo\n")
+    ctx = dir_repo_ctx(home, dir_repo)
+    install.run_install(ctx, [dir_true_spec()])
+    dest = home / ".claude" / "commands" / "foo.md"
+    assert dest.is_symlink()
+
+    (root / "foo.md").unlink()
+    capsys.readouterr()
+    install.run_install(ctx, [dir_true_spec()])
+
+    out = capsys.readouterr().out
+    assert not dest.exists()
+    assert kinds(ctx, "symlink-created") == []
+    assert "removed orphaned symlink" in out
+    assert ctx.display(dest) in out
+
+
+def test_auto_cleanup_leaves_broken_source_entries_alone(
+    home, dir_repo, offline_install
+):
+    """The orphan-only cleanup pass must never touch a still-known destination."""
+    root = dir_repo / "local" / "claude" / "commands"
+    (root / "orphan.md").write_text("gone-soon\n")
+    other_src = dir_repo / "local" / "other.md"
+    other_src.write_text("kept\n")
+    other_dest = "~/.claude/other.md"
+    specs = [dir_true_spec(), install.LinkSpec(src="local/other.md", dest=other_dest)]
+    ctx = dir_repo_ctx(home, dir_repo)
+    install.run_install(ctx, specs)
+
+    (root / "orphan.md").unlink()  # becomes orphaned: row no longer produces it
+    other_src.unlink()  # becomes broken-source: row still produces this dest
+
+    install.run_install(ctx, specs)
+
+    orphan_dest = home / ".claude" / "commands" / "orphan.md"
+    broken_dest = home / ".claude" / "other.md"
+    assert not orphan_dest.exists(), "orphaned entry should have been cleaned up"
+    assert broken_dest.is_symlink(), "still-known (broken-source) entry must survive"
+    assert kinds(ctx, "symlink-created") == [
+        e for e in kinds(ctx, "symlink-created") if e["dest"] == str(broken_dest)
+    ]
+
+
+def test_auto_cleanup_survives_a_different_harness_selected(
+    home, dir_repo, offline_install
+):
+    """Proves the all-harness view: an unselected harness's row is not orphaned."""
+    root = dir_repo / "local" / "claude" / "commands"
+    (root / "foo.md").write_text("foo\n")
+    specs = [dir_true_spec(harness="claude")]
+    ctx = dir_repo_ctx(home, dir_repo, harnesses=("claude",))
+    install.run_install(ctx, specs)
+    dest = home / ".claude" / "commands" / "foo.md"
+    assert dest.is_symlink()
+
+    other_harness_ctx = dir_repo_ctx(home, dir_repo, harnesses=("opencode",))
+    install.run_install(other_harness_ctx, specs)
+
+    assert dest.is_symlink(), "a claude-only row must survive an opencode-only run"
+    assert len(kinds(ctx, "symlink-created")) == 1
+
+
+def test_auto_cleanup_dry_run_previews_and_changes_nothing(
+    home, dir_repo, offline_install, capsys
+):
+    root = dir_repo / "local" / "claude" / "commands"
+    (root / "foo.md").write_text("foo\n")
+    ctx = dir_repo_ctx(home, dir_repo)
+    install.run_install(ctx, [dir_true_spec()])
+    dest = home / ".claude" / "commands" / "foo.md"
+    (root / "foo.md").unlink()
+    capsys.readouterr()
+
+    dry_ctx = dir_repo_ctx(home, dir_repo, dry_run=True)
+    install.run_install(dry_ctx, [dir_true_spec()])
+
+    out = capsys.readouterr().out
+    assert "[dry-run]" in out
+    assert "would remove orphaned symlink" in out
+    assert dest.is_symlink(), "dry-run must not actually remove the orphan"
+    assert len(kinds(ctx, "symlink-created")) == 1
+
+
+def test_rollback_reverts_dir_true_expanded_symlinks_individually(
+    home, dir_repo, offline_install
+):
+    root = dir_repo / "local" / "claude" / "commands"
+    (root / "foo.md").write_text("foo\n")
+    (root / "bar.md").write_text("bar\n")
+    ctx = dir_repo_ctx(home, dir_repo)
+    install.run_install(ctx, [dir_true_spec()])
+    dest_root = home / ".claude" / "commands"
+    assert (dest_root / "foo.md").is_symlink()
+    assert (dest_root / "bar.md").is_symlink()
+
+    install.do_rollback(ctx)
+
+    assert not (dest_root / "foo.md").exists()
+    assert not (dest_root / "bar.md").exists()
+
+
+def test_collision_normal_row_and_dir_true_row_same_dest_aborts(
+    home, dir_repo, offline_install, capsys
+):
+    root = dir_repo / "local" / "claude" / "commands"
+    (root / "shared.md").write_text("from-dir\n")
+    normal_src = dir_repo / "normal-shared.md"
+    normal_src.write_text("from-normal\n")
+    specs = [
+        install.LinkSpec(src="normal-shared.md", dest="~/.claude/commands/shared.md"),
+        dir_true_spec(),
+    ]
+    ctx = dir_repo_ctx(home, dir_repo)
+    capsys.readouterr()
+
+    code = install.run_install(ctx, specs)
+
+    out = capsys.readouterr().err
+    assert code == 2
+    assert "normal-shared.md" in out
+    assert "local/claude/commands/shared.md" in out
+    assert not (home / ".claude" / "commands" / "shared.md").exists()
+    assert kinds(ctx, "symlink-created") == []
+
+
+def test_collision_two_dir_true_rows_same_dest_aborts(
+    home, dir_repo, offline_install, capsys
+):
+    root_a = dir_repo / "local" / "claude" / "commands"
+    root_b = dir_repo / "local" / "claude" / "commands-b"
+    root_b.mkdir()
+    (root_a / "shared.md").write_text("from-a\n")
+    (root_b / "shared.md").write_text("from-b\n")
+    specs = [
+        dir_true_spec(),
+        dir_true_spec(src="local/claude/commands-b"),
+    ]
+    ctx = dir_repo_ctx(home, dir_repo)
+    capsys.readouterr()
+
+    code = install.run_install(ctx, specs)
+
+    out = capsys.readouterr().err
+    assert code == 2
+    assert "commands/shared.md" in out
+    assert "commands-b/shared.md" in out
+    assert kinds(ctx, "symlink-created") == []
+
+
+def test_check_links_dir_true_clean_state_reports_nothing(home, dir_repo, capsys):
+    root = dir_repo / "local" / "claude" / "commands"
+    (root / "foo.md").write_text("foo\n")
+    ctx = dir_repo_ctx(home, dir_repo)
+    install.symlink(
+        ctx, root / "foo.md", install.expand_dest("~/.claude/commands/foo.md", home)
+    )
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "orphaned" not in out
+
+
+def test_check_links_dir_true_detects_orphan_after_delete(home, dir_repo, capsys):
+    root = dir_repo / "local" / "claude" / "commands"
+    (root / "foo.md").write_text("foo\n")
+    ctx = dir_repo_ctx(home, dir_repo)
+    dest = install.expand_dest("~/.claude/commands/foo.md", home)
+    install.symlink(ctx, root / "foo.md", dest)
+    (root / "foo.md").unlink()
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "orphaned (1)" in out
+
+
+def test_check_links_dir_true_cross_checkout_uses_relative_path(
+    home, dir_repo, tmp_path, capsys
+):
+    """A dir=true expansion's cross-checkout check must use the per-file path."""
+    root = dir_repo / "local" / "claude" / "commands"
+    (root / "foo.md").write_text("foo\n")
+    ctx = dir_repo_ctx(home, dir_repo)
+    dest = install.expand_dest("~/.claude/commands/foo.md", home)
+    install.symlink(ctx, root / "foo.md", dest)
+
+    other = tmp_path / "dir-repo-worktree"
+    for path in sorted(dir_repo.rglob("*")):
+        if path.is_dir():
+            continue
+        target = other / path.relative_to(dir_repo)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(path.read_text())
+    capsys.readouterr()
+
+    other_ctx = dir_repo_ctx(home, other)
+    code = install.do_check_links(other_ctx)
+
+    out = capsys.readouterr().out
+    assert code == 0, f"expected the cross-checkout note, not a false finding:\n{out}"
+    assert "wrong-target" not in out
+    assert f"note: 1 link(s) point into {dir_repo}" in out

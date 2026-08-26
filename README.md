@@ -294,14 +294,16 @@ repointed — so it is safe to run at any time:
 ./install.sh --check-links --harness=claude    # scope it to one harness
 ```
 
-This covers a gap neither of the flags above does. `--rollback` only inspects
-destinations the history recorded, and only asks whether the link's target
-string still matches what was recorded; `--depart` compares against a
+This covers most of a gap neither of the flags above does. `--rollback` only
+inspects destinations the history recorded, and only asks whether the link's
+target string still matches what was recorded; `--depart` compares against a
 snapshot taken at install time. Neither notices that a link's repo-side
 source was deleted or renamed — and a plain re-run does not either, since the
 installer never checks that a source exists before linking to it (Unix
-happily creates a dangling symlink), and stops visiting a destination
-entirely the moment its `links.toml` entry goes away.
+happily creates a dangling symlink). The one exception is a destination
+`links.toml` has stopped producing entirely: a plain run now cleans that up
+automatically (see **orphaned** below) instead of only `--check-links`
+reporting it.
 
 Four buckets are reported:
 
@@ -313,8 +315,11 @@ Four buckets are reported:
 - **not-a-symlink** — a real file or directory sits where a link belongs.
   The next install run would back it up and replace it.
 - **orphaned** — a symlink an earlier run recorded in the history that no
-  `links.toml` entry produces anymore, still sitting on disk. Nothing else
-  in the installer would ever visit it again.
+  `links.toml` entry produces anymore, still sitting on disk. A plain
+  install run (not just `--check-links`) now removes these automatically —
+  the symlink, its manifest entry, and its now-possibly-empty parent
+  directory — and prints each removal; `--check-links` still only reports
+  them, changing nothing, since it is read-only by design.
 
 `--harness` and `--profile` scope which entries are considered; with neither,
 every harness's entries are checked. Widening cannot produce false positives,
