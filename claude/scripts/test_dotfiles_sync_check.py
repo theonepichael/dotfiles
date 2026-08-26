@@ -106,5 +106,17 @@ class DotfilesSyncCheckTestCase(unittest.TestCase):
             self.assertFalse(args.verbose)
 
 
+class DotfilesSyncCheckDefaultRootTestCase(unittest.TestCase):
+    def test_repo_default_derives_from_script_location_not_home(self) -> None:
+        # Regression: REPO used to be hardcoded to ~/dotfiles, which breaks
+        # the moment the checkout has any other name (e.g. a worktree, or
+        # the ~/.dotfiles rename a GitHub-blocked work machine's zip-based
+        # transfer workflow produces). It must be derived from the script's
+        # own location instead, same convention install.py already uses.
+        script_path = Path(dotfiles_sync_check.__file__).resolve()
+        expected_root = script_path.parents[2]
+        self.assertEqual(dotfiles_sync_check.REPO, expected_root)
+
+
 if __name__ == "__main__":
     unittest.main()

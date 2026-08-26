@@ -242,7 +242,7 @@ SessionStart hook: flag when the dotfiles repo has drifted from the last commit 
   - `mark [<sha>]` — record the given (or current HEAD) commit as last-bundled
     - `sha` — commit to record (defaults to HEAD) (nargs: ?)
 - Filesystem constants:
-  - `REPO = Path.home() / 'dotfiles'`
+  - `REPO = Path(__file__).resolve().parents[2]`
   - `STATE_DIR = Path.home() / '.local' / 'state' / 'dotfiles'`
   - `MARKER = STATE_DIR / 'last-bundled-commit'`
 - Explicit exit codes: `1`
@@ -538,7 +538,7 @@ SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/
   - `push-vscode [--dotfiles-root <DOTFILES_ROOT>] [--yes]`
 - Filesystem constants:
   - `HOME = Path.home()`
-  - `DOTFILES = HOME / 'dotfiles'`
+  - `DOTFILES = Path(__file__).resolve().parents[2]`
   - `PROFILE_MARKER = HOME / '.local' / 'state' / 'dotfiles' / 'profile'`
 - Depends on: `cli_common.py`
 - Exceptions:

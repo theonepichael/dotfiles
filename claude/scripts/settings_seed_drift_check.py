@@ -132,9 +132,10 @@ Subcommands
             writes the seed file, never the live files Claude Code/
             opencode hold in memory. Same backup-then-atomic-write pattern
             as ``fix``. Accepts ``--dotfiles-root PATH`` to target a
-            worktree instead of ``~/dotfiles`` (the default) — point it at
-            a fresh worktree per the dotfiles-first git policy rather than
-            writing directly into the main checkout.
+            worktree instead of the live checkout (the default, resolved
+            from this script's own location) — point it at a fresh worktree
+            per the dotfiles-first git policy rather than writing directly
+            into the main checkout.
     push-vscode
             the repo->live direction for VS Code: push the dotfiles seed's
             ``settings.json`` / ``keybindings.json`` out to the live
@@ -202,7 +203,7 @@ from pathlib import Path
 import cli_common
 
 HOME = Path.home()
-DOTFILES = HOME / "dotfiles"
+DOTFILES = Path(__file__).resolve().parents[2]
 
 # Cosmetic keys — per-machine preferences explicitly allowed to drift
 # silently. Anything NOT in this set is reported as drift by default, so a

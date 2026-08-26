@@ -1330,5 +1330,16 @@ class SettingsSeedDriftCheckTestCase(unittest.TestCase):
         )
 
 
+class SettingsSeedDriftCheckDefaultRootTestCase(unittest.TestCase):
+    def test_dotfiles_default_derives_from_script_location_not_home(self) -> None:
+        # Regression: DOTFILES used to be hardcoded to ~/dotfiles, which
+        # breaks the moment the checkout has any other name (e.g. a
+        # worktree, or the ~/.dotfiles rename a GitHub-blocked work
+        # machine's zip-based transfer workflow produces). It must be
+        # derived from the script's own location instead, same convention
+        # install.py already uses.
+        self.assertEqual(ssdc.DOTFILES, REPO_ROOT)
+
+
 if __name__ == "__main__":
     unittest.main()

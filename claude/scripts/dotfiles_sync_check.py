@@ -18,7 +18,7 @@ from pathlib import Path
 
 import cli_common
 
-REPO = Path.home() / "dotfiles"
+REPO = Path(__file__).resolve().parents[2]
 STATE_DIR = Path.home() / ".local" / "state" / "dotfiles"
 MARKER = STATE_DIR / "last-bundled-commit"
 
