@@ -811,9 +811,13 @@ def effective_blockers(item: BacklogItem, index: BacklogIndex) -> list[str]:
     """Return ``item``'s ``blocked_by`` slugs whose referent isn't done.
 
     A blocker slug that no longer resolves in ``index`` still counts as
-    unresolved — it's returned as-is. This missing-slug fallback only
-    fires for legacy or hand-edited data now that :func:`cmd_remove`/
-    :func:`cmd_prune` purge inbound ``blocked_by`` references on delete.
+    unresolved — it's returned as-is. ``index`` is a *backlog* index, so
+    this fallback is also what makes a pending-item blocker (``blocked_by``
+    can hold a pending slug — see :func:`cmd_block`) correctly keep an item
+    out of READY, with no separate pending-aware branch needed here.
+    Otherwise (a genuinely dangling slug) this only fires for legacy or
+    hand-edited data now that :func:`cmd_remove`/:func:`cmd_prune` purge
+    inbound ``blocked_by`` references on delete.
 
     A stored ``blocked_by`` that isn't a list (legacy corruption — a
     string value would previously be iterated character-by-character) is
@@ -1293,6 +1297,7 @@ def render(
         rev = load_rev()
 
     index = build_index(items)
+    pending_index = {p["id"]: p for p in pending_items}
     buckets = _render_order(items)
     in_progress, ready, blocked, in_review, done = buckets
     current_fingerprint = _board_fingerprint(items, pending_items)
@@ -1378,10 +1383,14 @@ def render(
                     parts = []
                     for i, slug in enumerate(eff):
                         dep = index.get(slug)
+                        dep_summary_key = "summary"
+                        if dep is None:
+                            dep = pending_index.get(slug)
+                            dep_summary_key = "description"
                         dep_n = slug_to_num.get(slug)
                         ref = f"#{dep_n}" if dep_n else slug
                         if i == 0 and dep:
-                            hint = dep.get("summary", "")[:55]
+                            hint = dep.get(dep_summary_key, "")[:55]
                             parts.append(f"{ref} ({hint})")
                         else:
                             parts.append(ref)
@@ -2480,8 +2489,9 @@ def cmd_add(args: argparse.Namespace) -> None:
             sys.exit(1)
 
         blocked_by = cast(list[str], _list_field(patch, "blocked_by"))
+        pending_ids = {p["id"] for p in pending_items}
         for dep in blocked_by:
-            if dep not in index:
+            if dep not in index and dep not in pending_ids:
                 print(
                     f"[add] blocked_by references unknown slug: {dep}", file=sys.stderr
                 )
@@ -3031,6 +3041,15 @@ def cmd_rename(args: argparse.Namespace) -> None:
 def cmd_block(args: argparse.Namespace) -> None:
     """Handle ``block``: add a blocker to a backlog item.
 
+    ``blocker`` may be a backlog slug or a pending item's slug — a backlog
+    item can be genuinely blocked on an external wait, not just on another
+    backlog item. ``effective_blockers`` already treats any slug missing
+    from the backlog index as unresolved, so a pending blocker correctly
+    keeps the item out of READY with no further change there; this
+    function only needed to stop rejecting it at the door. Cycle detection
+    stays backlog-index-only deliberately: a pending item carries no
+    ``blocked_by`` of its own, so it can never participate in a cycle.
+
     Refuses duplicates and cycle-creating blockers.
     """
     blocker = args.blocker
@@ -3038,7 +3057,8 @@ def cmd_block(args: argparse.Namespace) -> None:
         "block", args.id, args.if_rev, quiet=args.quiet, verbose=args.verbose
     ) as m:
         index = build_index(m.items)
-        if blocker not in index:
+        pending_ids = {p["id"] for p in m.pending_items}
+        if blocker not in index and blocker not in pending_ids:
             print(f"[block] blocker not found: {blocker}", file=sys.stderr)
             sys.exit(1)
         if blocker in m.item.get("blocked_by", []):
@@ -3512,24 +3532,24 @@ def cmd_prune(args: argparse.Namespace) -> None:
                 _backup_before_bulk_delete(PENDING_FILE)
 
             # Purge inbound refs from the surviving records before either
-            # write. `blocked_by` values are always backlog slugs
-            # (cmd_block rejects non-backlog blockers), so pruning a pending
-            # item alone can never touch `keep` — write it only when
-            # pruned_slugs is non-empty. But pending `blocking` lists
-            # reference backlog slugs, so pruning a *backlog* item alone
-            # can still leave a stale reference in a surviving pending
-            # item — pending_keep must be written whenever either set is
-            # non-empty, not just when a pending item itself was pruned
-            # (an earlier version's asymmetric check silently dropped this
+            # write. `blocked_by` values can be backlog slugs *or* pending
+            # slugs (cmd_block/cmd_add accept both), so pruning a pending
+            # item alone can still leave a stale reference in a surviving
+            # backlog item's `blocked_by` — `keep` must be written whenever
+            # either set is non-empty, not just when a backlog item itself
+            # was pruned. Symmetrically, pending `blocking` lists reference
+            # backlog slugs, so pruning a *backlog* item alone can leave a
+            # stale reference in a surviving pending item — pending_keep
+            # must be written whenever either set is non-empty too (an
+            # earlier version's asymmetric check silently dropped this
             # case: `_purge_inbound_refs` would strip the reference in
             # memory but the file on disk kept the stale slug since
             # save_pending was never called for a backlog-only prune).
             _purge_inbound_refs(pruned_slugs | pending_pruned_slugs, keep, pending_keep)
 
             new_rev = bump_rev()
-            if pruned_slugs:
-                save_items(keep)
             if pruned_slugs or pending_pruned_slugs:
+                save_items(keep)
                 save_pending(pending_keep)
             append_journal_event(
                 _journal_entry("prune", "backlog", new_rev, count=total_removed),

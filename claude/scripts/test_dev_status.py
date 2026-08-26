@@ -237,6 +237,30 @@ class BacklogTestCase(unittest.TestCase):
             dev_status.cmd_add(args)
         self.assertIn("ghost-slug", err.getvalue())
 
+    def test_05b_add_blocked_by_pending_slug_accepted(self):
+        self.write_pending(
+            [
+                {
+                    "id": "pend-wait",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "waiting on someone",
+                    "kind": "email",
+                    "blocking": [],
+                    "related_files": [],
+                    "next_steps": [],
+                    "outcome": None,
+                }
+            ]
+        )
+        args = _args(
+            json='{"id": "my-feature", "summary": "x", "blocked_by": ["pend-wait"]}'
+        )
+        dev_status.cmd_add(args)
+        items = self.read_items()
+        self.assertEqual(items[0]["blocked_by"], ["pend-wait"])
+
     # ── 6: done N resolves via internal re-render ─────────────────────────────
 
     def test_06_done_by_number_resolves_correctly(self):
@@ -374,6 +398,35 @@ class BacklogTestCase(unittest.TestCase):
             dev_status.cmd_block(args)
         self.assertIn("cycle", err.getvalue())
 
+    def test_11c_block_accepts_pending_slug(self):
+        self.write_items([make_item("item-a")])
+        self.write_pending(
+            [
+                {
+                    "id": "pend-block",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "waiting on Angela",
+                    "kind": "email",
+                    "blocking": [],
+                    "related_files": [],
+                    "next_steps": [],
+                    "outcome": None,
+                }
+            ]
+        )
+        dev_status.cmd_block(_args(id="item-a", blocker="pend-block"))
+        items = self.read_items()
+        self.assertEqual(items[0]["blocked_by"], ["pend-block"])
+
+    def test_11d_block_unknown_slug_still_rejected(self):
+        self.write_items([make_item("item-a")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_block(_args(id="item-a", blocker="ghost-slug"))
+        self.assertIn("blocker not found", err.getvalue())
+
     # ── 12: done blocker promotes BLOCKED → READY ────────────────────────────
 
     def test_12_done_blocker_promotes_to_ready(self):
@@ -390,6 +443,37 @@ class BacklogTestCase(unittest.TestCase):
         self.assertIn(items[1], ready)
         self.assertEqual(blocked, [])
         self.assertEqual(in_review, [])
+
+    def test_12b_render_blocked_by_pending_shows_description_hint(self):
+        items = [make_item("blocked-item", blocked_by=["pend-block"])]
+        pending_items = [
+            {
+                "id": "pend-block",
+                "created": "2026-01-01",
+                "updated": "2026-01-01",
+                "status": "waiting_for_reply",
+                "description": "waiting on Angela to reply",
+                "kind": "email",
+                "blocking": ["blocked-item"],
+                "related_files": [],
+                "next_steps": [],
+                "outcome": None,
+            }
+        ]
+        self.write_items(items)
+        self.write_pending(pending_items)
+
+        in_progress, ready, blocked, in_review, done = dev_status._render_order(items)
+        self.assertEqual([i["id"] for i in blocked], ["blocked-item"])
+        self.assertEqual(ready, [])
+
+        out, err = io.StringIO(), io.StringIO()
+        dev_status.render(items, pending_items, out=out, err=err)
+        blocked_by_lines = [
+            line for line in out.getvalue().splitlines() if "↳ blocked by:" in line
+        ]
+        self.assertEqual(len(blocked_by_lines), 1)
+        self.assertIn("waiting on Angela to reply", blocked_by_lines[0])
 
     # ── 13: numbering is 1..N globally, contiguous ───────────────────────────
 
@@ -2186,6 +2270,40 @@ class BacklogTestCase(unittest.TestCase):
             dev_status.cmd_prune(_args(force=True))
         pending_on_disk = dev_status.load_pending()
         self.assertEqual(pending_on_disk[0]["blocking"], [])
+
+    def test_prune_persists_backlog_blocked_by_purge_pending_only(self):
+        """Mirror of the case above: pruning a resolved *pending* item (not
+        a backlog item) must still purge the stale reference from a
+        surviving backlog item's `blocked_by` and persist that to disk —
+        the write-optimization that only saved `keep` when a backlog item
+        was itself pruned would otherwise drop this purge silently."""
+        old = (date.today() - timedelta(days=30)).isoformat()
+        self.write_items([make_item("blocked-item", blocked_by=["old-pending"])])
+        self.write_pending(
+            [
+                {
+                    "id": "old-pending",
+                    "created": old,
+                    "updated": old,
+                    "status": "resolved",
+                    "resolved_at": old,
+                    "description": "long since resolved",
+                    "kind": "email",
+                    "blocking": ["blocked-item"],
+                    "related_files": [],
+                    "next_steps": [],
+                    "outcome": "done",
+                }
+            ]
+        )
+        with (
+            patch("sys.stdout", io.StringIO()),
+            patch("sys.stderr", io.StringIO()),
+            patch.object(dev_status, "_backup_before_bulk_delete", lambda _p: None),
+        ):
+            dev_status.cmd_prune(_args(force=True))
+        items_on_disk = self.read_items()
+        self.assertEqual(items_on_disk[0]["blocked_by"], [])
 
     def test_start_clears_completed_at(self):
         """Starting a previously-done item must clear its completed_at stamp."""
