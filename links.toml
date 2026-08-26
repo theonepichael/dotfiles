@@ -105,6 +105,11 @@ src = "claude/commands/skill-map.md"
 dest = "~/.claude/commands/skill-map.md"
 harness = "claude"
 
+[[link]]
+src = "claude/commands/draft-voice.md"
+dest = "~/.claude/commands/draft-voice.md"
+harness = "claude"
+
 # backlog-item orchestrates grill-me/second-opinion via each harness's native
 # skill mechanism. opencode and Copilot CLI have ports; agy remains unported
 # (description-match-only activation, mid-run delegation uncertain).

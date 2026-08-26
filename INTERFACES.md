@@ -714,6 +714,7 @@ the file existing in the repo; the description is the canonical
 | --- | --- | --- | --- | --- |
 | `/backlog-item` | yes | yes | yes | yes |
 | `/dashboard` | yes | yes | yes | yes |
+| `/draft-voice` | yes | — | — | — |
 | `/grill-me` | yes | yes | yes | yes |
 | `/make-skill` | yes | yes | yes | yes |
 | `/second-opinion` | yes | yes | yes | yes |
@@ -728,6 +729,9 @@ the file existing in the repo; the description is the canonical
 - **`/dashboard`** — surfaces backlog and pending items as a dashboard. use when the user says 'dashboard', 'what's pending', 'show backlog', 'where we at', 'what am i working on', 'open items', or any variant of checking current work status. Renamed from /status to avoid colliding with Claude Code's built-in /status (plan usage/rate-limit view) — a naming collision with a built-in command can silently break custom command loading. (session start is covered by a SessionStart hook — do not run this again unprompted.)
   - Source: `claude/commands/dashboard.md`
   - Installed at: `~/.claude/commands/dashboard.md` (claude)
+- **`/draft-voice`** — Apply the user's own voice and formatting rules when drafting an outgoing informal peer message on their behalf — a Teams reply, a Slack-style ping, a PR comment to a teammate. Use when asked to 'draft a reply', 'write a Teams message', 'draft a Slack message to my teammate', 'write a PR comment', 'respond to this PR comment', 'draft a message to my coworker', or similar. Do not use for formal drafts (email to a director, a written PR description, a public README) — ask before applying these rules there.
+  - Source: `claude/commands/draft-voice.md`
+  - Installed at: `~/.claude/commands/draft-voice.md` (claude)
 - **`/grill-me`** — Interview the user relentlessly about a plan or design until reaching shared understanding, resolving each branch of the decision tree. Use when user wants to stress-test a plan, get grilled on their design, or mentions "grill me".
   - Source: `claude/commands/grill-me.md`
   - Installed at: `~/.claude/commands/grill-me.md` (claude)
@@ -1056,6 +1060,7 @@ new one, `--check` catches it the same as any other stale content.
 | --- | --- |
 | `/backlog-item` | `dashboard`, `grill-me`, `second-opinion`, `spec` |
 | `/dashboard` | — |
+| `/draft-voice` | — |
 | `/grill-me` | `second-opinion`, `spec` |
 | `/make-skill` | `grill-me` |
 | `/second-opinion` | — |
