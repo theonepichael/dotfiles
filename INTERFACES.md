@@ -779,6 +779,7 @@ are copy-once seeds for exactly that reason.
 | `opencode/plugin/ruff-format-on-edit.ts` | `~/.config/opencode/plugin/ruff-format-on-edit.ts` (opencode) |
 | `opencode/tui.json` | `~/.config/opencode/tui.json` (opencode) |
 | `agy/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
+| `agy/hooks/agy-elapsed.js` | `~/.claude/hooks/agy-elapsed.js` (agy) |
 | `agy/hooks.json` | `~/.gemini/config/hooks.json` (agy) |
 
 ---

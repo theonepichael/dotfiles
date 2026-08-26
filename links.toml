@@ -436,6 +436,11 @@ src = "agy/hooks.json"
 dest = "~/.gemini/config/hooks.json"
 harness = "agy"
 
+[[link]]
+src = "agy/hooks/agy-elapsed.js"
+dest = "~/.claude/hooks/agy-elapsed.js"
+harness = "agy"
+
 # ── watchcommit (personal machines only) ─────────────────────────────────
 # It auto-pushes to a personal remote under your personal Claude account
 # login, which has no place on work hardware.
