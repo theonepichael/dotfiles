@@ -60,6 +60,7 @@ from typing import NamedTuple
 
 POLL_INTERVAL = 90
 MODEL = "haiku"
+DEFAULT_REPO = Path(__file__).resolve().parents[1]
 
 STATE_DIR = (
     Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state")))
@@ -413,9 +414,7 @@ def pull_ff_only(repo: Path) -> None:
 
 def main() -> None:
     repo = (
-        Path(sys.argv[1]).expanduser().resolve()
-        if len(sys.argv) > 1
-        else Path.home() / "dotfiles"
+        Path(sys.argv[1]).expanduser().resolve() if len(sys.argv) > 1 else DEFAULT_REPO
     )
 
     if not (repo / ".git").exists():
