@@ -43,6 +43,15 @@ fix genuinely only covers the specific instance (time pressure, unclear root
 cause, etc.), say so explicitly and note what a systemic fix would look
 like, rather than letting the instance-only fix pass as if it were complete.
 
+### Naming conflated states without over-building
+
+A label conflating two cases with different resumption costs (e.g. "not
+started" vs. "paused mid-flight") hides that difference from anyone
+scanning the dashboard. Name the distinction even if you don't build for
+it — but don't add new schema/state/commands until there's evidence the
+conflated case is common. A narrow, reversible fix that surfaces the signal
+without new state is usually the better first move.
+
 ### Keeping skill docs in sync with their scripts
 
 A flag or subcommand can keep its name while its real behavior changes
