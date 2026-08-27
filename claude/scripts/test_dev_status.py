@@ -5,6 +5,7 @@ import fcntl
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -1087,7 +1088,7 @@ class BacklogTestCase(unittest.TestCase):
         for value in sorted(dev_status.VALID_STATUSES):
             out, err = io.StringIO(), io.StringIO()
             with patch("sys.stdout", out), patch("sys.stderr", err):
-                dev_status.cmd_list(_args(status=value))
+                dev_status.cmd_list(_args(status=value, raw=True))
             lines = [
                 ln
                 for ln in out.getvalue().splitlines()
@@ -1126,6 +1127,92 @@ class BacklogTestCase(unittest.TestCase):
             dev_status.cmd_list(_args())
         self.assertNotIn("rev=", out.getvalue())
         self.assertIn("rev=0", err.getvalue())
+
+    # ── 20p–20s: list default table (--raw keeps the frozen TSV) ──────────
+
+    def test_20p_list_default_groups_by_status_in_render_order(self):
+        self.write_items(
+            [
+                make_item("a-done", status="done"),
+                make_item("b-blocked", status="open", blocked_by=["c-progress"]),
+                make_item("c-progress", status="in-progress"),
+                make_item("d-review", status="in-review"),
+                make_item("e-ready", status="open"),
+            ]
+        )
+        out, err = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            dev_status.cmd_list(_args())
+        text = out.getvalue()
+        positions = [
+            text.index(s)
+            for s in ("IN PROGRESS", "READY", "BLOCKED", "IN REVIEW", "DONE")
+        ]
+        self.assertEqual(positions, sorted(positions))
+        for slug in ("a-done", "b-blocked", "c-progress", "d-review", "e-ready"):
+            self.assertIn(slug, text)
+            self.assertIn(f"Summary of {slug}", text)
+
+    def test_20q_list_default_numbers_match_unified_order(self):
+        self.write_pending(
+            [
+                {
+                    "id": "pend-item",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "w",
+                    "kind": "email",
+                }
+            ]
+        )
+        items = [
+            make_item("a-progress", status="in-progress"),
+            make_item("b-open", status="open"),
+        ]
+        self.write_items(items)
+        pending = dev_status.load_pending()
+        ordered = dev_status._unified_order(items, pending)
+        out, err = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            dev_status.cmd_list(_args())
+        printed = out.getvalue()
+        for n, item in enumerate(ordered, start=1):
+            if item["id"] == "pend-item":
+                continue
+            row = next(ln for ln in printed.splitlines() if item["id"] in ln)
+            num = int(re.search(r"\d+", row).group(0))
+            self.assertEqual(num, n, f"row for {item['id']}")
+
+    def test_20r_list_raw_preserves_tsv_bytes(self):
+        items = [
+            make_item("a-open", status="open"),
+            make_item("b-done", status="done"),
+            make_item("c-progress", status="in-progress"),
+        ]
+        self.write_items(items)
+        expected = "\n".join(f"{i['id']}\t{i['status']}\t{i['summary']}" for i in items)
+        out, err = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            dev_status.cmd_list(_args(raw=True))
+        self.assertEqual(out.getvalue(), expected + "\n")
+        # --status composes with --raw exactly as the pre-table TSV did.
+        out2, err2 = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out2), patch("sys.stderr", err2):
+            dev_status.cmd_list(_args(status="done", raw=True))
+        self.assertEqual(out2.getvalue(), "b-done\tdone\tSummary of b-done\n")
+
+    def test_20s_list_default_empty_and_no_match_messages(self):
+        out, err = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out), patch("sys.stderr", err):
+            dev_status.cmd_list(_args())
+        self.assertIn("(backlog is empty)", out.getvalue())
+
+        self.write_items([make_item("only-done", status="done")])
+        out2, err2 = io.StringIO(), io.StringIO()
+        with patch("sys.stdout", out2), patch("sys.stderr", err2):
+            dev_status.cmd_list(_args(status="open"))
+        self.assertIn("(no matching items)", out2.getvalue())
 
     # ── 21: numeric id without --if-rev refused, no write ─────────────────
 
@@ -4454,6 +4541,7 @@ class _args:
 
     if_rev = None  # default; argparse always sets --if-rev (default None)
     status = None  # default; argparse sets --status (default None) for `list`
+    raw = False  # default; argparse sets --raw (default False) for `list`
     apply = False  # default; argparse sets --apply (default False) for backfill-gate
     force = False  # default; argparse sets --force (required) for `prune`
     refresh = False  # default; argparse sets --refresh (default False) for `recap`

@@ -138,6 +138,7 @@ SLUG_MIN, SLUG_MAX = 3, 40
 CATEGORY_TAG = {"bug": "bug", "feature": "feat", "chore": "chore", "research": "rsrch"}
 STALE_DAYS = 7
 SECTION_WIDTH = 76
+_LIST_SUMMARY_MAX = 46
 _RESET = "\x1b[0m"
 _COLORS = {
     "in_progress": "\x1b[33m",
@@ -938,6 +939,13 @@ def _section_top(title: str, width: int = SECTION_WIDTH) -> str:
 def _section_bottom(width: int = SECTION_WIDTH) -> str:
     """Render a section's bottom border."""
     return "└" + ("─" * (width - 1))
+
+
+def _ellipsize(text: str, limit: int) -> str:
+    """Truncate ``text`` to ``limit`` display chars with a trailing ``…``."""
+    if len(text) <= limit:
+        return text
+    return text[: max(limit - 1, 1)] + "…"
 
 
 def _render_order(items: list[BacklogItem]) -> RenderOrder:
@@ -2394,18 +2402,97 @@ def cmd_render(args: argparse.Namespace) -> None:
 
 
 def cmd_list(args: argparse.Namespace) -> None:
-    """Handle ``list``: print flat, tab-separated backlog items.
+    """Handle ``list``: print grouped, aligned backlog sections by default.
 
-    Reads items + rev under :func:`backlog_lock` (same rationale as
-    :func:`cmd_render`).
+    Default output mirrors ``render``'s mental model: non-empty status
+    sections (IN PROGRESS / READY / BLOCKED / IN REVIEW / DONE), with each
+    row numbered to match ``render``'s display numbering so a number copied
+    from ``list`` resolves identically in every mutation command via
+    :func:`resolve_id`. The DONE section uses the same capped selection as
+    ``render`` (:func:`_done_selection`) precisely because only those items
+    appear in :func:`_unified_order` — an uncapped row would have no
+    display number that any numeric-id command could resolve; older done
+    items remain reachable by slug. ``--raw`` preserves the historical
+    machine-readable TSV byte-for-byte.
+
+    Reads items + pending + rev under :func:`backlog_lock` (same rationale
+    as :func:`cmd_render`; pending is needed only for stable numbering).
     """
     with backlog_lock():
         items = load_items()
-        if args.status:
-            items = [i for i in items if i.get("status") == args.status]
-        print(f"# rev={load_rev()}", file=sys.stderr)
+        pending_items = load_pending()
+        rev = load_rev()
+    print(f"# rev={rev}", file=sys.stderr)
+
+    if args.raw:
         for item in items:
-            print(f"{item['id']}\t{item.get('status', '')}\t{item.get('summary', '')}")
+            if args.status is None or item.get("status") == args.status:
+                print(
+                    f"{item['id']}\t{item.get('status', '')}\t{item.get('summary', '')}"
+                )
+        return
+
+    matched_slugs = {
+        item["id"]
+        for item in items
+        if args.status is None or item.get("status") == args.status
+    }
+    if not matched_slugs:
+        print("(backlog is empty)" if args.status is None else "(no matching items)")
+        return
+
+    ordered = _unified_order(items, pending_items)
+    backlog_ids = {item["id"] for item in items}
+    slug_to_num = {
+        item["id"]: n + 1 for n, item in enumerate(ordered) if item["id"] in backlog_ids
+    }
+
+    in_progress, ready, blocked, in_review, _done_capped = _render_order(items)
+    sections: list[tuple[str, Sequence[BacklogItem]]] = [
+        ("IN PROGRESS", in_progress),
+        ("READY", ready),
+        ("BLOCKED", blocked),
+        ("IN REVIEW", in_review),
+        ("DONE", _done_selection(items)),
+    ]
+
+    built: list[tuple[str, list[tuple[int, str, str, str]]]] = []
+    for title, bucket in sections:
+        rows = []
+        for item in bucket:
+            if item["id"] not in matched_slugs:
+                continue
+            rows.append(
+                (
+                    slug_to_num[item["id"]],
+                    _category_tag(cast(str, item.get("category", ""))),
+                    cast(str, item.get("summary", "")),
+                    item["id"],
+                )
+            )
+        if rows:
+            built.append((title, rows))
+
+    num_w = len(str(max(n for _, rws in built for n, *_ in rws)))
+    tag_w = max(len(tag) for _, rws in built for _, tag, _, _ in rws)
+    sum_w = max(
+        len(_ellipsize(summary, _LIST_SUMMARY_MAX))
+        for _, rws in built
+        for _, _, summary, _ in rws
+    )
+
+    out_lines: list[str] = []
+    for i, (title, rows) in enumerate(built):
+        if i > 0:
+            out_lines.append("")
+        out_lines.append(_section_top(title))
+        for n, tag, summary, slug in rows:
+            out_lines.append(
+                f"│ {n:>{num_w}} {tag:<{tag_w}}"
+                f"{_ellipsize(summary, _LIST_SUMMARY_MAX):<{sum_w}}  {slug}"
+            )
+        out_lines.append(_section_bottom())
+    print("\n".join(out_lines))
 
 
 def cmd_show(args: argparse.Namespace) -> None:
@@ -3651,13 +3738,20 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[verbosity_parent],
     )
     p = sub.add_parser(
-        "list", help="flat tab-separated output", parents=[verbosity_parent]
+        "list",
+        help="grouped backlog table (--raw for tab-separated output)",
+        parents=[verbosity_parent],
     )
     p.add_argument(
         "--status",
         choices=sorted(VALID_STATUSES),
         default=None,
         help="only show items with this status",
+    )
+    p.add_argument(
+        "--raw",
+        action="store_true",
+        help="machine-readable TSV (id\\tstatus\\tsummary) instead of the table",
     )
 
     p = sub.add_parser(

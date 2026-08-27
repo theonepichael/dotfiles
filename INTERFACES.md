@@ -76,8 +76,9 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `--verbose/-v`
 - Subcommands:
   - `render` — render dashboard (pure — no side effects)
-  - `list [--status <STATUS>]` — flat tab-separated output
+  - `list [--status <STATUS>] [--raw]` — grouped backlog table (--raw for tab-separated output)
     - `--status` — only show items with this status (choices computed at runtime)
+    - `--raw` — machine-readable TSV (id\tstatus\tsummary) instead of the table
   - `show <slug|N>` — print full JSON for an item
   - `add '{"id": "my-slug", "summary": "...", "priority": "high"}'` — append a new item (id required in JSON)
   - `update <slug|N> '{"field": "value", "priority": "high"}' [--if-rev <N>]` — merge JSON patch into an item
