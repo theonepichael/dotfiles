@@ -162,8 +162,8 @@ src = "claude/scripts/to_tickets_runner.py"
 dest = "~/.claude/scripts/to_tickets_runner.py"
 
 [[link]]
-src = "claude/scripts/gen_claude_completion.py"
-dest = "~/.claude/scripts/gen_claude_completion.py"
+src = "claude/scripts/gen_shell_completion.py"
+dest = "~/.claude/scripts/gen_shell_completion.py"
 
 # Repo-maintenance tool rather than a harness runtime script, but it is linked
 # like the rest so it can be run as ~/.claude/scripts/gen_interfaces.py; it

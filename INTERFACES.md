@@ -37,9 +37,9 @@ House style for these interfaces is in `STYLE.md`.
 | [`dev_status.py`](#claudescriptsdevstatuspy) | dev_status.py v2 — slug IDs, structured dependency graph, pure render. |
 | [`dev_status_sync.py`](#claudescriptsdevstatussyncpy) | dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending store. |
 | [`dotfiles_sync_check.py`](#claudescriptsdotfilessynccheckpy) | SessionStart hook: flag when the dotfiles repo has drifted from the last commit bundled over to a GitHub-blocked work machine. |
-| [`gen_claude_completion.py`](#claudescriptsgenclaudecompletionpy) | Recursively walk `claude --help` and emit a bash completion script. |
 | [`gen_interfaces.py`](#claudescriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`gen_second_opinion.py`](#claudescriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the five second-opinion skill copies from one canonical template. |
+| [`gen_shell_completion.py`](#claudescriptsgenshellcompletionpy) | Generate a zsh `#compdef` completion file for a harness CLI. |
 | [`grill.py`](#claudescriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
 | [`llm_backends.py`](#claudescriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
 | [`opencode_skills_sync_activity.py`](#claudescriptsopencodeskillssyncactivitypy) | Print opencode-skills-sync's pause state and last known snapshot commit, so a session can tell whether the daemon is running and how current its mirror is -- mirrors watchcommit_activity.py's SessionStart banner role. |
@@ -253,38 +253,6 @@ SessionStart hook: flag when the dotfiles repo has drifted from the last commit 
 - Subcommand handlers: `cmd_check`, `cmd_mark`
 - Tested by: `claude/scripts/test_dotfiles_sync_check.py`
 
-### `claude/scripts/gen_claude_completion.py`
-
-Recursively walk `claude --help` and emit a bash completion script.
-
-- Installed at: `~/.claude/scripts/gen_claude_completion.py` (all harnesses)
-- Entrypoint: not executable, `#!/usr/bin/env python3`
-- CLI (`argparse`): Recursively walk `claude --help` and emit a bash completion script.
-  - `--quiet/-q`
-  - `--verbose/-v`
-  - `--out`
-  - `--stdout` — Print to stdout instead of writing
-- Filesystem constants:
-  - `DEFAULT_OUT = Path.home() / '.local/share/bash-completion/completions/claude'`
-- Depends on: `cli_common.py`
-- Public classes:
-  - `class Option`
-  - `class Node`
-- Public functions:
-  - `run_help(path: list[str], *, verbose: bool = False) -> str`
-  - `collect_sections(text: str) -> dict[str, list[str]]`
-  - `parse_options(lines: list[str]) -> list[Option]`
-  - `parse_commands(lines: list[str]) -> list[tuple[str, list[str]]]` — Return list of (primary_name, aliases).
-  - `help_matches_path(text: str, path: tuple[str, ...]) -> bool` — Check that the help output's `Usage:` line reflects the path we asked for.
-  - `build_tree(path: tuple[str, ...], seen: set[tuple[str, ...]], *, verbose: bool = False) -> Node`
-  - `path_key(path: tuple[str, ...]) -> str`
-  - `is_dir_option(opt: Option) -> bool`
-  - `is_file_option(opt: Option) -> bool`
-  - `collect_all_nodes(root: Node) -> list[Node]`
-  - `shell_quote(s: str) -> str`
-  - `emit_bash(root: Node) -> str`
-- Tested by: nothing
-
 ### `claude/scripts/gen_interfaces.py`
 
 gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
@@ -393,6 +361,47 @@ gen_second_opinion.py — regenerate the five second-opinion skill copies from o
   - `check_row_comments(repo_root: Path) -> list[str]` — Return problems where a HARNESS_TABLE keyword argument has no comment on the line immediately above it.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
 - Tested by: `claude/scripts/test_gen_second_opinion.py`
+
+### `claude/scripts/gen_shell_completion.py`
+
+Generate a zsh `#compdef` completion file for a harness CLI.
+
+- Installed at: `~/.claude/scripts/gen_shell_completion.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Generate a zsh `#compdef` completion file for a harness CLI.
+  - `--quiet/-q`
+  - `--verbose/-v`
+  - `--harness` — harness to generate a completion for, or 'all' (choices computed at runtime; required)
+  - `--out` — output path (only valid for a single harness)
+  - `--stdout` — print to stdout instead of writing
+- Filesystem constants:
+  - `DEFAULT_OUT_DIR = Path.home() / '.zsh/completions'`
+- Depends on: `cli_common.py`
+- Public classes:
+  - `class HarnessSpec`
+  - `class Option`
+  - `class Node`
+- Public functions:
+  - `run_help(cli: str, path: list[str], *, verbose: bool = False) -> str`
+  - `run_goflag_subcommand_help(cli: str, name: str, *, verbose: bool = False) -> str`
+  - `collect_sections(text: str) -> dict[str, list[str]]`
+  - `parse_options(lines: list[str]) -> list[Option]`
+  - `parse_commands(lines: list[str]) -> list[tuple[str, list[str], str]]` — Return list of (primary_name, aliases, description).
+  - `is_dir_option(opt: Option) -> bool`
+  - `is_file_option(opt: Option) -> bool`
+  - `help_matches_path(cli: str, text: str, path: tuple[str, ...]) -> bool` — Check that the help output's `Usage:` line reflects the path we asked for.
+  - `build_tree(cli: str, path: tuple[str, ...], seen: set[tuple[str, ...]], *, verbose: bool = False) -> Node`
+  - `collect_goflag_sections(text: str, *, is_root: bool) -> dict[str, list[str]]` — Split go-flag `--help`/`help <name>` output into Flags/Commands blocks.
+  - `build_tree_goflag(cli: str, *, verbose: bool = False) -> Node` — Build a 2-level-deep tree: root flags/subcommands, one level of
+  - `run_native_passthrough(spec: HarnessSpec, *, verbose: bool = False) -> str | None`
+  - `option_label(opt: Option) -> str`
+  - `esc_desc(s: str) -> str`
+  - `format_option(opt: Option) -> str`
+  - `sanitize(path: tuple[str, ...]) -> str`
+  - `needs_function(node: Node) -> bool`
+  - `emit_zsh(root: Node, cli: str) -> str`
+  - `generate(spec: HarnessSpec, *, verbose: bool = False) -> str | None`
+- Tested by: `claude/scripts/test_gen_shell_completion.py`
 
 ### `claude/scripts/grill.py`
 
