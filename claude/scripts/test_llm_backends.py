@@ -11,6 +11,7 @@ mocks `_run_command`/`run_backend_command` instead, since real
 """
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -186,6 +187,37 @@ class RunCommandRealSubprocessTests(unittest.TestCase):
         # killed promptly, not left running the full 30s sleep
         self.assertLess(elapsed, 5)
         self.assertIsNone(llm_backends._active_process)
+
+    @pytest.mark.allow_real_subprocess
+    def test_62_child_does_not_inherit_an_open_never_eof_stdin(self) -> None:
+        # Regression for anomalyco/opencode#38723: a child that reads stdin
+        # at all blocks forever if it inherits a descriptor that never
+        # reaches EOF (e.g. a pipe whose write end is still open) -- which is
+        # exactly what our own stdin can look like when this process is
+        # itself spawned by a long-lived parent. Simulates that by replacing
+        # our own fd 0 with the read end of a pipe whose write end is
+        # deliberately kept open for the duration of the call. Pre-fix (no
+        # stdin= on Popen), the child inherits this and `sys.stdin.read()`
+        # never returns, so `_run_command` would raise on the 5s timeout
+        # instead of returning quickly.
+        read_fd, write_fd = os.pipe()
+        saved_stdin_fd = os.dup(0)
+        try:
+            os.dup2(read_fd, 0)
+            os.close(read_fd)
+            start = time.monotonic()
+            returncode, stdout, _stderr = llm_backends._run_command(
+                py("import sys; data = sys.stdin.read(); print(len(data))"),
+                timeout=5,
+            )
+            elapsed = time.monotonic() - start
+        finally:
+            os.dup2(saved_stdin_fd, 0)
+            os.close(saved_stdin_fd)
+            os.close(write_fd)
+        self.assertEqual(returncode, 0)
+        self.assertEqual(stdout.strip(), "0")
+        self.assertLess(elapsed, 3)
 
     @pytest.mark.allow_real_subprocess
     def test_59_retries_zero_by_default_message_unchanged(self) -> None:

@@ -114,6 +114,18 @@ def _run_command(
     Tracks the running process in :data:`_active_process` so a termination
     signal or a timeout can kill it (and its whole process group).
 
+    ``stdin`` is always :data:`subprocess.DEVNULL`, never inherited: every
+    backend here is a one-shot, non-interactive prompt, so a child never
+    needs to read from our stdin. Without this, a child that reads stdin at
+    all (opencode's CLI does, unconditionally, per
+    ``anomalyco/opencode#38723``) inherits our own process's stdin file
+    descriptor by default and blocks forever if that descriptor never
+    reaches EOF (e.g. an open pipe with no writer, which is exactly what a
+    long-lived parent process like this one hands its children) — this
+    reproduced reliably in this environment and is a confirmed root cause of
+    "opencode intermittently hangs" reports upstream, not merely a
+    hypothesis.
+
     Args:
         cmd: The command and arguments to execute.
         timeout: Seconds to wait before killing the process.
@@ -140,6 +152,7 @@ def _run_command(
         try:
             proc = subprocess.Popen(
                 cmd,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
