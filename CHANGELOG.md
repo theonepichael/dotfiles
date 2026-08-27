@@ -3,6 +3,23 @@
 This repo's internal tooling changes are logged here. Breaking changes to
 harness CLIs, flags, or behavior get an entry going forward.
 
+## 2026-08-27
+
+### Fixed
+
+- `llm_backends.py`'s `_run_command` (shared subprocess plumbing for
+  agy/opencode/copilot, used by `second_opinion.py` and `dev_status.py`'s
+  recap generation) now spawns every backend with `stdin=subprocess.DEVNULL`
+  instead of inheriting this process's stdin. Root-caused against a
+  currently-open upstream bug, `anomalyco/opencode#38723`: `opencode run`
+  unconditionally reads stdin at startup and blocks forever if that
+  descriptor never reaches EOF (e.g. an open pipe with no writer) — exactly
+  what a long-lived parent process (this one) hands its children by default.
+  This reproduced live in this environment and is the dominant cause behind
+  `second_opinion.py`'s opencode backend "intermittently hangs" reports,
+  distinct from the already-mitigated event-stream-stall issue the existing
+  single retry targets.
+
 ## 2026-08-26
 
 ### Added
