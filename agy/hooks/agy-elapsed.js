@@ -14,7 +14,13 @@
 
 const fs = require('fs');
 const os = require('os');
-const STATE_FILE = `${os.tmpdir()}/agy-elapsed-state.json`;
+const crypto = require('crypto');
+
+// Generous on purpose: a heuristic floor under the lastIdle-based reset, for
+// a crash/kill mid-turn that lastIdle alone can't catch (no idle poll ever
+// arrives to record it). Not a derived number — chosen to sit far above any
+// real continuous-polling gap seen in captured data (up to ~80s).
+const STALE_MS = 6 * 60 * 60 * 1000; // 6h
 
 function fmtDuration(ms) {
   const s = Math.round(ms / 1000);
@@ -45,12 +51,11 @@ function fmtQuota(quota, modelName) {
   const isGemini = m.includes('gemini');
   const prefix = isGemini ? 'gemini-' : '3p-';
 
-  // Dynamically derive label from modelName if non-Gemini
   let label = 'Gemini';
   if (!isGemini) {
-    // Take the first word of model name (e.g., "Claude", "GPT", "DeepSeek", "Mistral", "o3-mini" -> "o3")
-    const firstWord = rawName.split(/\s+/)[0] || '3p';
-    label = firstWord.replace(/[^a-zA-Z0-9-]/g, '');
+    // 3p-* buckets are a single pool shared across all non-Gemini models,
+    // confirmed empirically (not documented by antigravity.google).
+    label = '3rd-party';
   }
 
   // Find the tightest (lowest remaining_fraction = highest usage) bucket for this provider
@@ -64,14 +69,23 @@ function fmtQuota(quota, modelName) {
   return reset ? `${label} ${usedPct}% used (resets in ${reset})` : `${label} ${usedPct}% used`;
 }
 
-function loadState() {
-  try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); }
-  catch (_) { return {}; }
+function loadState(path) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path, 'utf8'));
+    // Valid JSON that isn't an object (e.g. a bare "null" or a number) would
+    // otherwise throw downstream the first time a field is read off it.
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_) { return {}; }
 }
 
-function saveState(s) {
-  try { fs.writeFileSync(STATE_FILE, JSON.stringify(s)); }
-  catch (_) {}
+function saveState(path, s) {
+  try {
+    const tmp = `${path}.tmp.${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify(s));
+    fs.renameSync(tmp, path);
+  } catch (e) {
+    if (process.env.AGY_STATUSLINE_DEBUG) console.error('saveState failed:', e);
+  }
 }
 
 let raw = '';
@@ -86,24 +100,57 @@ process.stdin.on('end', () => {
       new Date().toISOString() + '\n' + JSON.stringify(data, null, 2) + '\n---\n');
   }
 
-  const now = Date.now();
-  // Real agy data model: agent_state = "working" | "idle" | "done"
+  // Test-only override: normal/production use always takes Date.now(). Env
+  // vars are always strings, so parse explicitly rather than let a raw
+  // string "now" silently turn later arithmetic/serialization into string
+  // concatenation.
+  const now = process.env.AGY_FAKE_NOW != null && process.env.AGY_FAKE_NOW !== ''
+    ? Number(process.env.AGY_FAKE_NOW)
+    : Date.now();
+
+  // crypto.update() throws on a non-string/Buffer input; a malformed payload
+  // could hand session_id as a number or object, so coerce defensively.
+  const sessionId = typeof data.session_id === 'string'
+    ? data.session_id
+    : (data.session_id ? String(data.session_id) : '');
+  const sessionKey = sessionId
+    ? crypto.createHash('sha256').update(sessionId).digest('hex')
+    : '';
+  const STATE_FILE = sessionKey
+    ? `${os.tmpdir()}/agy-elapsed-state-${sessionKey}.json`
+    : `${os.tmpdir()}/agy-elapsed-state.json`;
+
+  // Real agy data model: agent_state has 5 observed values — working, idle,
+  // tool_use, authenticating, running. Deny-list, not allow-list: any future
+  // or rare state this script hasn't seen defaults to "still in a turn"
+  // rather than "turn ended" — the safer direction, since treating an active
+  // state as active (timer keeps counting) is much milder than treating it
+  // as idle (spurious premature "done" line).
+  const IDLE_STATES = new Set(['idle', 'authenticating']);
   const agentState = (data.agent_state || '').toLowerCase();
-  const isRunning = agentState === 'working';
+  const isRunning = !IDLE_STATES.has(agentState);
   const isThinking = isRunning && (data.model?.id || '').toLowerCase().includes('thinking');
   // Tokens: sum of input+output from context_window
   const ctxWindow = data.context_window || {};
   const totalTokens = (ctxWindow.total_input_tokens || 0) + (ctxWindow.total_output_tokens || 0);
   // Model: object with display_name
   const modelName = (data.model?.display_name || data.model?.id || '');
-  const state = loadState();
+  const state = loadState(STATE_FILE);
   let text = '';
 
+  // Staleness check runs uniformly before the running/idle branch, so it
+  // isn't missed on the idle branch. A crash/kill mid-turn leaves no idle
+  // poll to record lastIdle, so this heartbeat is the only backstop for it.
+  const lastSeen = state.lastSeen != null ? state.lastSeen : state.turnStart;
+  if (state.turnStart && now - lastSeen > STALE_MS) {
+    for (const k of Object.keys(state)) delete state[k];
+  }
+  state.lastSeen = now;
+
   if (isRunning) {
-    if (!state.turnStart) {
+    if (!state.turnStart || state.lastIdle) {
       state.turnStart = now;
       state.lastIdle = false;
-      saveState(state);
     }
     const elapsed = now - state.turnStart;
     const icon = isThinking ? '🤔' : '⏱';
@@ -124,13 +171,12 @@ process.stdin.on('end', () => {
   } else {
     if (state.turnStart && !state.lastIdle) {
       const elapsed = now - state.turnStart;
-      const finishedAt = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+      const finishedAt = new Date(now).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
       const quota = fmtQuota(data.quota, modelName);
       text = `✓ ${fmtDuration(elapsed)} · done ${finishedAt}${quota ? ' · ' + quota : ''}`;
       state.lastIdle = true;
       state.doneAt = now;
       state.doneText = text;
-      saveState(state);
     } else if (state.lastIdle && state.doneText) {
       // Recompute quota dynamically so percentage and reset time update live during idle
       const quota = fmtQuota(data.quota, modelName);
@@ -152,5 +198,6 @@ process.stdin.on('end', () => {
     }
   }
 
+  saveState(STATE_FILE, state);
   process.stdout.write(text + '\n');
 });

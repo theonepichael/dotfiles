@@ -790,6 +790,7 @@ are copy-once seeds for exactly that reason.
 | `opencode/tui.json` | `~/.config/opencode/tui.json` (opencode) |
 | `agy/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
 | `agy/hooks/agy-elapsed.js` | `~/.claude/hooks/agy-elapsed.js` (agy) |
+| `agy/hooks/agy-elapsed.test.js` | not symlinked by `links.toml` |
 | `agy/hooks.json` | `~/.gemini/config/hooks.json` (agy) |
 
 ---
