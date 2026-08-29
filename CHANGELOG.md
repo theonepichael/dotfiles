@@ -3,6 +3,23 @@
 This repo's internal tooling changes are logged here. Breaking changes to
 harness CLIs, flags, or behavior get an entry going forward.
 
+## 2026-08-29
+
+### Fixed
+
+- `agy/hooks/agy-elapsed.js` (agy status line): the elapsed-time timer never
+  reset after the first turn, every tool call inside a turn was
+  misclassified as idle (producing a premature "done" line mid-turn), and
+  all concurrent agy processes on a machine shared one state file. Now uses
+  a deny-list of idle `agent_state` values, resets the timer only when a new
+  turn starts after a genuine idle transition, scopes the state file per
+  `session_id`, writes state atomically (temp file + rename), and adds a 6h
+  staleness heartbeat to recover from a crashed/killed turn. Also fixed the
+  non-Gemini quota label to read "3rd-party" instead of the current model's
+  name, since the `3p-*` quota buckets are shared across all non-Gemini
+  models. Covered by a new `agy/hooks/agy-elapsed.test.js` (Node's built-in
+  test runner), wired into `uv run pytest` via `test/test_agy_elapsed.py`.
+
 ## 2026-08-27
 
 ### Fixed
