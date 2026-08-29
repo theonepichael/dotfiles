@@ -63,10 +63,12 @@ function fmtQuota(quota, modelName) {
     .filter(([k]) => k.startsWith(prefix))
     .sort(([, a], [, b]) => a.remaining_fraction - b.remaining_fraction);
   if (!buckets.length) return null;
-  const [, tightest] = buckets[0];
+  const [tightestKey, tightest] = buckets[0];
   const usedPct = Math.round((1 - tightest.remaining_fraction) * 100);
   const reset = fmtResetIn(tightest.reset_in_seconds);
-  return reset ? `${label} ${usedPct}% used (resets in ${reset})` : `${label} ${usedPct}% used`;
+  const window = tightestKey.endsWith('-weekly') ? 'wk' : '5h';
+  if (reset) return `${label} ${usedPct}% used (${window}, resets in ${reset})`;
+  return `${label} ${usedPct}% used (${window})`;
 }
 
 function loadState(path) {

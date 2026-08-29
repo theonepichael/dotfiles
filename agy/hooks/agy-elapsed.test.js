@@ -147,6 +147,36 @@ test('quota label for non-Gemini model reads "3rd-party", not the model name', (
   assert.doesNotMatch(text, /DeepSeek \d+%/, `quota label itself must not use the model name, got: ${text}`);
 });
 
+test('quota window label: 5h bucket is tightest, label says "5h"', () => {
+  const dir = freshTmpDir();
+  const payload = {
+    agent_state: 'working',
+    session_id: 's-quota-5h',
+    model: { display_name: 'DeepSeek V3' },
+    quota: {
+      '3p-5h': { remaining_fraction: 0.4, reset_in_seconds: 3600 },
+      '3p-weekly': { remaining_fraction: 0.9, reset_in_seconds: 200000 },
+    },
+  };
+  const { text } = run(payload, { tmpdir: dir, fakeNow: 1000 });
+  assert.match(text, /3rd-party 60% used \(5h, resets in 1h\)/, `expected 5h window label, got: ${text}`);
+});
+
+test('quota window label: weekly bucket is tightest, label says "wk"', () => {
+  const dir = freshTmpDir();
+  const payload = {
+    agent_state: 'working',
+    session_id: 's-quota-wk',
+    model: { display_name: 'DeepSeek V3' },
+    quota: {
+      '3p-5h': { remaining_fraction: 0.9, reset_in_seconds: 3600 },
+      '3p-weekly': { remaining_fraction: 0.4, reset_in_seconds: 200000 },
+    },
+  };
+  const { text } = run(payload, { tmpdir: dir, fakeNow: 1000 });
+  assert.match(text, /3rd-party 60% used \(wk, resets in/, `expected wk window label, got: ${text}`);
+});
+
 test('torn-write recovery: stray .tmp.<pid> file does not interfere with reading valid state', () => {
   const dir = freshTmpDir();
   const sessionId = 's-torn';
