@@ -109,6 +109,7 @@ class HarnessParams:
     usage_block: str
     review_call: str
     review_call_retry: str
+    grill_plan_lookup: str
 
 
 HARNESS_TABLE: dict[str, HarnessParams] = {
@@ -185,6 +186,9 @@ second_opinion.py review <plan-file-or-text> \\
         critique = second_opinion.py review <current_plan> \\
                        [--focus-file <focus-hints-path>]   # retry, no index —\
 """,
+        # every harness but Pi still reaches grill.py through bash, so the
+        # plan-path lookup stays a CLI invocation, 2026-08-30
+        grill_plan_lookup="`grill.py show`'s most recent session `plan_path`",
     ),
     "opencode/command/second-opinion.md": HarnessParams(
         frontmatter="""\
@@ -254,6 +258,9 @@ second_opinion.py review <plan-file-or-text> \\
         critique = second_opinion.py review <current_plan> \\
                        [--focus-file <focus-hints-path>]   # retry, no index —\
 """,
+        # every harness but Pi still reaches grill.py through bash, so the
+        # plan-path lookup stays a CLI invocation, 2026-08-30
+        grill_plan_lookup="`grill.py show`'s most recent session `plan_path`",
     ),
     "opencode/skills/second-opinion/SKILL.md": HarnessParams(
         frontmatter="""\
@@ -322,6 +329,9 @@ second_opinion.py review <plan-file-or-text> \\
         critique = second_opinion.py review <current_plan> \\
                        [--focus-file <focus-hints-path>]   # retry, no index —\
 """,
+        # every harness but Pi still reaches grill.py through bash, so the
+        # plan-path lookup stays a CLI invocation, 2026-08-30
+        grill_plan_lookup="`grill.py show`'s most recent session `plan_path`",
     ),
     "copilot/skills/second-opinion/SKILL.md": HarnessParams(
         frontmatter="""\
@@ -398,6 +408,9 @@ second_opinion.py review <plan-file-or-text> \\
         critique = second_opinion.py review <current_plan> \\
                        [--focus-file <focus-hints-path>]   # retry, no index —\
 """,
+        # every harness but Pi still reaches grill.py through bash, so the
+        # plan-path lookup stays a CLI invocation, 2026-08-30
+        grill_plan_lookup="`grill.py show`'s most recent session `plan_path`",
     ),
     "agy/skills/second-opinion/SKILL.md": HarnessParams(
         frontmatter="""\
@@ -469,6 +482,9 @@ second_opinion.py review <plan-file-or-text> \\
         critique = second_opinion.py review <current_plan> \\
                        [--focus-file <focus-hints-path>]   # retry, no index —\
 """,
+        # every harness but Pi still reaches grill.py through bash, so the
+        # plan-path lookup stays a CLI invocation, 2026-08-30
+        grill_plan_lookup="`grill.py show`'s most recent session `plan_path`",
     ),
     "pi/prompts/second-opinion.md": HarnessParams(
         frontmatter="""\
@@ -543,6 +559,14 @@ argument-hint: [plan file or text]
                        planFile = <current_plan>
                        [focusFile = <focus-hints-path>]   # retry, no index —\
 """,
+        # Pi reaches grill.py only through its native grill tool
+        # (pi/extensions/grill-tool.ts); grill.py is off permission-gate.ts's
+        # bash allowlist, so a bash call to it stalls on a confirmation
+        # prompt or fails outright headless, 2026-08-30
+        grill_plan_lookup=(
+            "the most recent session's `plan_path` from the `grill` tool's "
+            "`show` action"
+        ),
     ),
 }
 
@@ -565,6 +589,7 @@ def substitutions(params: HarnessParams) -> dict[str, str]:
         "USAGE_BLOCK": params.usage_block,
         "REVIEW_CALL": params.review_call,
         "REVIEW_CALL_RETRY": params.review_call_retry,
+        "GRILL_PLAN_LOOKUP": params.grill_plan_lookup,
     }
 
 
