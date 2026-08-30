@@ -146,8 +146,31 @@ user typing the slash form at all. `pi/prompts/backlog-item.md`,
 
 ## 5. Extensions (`pi/extensions/`)
 
-Four extensions, all verified live end-to-end against a real Pi session
-(provider `opencode-go`, model `kimi-k2.6`), not just read through:
+Twelve extensions. Their verification states genuinely differ, so this
+section records each one's rather than asserting a single claim over all of
+them:
+
+- **Exercised live in a real Pi session**, with the tool call read back out
+  of the session JSONL rather than inferred from the reply text —
+  `guard-rails`, `permission-gate`, `ruff-format-on-edit`,
+  `dev-status-tool`, and the five script wrappers below
+  (`grill`, `second-opinion`, `standup`, `to-tickets`,
+  `vitals-promotion`). Provider `opencode-go`, model `kimi-k2.6`.
+- **`question-tool`**: both paths exercised — the headless refusal, and the
+  TUI picker driven through a pty, which returned a real arrow-key
+  selection of the *second* option (a default-accepting bug would have
+  returned the first).
+- **Unit-tested only, no live run**: `custom-footer` and
+  `philosophy-header`. Both are cosmetic and TUI-only. `philosophy-header`
+  ran live for a day before adoption, but as the pre-refactor file, not the
+  version committed here.
+
+A note that cost real debugging time and applies to every tool below: a
+fenced ` ```bash ` fallback block defeats a "prefer the tool" instruction
+no matter how clear the surrounding prose is. See `dev-status-tool.ts`'s
+subsection for the regression that established this. Every prompt template
+converted to a tool since has had its fenced command block removed, not
+reworded.
 
 ### `guard-rails.ts`
 
@@ -298,6 +321,63 @@ generally: any Pi prompt template with a "primary: tool, fallback: bash"
 shape should keep the fallback out of a code fence, not just this repo's
 3 dev_status-calling files.
 
+### The script-wrapper tools
+
+`grill-tool.ts`, `second-opinion-tool.ts`, `standup-tool.ts`,
+`to-tickets-tool.ts` and `vitals-promotion-tool.ts` all follow
+`dev-status-tool.ts`'s pattern: one `pi.registerTool()` per script, a
+typed `StringEnum` action plus optional fields, validation in exported
+pure functions so it is unit-testable, and `promptGuidelines` telling the
+model never to reach for the script via bash. Each has its Pi prompt
+template converted to call the tool, a `links.toml` entry, and bun tests
+over its `assertFields`/`buildArgv` helpers. Only what is distinctive is
+recorded here.
+
+- **`grill-tool.ts`** — all 14 subcommands, the largest wrapper. Unlike
+  `dev_status.py`, `grill.py` addresses sessions by slug or unique
+  substring only, never a numeric position, so the numeric-identity
+  refusal that dominates `dev-status-tool.ts` has no analogue and
+  `session` passes through as-is. The validation mirrors constraints the
+  script already enforces so a bad call fails with a useful message rather
+  than an argparse error: `new` needs `payload.topic`, `ask`/`decide` need
+  `payload.id`, and a `VERIFIED` or `DISPUTED` verdict needs `evidence`,
+  matching `grill.py`'s own `EVIDENCE_REQUIRED`.
+- **`second-opinion-tool.ts`** — `detect` and `review`. `modelIndex` is
+  compared against `undefined`, not truthiness: index 0 is round 1 of the
+  rotation, and a truthiness test would silently drop it and fall back to
+  the single-model override instead of the pool. The multi-round loop,
+  plan revision and convergence judgment stay in the prompt template; the
+  script is single-round by design and the tool does not model them.
+- **`standup-tool.ts`** — `fetch` only. The tool validates `date`'s shape
+  before the script runs: `standup.py` takes it as a bare string, and a
+  wrong shape does not error, it lands the window on the wrong day and the
+  standup silently covers the wrong period. Pending-item writes are
+  deliberately absent — those go through `dev_status`.
+- **`to-tickets-tool.ts`** — `run` only, path in, slugs out. The argv shape
+  gains little; what it removes is the shell. Batch files and the ticket
+  text behind them routinely contain apostrophes, and `to-tickets.md` had
+  to carry a quoting rule to stop an inline single-quoted command breaking
+  on them. `pi.exec` takes argv directly, so no shell parses the path.
+- **`vitals-promotion-tool.ts`** — the script is flags-only, with no
+  subcommands. Modelled as two actions (`run`, `needs_review_summary`)
+  rather than a bare flag bag, so `apply` cannot be offered on the
+  summary-only path where the script would silently ignore it.
+
+**Verified live** (2026-08-30, tool calls read from session JSONL):
+`grill` `{action:"list"}` returned the real session list; `second_opinion`
+`{action:"detect"}` returned the four available backends; `standup`
+`{action:"fetch"}` returned real data and `--date` correctly shifted the
+window; `to_tickets` `{action:"run", batchFile:…}` created two throwaway
+tickets with their `blocked_by` edge intact, since removed. `vitals_promotion`
+is the sharpest evidence that the schema reads correctly to a model rather
+than only to its author: asked for a dry run, the model sent
+`{action:"run"}` with `apply` omitted — exactly the intended encoding.
+
+Also verified: with `grill.py` and `second_opinion.py` off
+`permission-gate.ts`'s bash allowlist, a direct instruction to run
+`python3 ~/.claude/scripts/grill.py list` as bash was refused by the model,
+which rerouted through the `grill` tool on its own.
+
 ### `question-tool.ts`
 
 Registers `question` — the AskUserQuestion equivalent Pi has no built-in
@@ -335,6 +415,37 @@ multi-select, and the multi-question loop are this repo's.
 `ui.custom` path is not unit-testable and has not been driven live in a
 real TUI session — unlike the four extensions above, this one's UI is
 verified by adaptation from Pi's shipped example, not by observation.
+
+### `custom-footer.ts` and `philosophy-header.ts`
+
+The two cosmetic extensions. Both are TUI-only and both are **unit-tested
+but never run live** — stated plainly because the rest of this section's
+claims are live-verified and flattening the difference would make the
+section less useful, not more.
+
+- **`custom-footer.ts`** — replaces the footer with the git branch, the
+  active model, and a pending-item count, behind `/custom-footer`. It is
+  the one extension with no test file at all; `refreshPendingCount` parses
+  `dev_status.py pending list` JSONL and swallows malformed lines, which is
+  real logic worth covering.
+- **`philosophy-header.ts`** — replaces Pi's startup header with a wordmark
+  and one of six taglines quoted from this repo's own `STYLE.md` and
+  `claude/CLAUDE.md`, picked once per session; `/builtin-header` restores
+  the stock one. It imports only a type, so no `pi.exec`, no filesystem, no
+  network, and `ctx.mode !== "tui"` makes it inert in print, RPC and JSON
+  modes.
+
+`philosophy-header.ts` is also the cautionary tale for this whole
+directory. It was authored straight into `~/.pi/agent/extensions/` and
+never tracked — Pi loads every `.ts` there, so it ran in every TUI session
+from a file that was invisible to review, absent on every other machine,
+and one directory rebuild from gone. `custom-footer.ts` failed the same way
+from the other direction: it was committed to the repo but hand-symlinked
+from the worktree that authored it, so removing that worktree left a
+dangling link and it silently stopped loading. `test_pi_extension_links.py`
+now asserts repo-to-`links.toml` parity in both directions, which catches
+the second failure. It cannot catch the first — a file that exists only in
+the installed directory is still undetected, tracked as its own item.
 
 ## 6. second-opinion / dev_status recap backend
 
