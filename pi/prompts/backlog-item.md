@@ -107,9 +107,9 @@ built-ins — so state the options, recommend one, then stop and wait for an
 actual reply):
 
 - **Same session, now.** Trivial/small item → go to step 8 immediately.
-- **Fresh Pi session.** Run `grill.py mark-pending-execution
-  --backlog-slug <slug>` (the plan's session, with this item's slug — not
-  its own resolved-topic slug) and tell the user to start a fresh session
+- **Fresh Pi session.** Use the `grill` tool's `mark_pending_execution`
+  action with `backlogSlug` set to this item's slug (the plan's session,
+  with this item's slug — not its own resolved-topic slug) and tell the user to start a fresh session
   and type `/backlog-item <slug|N>`. Pi supports a `session_start`
   extension event (`docs/extensions.md`), but this repo doesn't ship an
   extension hooked to it to auto-surface the marked plan, so the typed
