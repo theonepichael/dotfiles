@@ -8,13 +8,12 @@ No autonomous scanning: this only runs when invoked.
 
 ## 1. Fetch
 
-```
-python3 ~/.claude/scripts/standup.py fetch [--date YYYY-MM-DD]
-```
+Call the `standup` tool with action `fetch` — never `standup.py` via bash.
 
-`--date` overrides the reference date (defaults to today) — use it after a
-gap longer than one working day (holiday, PTO) where the default
-last-working-day boundary would land on the wrong day.
+Its optional `date` field (`YYYY-MM-DD`) overrides the reference date
+(defaults to today) — use it after a gap longer than one working day
+(holiday, PTO) where the default last-working-day boundary would land on the
+wrong day.
 
 Returns one JSON object: `date`, `since` (the computed time boundary every
 windowed source used), `git_commits`, `backlog_in_progress`,
