@@ -47,6 +47,7 @@ COPIES = (
     "opencode/skills/second-opinion/SKILL.md",
     "copilot/skills/second-opinion/SKILL.md",
     "agy/skills/second-opinion/SKILL.md",
+    "pi/prompts/second-opinion.md",
 )
 
 

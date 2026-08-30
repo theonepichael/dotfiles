@@ -7,9 +7,9 @@ edit the body template for shared wording or the per-harness parameter table
 for harness-specific wording, then regenerate -->
 
 All backend I/O goes through `python3 ~/.claude/scripts/second_opinion.py` —
-never shell out to `agy`/`opencode`/`copilot` directly. It is single-round: one
-call, one critique. The multi-round loop and plan revision are your job, not
-the script's.
+never shell out to `agy`/`opencode`/`pi`/`copilot` directly. It is
+single-round: one call, one critique. The multi-round loop and plan revision
+are your job, not the script's.
 
 ```
 second_opinion.py detect                        # which backends are present (JSON)
@@ -22,9 +22,9 @@ second_opinion.py review <plan-file-or-text> \
 ```
 
 `--model-index` is a 0-based index into a per-machine model pool
-(`SECOND_OPINION_AGY_MODEL_POOL` / `_OPENCODE_MODEL_POOL` /
+(`SECOND_OPINION_AGY_MODEL_POOL` / `_PI_MODEL_POOL` / `_OPENCODE_MODEL_POOL` /
 `_COPILOT_MODEL_POOL`, set by the user, not this skill) — round 1 of the loop
-below is index 0, round 2 is index 1, etc. All three backends share the same
+below is index 0, round 2 is index 1, etc. All four backends share the same
 indexed-pool contract. An explicit index selects the pool entry for that call
 even when a single-model override (`SECOND_OPINION_<BACKEND>_MODEL`) is also
 set; without `--model-index` the single override (or the backend default)
@@ -79,14 +79,14 @@ for the final plan and critique-notes file only, per the section below).
 
 Caller check for tooling changes: when `current_plan` modifies a script under
 `claude/scripts/` or a harness skill file (`claude/commands/`,
-`opencode/skills/`, `copilot/skills/`, `agy/skills/`), grep the repo for that
-script's callers before deriving hints and add a focus hint naming them — e.g.
-"The plan changes `<script>`; verify it against its documented callers in
-`<paths>` — does the change break any caller's documented invocation (flags,
-env vars, exit behavior)?" A non-Claude reviewer won't surface this on its own:
-the 12 adversarial rounds that let the `--model-index` hard-error ship never
-inspected the skill files that invoke the script. Name the callers the grep
-actually finds, not a generic reminder.
+`opencode/skills/`, `copilot/skills/`, `agy/skills/`, `pi/prompts/`), grep the
+repo for that script's callers before deriving hints and add a focus hint
+naming them — e.g. "The plan changes `<script>`; verify it against its
+documented callers in `<paths>` — does the change break any caller's documented
+invocation (flags, env vars, exit behavior)?" A non-Claude reviewer won't
+surface this on its own: the 12 adversarial rounds that let the `--model-index`
+hard-error ship never inspected the skill files that invoke the script. Name
+the callers the grep actually finds, not a generic reminder.
 
 The point of these hints is to sharpen the critique on this plan's actual risk
 surface, not to narrow the reviewer's attention to only what you anticipated —
@@ -191,7 +191,8 @@ first) or updating an existing one.
 ## No backend available
 
 `second_opinion.py review` exits nonzero with a clear message when none of
-`agy`, `opencode`, or `copilot` is on `PATH`, or when the available backend(s)
-fail (e.g. the `adversary` agent errors out — check with `opencode run --agent
-adversary --auto --format json <text> 2>&1` if that happens). Relay that
-message and stop — don't retry or fall back to critiquing the plan yourself.
+`agy`, `opencode`, `pi`, or `copilot` is on `PATH`, or when the available
+backend(s) fail (e.g. the `adversary` agent errors out — check with `opencode
+run --agent adversary --auto --format json <text> 2>&1` if that happens). Relay
+that message and stop — don't retry or fall back to critiquing the plan
+yourself.

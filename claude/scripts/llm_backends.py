@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """llm_backends.py — shared subprocess plumbing for CLI-agent backends
-(agy, opencode, copilot). Extracted from second_opinion.py so dev_status.py's
-recap generation can reuse the same process-lifecycle handling (timeouts,
-process-group kills, opencode JSON-event parsing) with its own timeout and
-model choices, without duplicating it.
+(agy, opencode, pi, copilot). Extracted from second_opinion.py so
+dev_status.py's recap generation can reuse the same process-lifecycle
+handling (timeouts, process-group kills, opencode JSON-event parsing) with
+its own timeout and model choices, without duplicating it.
 
 Requires Python 3.12+.
 """
@@ -16,7 +16,7 @@ import signal
 import subprocess
 from contextlib import suppress
 
-BACKEND_PRIORITY = ["agy", "opencode", "copilot"]
+BACKEND_PRIORITY = ["agy", "pi", "opencode", "copilot"]
 
 # Each pattern captures one shape a tool-hungry model can emit as literal
 # text when every tool is denied (opencode's "permission": "deny") or a
@@ -238,6 +238,40 @@ def run_copilot(prompt: str, *, model: str | None, timeout: float) -> str:
     if model:
         cmd += ["--model", model]
     return run_backend_command(cmd, timeout)
+
+
+_DEFAULT_PI_PROVIDER = "opencode-go"
+
+
+def run_pi(prompt: str, *, model: str | None, timeout: float) -> str:
+    """Run Pi's headless mode and return its text output.
+
+    Generic invocation for callers that just want a plain completion (e.g.
+    dev_status.py's recap prose). Always targets the ``opencode-go`` gateway
+    provider — the only provider confirmed authenticated on this machine
+    (``pi auth check --provider opencode-go --json`` -> ``ready``) and the
+    one every configured model pool entry resolves through.
+
+    Unlike opencode's ``adversary`` agent (which sets ``permission: deny``
+    so a swapped-in model can only return prose), no equivalent
+    restricted-permission invocation for Pi is verified yet — this call
+    passes no tool-restriction flag. :func:`_raise_on_emitted_tool_call`
+    below is the only backstop against a model leaking an attempted tool
+    call as text; it cannot catch Pi actually taking a real tool action
+    instead of returning a critique.
+
+    Raises:
+        BackendError: If the process exits nonzero or produces no output
+            (via :func:`run_backend_command`), or the output is dominated by
+            leaked tool-call markup (via :func:`_raise_on_emitted_tool_call`).
+    """
+    cmd = ["pi", "-p", "--no-session", "--provider", _DEFAULT_PI_PROVIDER]
+    if model:
+        cmd += ["--model", model]
+    cmd.append(prompt)
+    text = run_backend_command(cmd, timeout)
+    _raise_on_emitted_tool_call(text, context="pi")
+    return text
 
 
 def _opencode_json_events(raw_output: str) -> list[dict[str, object]]:

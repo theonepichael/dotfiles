@@ -3,6 +3,37 @@
 This repo's internal tooling changes are logged here. Breaking changes to
 harness CLIs, flags, or behavior get an entry going forward.
 
+## 2026-08-30
+
+### Added
+
+- Pi (`@earendil-works/pi-coding-agent`) added as a 5th harness alongside
+  Claude Code, Copilot, opencode, and agy — purely additive, nothing removed
+  or restructured for the existing four. `claude/CLAUDE.md` is symlinked to
+  `~/.pi/agent/AGENTS.md` (Pi has no fallback to `~/.claude/CLAUDE.md` like
+  opencode does, so it needs a real link of its own, same as agy's
+  `GEMINI.md`). `pi/prompts/*.md` (8 files, Pi's
+  command layer) symlink into `~/.pi/agent/prompts/`; `pi/extensions/
+  permission-gate.ts`, `pi/extensions/ruff-format-on-edit.ts`, and
+  `pi/extensions/guard-rails.ts` (rm -rf/sudo confirmation gates, blocks
+  `git commit` on `main`/`master`, protects `.env`/`.git`/`node_modules`
+  from writes — all three live-tested against a real Pi session) symlink
+  into `~/.pi/agent/extensions/`; `pi/settings.json` points Pi's `skills`
+  setting straight at
+  `agy/skills/` instead of duplicating a skills tree, and is copy-once-
+  seeded to `~/.pi/agent/settings.json` the same drift-reporting way as
+  Claude Code's `settings.json`. `install.py` gains `"pi"` in
+  `VALID_HARNESSES` and a `seed_pi_settings()` function; `--harness=pi` is
+  fully available on both `--profile=personal` and `--profile=work` — no
+  work-profile exclusion, unlike opencode's. `gen_shell_completion.py`
+  gains a `pi` entry (reusing the `commander` adapter, since Pi has no
+  native completion subcommand). `llm_backends.py`'s `BACKEND_PRIORITY`
+  gains `"pi"`, placed right after `"agy"`. New env vars
+  `SECOND_OPINION_PI_MODEL`, `SECOND_OPINION_PI_MODEL_POOL`, and
+  `SECOND_OPINION_PI_TIMEOUT_SECONDS` follow the same per-backend contract
+  as the other three backends. See `pi/CLAUDE_CODE_PARITY.md` for the full
+  verification notes.
+
 ## 2026-08-29
 
 ### Fixed

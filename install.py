@@ -51,7 +51,7 @@ import cli_common  # noqa: E402 — sibling dir inserted above
 
 import depart
 
-VALID_HARNESSES = ("claude", "copilot", "opencode", "agy")
+VALID_HARNESSES = ("claude", "copilot", "opencode", "agy", "pi")
 VALID_PROFILES = ("personal", "work")
 
 # Pinned rather than "latest" so every machine ends up with byte-identical
@@ -125,7 +125,7 @@ CAPS_LOCK_TO_ESCAPE = [
 ]
 
 USAGE = """\
-usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--no-nvim-pin] [--reseed | --adopt] [--quiet | --verbose]
+usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--no-nvim-pin] [--reseed | --adopt] [--quiet | --verbose]
        ./install.sh --depart [--yes] [--dry-run] [--quiet | --verbose]
        ./install.sh --check-links [--harness=...] [--profile=personal|work] [--quiet | --verbose]
 
@@ -135,7 +135,7 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=per
               actions (--rollback, --depart, --check-links), though
               --check-links accepts it to scope which entries apply.
               Comma-separated, at least one of:
-              claude, copilot, opencode, agy. No default — every run must
+              claude, copilot, opencode, agy, pi. No default — every run must
               state its intent explicitly. Purely additive: omitting a harness
               you previously selected does NOT uninstall or clean it up,
               it just skips re-provisioning it this run. Removal is a
@@ -192,8 +192,9 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy>[,...] [--profile=per
               "good enough" is left alone rather than overridden.
   --reseed    force an overwrite of drifted copy-once seeds (VS Code
               settings.json/keybindings.json, Claude Code settings.json,
-              opencode.jsonc) with the repo's current version, instead of
-              only reporting drift. The pre-existing file is backed up to
+              opencode.jsonc, Pi settings.json) with the repo's current
+              version, instead of only reporting drift. The pre-existing
+              file is backed up to
               <name>.bak once, the first time a given file is reseeded;
               later reseeds of the same file reuse that backup rather than
               overwriting it again. Cannot be combined with --rollback.
@@ -694,7 +695,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         if harness not in VALID_HARNESSES:
             _fail(
                 f"unknown harness: {harness} "
-                "(must be claude, copilot, opencode, and/or agy)"
+                "(must be claude, copilot, opencode, agy, and/or pi)"
             )
 
     # opencode never belongs on a work machine, full stop — not "tightened
@@ -769,7 +770,7 @@ def parse_args(argv: Sequence[str]) -> Options:
     ):
         _fail(
             "no --harness specified — pass at least one of: "
-            "claude, copilot, opencode, agy",
+            "claude, copilot, opencode, agy, pi",
             show_usage=True,
         )
 
@@ -2100,12 +2101,12 @@ def seed_file(
 ) -> str:
     """Copy ``seed`` to ``dest`` once, or report drift if it's already there.
 
-    These two files (Claude Code's settings.json, opencode's opencode.jsonc)
-    are copied rather than symlinked because both tools rewrite them in
-    place as permissions get approved live, which would replace a symlink
-    with a plain file and silently detach it from the repo. So the repo copy
-    is a *seed*: written once, never overwritten, with divergence reported
-    instead.
+    These files (Claude Code's settings.json, opencode's opencode.jsonc,
+    Pi's settings.json) are copied rather than symlinked because each tool
+    rewrites its own copy in place live (permissions approved, settings
+    edited, etc.), which would replace a symlink with a plain file and
+    silently detach it from the repo. So the repo copy is a *seed*: written
+    once, never overwritten, with divergence reported instead.
 
     Args:
         ctx: The run context.
@@ -2450,6 +2451,35 @@ def seed_claude_settings(ctx: Context) -> tuple[str, str]:
         seed,
         dest,
         skip_label="settings.json seed",
+        drift=describe_settings_drift,
+        adopt_drift=_describe_settings_text,
+    )
+
+
+def seed_pi_settings(ctx: Context) -> tuple[str, str]:
+    """Seed ~/.pi/agent/settings.json, if Pi was selected.
+
+    Structurally like Claude Code's settings.json (just a ``skills`` array,
+    no bash permission allowlist to watch for a live bypass on — that lives
+    in ``permission-gate.ts``, a plain symlink, not this seeding subsystem),
+    so this mirrors ``seed_claude_settings``'s simpler copy-once-and-report-
+    drift shape rather than ``seed_opencode_config``'s allowlist-bypass
+    detection. See ``pi/CLAUDE_CODE_PARITY.md`` §3 and §7.
+
+    Returns:
+        ``(seed filename, drift description)``; both empty when the harness
+        wasn't selected.
+    """
+    if not ctx.has_harness("pi"):
+        return "", ""
+    name = "settings.json"
+    seed = ctx.dotfiles / "pi" / name
+    dest = ctx.home / ".pi" / "agent" / "settings.json"
+    return name, seed_file(
+        ctx,
+        seed,
+        dest,
+        skip_label="pi settings.json seed",
         drift=describe_settings_drift,
         adopt_drift=_describe_settings_text,
     )
@@ -2870,6 +2900,8 @@ def _departure_owned_destinations(
         destinations.append(ctx.home / ".claude" / "settings.json")
     if ctx.has_harness("opencode"):
         destinations.append(ctx.home / ".config" / "opencode" / "opencode.jsonc")
+    if ctx.has_harness("pi"):
+        destinations.append(ctx.home / ".pi" / "agent" / "settings.json")
     return destinations
 
 
@@ -3369,6 +3401,7 @@ def print_summary(
     settings: tuple[str, str],
     opencode: tuple[str, str],
     vscode: Sequence[tuple[str, tuple[str, str]]] = (),
+    pi_settings: tuple[str, str] = ("", ""),
 ) -> None:
     """Print the loud end-of-run summary: skips, drift, and next steps."""
     dry = ctx.opts.dry_run
@@ -3388,6 +3421,7 @@ def print_summary(
     for path, (seed_name, drift) in (
         ("~/.claude/settings.json", settings),
         ("~/.config/opencode/opencode.jsonc", opencode),
+        ("~/.pi/agent/settings.json", pi_settings),
         *vscode,
     ):
         if drift:
@@ -4721,6 +4755,7 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
     _cleanup_orphaned_links(ctx, links)
     opencode_drift = seed_opencode_config(ctx)
     settings_drift = seed_claude_settings(ctx)
+    pi_settings_drift = seed_pi_settings(ctx)
     vscode_drift = seed_vscode_settings(ctx)
 
     if ctx.is_mac:
@@ -4737,7 +4772,7 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
     if ctx.departure_baseline is not None:
         depart.save_baseline(ctx.state_dir, ctx.departure_baseline)
 
-    print_summary(ctx, settings_drift, opencode_drift, vscode_drift)
+    print_summary(ctx, settings_drift, opencode_drift, vscode_drift, pi_settings_drift)
     return 1 if ctx.reporter.skipped else 0
 
 

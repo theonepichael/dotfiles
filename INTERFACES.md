@@ -38,10 +38,10 @@ House style for these interfaces is in `STYLE.md`.
 | [`dev_status_sync.py`](#claudescriptsdevstatussyncpy) | dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending store. |
 | [`dotfiles_sync_check.py`](#claudescriptsdotfilessynccheckpy) | SessionStart hook: flag when the dotfiles repo has drifted from the last commit bundled over to a GitHub-blocked work machine. |
 | [`gen_interfaces.py`](#claudescriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
-| [`gen_second_opinion.py`](#claudescriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the five second-opinion skill copies from one canonical template. |
+| [`gen_second_opinion.py`](#claudescriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template. |
 | [`gen_shell_completion.py`](#claudescriptsgenshellcompletionpy) | Generate a zsh `#compdef` completion file for a harness CLI. |
 | [`grill.py`](#claudescriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
-| [`llm_backends.py`](#claudescriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
+| [`llm_backends.py`](#claudescriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
 | [`opencode_skills_sync_activity.py`](#claudescriptsopencodeskillssyncactivitypy) | Print opencode-skills-sync's pause state and last known snapshot commit, so a session can tell whether the daemon is running and how current its mirror is -- mirrors watchcommit_activity.py's SessionStart banner role. |
 | [`second_opinion.py`](#claudescriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
 | [`settings_seed_drift_check.py`](#claudescriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo. |
@@ -337,11 +337,11 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
 
 ### `claude/scripts/gen_second_opinion.py`
 
-gen_second_opinion.py — regenerate the five second-opinion skill copies from one canonical template.
+gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template.
 
 - Installed at: `~/.claude/scripts/gen_second_opinion.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
-- CLI (`argparse`): regenerate the five second-opinion skill copies from one template
+- CLI (`argparse`): regenerate the second-opinion skill copies from one template
   - `--quiet/-q`
   - `--verbose/-v`
   - `--check` — exit 1 (with diffs on stderr) if any copy, the contract shape, or a guard phrase is stale
@@ -387,7 +387,7 @@ Generate a zsh `#compdef` completion file for a harness CLI.
   - `run_goflag_subcommand_help(cli: str, name: str, *, verbose: bool = False) -> str`
   - `collect_sections(text: str) -> dict[str, list[str]]`
   - `parse_options(lines: list[str]) -> list[Option]`
-  - `parse_commands(lines: list[str]) -> list[tuple[str, list[str], str]]` — Return list of (primary_name, aliases, description).
+  - `parse_commands(lines: list[str], *, strip_cli: str | None = None) -> list[tuple[str, list[str], str]]` — Return list of (primary_name, aliases, description).
   - `is_dir_option(opt: Option) -> bool`
   - `is_file_option(opt: Option) -> bool`
   - `help_matches_path(cli: str, text: str, path: tuple[str, ...]) -> bool` — Check that the help output's `Usage:` line reflects the path we asked for.
@@ -475,7 +475,7 @@ grill.py — grill-me session state CLI. All session mutations go through here.
 
 ### `claude/scripts/llm_backends.py`
 
-llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it.
+llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it.
 
 - Installed at: `~/.claude/scripts/llm_backends.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
@@ -488,6 +488,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
   - `run_backend_command(cmd: list[str], timeout: float) -> str` — Run a backend CLI command and return its critique/prose text.
   - `run_agy(prompt: str, *, model: str, timeout: float) -> str` — Run the ``agy`` backend with the given model and return its text output.
   - `run_copilot(prompt: str, *, model: str | None, timeout: float) -> str` — Run the ``copilot`` backend and return its text output.
+  - `run_pi(prompt: str, *, model: str | None, timeout: float) -> str` — Run Pi's headless mode and return its text output.
   - `run_opencode(prompt: str, *, model: str | None, timeout: float) -> str` — Run opencode's default agent (no ``--agent`` override) and return its text output.
 - Tested by: `claude/scripts/test_dev_status.py`, `claude/scripts/test_gen_interfaces.py`, `claude/scripts/test_llm_backends.py`
 
@@ -516,8 +517,8 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `review <plan-file-or-text> [--backend <BACKEND>] [--focus-file <FOCUS_FILE>] [--model-index N]` — get one critique from the priority-selected backend
     - `--backend` — force this backend instead of priority-order fallback (choices computed at runtime)
     - `--focus-file` — path to a file of plan-specific risk hints, appended to the critique prompt as areas to scrutinize (supplements, not replaces, the generic adversarial mandate)
-    - `--model-index` — 0-based index into the backend model pool (SECOND_OPINION_{AGY,OPENCODE,COPILOT}_MODEL_POOL) for this call -- round 1 of a rotation is index 0, round 2 is index 1, etc. Supported for agy/opencode/copilot; an explicit index selects the pool even when a single-model override is set, and is a hard error if the pool is unset/empty or the index is out of range (was previously a silent no-op/fallback).
-- Environment: `SECOND_OPINION_AGY_MODEL`, `SECOND_OPINION_AGY_MODEL_POOL`, `SECOND_OPINION_AGY_TIMEOUT_SECONDS`, `SECOND_OPINION_COPILOT_MODEL`, `SECOND_OPINION_COPILOT_MODEL_POOL`, `SECOND_OPINION_COPILOT_TIMEOUT_SECONDS`, `SECOND_OPINION_OPENCODE_MODEL`, `SECOND_OPINION_OPENCODE_MODEL_POOL`, `SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS`, `SECOND_OPINION_TIMEOUT_SECONDS`
+    - `--model-index` — 0-based index into the backend model pool (SECOND_OPINION_{AGY,PI,OPENCODE,COPILOT}_MODEL_POOL) for this call -- round 1 of a rotation is index 0, round 2 is index 1, etc. Supported for agy/pi/opencode/copilot; an explicit index selects the pool even when a single-model override is set, and is a hard error if the pool is unset/empty or the index is out of range (was previously a silent no-op/fallback).
+- Environment: `SECOND_OPINION_AGY_MODEL`, `SECOND_OPINION_AGY_MODEL_POOL`, `SECOND_OPINION_AGY_TIMEOUT_SECONDS`, `SECOND_OPINION_COPILOT_MODEL`, `SECOND_OPINION_COPILOT_MODEL_POOL`, `SECOND_OPINION_COPILOT_TIMEOUT_SECONDS`, `SECOND_OPINION_OPENCODE_MODEL`, `SECOND_OPINION_OPENCODE_MODEL_POOL`, `SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS`, `SECOND_OPINION_PI_MODEL`, `SECOND_OPINION_PI_MODEL_POOL`, `SECOND_OPINION_PI_TIMEOUT_SECONDS`, `SECOND_OPINION_TIMEOUT_SECONDS`
 - Explicit exit codes: `1`
 - Depends on: `cli_common.py`, `llm_backends.py`
 - Public functions:
@@ -527,7 +528,8 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `run_agy(prompt: str, *, model_index: int | None = None) -> str` — Run the ``agy`` backend and return its critique text.
   - `run_opencode(prompt: str, *, model_index: int | None = None) -> str` — Run the ``opencode`` backend's adversary agent and return its critique text.
   - `run_copilot(prompt: str, *, model_index: int | None = None) -> str` — Run the ``copilot`` backend and return its critique text.
-  - `backend_label(backend: str, *, model_index: int | None = None) -> str` — Return ``backend``'s display label, appending the resolved agy/copilot/opencode model if any.
+  - `run_pi(prompt: str, *, model_index: int | None = None) -> str` — Run the ``pi`` backend and return its critique text.
+  - `backend_label(backend: str, *, model_index: int | None = None) -> str` — Return ``backend``'s display label, appending the resolved model if any.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
 - Subcommand handlers: `cmd_detect`, `cmd_review`
 - Tested by: `claude/scripts/test_second_opinion.py`
@@ -776,7 +778,7 @@ are copy-once seeds for exactly that reason.
 
 | Source | Installed at |
 | --- | --- |
-| `claude/CLAUDE.md` | `~/.claude/CLAUDE.md` (claude), `~/.copilot/copilot-instructions.md` (copilot), `~/.gemini/GEMINI.md` (agy) |
+| `claude/CLAUDE.md` | `~/.claude/CLAUDE.md` (claude), `~/.copilot/copilot-instructions.md` (copilot), `~/.gemini/GEMINI.md` (agy), `~/.pi/agent/AGENTS.md` (pi) |
 | `claude/output-styles/ConciseSTE.md` | `~/.claude/output-styles/ConciseSTE.md` (claude) |
 | `claude/settings.json` | not symlinked by `links.toml` |
 | `claude/settings.work.json` | not symlinked by `links.toml` |
@@ -861,6 +863,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `seed_vscode_settings(ctx: Context) -> list[tuple[str, tuple[str, str]]]` — Seed the Windows-side VS Code settings.json and keybindings.json under WSL.
   - `seed_file(ctx: Context, seed: Path, dest: Path, *, skip_label: str, drift: Callable[[Path, Path], str], adopt_drift: Callable[[str, str], str] | None = None, adopt_blocker: Callable[[Context, Path, Path, str, str], str | None] | None = None) -> str` — Copy ``seed`` to ``dest`` once, or report drift if it's already there.
   - `seed_claude_settings(ctx: Context) -> tuple[str, str]` — Seed ~/.claude/settings.json, if Claude Code was selected.
+  - `seed_pi_settings(ctx: Context) -> tuple[str, str]` — Seed ~/.pi/agent/settings.json, if Pi was selected.
   - `seed_opencode_config(ctx: Context) -> tuple[str, str]` — Seed ~/.config/opencode/opencode.jsonc, if opencode was selected.
   - `capture_service_baseline(ctx: Context) -> None` — Capture every managed service's service/linger state, immediately before :func:`enable_managed_services` runs — capturing any later would record the post-install enabled state as baseline and departure would never disable anything.
   - `enable_managed_services(ctx: Context) -> None` — Enable and start every managed systemd --user unit (Linux, non-work).
@@ -875,7 +878,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `write_profile_marker(ctx: Context) -> None` — Mark this machine as work-provisioned, so later plain runs are guarded.
   - `work_guard_blocks(ctx: Context) -> bool` — Return whether a plain personal run must be refused on this machine.
   - `do_rollback(ctx: Context) -> int` — Reverse every file mutation recorded across every past run.
-  - `print_summary(ctx: Context, settings: tuple[str, str], opencode: tuple[str, str], vscode: Sequence[tuple[str, tuple[str, str]]] = ()) -> None` — Print the loud end-of-run summary: skips, drift, and next steps.
+  - `print_summary(ctx: Context, settings: tuple[str, str], opencode: tuple[str, str], vscode: Sequence[tuple[str, tuple[str, str]]] = (), pi_settings: tuple[str, str] = ('', '')) -> None` — Print the loud end-of-run summary: skips, drift, and next steps.
   - `build_preflight_report(ctx: Context) -> dict[str, depart.Classification] | None` — Classify every tracked ownership key, or None if there's no baseline.
   - `build_package_preflight(ctx: Context) -> list[depart.PackageClassification] | None` — Classify every requested/introduced package, or None if there's no baseline.
   - `execute_service_phase(ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> None` — Disable+stop every owned managed service, then reconcile linger once.

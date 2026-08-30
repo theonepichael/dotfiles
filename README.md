@@ -32,6 +32,7 @@ chmod +x install.sh
 ./install.sh --profile=work --harness=copilot         # work machine, Copilot only
 ./install.sh --harness=claude,opencode                # both harnesses, personal
 ./install.sh --harness=claude,agy                     # Claude Code + Antigravity CLI
+./install.sh --harness=claude,pi                      # Claude Code + Pi
 ./install.sh --dry-run --harness=claude               # preview only, nothing written
 ```
 
@@ -44,11 +45,13 @@ loudly rather than falling back to an older interpreter.
 The dotfile→destination table lives in **`links.toml`** at the repo root,
 not in the installer — add, move, or retire a mapping by editing that file
 (each entry can be gated on `harness`, `platform`, `wsl`, and
-`profile_exclude`; the file's header documents the schema). Only the two
-copy-once seed files and the WSL-side VS Code path need real code.
+`profile_exclude`; the file's header documents the schema). Only the three
+copy-once seed files (Claude Code's `settings.json`, opencode's
+`opencode.jsonc`, Pi's `settings.json`) and the WSL-side VS Code path need
+real code.
 
 `--harness` is required on every run — there's no default. Pick any
-combination of `claude`, `copilot`, `opencode`, `agy` (comma-separated);
+combination of `claude`, `copilot`, `opencode`, `agy`, `pi` (comma-separated);
 `--profile` (personal by default) controls machine-level concerns like
 watchcommit and personal API-key setup, and never restricts which harness(es)
 you can choose. See "Harness selection" and "Work profile" below.
@@ -88,8 +91,8 @@ exists and HEAD has since moved ahead of it.
 ## Harness selection
 
 `--harness` picks which coding-agent harness(es) get installed and wired up
-— comma-separated, at least one of `claude`, `copilot`, `opencode`, `agy`. No
-default; every run states its intent explicitly. Selecting fewer harnesses
+— comma-separated, at least one of `claude`, `copilot`, `opencode`, `agy`,
+`pi`. No default; every run states its intent explicitly. Selecting fewer harnesses
 on a later run doesn't uninstall the ones left out — this script is purely
 additive, same as everything else it does. Use `--rollback` (which reverses
 every recorded run, not just the most recent) or manual cleanup to actually
@@ -191,12 +194,39 @@ remove something.
   - agy has no `SessionStart`-equivalent hook event, so there's no
     auto-render-dashboard wiring for it, unlike Claude Code and Copilot.
   - See `agy/CLAUDE_CODE_PARITY.md` for the full verification notes.
+- **`pi`** — wires config for [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
+  (`@earendil-works/pi-coding-agent`); the binary itself is assumed already
+  installed, same as `opencode`/`agy` — this script only wires its config:
+  - **Shared instructions file**: `claude/CLAUDE.md` is symlinked to
+    `~/.pi/agent/AGENTS.md` — Pi looks specifically under `~/.pi/agent/`
+    for its global instructions (no fallback to `~/.claude/CLAUDE.md` like
+    opencode has), so it needs a real link of its own, same as agy's
+    `GEMINI.md` link.
+  - **`pi/prompts/*.md`** (8 files: `dashboard`, `grill-me`, `make-skill`,
+    `second-opinion`, `spec`, `standup`, `backlog-item`, `to-tickets`),
+    symlinked into `~/.pi/agent/prompts/*.md` — Pi's command layer
+    ("prompt templates"), invoked as `/name`.
+  - **`pi/extensions/permission-gate.ts`**,
+    **`pi/extensions/ruff-format-on-edit.ts`**, and
+    **`pi/extensions/guard-rails.ts`** (rm -rf/sudo confirmation gates,
+    blocks `git commit` on `main`/`master`, protects `.env`/`.git`/
+    `node_modules` from writes), symlinked into `~/.pi/agent/extensions/*.ts`
+    — all three live-tested against a real Pi session.
+  - **No `pi/skills/` directory** — `pi/settings.json`'s `skills` array
+    points straight at `agy/skills/` instead of duplicating a skills tree.
+  - **`pi/settings.json`**, copy-once-and-report-drift same as Claude's
+    `settings.json` (no bash permission allowlist to seed — that lives in
+    `permission-gate.ts` instead).
+  - Pi has no structured multi-choice prompt either, so its ported skills
+    use plain conversational back-and-forth for judgment calls, same as
+    Copilot/agy.
+  - See `pi/CLAUDE_CODE_PARITY.md` for the full verification notes.
 
 The shared `~/.claude/scripts/*.py` (dev_status, grill, second_opinion,
 standup, etc.) are symlinked regardless of which harness(es) are selected —
-all four harnesses' skills/hooks call these same paths.
+all five harnesses' skills/hooks call these same paths.
 
-The five `second-opinion` skill/command copies listed above are generated
+The six `second-opinion` skill/command copies listed above are generated
 from one canonical body template (`templates/second_opinion.md.tmpl`) by
 `claude/scripts/gen_second_opinion.py` — do not hand-edit them; edit the
 template (shared wording) or the script's per-harness parameter table
@@ -204,9 +234,9 @@ template (shared wording) or the script's per-harness parameter table
 
 `second_opinion.py review --model-index N` rotates the critique model across
 a per-machine pool configured via `SECOND_OPINION_AGY_MODEL_POOL` /
-`_OPENCODE_MODEL_POOL` / `_COPILOT_MODEL_POOL` (agy, opencode, and copilot
-all share the same indexed-pool contract). An explicit `--model-index` picks
-the pool entry for that call even when a single-model override
+`_PI_MODEL_POOL` / `_OPENCODE_MODEL_POOL` / `_COPILOT_MODEL_POOL` (agy, pi,
+opencode, and copilot all share the same indexed-pool contract). An explicit
+`--model-index` picks the pool entry for that call even when a single-model override
 (`SECOND_OPINION_<BACKEND>_MODEL`) is also set; without it, the override (or
 the backend default) applies. **Breaking:** an explicit `--model-index` is now
 a hard error if the selected backend's pool is unset/empty or the index is
@@ -472,19 +502,22 @@ against, because there's nothing there at all.
 | `claude/CLAUDE.md` | `~/.claude/CLAUDE.md` and, with `--harness=copilot`, also `~/.copilot/copilot-instructions.md` |
 | `copilot/aliases.zsh` | `~/.copilot_aliases` (only with `--harness=copilot`) |
 | `opencode/opencode.jsonc` | `~/.config/opencode/opencode.jsonc` (only with `--harness=opencode`; never on `--profile=work`) |
+| `pi/settings.json` | `~/.pi/agent/settings.json` (only with `--harness=pi`) |
 | `scripts/watchcommit.py` | `~/.local/bin/watchcommit` |
 | `launchd/com.user.watchcommit.plist` | `~/Library/LaunchAgents/com.user.watchcommit.plist` (macOS only) |
 | `systemd/watchcommit.service` | `~/.config/systemd/user/watchcommit.service` (Linux/WSL only) |
 
 Everything is symlinked — edits in `~/dotfiles` take effect immediately. The
 full, authoritative table is `links.toml`; the rows above are the
-highlights. Three things are copied instead of symlinked:
-`claude/settings.json` (and its `.work` variant) and `opencode/opencode.jsonc`
+highlights. Four things are copied instead of symlinked:
+`claude/settings.json` (and its `.work` variant), `opencode/opencode.jsonc`
 (no `.work` variant — `--profile=work --harness=opencode` is rejected
-outright, so only one variant of that seed exists) are copy-once seeds,
-because both tools rewrite the file in place once live; the WSL-side VS Code
-`settings.json`/`keybindings.json` are copied for an unrelated reason —
-Windows can't read a WSL-side symlink through `DrvFs`.
+outright, so only one variant of that seed exists), and `pi/settings.json`
+(also no `.work` variant — pi has no work-profile restriction, but nothing
+in its settings needs tightening for work hardware either) are copy-once
+seeds, because each tool rewrites its file in place once live; the WSL-side
+VS Code `settings.json`/`keybindings.json` are copied for an unrelated
+reason — Windows can't read a WSL-side symlink through `DrvFs`.
 
 Use `--adopt --harness=...` to pull all drifted selected copy-once files back
 into the repo. Adoption requires each repo seed to be tracked and clean, makes
@@ -499,12 +532,14 @@ refused rather than written back. `--adopt` cannot be combined with
 ### Both platforms
 1. Installs packages: tmux, zoxide, eza, bat, ripgrep, lsd, ncdu, tldr, oh-my-posh, neovim, fd, uv, ruff
 2. Installs NVM and Node/npm — only if `claude` and/or `copilot` is in `--harness`
-   (`opencode` manages its own runtime separately, not installed by this script)
+   (`opencode`, `agy`, and `pi` all manage their own runtime separately, not
+   installed by this script)
 3. Installs the harness(es) named in `--harness` (`claude`: Claude Code via
    `npm i -g @anthropic-ai/claude-code`; `copilot`: GitHub Copilot CLI via
-   `npm i -g @github/copilot`; `opencode`: assumed already installed, this
-   script only wires its config) and their `~/.claude`/`~/.copilot`/
-   `~/.config/opencode` wiring — see "Harness selection" above
+   `npm i -g @github/copilot`; `opencode`/`agy`/`pi`: assumed already
+   installed, this script only wires their config) and their
+   `~/.claude`/`~/.copilot`/`~/.config/opencode`/`~/.pi/agent` wiring — see
+   "Harness selection" above
 4. Symlinks every applicable `links.toml` entry (backs up any existing
    non-symlink files to `*.bak`)
 5. Seeds `~/.claude/settings.json` (copy-once — if it already exists, drift from
@@ -513,8 +548,10 @@ refused rather than written back. `--adopt` cannot be combined with
 6. Seeds `~/.config/opencode/opencode.jsonc` (the bash permission allowlist,
    profile-specific) the same copy-once way — only when `opencode` is selected;
    `--adopt` reverses the direction for intentional live edits
-7. Installs vim-plug (if missing)
-8. Bootstraps Neovim plugins (`lazy.nvim` sync) if `nvim` on PATH is >=0.11
+7. Seeds `~/.pi/agent/settings.json` the same copy-once way — only when `pi`
+   is selected
+8. Installs vim-plug (if missing)
+9. Bootstraps Neovim plugins (`lazy.nvim` sync) if `nvim` on PATH is >=0.11
 
 ### macOS only
 - Installs Homebrew (if missing) — supports both Apple Silicon (`/opt/homebrew`) and Intel (`/usr/local`)

@@ -26,7 +26,7 @@ When a step specifically needs the user to pick among 2–4 concrete,
 enumerable options, state the recommendation first. In harnesses with a
 structured multi-choice prompt (Claude Code's `AskUserQuestion`, opencode's
 `question` tool), use it, labeling the recommendation "(Recommended)". In
-harnesses without one (Copilot CLI, agy), state the options in plain
+harnesses without one (Copilot CLI, agy, Pi), state the options in plain
 conversational text with the same recommendation, and wait for a plain-text
 reply — never design a step around a UI widget a harness doesn't have.
 
@@ -61,7 +61,7 @@ still passed a marker check, because nothing re-read the flag's actual
 current behavior. Before committing an edit to any script under
 `claude/scripts/` that a skill doc names (check `INTERFACES.md`'s "Tested
 by"/module entries, or grep `claude/commands/`, `opencode/skills/`,
-`copilot/skills/`, `agy/skills/` for the script's filename), read that
+`copilot/skills/`, `agy/skills/`, `pi/prompts/` for the script's filename), read that
 script's updated `INTERFACES.md` entry and check every skill doc that names
 it for wording that no longer matches the new behavior — fix the doc before
 committing, not after. This is a semantic read, not a marker-substring
@@ -420,7 +420,7 @@ used for backlog capture.
 
   This sidesteps concurrent-session collisions by construction — repos
   routinely get worked from more than one tool in parallel (Claude Code,
-  opencode, Copilot, agy) against the same checkout — instead of detecting
+  opencode, Copilot, agy, Pi) against the same checkout — instead of detecting
   and reacting to them after the fact. If you're already mid-task in a worktree
   this session created, keep working there; don't spin up a second one for
   the same task just because a new tool call starts. Mention the worktree

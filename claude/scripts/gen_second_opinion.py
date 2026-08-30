@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""gen_second_opinion.py — regenerate the five second-opinion skill copies
-from one canonical template.
+"""gen_second_opinion.py — regenerate the second-opinion skill copies
+(one per harness, named in HARNESS_TABLE) from one canonical template.
 
-The second-opinion contract used to live in five hand-maintained copies
-(claude/commands/second-opinion.md plus four sibling skill/command forms).
-They drifted repeatedly, and each drift caused a real bug (see
-`test/test_second_opinion_docs.py`'s docstring). This script replaces the
-five copies with one generated output: a shared body template
-(`templates/second_opinion.md.tmpl`) plus a small per-harness parameter
-table below, mirroring `gen_interfaces.py`'s generator/--check/--stdout
-shape.
+The second-opinion contract used to live in hand-maintained copies, one per
+harness (claude/commands/second-opinion.md plus a sibling skill/command
+form for each of opencode, copilot, agy, and pi). They drifted repeatedly,
+and each drift caused a real bug (see `test/test_second_opinion_docs.py`'s
+docstring). This script replaces those copies with one generated output: a
+shared body template (`templates/second_opinion.md.tmpl`) plus a small
+per-harness parameter table below, mirroring `gen_interfaces.py`'s
+generator/--check/--stdout shape.
 
 This does not close every drift class. A second, distinct failure mode is
-the five copies (or now, the one template) going stale relative to the
-actual backing script (`second_opinion.py`) they describe — the
-`--model-index` bug was exactly this: the flag already existed everywhere,
-only its real behavior changed, and no doc followed. `--check` also runs a
-narrow guard against that: a contract-shape check (every flag/subcommand
+the copies (or now, the one template) going stale relative to the actual
+backing script (`second_opinion.py`) they describe — the `--model-index`
+bug was exactly this: the flag already existed everywhere, only its real
+behavior changed, and no doc followed. `--check` also runs a narrow guard
+against that: a contract-shape check (every flag/subcommand
 `INTERFACES.md` lists for `second_opinion.py`'s `review`/`detect`
 subcommands is named somewhere in the template) and a guard-phrase check
 (a short, hand-maintained list of exact substrings that must appear in both
@@ -27,10 +27,11 @@ itself was kept accurate when the script's real behavior last changed.
 
 The generator is pure and deterministic: no subprocesses, no network, no
 writes to `~/.claude` — only reading the template + `INTERFACES.md` and
-writing the five repo files (skipped in `--check`/`--stdout`).
+writing the repo files named in HARNESS_TABLE (skipped in
+`--check`/`--stdout`).
 
 Usage:
-    python3 claude/scripts/gen_second_opinion.py            rewrite all five copies
+    python3 claude/scripts/gen_second_opinion.py            rewrite every copy
     python3 claude/scripts/gen_second_opinion.py --check     exit 1 if any copy,
                                                               the contract shape, or
                                                               a guard phrase is stale
@@ -40,7 +41,7 @@ Usage:
 Flags: --check, --stdout, --repo-root <path>, --quiet/-q, --verbose/-v.
 Env vars: none.
 Files read: <repo>/templates/second_opinion.md.tmpl, <repo>/INTERFACES.md.
-Files written: the five copies named in HARNESS_TABLE (skipped by --check
+Files written: the copies named in HARNESS_TABLE (skipped by --check
 and --stdout).
 Exit codes: 0 success; 1 --check found drift (sibling, contract-shape, or
 guard-phrase); 2 bad usage.
@@ -115,10 +116,11 @@ allowed-tools: [Read, Write, AskUserQuestion, "Bash(python3 ~/.claude/scripts/se
         # claude reads $ARGUMENTS directly, the harness's own invocation
         # convention (checked against claude/commands/*.md's own house
         # style, 2026-08-19)
-        backends_never="`agy`/`opencode`/`copilot`",
-        # claude can shell to all three backends, so "no backend available"
-        # names all three (checked against llm_backends.py, 2026-08-19)
-        backends_none="none of `agy`, `opencode`, or `copilot`",
+        backends_never="`agy`/`opencode`/`pi`/`copilot`",
+        # claude can shell to all four backends, so "no backend available"
+        # names all four (checked against llm_backends.py, 2026-08-30 —
+        # pi joined the list alongside opencode, not in place of it)
+        backends_none="none of `agy`, `opencode`, `pi`, or `copilot`",
         # claude reads $ARGUMENTS directly (checked against
         # claude/commands/*.md's own house style, 2026-08-19)
         target_source_opening=(
@@ -156,9 +158,10 @@ description: "Send a plan to a non-Claude model for adversarial critique, then i
 """,
         # opencode's user-typed command form also reads $ARGUMENTS, per
         # opencode's own command-file docs (2026-08-19)
-        backends_never="`agy`/`opencode`/`copilot`",
-        # opencode can shell to all three backends, 2026-08-19
-        backends_none="none of `agy`, `opencode`, or `copilot`",
+        backends_never="`agy`/`opencode`/`pi`/`copilot`",
+        # opencode can shell to all four backends, 2026-08-30 (pi added
+        # alongside opencode, not in place of it)
+        backends_none="none of `agy`, `opencode`, `pi`, or `copilot`",
         # the user-typed command form reads $ARGUMENTS, same as claude's,
         # per opencode's own command-file docs (2026-08-19)
         target_source_opening=(
@@ -195,11 +198,11 @@ name: second-opinion
 description: Send a plan to a non-Claude model for adversarial critique, then iterate — revise, re-send, repeat — until the critique stops surfacing anything new or a round cap is hit. Use when the user wants a second opinion, an outside critique, or to stress-test a plan against a different model.
 ---
 """,
-        # opencode can shell to all three backends regardless of
-        # invocation layer, 2026-08-19
-        backends_never="`agy`/`opencode`/`copilot`",
-        # opencode can shell to all three backends, 2026-08-19
-        backends_none="none of `agy`, `opencode`, or `copilot`",
+        # opencode can shell to all four backends regardless of
+        # invocation layer, 2026-08-30 (pi added alongside opencode)
+        backends_never="`agy`/`opencode`/`pi`/`copilot`",
+        # opencode can shell to all four backends, 2026-08-30
+        backends_none="none of `agy`, `opencode`, `pi`, or `copilot`",
         # the model-invoked skill form has no $ARGUMENTS; it only sees the
         # invoking message, per opencode's own skill-invocation docs
         # (2026-08-19)
@@ -237,14 +240,14 @@ allowed-tools: shell
 ---
 """,
         # copilot cannot shell to a sibling harness's CLI directly; the
-        # skill still names all three since copilot itself can be the
+        # skill still names all four since copilot itself can be the
         # backend (unlike agy, which never can), per copilot skills docs
-        # (2026-08-19)
-        backends_never="`agy`/`opencode`/`copilot`",
-        # copilot can be a backend for the other two harnesses even though
-        # it can't shell out itself, so "no backend available" still names
-        # all three, 2026-08-19
-        backends_none="none of `agy`, `opencode`, or `copilot`",
+        # (2026-08-19; pi added 2026-08-30 alongside opencode)
+        backends_never="`agy`/`opencode`/`pi`/`copilot`",
+        # copilot can be a backend for the other three harnesses even
+        # though it can't shell out itself, so "no backend available"
+        # still names all four, 2026-08-30
+        backends_none="none of `agy`, `opencode`, `pi`, or `copilot`",
         # copilot CLI has no $ARGUMENTS equivalent; it only sees what the
         # user typed or pasted, per copilot skills docs (2026-08-19)
         target_source_opening=(
@@ -283,12 +286,13 @@ name: second-opinion
 description: Send a plan to a non-Claude model for adversarial critique, then iterate — revise, re-send, repeat — until the critique stops surfacing anything new or a round cap is hit. Use when the user wants a second opinion, an outside critique, or to stress-test a plan against a different model.
 ---
 """,
-        # agy can shell to agy/opencode only — it cannot reach copilot, per
-        # agy's own backshelling docs (2026-08-19)
-        backends_never="`agy`/`opencode`",
-        # agy can only ever see agy or opencode as a backend, so "no
-        # backend available" is the two-way "neither/nor" form, 2026-08-19
-        backends_none="neither `agy` nor `opencode`",
+        # agy can shell to agy/opencode/pi only — it cannot reach copilot,
+        # per agy's own backshelling docs (2026-08-19; pi added 2026-08-30
+        # as the same class of CLI tool as opencode)
+        backends_never="`agy`/`opencode`/`pi`",
+        # agy can only ever see agy, opencode, or pi as a backend, so "no
+        # backend available" names those three, 2026-08-30
+        backends_none="none of `agy`, `opencode`, or `pi`",
         # agy CLI has no $ARGUMENTS equivalent; it only sees what the user
         # typed or pasted, per agy's own skills docs (2026-08-19)
         target_source_opening=(
@@ -316,6 +320,51 @@ description: Send a plan to a non-Claude model for adversarial critique, then it
         instructions_ref="the shared instructions file's",
         # agy is naming opencode's `adversary` agent but leaves it
         # unnamed, same as copilot, 2026-08-19
+        adversary_ref="the",
+    ),
+    "pi/prompts/second-opinion.md": HarnessParams(
+        frontmatter="""\
+---
+description: "Send a plan to a non-Claude model for adversarial critique, then iterate — revise, re-send, repeat — until the critique stops surfacing anything new or a round cap is hit. Use when the user wants a second opinion, an outside critique, or to stress-test a plan against a different model."
+argument-hint: [plan file or text]
+---
+""",
+        # Pi's user-typed prompt-template form reads $ARGUMENTS with the
+        # same placeholder syntax as opencode's command form (verified live
+        # against a real Pi install, 2026-08-30) and, like opencode, has no
+        # restriction on which backend CLIs it can shell out to
+        backends_never="`agy`/`opencode`/`pi`/`copilot`",
+        # same reasoning as opencode's rows above, 2026-08-30
+        backends_none="none of `agy`, `opencode`, `pi`, or `copilot`",
+        # Pi's prompt-template form reads $ARGUMENTS, same as opencode's
+        # command form, 2026-08-30
+        target_source_opening=(
+            "If `$ARGUMENTS` is non-empty, treat it as an explicit file path "
+            "or inline plan text."
+        ),
+        # echoes the same $ARGUMENTS convention as the opening sentence
+        # above, 2026-08-30
+        target_source_echo="inline `$ARGUMENTS` text",
+        # no structured multi-choice widget for Pi is confirmed from
+        # research so far; plain text per the shared instructions file's
+        # harnesses-without-a-widget convention, same as copilot/agy,
+        # 2026-08-30
+        ask_choose_overwrite=(
+            "apply the shared instructions file's convention for asking the "
+            "user to choose: overwrite (recommended) or leave as-is"
+        ),
+        # same plain-text convention as the overwrite choice above,
+        # 2026-08-30
+        ask_choose_cap=(
+            "apply the shared instructions file's convention for asking the "
+            "user to choose: keep your approach (recommended), use the "
+            "reviewer's suggestion, or let the user decide manually"
+        ),
+        # Pi has no CLAUDE.md equivalent of its own, 2026-08-30
+        instructions_ref="the shared instructions file's",
+        # Pi is naming opencode's `adversary` agent (Pi has no adversary-
+        # agent equivalent of its own) but leaves it unnamed, same as
+        # copilot/agy, 2026-08-30
         adversary_ref="the",
     ),
 }
@@ -509,10 +558,10 @@ def default_repo_root() -> Path:
 
 
 def main() -> None:
-    """Parse argv, then regenerate, check, or print the five skill copies."""
+    """Parse argv, then regenerate, check, or print the skill copies."""
     parser = argparse.ArgumentParser(
         prog="gen_second_opinion",
-        description="regenerate the five second-opinion skill copies from one template",
+        description="regenerate the second-opinion skill copies from one template",
     )
     cli_common.add_verbosity_args(parser)
     parser.add_argument(
@@ -571,7 +620,7 @@ def main() -> None:
                 sys.stderr.writelines(diff)
         if not problems and not stale:
             cli_common.qprint(
-                "[gen_second_opinion] all five copies are up to date",
+                f"[gen_second_opinion] all {len(rendered)} copies are up to date",
                 quiet=args.quiet,
             )
             return

@@ -9,8 +9,8 @@
 #   dest             (required) destination path; a leading `~/` is expanded
 #                    against the invoking user's home at load time.
 #   harness          (optional) only linked when this harness is named in
-#                    --harness: claude, copilot, opencode, or agy. Absent =
-#                    linked regardless of harness selection.
+#                    --harness: claude, copilot, opencode, agy, or pi. Absent
+#                    = linked regardless of harness selection.
 #   platform         (optional) "mac" or "linux". Absent = both.
 #   wsl              (optional) "exclude" to skip the entry under WSL,
 #                    "only" to restrict it to WSL. Absent = neither matters.
@@ -37,10 +37,10 @@
 # log (and the rollback that replays it in reverse) reads in this order.
 #
 # Not here, because they need more than a static mapping — see install.py:
-#   * ~/.claude/settings.json and ~/.config/opencode/opencode.jsonc are
-#     copied once with drift reporting, never symlinked (both tools rewrite
-#     them in place, which would silently detach a symlink), and pick a
-#     profile-specific seed.
+#   * ~/.claude/settings.json, ~/.config/opencode/opencode.jsonc, and
+#     ~/.pi/agent/settings.json are copied once with drift reporting, never
+#     symlinked (all three tools rewrite them in place, which would silently
+#     detach a symlink), and pick a profile-specific seed.
 #   * The WSL VS Code destination (Windows-side AppData), derived at run
 #     time as described above.
 
@@ -440,6 +440,79 @@ harness = "agy"
 src = "agy/hooks/agy-elapsed.js"
 dest = "~/.claude/hooks/agy-elapsed.js"
 harness = "agy"
+
+# ── Pi ───────────────────────────────────────────────────────────────────
+# Pi looks specifically under ~/.pi/agent/ for its global instructions file
+# (AGENTS.md, with CLAUDE.md read as a fallback name) — unlike opencode, it
+# has no legacy fallback to ~/.claude/CLAUDE.md, so it needs a real link of
+# its own, same as agy's GEMINI.md link above. Symlinked as AGENTS.md, not
+# CLAUDE.md, since the doc names AGENTS.md first when both are considered
+# for a directory. See pi/CLAUDE_CODE_PARITY.md §1.
+#
+# No pi/skills/ directory exists here — pi/settings.json (copy-once seeded
+# by install.py, not a plain link; see the top-of-file comment above) points
+# its `skills` setting directly at agy/skills/ instead of duplicating a
+# skills tree. See pi/CLAUDE_CODE_PARITY.md §3.
+
+[[link]]
+src = "claude/CLAUDE.md"
+dest = "~/.pi/agent/AGENTS.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/dashboard.md"
+dest = "~/.pi/agent/prompts/dashboard.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/grill-me.md"
+dest = "~/.pi/agent/prompts/grill-me.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/make-skill.md"
+dest = "~/.pi/agent/prompts/make-skill.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/second-opinion.md"
+dest = "~/.pi/agent/prompts/second-opinion.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/spec.md"
+dest = "~/.pi/agent/prompts/spec.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/standup.md"
+dest = "~/.pi/agent/prompts/standup.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/backlog-item.md"
+dest = "~/.pi/agent/prompts/backlog-item.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/to-tickets.md"
+dest = "~/.pi/agent/prompts/to-tickets.md"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/permission-gate.ts"
+dest = "~/.pi/agent/extensions/permission-gate.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/ruff-format-on-edit.ts"
+dest = "~/.pi/agent/extensions/ruff-format-on-edit.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/guard-rails.ts"
+dest = "~/.pi/agent/extensions/guard-rails.ts"
+harness = "pi"
 
 # ── watchcommit (personal machines only) ─────────────────────────────────
 # It auto-pushes to a personal remote under your personal Claude account

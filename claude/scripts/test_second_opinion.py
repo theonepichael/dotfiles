@@ -27,7 +27,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 import second_opinion
 
-# The six model/pool variables that must be isolated from the host so tests
+# The eight model/pool variables that must be isolated from the host so tests
 # never depend on a real SECOND_OPINION_* setting. Derived-independent of the
 # implementation: enumerated here explicitly and asserted against the
 # implementation's mapping so cleanup cannot silently hide a mapping omission.
@@ -36,6 +36,8 @@ EXPECTED_MODEL_ENV_VARS = [
     "SECOND_OPINION_AGY_MODEL",
     "SECOND_OPINION_OPENCODE_MODEL_POOL",
     "SECOND_OPINION_OPENCODE_MODEL",
+    "SECOND_OPINION_PI_MODEL_POOL",
+    "SECOND_OPINION_PI_MODEL",
     "SECOND_OPINION_COPILOT_MODEL_POOL",
     "SECOND_OPINION_COPILOT_MODEL",
 ]
@@ -75,6 +77,10 @@ class ModelEnvMappingTests(unittest.TestCase):
                     "SECOND_OPINION_OPENCODE_MODEL_POOL",
                     "SECOND_OPINION_OPENCODE_MODEL",
                 ),
+                "pi": (
+                    "SECOND_OPINION_PI_MODEL_POOL",
+                    "SECOND_OPINION_PI_MODEL",
+                ),
                 "copilot": (
                     "SECOND_OPINION_COPILOT_MODEL_POOL",
                     "SECOND_OPINION_COPILOT_MODEL",
@@ -82,13 +88,13 @@ class ModelEnvMappingTests(unittest.TestCase):
             },
         )
 
-    def test_69b_mapping_yields_exactly_six_expected_vars(self) -> None:
+    def test_69b_mapping_yields_exactly_eight_expected_vars(self) -> None:
         flat = [v for pair in second_opinion._POOL_ENV_VARS.values() for v in pair]
         self.assertEqual(sorted(flat), sorted(EXPECTED_MODEL_ENV_VARS))
-        self.assertEqual(len(flat), 6)
+        self.assertEqual(len(flat), 8)
 
     def test_69c_backend_tables_share_keys_and_order(self) -> None:
-        keys = ["agy", "opencode", "copilot"]
+        keys = ["agy", "pi", "opencode", "copilot"]
         self.assertEqual(list(second_opinion.BACKEND_PRIORITY), keys)
         self.assertEqual(list(second_opinion.BACKEND_RUNNERS.keys()), keys)
         self.assertEqual(list(second_opinion.BACKEND_LABELS.keys()), keys)
@@ -101,13 +107,14 @@ class ValidateModelIndexTests(unittest.TestCase):
     silently skip to another backend."""
 
     def test_70_none_index_always_valid(self) -> None:
-        for backend in ("agy", "opencode", "copilot"):
+        for backend in ("agy", "opencode", "pi", "copilot"):
             self.assertIsNone(second_opinion._validate_model_index(backend, None, {}))
 
     def test_71_missing_pool_is_error_for_each_backend(self) -> None:
         for backend, pool_var in (
             ("agy", "SECOND_OPINION_AGY_MODEL_POOL"),
             ("opencode", "SECOND_OPINION_OPENCODE_MODEL_POOL"),
+            ("pi", "SECOND_OPINION_PI_MODEL_POOL"),
             ("copilot", "SECOND_OPINION_COPILOT_MODEL_POOL"),
         ):
             msg = second_opinion._validate_model_index(backend, 0, {})
@@ -804,7 +811,7 @@ class CmdDetectTests(unittest.TestCase):
             second_opinion.cmd_detect(ns())
         self.assertEqual(
             json.loads(out.getvalue()),
-            {"agy": True, "opencode": False, "copilot": False},
+            {"agy": True, "opencode": False, "pi": False, "copilot": False},
         )
 
 
@@ -842,6 +849,9 @@ class CmdReviewTests(unittest.TestCase):
                     "agy": lambda p, model_index=None: (_ for _ in ()).throw(
                         second_opinion.BackendError("agy broke")
                     ),
+                    "pi": lambda p, model_index=None: (_ for _ in ()).throw(
+                        second_opinion.BackendError("pi broke")
+                    ),
                     "opencode": lambda p, model_index=None: "opencode's critique",
                 },
             ),
@@ -866,6 +876,9 @@ class CmdReviewTests(unittest.TestCase):
                     "opencode": lambda p, model_index=None: (_ for _ in ()).throw(
                         second_opinion.BackendError("opencode broke")
                     ),
+                    "pi": lambda p, model_index=None: (_ for _ in ()).throw(
+                        second_opinion.BackendError("pi broke")
+                    ),
                     "copilot": lambda p, model_index=None: (_ for _ in ()).throw(
                         second_opinion.BackendError("copilot broke")
                     ),
@@ -878,6 +891,7 @@ class CmdReviewTests(unittest.TestCase):
         self.assertEqual(cm.exception.code, 1)
         self.assertIn("agy broke", err.getvalue())
         self.assertIn("opencode broke", err.getvalue())
+        self.assertIn("pi broke", err.getvalue())
         self.assertIn("copilot broke", err.getvalue())
 
     def test_46_plan_file_contents_used_not_the_path(self) -> None:
@@ -1207,6 +1221,7 @@ class PerBackendTimeoutIsolationTests(unittest.TestCase):
             "SECOND_OPINION_TIMEOUT_SECONDS",
             "SECOND_OPINION_AGY_TIMEOUT_SECONDS",
             "SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS",
+            "SECOND_OPINION_PI_TIMEOUT_SECONDS",
             "SECOND_OPINION_COPILOT_TIMEOUT_SECONDS",
         ):
             os.environ.pop(var, None)
@@ -1244,6 +1259,31 @@ class PerBackendTimeoutIsolationTests(unittest.TestCase):
                 with patch.object(second_opinion, "_run_command", side_effect=capture):
                     second_opinion.run_opencode("prompt")
                 self.assertEqual(box["timeout"], 60)
+
+                with patch.object(
+                    second_opinion.llm_backends, "run_agy", return_value="c"
+                ) as mock_agy:
+                    second_opinion.run_agy("prompt")
+                mock_agy.assert_called_once_with(
+                    "prompt", model=second_opinion.DEFAULT_AGY_MODEL, timeout=120
+                )
+
+                with patch.object(
+                    second_opinion.llm_backends, "run_copilot", return_value="c"
+                ) as mock_copilot:
+                    second_opinion.run_copilot("prompt")
+                mock_copilot.assert_called_once_with("prompt", model=None, timeout=120)
+
+    def test_84b_pi_override_does_not_leak_into_agy_or_copilot(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            self._clear_all_timeout_vars()
+            os.environ["SECOND_OPINION_PI_TIMEOUT_SECONDS"] = "90"
+            with patch.object(second_opinion, "BACKEND_TIMEOUT_SECONDS", 120):
+                with patch.object(
+                    second_opinion.llm_backends, "run_pi", return_value="c"
+                ) as mock_pi:
+                    second_opinion.run_pi("prompt")
+                mock_pi.assert_called_once_with("prompt", model=None, timeout=90)
 
                 with patch.object(
                     second_opinion.llm_backends, "run_agy", return_value="c"

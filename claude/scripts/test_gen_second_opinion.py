@@ -2,7 +2,7 @@
 """Tests for gen_second_opinion.py. Run with: python3 test_gen_second_opinion.py
 
 Two kinds of coverage: small unit tests for the render function against a
-tiny fixture template, and end-to-end tests that assert the five committed
+tiny fixture template, and end-to-end tests that assert the committed
 copies, the contract-shape check, the guard-phrase check, and the
 row-comment check all currently pass against this repo's real
 templates/second_opinion.md.tmpl and INTERFACES.md — so a forgotten

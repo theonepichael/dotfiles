@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Generate a zsh `#compdef` completion file for a harness CLI.
 
-Supports all four harness CLIs in this repo — `claude`, `copilot`, `agy`,
-`opencode` — via a small per-harness adapter registry rather than a single
-auto-detecting parser: each harness's `--help` output has a genuinely
-different shape (Commander.js for claude/copilot, Go's `flag` package for
-agy, yargs for opencode, which ships its own native completion generator).
+Supports all five harness CLIs in this repo — `claude`, `copilot`, `agy`,
+`opencode`, `pi` — via a small per-harness adapter registry rather than a
+single auto-detecting parser: each harness's `--help` output has a
+genuinely different shape (Commander.js for claude/copilot, Go's `flag`
+package for agy, yargs for opencode, which ships its own native completion
+generator; Pi has no native completion command, but its `--help` shape is
+close enough to Commander's to reuse that adapter with one accommodation —
+see the `pi` entry in `HARNESSES` and `parse_commands`'s `strip_cli`).
 
 Usage:
     python3 ~/.claude/scripts/gen_shell_completion.py --harness agy
@@ -63,6 +66,15 @@ HARNESSES: dict[str, HarnessSpec] = {
     "opencode": HarnessSpec(
         cli="opencode", format="native-passthrough", native_command=["completion"]
     ),
+    # Pi has no native completion subcommand (`pi --help` / `pi config --help`
+    # checked, neither lists one). Its --help output is otherwise close
+    # enough to Commander's shape (Usage:/Commands:/Options: sections, same
+    # 2-space option/command indent) to reuse the "commander" adapter,
+    # except every Commands-section line repeats "pi" as its own first
+    # token ("  pi install <source> ...") where claude/copilot start
+    # straight with the subcommand name — parse_commands's strip_cli param
+    # exists specifically to strip that repeated token for this harness.
+    "pi": HarnessSpec(cli="pi", format="commander"),
 }
 
 
@@ -240,8 +252,19 @@ def parse_options(lines: list[str]) -> list[Option]:
     return out
 
 
-def parse_commands(lines: list[str]) -> list[tuple[str, list[str], str]]:
-    """Return list of (primary_name, aliases, description)."""
+def parse_commands(
+    lines: list[str], *, strip_cli: str | None = None
+) -> list[tuple[str, list[str], str]]:
+    """Return list of (primary_name, aliases, description).
+
+    ``strip_cli``: Pi's Commands section repeats its own binary name as the
+    first token of every line ("  pi install <source> ...  Install..."),
+    unlike claude/copilot/agy, whose command lines start directly with the
+    subcommand name. When set, a leading token equal to ``strip_cli`` is
+    dropped before tokenizing, so the real subcommand name is parsed
+    instead of the repeated binary name. ``None`` (the default) leaves
+    existing callers' behavior unchanged.
+    """
     entries = _group_indented(lines, lambda ln: bool(CMD_START_RE.match(ln)))
     out: list[tuple[str, list[str], str]] = []
     for entry in entries:
@@ -251,6 +274,8 @@ def parse_commands(lines: list[str]) -> list[tuple[str, list[str], str]]:
         tokens = defn.strip().split()
         if not tokens:
             continue
+        if strip_cli is not None and len(tokens) > 1 and tokens[0] == strip_cli:
+            tokens = tokens[1:]
         head = tokens[0]
         # Reject anything that isn't a valid command token. This filters out
         # "Examples:" and similar spurious tokens that arise when `--help`
@@ -349,7 +374,9 @@ def build_tree(
     sections = collect_sections(text)
     node = Node(path=path)
     node.options = parse_options(sections.get("Options", []))
-    for name, aliases, desc in parse_commands(sections.get("Commands", [])):
+    for name, aliases, desc in parse_commands(
+        sections.get("Commands", []), strip_cli=cli
+    ):
         child = build_tree(cli, path + (name,), seen, verbose=verbose)
         child.aliases = aliases
         child.desc = desc

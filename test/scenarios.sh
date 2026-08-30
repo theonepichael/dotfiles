@@ -3,7 +3,8 @@
 # Exercises the full lifecycle: fresh install, rollback, backup-and-restore
 # of a pre-existing dotfile, work profile + guard, --force override,
 # harness opt-in selection (--harness=), opencode profile-specific
-# permission seeding, and argument-parsing edge cases (including the old
+# permission seeding, Pi's copy-once settings.json seeding (drift + --reseed
+# + rollback), and argument-parsing edge cases (including the old
 # --work/--copilot flags being rejected outright). Not meant to run on a
 # real machine.
 set -uo pipefail
@@ -126,6 +127,7 @@ check "fc-list recognizes the installed Nerd Font" bash -c \
 check "Copilot NOT installed (not in --harness)" bash -c '[[ ! -e ~/.copilot/copilot-instructions.md ]]'
 check "copilot-work alias file NOT symlinked (Copilot not selected)" bash -c '[[ ! -e ~/.copilot_aliases ]]'
 check "opencode NOT wired (not in --harness)" bash -c '[[ ! -e ~/.config/opencode/opencode.jsonc ]]'
+check "Pi NOT wired (not in --harness)" bash -c '[[ ! -e ~/.pi/agent/settings.json ]]'
 
 echo ""
 echo "=== 1b. Re-run is idempotent — no re-download of the Nerd Font ==="
@@ -268,6 +270,7 @@ cat /tmp/harness-claude.out
 check "Claude Code wired" bash -c '[[ -L ~/.claude/CLAUDE.md ]]'
 check "Copilot NOT wired" bash -c '[[ ! -e ~/.copilot/copilot-instructions.md ]]'
 check "opencode NOT wired" bash -c '[[ ! -e ~/.config/opencode/opencode.jsonc ]]'
+check "Pi NOT wired" bash -c '[[ ! -e ~/.pi/agent/settings.json ]]'
 ./install.sh --rollback >/tmp/rb-h1.out 2>&1
 
 ./install.sh --harness=claude,opencode >/tmp/harness-both.out 2>&1
@@ -298,6 +301,60 @@ cat /tmp/narrow.out
 check "Copilot files left in place after a narrower re-run (additive-only, no surprise uninstall)" \
   bash -c '[[ -e ~/.copilot/copilot-instructions.md ]]'
 ./install.sh --rollback >/tmp/rb-h3.out 2>&1
+
+echo ""
+echo "=== 9b. Pi: harness combo wiring + settings.json copy-once seeding ==="
+./install.sh --harness=claude,pi >/tmp/harness-pi.out 2>&1
+cat /tmp/harness-pi.out
+check "Claude Code wired (pi combo)" bash -c '[[ -L ~/.claude/CLAUDE.md ]]'
+check "Pi wired (combo)" bash -c '[[ -f ~/.pi/agent/settings.json ]]'
+check "Copilot still NOT wired (pi combo omits it)" bash -c '[[ ! -e ~/.copilot/copilot-instructions.md ]]'
+check "pi AGENTS.md symlinks into repo's shared CLAUDE.md" bash -c \
+  '[[ "$(readlink -f ~/.pi/agent/AGENTS.md)" == "'"$DOTFILES"'/claude/CLAUDE.md" ]]'
+check "pi dashboard prompt symlinked" bash -c \
+  '[[ "$(readlink -f ~/.pi/agent/prompts/dashboard.md)" == "'"$DOTFILES"'/pi/prompts/dashboard.md" ]]'
+check "pi backlog-item prompt symlinked" bash -c \
+  '[[ "$(readlink -f ~/.pi/agent/prompts/backlog-item.md)" == "'"$DOTFILES"'/pi/prompts/backlog-item.md" ]]'
+check "pi permission-gate extension symlinked" bash -c \
+  '[[ "$(readlink -f ~/.pi/agent/extensions/permission-gate.ts)" == "'"$DOTFILES"'/pi/extensions/permission-gate.ts" ]]'
+check "pi ruff-format-on-edit extension symlinked" bash -c \
+  '[[ "$(readlink -f ~/.pi/agent/extensions/ruff-format-on-edit.ts)" == "'"$DOTFILES"'/pi/extensions/ruff-format-on-edit.ts" ]]'
+check "pi guard-rails extension symlinked" bash -c \
+  '[[ "$(readlink -f ~/.pi/agent/extensions/guard-rails.ts)" == "'"$DOTFILES"'/pi/extensions/guard-rails.ts" ]]'
+check "pi settings.json copied (not symlinked)" bash -c '[[ -f ~/.pi/agent/settings.json && ! -L ~/.pi/agent/settings.json ]]'
+check "pi settings.json matches repo seed" diff -q ~/.pi/agent/settings.json "$DOTFILES/pi/settings.json"
+
+echo ""
+echo "--- 9c. Pi settings.json drift is reported, not silently overwritten ---"
+echo '{"skills": ["/tmp/not-the-real-path"]}' >~/.pi/agent/settings.json
+./install.sh --harness=claude,pi >/tmp/pi-drift.out 2>&1
+cat /tmp/pi-drift.out
+check "pi settings.json drift reported instead of silently overwritten" grep -q "drifted" /tmp/pi-drift.out
+check "pi settings.json left untouched (copy-once, no --reseed)" bash -c \
+  '[[ "$(cat ~/.pi/agent/settings.json)" == "{\"skills\": [\"/tmp/not-the-real-path\"]}" ]]'
+
+echo ""
+echo "--- 9d. --reseed overwrites the drifted pi settings.json, backing up the drift first ---"
+./install.sh --harness=claude,pi --reseed >/tmp/pi-reseed.out 2>&1
+cat /tmp/pi-reseed.out
+check "pi settings.json reseeded to match repo copy" diff -q ~/.pi/agent/settings.json "$DOTFILES/pi/settings.json"
+check "pi settings.json .bak preserves the drifted content" \
+  bash -c '[[ "$(cat ~/.pi/agent/settings.json.bak)" == "{\"skills\": [\"/tmp/not-the-real-path\"]}" ]]'
+
+echo ""
+echo "--- 9e. --rollback restores the pre-reseed (drifted) content, mirrors scenario 3's vimrc backup+restore ---"
+./install.sh --rollback >/tmp/rb-pi.out 2>&1
+cat /tmp/rb-pi.out
+check "pi settings.json restored to its pre-reseed drifted content, not deleted" bash -c \
+  '[[ "$(cat ~/.pi/agent/settings.json)" == "{\"skills\": [\"/tmp/not-the-real-path\"]}" ]]'
+check "pi settings.json .bak cleaned up after restore" bash -c '[[ ! -e ~/.pi/agent/settings.json.bak ]]'
+check "pi AGENTS.md symlink removed by rollback" bash -c '[[ ! -e ~/.pi/agent/AGENTS.md ]]'
+check "pi dashboard prompt symlink removed by rollback" bash -c '[[ ! -e ~/.pi/agent/prompts/dashboard.md ]]'
+check "pi permission-gate extension symlink removed by rollback" \
+  bash -c '[[ ! -e ~/.pi/agent/extensions/permission-gate.ts ]]'
+check "pi guard-rails extension symlink removed by rollback" \
+  bash -c '[[ ! -e ~/.pi/agent/extensions/guard-rails.ts ]]'
+rm -f ~/.pi/agent/settings.json
 
 echo ""
 echo "=== 10. opencode.jsonc: personal-only permission seeding ==="

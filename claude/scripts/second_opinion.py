@@ -21,7 +21,7 @@ Flags
    --model-index N  (review only) 0-based index into the backend model pool
                     (SECOND_OPINION_<BACKEND>_MODEL_POOL) for this call, e.g.
                     round 1 of a rotation is index 0, round 2 is index 1.
-                    Supported for agy, opencode, and copilot. An explicit
+                    Supported for agy, pi, opencode, and copilot. An explicit
                     index selects the pool even when a single-model override
                     is set, and is a hard error if the selected backend has no
                     configured pool or the index is out of range — it no
@@ -32,6 +32,14 @@ Env vars
   SECOND_OPINION_AGY_MODEL_POOL     comma-separated agy model pool for
                                     --model-index rotation (default: unset,
                                     no rotation). SECOND_OPINION_AGY_MODEL, if
+                                    set without --model-index, wins outright
+                                    over the pool; an explicit --model-index
+                                    selects the pool regardless.
+  SECOND_OPINION_PI_MODEL           force the Pi model (default: unset, Pi's
+                                    own default for the opencode-go provider)
+  SECOND_OPINION_PI_MODEL_POOL      comma-separated Pi model pool for
+                                    --model-index rotation (default: unset,
+                                    no rotation). SECOND_OPINION_PI_MODEL, if
                                     set without --model-index, wins outright
                                     over the pool; an explicit --model-index
                                     selects the pool regardless.
@@ -48,6 +56,7 @@ Env vars
                                       SECOND_OPINION_COPILOT_MODEL.
   SECOND_OPINION_TIMEOUT_SECONDS    default per-backend timeout in seconds (default 120)
   SECOND_OPINION_AGY_TIMEOUT_SECONDS      override the timeout for agy calls only
+  SECOND_OPINION_PI_TIMEOUT_SECONDS       override the timeout for pi calls only
   SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS override the timeout for opencode calls only
   SECOND_OPINION_COPILOT_TIMEOUT_SECONDS  override the timeout for copilot calls only
                                      Unset/blank/non-integer/zero/negative
@@ -136,11 +145,12 @@ def _resolve_timeout(env_var: str) -> int:
 
 # backend -> (pool env var, single-override env var). The single source of
 # truth for pool resolution, the validator's error variable names, and test
-# cleanup. agy joins opencode/copilot under the same indexed-pool contract;
+# cleanup. agy joins opencode/pi/copilot under the same indexed-pool contract;
 # its single override is SECOND_OPINION_AGY_MODEL and its pool is
 # SECOND_OPINION_AGY_MODEL_POOL.
 _POOL_ENV_VARS = {
     "agy": ("SECOND_OPINION_AGY_MODEL_POOL", "SECOND_OPINION_AGY_MODEL"),
+    "pi": ("SECOND_OPINION_PI_MODEL_POOL", "SECOND_OPINION_PI_MODEL"),
     "opencode": ("SECOND_OPINION_OPENCODE_MODEL_POOL", "SECOND_OPINION_OPENCODE_MODEL"),
     "copilot": ("SECOND_OPINION_COPILOT_MODEL_POOL", "SECOND_OPINION_COPILOT_MODEL"),
 }
@@ -173,7 +183,7 @@ def _resolve_pooled_model(
     model_index: int | None,
     env: Mapping[str, str] | None = None,
 ) -> str | None:
-    """Pick a model for one backend call (opencode/copilot).
+    """Pick a model for one backend call (opencode/pi/copilot).
 
     Pure function, no side effects. An explicit ``model_index`` selects the
     matching ``pool_env_var`` entry for that call — even when
@@ -516,22 +526,47 @@ def run_copilot(prompt: str, *, model_index: int | None = None) -> str:
     )
 
 
-BACKEND_RUNNERS = {"agy": run_agy, "opencode": run_opencode, "copilot": run_copilot}
+def run_pi(prompt: str, *, model_index: int | None = None) -> str:
+    """Run the ``pi`` backend and return its critique text.
+
+    The model is resolved via :func:`_resolve_pooled_model`:
+    ``SECOND_OPINION_PI_MODEL``, if set, wins outright; otherwise
+    ``model_index`` picks an entry from ``SECOND_OPINION_PI_MODEL_POOL`` if
+    that's set; otherwise ``None`` (Pi's own default model choice for the
+    ``opencode-go`` provider — see :func:`llm_backends.run_pi`).
+    """
+    return llm_backends.run_pi(
+        prompt,
+        model=_resolve_pooled_model(
+            "SECOND_OPINION_PI_MODEL_POOL", "SECOND_OPINION_PI_MODEL", model_index
+        ),
+        timeout=_resolve_timeout("SECOND_OPINION_PI_TIMEOUT_SECONDS"),
+    )
+
+
+BACKEND_RUNNERS = {
+    "agy": run_agy,
+    "pi": run_pi,
+    "opencode": run_opencode,
+    "copilot": run_copilot,
+}
 BACKEND_LABELS = {
     "agy": f"agy ({DEFAULT_AGY_MODEL})",
+    "pi": "pi (opencode-go gateway)",
     "opencode": "opencode (adversary agent)",
     "copilot": "GitHub Copilot CLI",
 }
 
 
 def backend_label(backend: str, *, model_index: int | None = None) -> str:
-    """Return ``backend``'s display label, appending the resolved agy/copilot/opencode model if any.
+    """Return ``backend``'s display label, appending the resolved model if any.
 
     For ``agy``, resolution goes through :func:`_resolve_agy_model`; for
-    ``opencode``/``copilot`` it goes through the same :func:`_resolve_pooled_model`
-    the runner uses (single-override env var when no index, else pool +
-    ``model_index``) — one source of truth, so the printed label always
-    matches the model the runner actually used, pool or not.
+    ``opencode``/``pi``/``copilot`` it goes through the same
+    :func:`_resolve_pooled_model` the runner uses (single-override env var
+    when no index, else pool + ``model_index``) — one source of truth, so
+    the printed label always matches the model the runner actually used,
+    pool or not.
     """
     label = BACKEND_LABELS[backend]
     if backend == "agy":
@@ -552,6 +587,12 @@ def backend_label(backend: str, *, model_index: int | None = None) -> str:
             "SECOND_OPINION_OPENCODE_MODEL_POOL",
             "SECOND_OPINION_OPENCODE_MODEL",
             model_index,
+        )
+        if model:
+            return f"{label} ({model})"
+    if backend == "pi":
+        model = _resolve_pooled_model(
+            "SECOND_OPINION_PI_MODEL_POOL", "SECOND_OPINION_PI_MODEL", model_index
         )
         if model:
             return f"{label} ({model})"
@@ -676,9 +717,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="N",
         help="0-based index into the backend model pool "
-        "(SECOND_OPINION_{AGY,OPENCODE,COPILOT}_MODEL_POOL) for this call "
+        "(SECOND_OPINION_{AGY,PI,OPENCODE,COPILOT}_MODEL_POOL) for this call "
         "-- round 1 of a rotation is index 0, round 2 is index 1, etc. "
-        "Supported for agy/opencode/copilot; an explicit index selects the "
+        "Supported for agy/pi/opencode/copilot; an explicit index selects the "
         "pool even when a single-model override is set, and is a hard error "
         "if the pool is unset/empty or the index is out of range (was "
         "previously a silent no-op/fallback).",

@@ -7,7 +7,7 @@ functions' entire job is process lifecycle management (timeouts, process
 groups, kill signals), which a mock would just assert away instead of
 exercising. Higher-level logic (argv-building, opencode's event parsing)
 mocks `_run_command`/`run_backend_command` instead, since real
-`agy`/`opencode`/`copilot` binaries aren't available in CI.
+`agy`/`opencode`/`pi`/`copilot` binaries aren't available in CI.
 """
 
 import json
@@ -110,7 +110,8 @@ class AvailableBackendsTests(unittest.TestCase):
     def test_15_priority_order_preserved(self) -> None:
         with patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"):
             self.assertEqual(
-                llm_backends.available_backends(), ["agy", "opencode", "copilot"]
+                llm_backends.available_backends(),
+                ["agy", "pi", "opencode", "copilot"],
             )
 
     def test_16_only_installed_backends_returned(self) -> None:
@@ -364,6 +365,50 @@ class RunCopilotTests(unittest.TestCase):
             ["copilot", "-p", "my prompt", "--silent", "--model", "claude-sonnet-4.6"],
             60,
         )
+
+
+class RunPiTests(unittest.TestCase):
+    def test_63_no_model_argv(self) -> None:
+        with patch.object(
+            llm_backends, "run_backend_command", return_value="text"
+        ) as mock_run:
+            result = llm_backends.run_pi("my prompt", model=None, timeout=60)
+        self.assertEqual(result, "text")
+        mock_run.assert_called_once_with(
+            ["pi", "-p", "--no-session", "--provider", "opencode-go", "my prompt"],
+            60,
+        )
+
+    def test_64_model_appends_flag(self) -> None:
+        with patch.object(
+            llm_backends, "run_backend_command", return_value="text"
+        ) as mock_run:
+            llm_backends.run_pi("my prompt", model="kimi-k2.6", timeout=60)
+        mock_run.assert_called_once_with(
+            [
+                "pi",
+                "-p",
+                "--no-session",
+                "--provider",
+                "opencode-go",
+                "--model",
+                "kimi-k2.6",
+                "my prompt",
+            ],
+            60,
+        )
+
+    def test_65_leaked_tool_call_markup_raises(self) -> None:
+        text = (
+            '<tool_calls><invoke name="bash">'
+            '<parameter name="command">ls -la</parameter></invoke></tool_calls>'
+        )
+        with (
+            patch.object(llm_backends, "run_backend_command", return_value=text),
+            self.assertRaises(llm_backends.BackendError) as cm,
+        ):
+            llm_backends.run_pi("prompt", model=None, timeout=60)
+        self.assertIn("tool-call markup", str(cm.exception))
 
 
 class RunOpencodeTests(unittest.TestCase):

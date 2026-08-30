@@ -2120,6 +2120,10 @@ def _run_recap_regen(
                 raw = llm_backends.run_opencode(
                     prompt, model=None, timeout=RECAP_TIMEOUT_SECONDS
                 )
+            elif backend == "pi":
+                raw = llm_backends.run_pi(
+                    prompt, model=None, timeout=RECAP_TIMEOUT_SECONDS
+                )
             elif backend == "copilot":
                 raw = llm_backends.run_copilot(
                     prompt, model=None, timeout=RECAP_TIMEOUT_SECONDS
