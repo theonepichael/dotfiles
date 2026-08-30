@@ -239,7 +239,8 @@ export default function (pi: ExtensionAPI) {
     description: "Read and mutate the personal dev_status.py backlog/pending store.",
     promptSnippet: "Read or mutate the personal backlog/pending store",
     promptGuidelines: [
-      "Use dev_status instead of bash for every dev_status.py call -- it avoids the apostrophe/shell-quoting hazard of composing a raw CLI string.",
+      "Never invoke dev_status.py via bash, for any reason, including a plain read like listing pending items or checking status -- always use dev_status instead. This applies to every action, not just ones a slash command already told you to use dev_status for.",
+      "dev_status covers everything dev_status.py's CLI does: render, list, show, add, update, start, done, review, approve, reject, gate_set, gate_pass, backfill_gate, rename, remove, block, unblock, prune, recap, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.claude/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
       "dev_status's patch field is a plain object, not a JSON string -- never hand-encode it.",
       "dev_status refuses a numeric slug on any mutating action -- call action: \"show\" first to resolve a numeric position to its real slug.",
     ],
