@@ -54,10 +54,12 @@ or the "visible in the current conversation" fallback — write it to
 `grill.py` plans use (never the per-session scratchpad dir — it can be gone by
 the time anything references this path later, e.g. a `dev_status.py`
 `related_files` entry read back in a future session). Use that path as
-`current_plan` for the rest of this skill. Never pass inline plan text to
-`second_opinion.py review`, and never embed full plan text into a prose field
-meant for short descriptions (a `context`/`next_steps`/note field on a
-`dev_status.py` item, etc.) — reference the file path there instead.
+`current_plan` for the rest of this skill. Never `mkdir -p` that directory
+first — `grill.py` and `second_opinion.py` each create it on every invocation,
+so just write the file. Never pass inline plan text to `second_opinion.py
+review`, and never embed full plan text into a prose field meant for short
+descriptions (a `context`/`next_steps`/note field on a `dev_status.py` item,
+etc.) — reference the file path there instead.
 
 ## Deriving focus hints
 

@@ -63,7 +63,7 @@ Then check `grill.py list` for an existing session matching the topic. If one ma
 
 **End of session** (fully decided or wrapped up — not on pause):
 
-1. Author the plan as a markdown document — a real plan someone could execute, not a decision log. The recorded decision points (`grill.py show`) inform it. Plans always live centrally at `~/.claude/data/grill/<slug>-plan.md` — never in project repos; this is personal tooling, not team-facing docs.
+1. Author the plan as a markdown document — a real plan someone could execute, not a decision log. The recorded decision points (`grill.py show`) inform it. Plans always live centrally at `~/.claude/data/grill/<slug>-plan.md` — never in project repos; this is personal tooling, not team-facing docs. Never `mkdir -p` that directory first — `grill.py` and `second_opinion.py` each create it on every invocation, so just write the file.
 2. Run `python3 ~/.claude/scripts/vitals_promotion.py --apply` (mechanical, no new flags needed — this re-runs the full classify/promote/supersede pass over every session, not just this one, so it also catches drift from sessions closed since the last run). Show the printed report (promoted/superseded/needs-review counts) to the user in plain text; if `promoted_count` or `superseded_count` is nonzero, this session's activity changed the vitals store the next session's pre-step will read.
 3. Record it: `grill.py plan <path>`.
 4. Show the user the plan and the `grill.py render` output (decision table, any open questions, verification state).

@@ -1022,6 +1022,7 @@ named doc, not regenerating this file.
 | --- | --- |
 | `agy/skills/grill-me/SKILL.md` | OK |
 | `agy/skills/second-opinion/SKILL.md` | OK |
+| `agy/skills/spec/SKILL.md` | OK |
 | `agy/skills/to-tickets/SKILL.md` | OK |
 | `claude/commands/grill-me.md` | OK |
 | `claude/commands/second-opinion.md` | OK |
@@ -1029,6 +1030,7 @@ named doc, not regenerating this file.
 | `claude/commands/to-tickets.md` | OK |
 | `copilot/skills/grill-me/SKILL.md` | OK |
 | `copilot/skills/second-opinion/SKILL.md` | OK |
+| `copilot/skills/spec/SKILL.md` | OK |
 | `copilot/skills/to-tickets/SKILL.md` | OK |
 | `opencode/command/grill-me.md` | OK |
 | `opencode/command/second-opinion.md` | OK |
