@@ -321,6 +321,8 @@ check "pi ruff-format-on-edit extension symlinked" bash -c \
   '[[ "$(readlink -f ~/.pi/agent/extensions/ruff-format-on-edit.ts)" == "'"$DOTFILES"'/pi/extensions/ruff-format-on-edit.ts" ]]'
 check "pi guard-rails extension symlinked" bash -c \
   '[[ "$(readlink -f ~/.pi/agent/extensions/guard-rails.ts)" == "'"$DOTFILES"'/pi/extensions/guard-rails.ts" ]]'
+check "pi dev-status-tool extension symlinked" bash -c \
+  '[[ "$(readlink -f ~/.pi/agent/extensions/dev-status-tool.ts)" == "'"$DOTFILES"'/pi/extensions/dev-status-tool.ts" ]]'
 check "pi settings.json copied (not symlinked)" bash -c '[[ -f ~/.pi/agent/settings.json && ! -L ~/.pi/agent/settings.json ]]'
 check "pi settings.json matches repo seed" diff -q ~/.pi/agent/settings.json "$DOTFILES/pi/settings.json"
 
@@ -354,6 +356,8 @@ check "pi permission-gate extension symlink removed by rollback" \
   bash -c '[[ ! -e ~/.pi/agent/extensions/permission-gate.ts ]]'
 check "pi guard-rails extension symlink removed by rollback" \
   bash -c '[[ ! -e ~/.pi/agent/extensions/guard-rails.ts ]]'
+check "pi dev-status-tool extension symlink removed by rollback" \
+  bash -c '[[ ! -e ~/.pi/agent/extensions/dev-status-tool.ts ]]'
 rm -f ~/.pi/agent/settings.json
 
 echo ""

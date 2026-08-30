@@ -48,32 +48,29 @@ For each entry in `pending_items_open`, check `chat_thread_updates` /
 `email_thread_updates` (and `messages`/`email_correspondence` for anything
 those targeted fetches missed) for a reply. Propose the transition to the
 user in chat first — nothing gets written until they confirm, since "was
-this actually answered" is a judgment call, not a pattern match:
-
-```
-python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "reply_received"}'
-```
+this actually answered" is a judgment call, not a pattern match — then call
+the `dev_status` tool with `action: "pending_update", slug: "<id>", patch:
+{"status": "reply_received"}`.
 
 Only move an item to `resolved` when the user confirms it's actually done,
-and record what happened:
-
-```
-python3 ~/.claude/scripts/dev_status.py pending update <id> '{"status": "resolved", "outcome": "what actually happened"}'
-```
+and record what happened: `action: "pending_update", slug: "<id>", patch:
+{"status": "resolved", "outcome": "what actually happened"}`.
 
 For anything in the fetched data that looks like a new item worth tracking
 across days (an email/chat message still awaiting a reply, an access
 request not yet approved) but isn't already in `pending_items_open`,
-propose adding it:
+propose adding it: `action: "pending_add", patch: {"id", "description",
+"kind", "source_ref": {...}, "context", "next_steps": [...]}`.
 
-```
-python3 ~/.claude/scripts/dev_status.py pending add '{"id", "description", "kind", "source_ref": {...}, "context", "next_steps": [...]}'
-```
+`<id>` must be the pending item's real slug — `standup.py`'s `fetch` output
+already gives you it directly. The `dev_status` tool refuses a numeric
+`slug` on `pending_update` outright (call it with `action: "show", slug:
+"<N>"` first if you only have a cross-section number, e.g. from the
+dashboard).
 
-`<id>` can be the pending item's slug — `dev_status.py`'s cross-section
-numbering (visible via `/status`) also works, but its numbers shift as
-items change, so prefer the slug here since `standup.py`'s `fetch` output
-already gives you it directly.
+If the `dev_status` tool is genuinely unavailable, fall back to bash —
+`python3 ~/.claude/scripts/dev_status.py pending update <id> '{...}'` /
+`pending add '{...}'`, same JSON shapes as above.
 
 `kind` is one of `email`, `chat`, `approval`. `source_ref` is a structured
 object appropriate to the kind (e.g. `{"to", "subject", "sent_date"}` for

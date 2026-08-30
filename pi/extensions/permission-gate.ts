@@ -15,8 +15,19 @@ import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 // opencode.jsonc's separate `external_directory` permission type has no
 // direct Pi analog (Pi's file tools have no comparable directory-scoped
 // gate) and is out of scope for this port.
+//
+// Deliberate divergence from opencode.jsonc: dev_status.py is NOT
+// allowlisted here, unlike every other harness's permission config. Pi
+// has a native dev_status tool (pi/extensions/dev-status-tool.ts) that
+// replaces raw bash calls to dev_status.py entirely -- leaving the bash
+// pattern on the allowlist would let the model bypass the tool silently.
+// Dropping to the "*": "ask" default instead makes a direct bash call
+// require confirmation (or fail outright in headless mode), pushing
+// actual usage toward the tool. The tool's own internal pi.exec calls
+// are unaffected -- they never go through the tool_call event this gate
+// hooks, since they're plain subprocess calls from already-running
+// extension code, not a model-invoked "bash" tool call.
 const ALLOW_PATTERNS: string[] = [
-  "python3 ~/.claude/scripts/dev_status.py *",
   "python3 ~/.claude/scripts/grill.py *",
   "python3 ~/.claude/scripts/second_opinion.py *",
   "python3 ~/.claude/scripts/settings_seed_drift_check.py *",

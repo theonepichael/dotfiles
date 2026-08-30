@@ -514,6 +514,11 @@ src = "pi/extensions/guard-rails.ts"
 dest = "~/.pi/agent/extensions/guard-rails.ts"
 harness = "pi"
 
+[[link]]
+src = "pi/extensions/dev-status-tool.ts"
+dest = "~/.pi/agent/extensions/dev-status-tool.ts"
+harness = "pi"
+
 # ── watchcommit (personal machines only) ─────────────────────────────────
 # It auto-pushes to a personal remote under your personal Claude account
 # login, which has no place on work hardware.

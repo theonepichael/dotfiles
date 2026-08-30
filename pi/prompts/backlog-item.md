@@ -16,20 +16,23 @@ verification checkpoint, not a user-approval stop — same word, different
 mechanism, don't conflate them.
 
 ## 1. Resolve
-`python3 ~/.claude/scripts/dev_status.py show $ARGUMENTS`. Read the full
-record — never start from the dashboard's one-line summary (CLAUDE.md).
-Empty context/next_steps/related_files: stop and ask the user to fill them
-in; don't fabricate a plan from the title. Numeric id: note the rendered rev
-for `--if-rev` on the next mutating call. related_files already names a
-grill plan (`~/.claude/data/grill/<slug>-plan.md`) or a spec
-(`~/.claude/data/grill/<slug>-spec.md`)? Planning and critique (steps 5–6)
-are already done — skip to step 8. Worktree already has
-implemented, uncommitted changes (e.g. handed back from an external
-executor)? Skip straight to step 9.
+Call the `dev_status` tool with `action: "show", slug: "$ARGUMENTS"` (works
+whether `$ARGUMENTS` is a real slug or a numeric position — `show` is
+read-only). Its response's `id` field is this item's real slug — use that
+resolved slug for every remaining step below, never the raw `$ARGUMENTS`
+again (every mutating `dev_status` action refuses a numeric slug outright).
+Read the full record — never start from the dashboard's one-line summary
+(CLAUDE.md). Empty context/next_steps/related_files: stop and ask the user
+to fill them in; don't fabricate a plan from the title. related_files
+already names a grill plan (`~/.claude/data/grill/<slug>-plan.md`) or a
+spec (`~/.claude/data/grill/<slug>-spec.md`)? Planning and critique (steps
+5–6) are already done — skip to step 8. Worktree already has implemented,
+uncommitted changes (e.g. handed back from an external executor)? Skip
+straight to step 9.
 
 ## 2. Start
-If not already in-progress: `dev_status.py start $ARGUMENTS` (`--if-rev <N>`
-for numeric ids).
+If not already in-progress: call the tool with `action: "start", slug:
+"<resolved slug>"`.
 
 ## 3. Branch
 related_files names exactly one project repo → worktree it per CLAUDE.md's
@@ -81,9 +84,9 @@ unambiguous transformation — no interpretation needed) or **judgment**
 acceptance criteria). If any step is judgment, set the item's gate before
 continuing:
 
-```bash
-python3 ~/.claude/scripts/dev_status.py gate-set <slug|N> '{"required": true, "criteria": ["<short imperative criterion per judgment step>", "..."]}'
-```
+Call the tool with `action: "gate_set", slug: "<resolved slug>", patch:
+{"required": true, "criteria": ["<short imperative criterion per judgment
+step>", "..."]}`.
 
 If every step is mechanical, leave the gate unset (inert by default) —
 don't call `gate-set` for a step breakdown with no judgment calls in it.
@@ -162,12 +165,21 @@ orphaned directory directly (`rm -rf <worktree-path>`) and retry
 `git branch -d`.
 
 ## 12. Close
-`dev_status.py review $ARGUMENTS` then `approve $ARGUMENTS` — never a bare
-`done` on an in-review item. If `approve` refuses citing an unmet gate,
-actually check each criterion from `show $ARGUMENTS` against the diff —
-don't pass it reflexively — then `dev_status.py gate-pass $ARGUMENTS` and
-retry `approve`. Display the full dashboard stdout these print; don't just
+Call the tool with `action: "review", slug: "<resolved slug>"`, then
+`action: "approve", slug: "<resolved slug>"` — never a bare `done` on an
+in-review item. If `approve` refuses citing an unmet gate, actually check
+each criterion from `show`'s record against the diff — don't pass it
+reflexively — then call `action: "gate_pass", slug: "<resolved slug>"` and
+retry `approve`. Display the full dashboard text these return; don't just
 narrate a one-line confirmation.
+
+If the `dev_status` tool is genuinely unavailable at any of the steps
+above, fall back to the equivalent bash `dev_status.py` command named in
+this repo's other harness prompts (`show`/`start`/`gate-set`/`review`/
+`approve`/`gate-pass <slug|N> [--if-rev <N>]`) — in that fallback path
+only, a numeric id needs a fresh, non-quiet `render` immediately before
+each mutating call to read the current rev for `--if-rev` (CLAUDE.md's
+Backlog section).
 
 ---
 

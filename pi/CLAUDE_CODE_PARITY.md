@@ -144,7 +144,7 @@ user typing the slash form at all. `pi/prompts/backlog-item.md`,
 
 ## 5. Extensions (`pi/extensions/`)
 
-Three extensions, all verified live end-to-end against a real Pi session
+Four extensions, all verified live end-to-end against a real Pi session
 (provider `opencode-go`, model `kimi-k2.6`), not just read through:
 
 ### `guard-rails.ts`
@@ -189,6 +189,20 @@ the model's own turn reported "The command was blocked: **Blocked by
 permission-gate (no UI to confirm through in this mode): touch
 not-allowed-marker.txt**" and no file was created.
 
+**Deliberate divergence from `opencode.jsonc` (added once `dev-status-tool.ts`
+shipped, below):** `python3 ~/.claude/scripts/dev_status.py *` is *not*
+allowlisted here, unlike every other harness's permission config. Leaving
+it allowlisted would let the model silently bypass the native `dev_status`
+tool and shell out instead; dropping it to the `"*": "ask"` default makes
+that bash path need confirmation (or fail outright headless), while the
+tool's own internal `pi.exec` calls are unaffected — they never go through
+the `tool_call` event this gate hooks at all, since they're plain
+subprocess calls from already-running extension code, not a model-invoked
+`bash` tool call. Verified live: a direct bash call to `dev_status.py
+render` in headless mode was blocked with the same message shown above;
+the `dev_status` tool's own `render` action, called in the same session
+with both extensions loaded, succeeded with zero blocking.
+
 ### `ruff-format-on-edit.ts`
 
 Runs `uv run ruff format` + `uv run ruff check --fix` on any `.py` file the
@@ -211,6 +225,76 @@ here for Pi's own event shapes (`docs/extensions.md`'s Tool Events):
 line above the `def`; the file came back as `def add(a, b):` /
 `return a + b` — ruff format ran automatically after the edit, not just
 on the specific lines the model touched.
+
+### `dev-status-tool.ts`
+
+Registers `dev_status` — a single `pi.registerTool()` custom tool wrapping
+every `claude/scripts/dev_status.py` subcommand with a typed schema
+(`StringEnum` action + optional identity/patch/flag fields), so Pi's
+prompt templates can call it directly instead of composing a raw bash
+string. Full design history (3 rounds of `/second-opinion` critique, two
+real bugs caught and fixed) is in
+`~/.claude/data/grill/pi-tool-dev-status-spec.md` and its companion
+critique-notes file — not restated here, only the load-bearing corrections
+that shape the code:
+
+- **Mutating actions refuse a numeric `slug`/`secondarySlug` outright.**
+  Two earlier designs (auto-fetch the current rev; auto-resolve the
+  position to a slug via `show`) both silently risked mutating whatever
+  item currently occupies a drifted position instead of what the model
+  actually meant. The shipped design forces two explicit, model-visible
+  tool calls instead: `show` to resolve a position to its real `id`, then
+  the mutating call by that slug. Read-only actions still take numeric
+  positions directly (`dev_status.py` already handles `<slug|N>` natively
+  for reads, and nothing gets mutated).
+- **`pi.exec`'s real `ExecOptions` has no `env` field** — confirmed
+  against the installed package's own `dist/core/exec.d.ts`
+  (`{signal?, timeout?, cwd?}` only), not assumed from the docs' prose
+  example. `DEVSTATUS_AGENT=1` is set via the `env` coreutil as the
+  actual command (`pi.exec("env", ["DEVSTATUS_AGENT=1", "python3", ...])`),
+  not via a nonexistent `options.env`.
+- **`StringEnum` imports from `@earendil-works/pi-ai`**, not
+  `@earendil-works/pi-coding-agent` — confirmed against both packages'
+  real, installed type definitions.
+- stderr is appended to the tool's returned `content` whenever non-empty,
+  on both success and failure — `content` is what reaches the model,
+  `details` doesn't (confirmed against `docs/extensions.md`'s own inline
+  comment on the Tool Definition example). In practice this rarely fires:
+  `dev_status.py`'s own agent-facing reminders (e.g. `add`'s
+  blocker-relationship prompt) are gated by `_agent_quiet()`, true
+  whenever `DEVSTATUS_AGENT=1` — which this tool always sets — confirmed
+  by reading `dev_status.py` directly and by running a real `add` under
+  that flag and observing empty stderr. The forwarding stays in as a
+  backstop against anything not similarly gated, not because a real
+  reminder was ever caught by it.
+
+**Verified live**: extension loads cleanly (`pi -e
+dev-status-tool.ts "..."` with no error); `render` returns the real
+dashboard; `show` resolves both a real slug and a real numeric position;
+a mutating action (`start`) with a numeric `slug` was refused with the
+exact guidance error and left the store untouched; a `patch` payload
+containing an apostrophe (`Pi's skill discovery test`) round-tripped into
+`dev_status.py` correctly — the specific hazard this tool exists to
+eliminate; a missing required field and a field valid only for a
+different action were both refused before `pi.exec` ran.
+
+**A fenced ` ```bash ` fallback block actively defeats a "prefer the tool"
+instruction — confirmed by a real regression, not theory.** After
+`permission-gate.ts` moved `dev_status.py` off its bash allowlist (see its
+own subsection above) specifically so a direct bash call would need
+confirmation and push usage toward this tool, `pi/prompts/dashboard.md`'s real `/dashboard` template —
+run for real through `--prompt-template`, not a hand-picked test prompt —
+still fell through to the bash fallback and got blocked, even though the
+tool instruction came first and was unambiguous prose. The fenced code
+block a few lines down was more salient to the model than the prose
+around it. Fix: drop the fence entirely for a fallback path that should
+rarely fire — state it in plain prose, and add an explicit "check your
+actual tool list before assuming this" qualifier. Re-verified clean across
+3 consecutive real `/dashboard` runs after the fix, plus a spot check of
+`backlog-item.md`'s step 1 and `standup.md`'s `pending_add` path. Applies
+generally: any Pi prompt template with a "primary: tool, fallback: bash"
+shape should keep the fallback out of a code fence, not just this repo's
+3 dev_status-calling files.
 
 ## 6. second-opinion / dev_status recap backend
 
