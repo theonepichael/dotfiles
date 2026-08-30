@@ -16,11 +16,13 @@ import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 // direct Pi analog (Pi's file tools have no comparable directory-scoped
 // gate) and is out of scope for this port.
 //
-// Deliberate divergence from opencode.jsonc: dev_status.py is NOT
-// allowlisted here, unlike every other harness's permission config. Pi
-// has a native dev_status tool (pi/extensions/dev-status-tool.ts) that
-// replaces raw bash calls to dev_status.py entirely -- leaving the bash
-// pattern on the allowlist would let the model bypass the tool silently.
+// Deliberate divergence from opencode.jsonc: the scripts that now have a
+// native Pi tool are NOT allowlisted here, unlike every other harness's
+// permission config. dev_status.py, grill.py, second_opinion.py,
+// standup.py, to_tickets_runner.py and vitals_promotion.py are each
+// wrapped by an extension in pi/extensions/ that replaces raw bash calls
+// entirely -- leaving the bash pattern on the allowlist would let the
+// model bypass the tool silently.
 // Dropping to the "*": "ask" default instead makes a direct bash call
 // require confirmation (or fail outright in headless mode), pushing
 // actual usage toward the tool. The tool's own internal pi.exec calls
@@ -28,8 +30,6 @@ import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 // hooks, since they're plain subprocess calls from already-running
 // extension code, not a model-invoked "bash" tool call.
 const ALLOW_PATTERNS: string[] = [
-  "python3 ~/.claude/scripts/grill.py *",
-  "python3 ~/.claude/scripts/second_opinion.py *",
   "python3 ~/.claude/scripts/settings_seed_drift_check.py *",
   "python3 ~/.claude/scripts/dotfiles_sync_check.py *",
   "git log*",
