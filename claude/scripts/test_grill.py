@@ -1138,5 +1138,38 @@ class ParserVerbosityTests(unittest.TestCase):
             self.assertTrue(mock_cmd.call_args.args[0].quiet)
 
 
+class DataDirSelfEnsureTests(GrillTestCase):
+    """DATA_DIR is shared artifact storage, so grill.py owns creating it.
+
+    Agents write plan/spec .md files into the same directory with their own
+    file tools, and were running `mkdir -p` defensively first. Every grill.py
+    invocation ensures the directory, so that reflex has nothing left to
+    guard against.
+    """
+
+    def test_ensure_data_dir_creates_missing_directory(self) -> None:
+        self.assertFalse(self.data_dir.exists())
+        grill.ensure_data_dir()
+        self.assertTrue(self.data_dir.is_dir())
+
+    def test_ensure_data_dir_is_idempotent(self) -> None:
+        grill.ensure_data_dir()
+        marker = self.data_dir / "keep.md"
+        marker.write_text("artifact")
+        grill.ensure_data_dir()
+        self.assertEqual(marker.read_text(), "artifact")
+
+    def test_read_only_subcommand_still_creates_the_directory(self) -> None:
+        """`list` never writes a session, but must still leave DATA_DIR there."""
+        self.assertFalse(self.data_dir.exists())
+        with (
+            patch.object(sys, "argv", ["grill.py", "list"]),
+            patch("sys.stdout", io.StringIO()),
+            patch("sys.stderr", io.StringIO()),
+        ):
+            grill.main()
+        self.assertTrue(self.data_dir.is_dir())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
