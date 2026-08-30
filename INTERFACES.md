@@ -472,7 +472,7 @@ grill.py — grill-me session state CLI. All session mutations go through here.
   - `frontier(session: Session) -> DecisionList` — Return every open decision whose dependencies are all resolved.
   - `render_markdown(session: Session) -> str` — Render a session's status as a Markdown document.
 - Subcommand handlers: `cmd_new`, `cmd_ask`, `cmd_decide`, `cmd_revise`, `cmd_rm`, `cmd_verdict`, `cmd_plan`, `cmd_mark_pending_execution`, `cmd_pending_plan`, `cmd_next`, `cmd_frontier`, `cmd_render`, `cmd_list`, `cmd_show`
-- Tested by: `claude/scripts/test_grill.py`, `claude/scripts/test_second_opinion.py`
+- Tested by: `claude/scripts/test_grill.py`, `claude/scripts/test_second_opinion.py`, `claude/scripts/test_to_tickets_runner.py`
 
 ### `claude/scripts/llm_backends.py`
 
@@ -645,6 +645,8 @@ to_tickets_runner.py — create a linked batch of dev_status.py backlog items fr
 - Subcommands:
   - `run <batch_file>` — create every ticket in a batch file
     - `batch_file` — path to the batch JSON file
+- Filesystem constants:
+  - `DATA_DIR = Path.home() / '.claude' / 'data' / 'to-tickets'`
 - Explicit exit codes: `1`
 - Depends on: `dev_status.py`
 - Exceptions:
@@ -653,6 +655,7 @@ to_tickets_runner.py — create a linked batch of dev_status.py backlog items fr
 - Public classes:
   - `class Ticket(TypedDict)`
 - Public functions:
+  - `ensure_data_dir() -> None` — Create ``DATA_DIR`` if it is missing.
   - `load_batch(path: Path) -> list[Ticket]` — Load and validate the batch file at ``path``.
   - `compute_order(tickets: list[Ticket], index: dev_status.BacklogIndex) -> list[str]` — Compute a safe creation order for ``tickets`` from their ``blocked_by`` edges.
   - `load_state(batch_path: Path) -> dict[str, object] | None` — Load the state file for ``batch_path``, or ``None`` if absent/unreadable.

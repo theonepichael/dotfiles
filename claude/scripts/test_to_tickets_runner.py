@@ -356,5 +356,59 @@ class RunTests(RunnerTestCase):
         self.assertEqual(entry["slug"], "solo-ticket")
 
 
+# ── data directory self-ensure ─────────────────────────────────────────────
+
+
+class DataDirSelfEnsureTests(unittest.TestCase):
+    """DATA_DIR holds batch files agents write, so to_tickets_runner.py owns it.
+
+    The to-tickets skill has the agent write its batch JSON there with its own
+    file tools before invoking this script — the same shape that had agents
+    running `mkdir -p ~/.claude/data/grill` defensively. Every invocation
+    ensures the directory, so that reflex has nothing left to guard against.
+    """
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+        self.data_dir = Path(self.tmpdir) / "to-tickets"
+        self._patch = patch.object(runner, "DATA_DIR", self.data_dir)
+        self._patch.start()
+
+    def tearDown(self) -> None:
+        self._patch.stop()
+        shutil.rmtree(self.tmpdir)
+
+    def test_ensure_data_dir_creates_missing_directory(self) -> None:
+        self.assertFalse(self.data_dir.exists())
+        runner.ensure_data_dir()
+        self.assertTrue(self.data_dir.is_dir())
+
+    def test_ensure_data_dir_is_idempotent(self) -> None:
+        runner.ensure_data_dir()
+        marker = self.data_dir / "keep-tickets-batch.json"
+        marker.write_text("[]")
+        runner.ensure_data_dir()
+        self.assertEqual(marker.read_text(), "[]")
+
+    def test_run_subcommand_creates_the_directory(self) -> None:
+        self.assertFalse(self.data_dir.exists())
+        with (
+            patch.object(sys, "argv", ["to_tickets_runner.py", "run", "batch.json"]),
+            patch.object(runner, "cmd_run"),
+        ):
+            runner.main()
+        self.assertTrue(self.data_dir.is_dir())
+
+    def test_data_dir_is_not_the_grill_dir(self) -> None:
+        """Sharing grill's dir would break its private session glob — assert we don't."""
+        import grill
+
+        self._patch.stop()
+        try:
+            self.assertNotEqual(runner.DATA_DIR, grill.DATA_DIR)
+        finally:
+            self._patch.start()
+
+
 if __name__ == "__main__":
     unittest.main()

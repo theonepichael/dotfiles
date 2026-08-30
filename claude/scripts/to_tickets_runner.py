@@ -39,7 +39,10 @@ Files read/written
   ``dev_status.py`` backlog store (``~/.claude/data/backlog/``) that
   ``dev_status.py`` itself and ``dev_status_sync.py`` use, via
   ``dev_status``'s own primitives (``backlog_lock``, ``load_items``,
-  ``save_items``, ``append_journal_event``).
+  ``save_items``, ``append_journal_event``). Also creates
+  ``~/.claude/data/to-tickets/`` on every invocation (see
+  ``ensure_data_dir``) — the directory the skill has agents write their batch
+  files into.
 
 Exit codes
   0 success. 1 on any batch/schema/cycle/unknown-slug/stale-state/
@@ -59,6 +62,22 @@ from typing import TypedDict, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dev_status  # noqa: E402 — must follow the sys.path.insert above
+
+DATA_DIR = Path.home() / ".claude" / "data" / "to-tickets"
+
+
+def ensure_data_dir() -> None:
+    """Create ``DATA_DIR`` if it is missing.
+
+    Called once per invocation, before any subcommand runs. It is shared
+    artifact storage: the ``to-tickets`` skill has the agent write its batch
+    ``.json`` file there with its own file tools, not through this script, and
+    agents used to run ``mkdir -p`` defensively first. Guaranteeing it here is
+    what lets the skill docs drop that step. Deliberately its own directory,
+    never ``grill.py``'s — that one is globbed as a private session store and
+    cannot tolerate a non-session file landing in it.
+    """
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class Ticket(TypedDict):
@@ -342,6 +361,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    ensure_data_dir()
     parser = build_parser()
     args = parser.parse_args()
     args.func(args)
