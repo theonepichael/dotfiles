@@ -7,20 +7,16 @@ argument-hint: [plan file or text]
 edit the body template for shared wording or the per-harness parameter table
 for harness-specific wording, then regenerate -->
 
-All backend I/O goes through `python3 ~/.claude/scripts/second_opinion.py` —
-never shell out to `agy`/`opencode`/`pi`/`copilot` directly. It is
-single-round: one call, one critique. The multi-round loop and plan revision
-are your job, not the script's.
+All backend I/O goes through the `second_opinion` tool — never shell out to
+`agy`/`opencode`/`pi`/`copilot` directly. Two operations: `detect` lists which
+backends are present, `review` returns one critique. It is single-round: one
+call, one critique. The multi-round loop and plan revision are your job, not
+the script's.
 
-```
-second_opinion.py detect                        # which backends are present (JSON)
-second_opinion.py review <plan-file-or-text> \
-    [--focus-file <path>] \
-    [--model-index N]                            # one critique from the
-                                                  # priority-selected backend,
-                                                  # optionally scoped with
-                                                  # plan-specific risk hints
-```
+Call the `second_opinion` tool. Action `detect` lists the available backends as
+JSON. Action `review` returns one critique of the plan at `planFile`,
+optionally scoped with `focusFile` and `modelIndex`. Never run
+`second_opinion.py` via bash.
 
 `--model-index` is a 0-based index into a per-machine model pool
 (`SECOND_OPINION_AGY_MODEL_POOL` / `_PI_MODEL_POOL` / `_OPENCODE_MODEL_POOL` /
@@ -106,13 +102,15 @@ prior_critique = None
 loop:
     focus_hints = derive 2-3 plan-specific risk bullets from current_plan
                   (see above), or skip if nothing specific stands out
-    critique = second_opinion.py review <current_plan> \
-                   [--focus-file <focus-hints-path>] \
-                   --model-index <round - 1>   # one call
+    critique = second_opinion review
+                   planFile = <current_plan>
+                   [focusFile = <focus-hints-path>]
+                   modelIndex = <round - 1>   # one call
     if that call exited nonzero with a "--model-index ... requires
        ... POOL ..." configuration error (not a backend-failure message):
-        critique = second_opinion.py review <current_plan> \
-                       [--focus-file <focus-hints-path>]   # retry, no index —
+        critique = second_opinion review
+                       planFile = <current_plan>
+                       [focusFile = <focus-hints-path>]   # retry, no index —
                                                             # no pool configured
                                                             # for this backend,
                                                             # not an error to

@@ -539,6 +539,11 @@ src = "pi/extensions/standup-tool.ts"
 dest = "~/.pi/agent/extensions/standup-tool.ts"
 harness = "pi"
 
+[[link]]
+src = "pi/extensions/second-opinion-tool.ts"
+dest = "~/.pi/agent/extensions/second-opinion-tool.ts"
+harness = "pi"
+
 # ── watchcommit (personal machines only) ─────────────────────────────────
 # It auto-pushes to a personal remote under your personal Claude account
 # login, which has no place on work hardware.

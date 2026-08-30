@@ -1,14 +1,6 @@
-All backend I/O goes through `python3 ~/.claude/scripts/second_opinion.py` — never shell out to {{BACKENDS_NEVER}} directly. It is single-round: one call, one critique. The multi-round loop and plan revision are your job, not the script's.
+All backend I/O goes through {{IO_ENTRYPOINT}} — never shell out to {{BACKENDS_NEVER}} directly. Two operations: `detect` lists which backends are present, `review` returns one critique. It is single-round: one call, one critique. The multi-round loop and plan revision are your job, not the script's.
 
-```
-second_opinion.py detect                        # which backends are present (JSON)
-second_opinion.py review <plan-file-or-text> \
-    [--focus-file <path>] \
-    [--model-index N]                            # one critique from the
-                                                  # priority-selected backend,
-                                                  # optionally scoped with
-                                                  # plan-specific risk hints
-```
+{{USAGE_BLOCK}}
 
 `--model-index` is a 0-based index into a per-machine model pool (`SECOND_OPINION_AGY_MODEL_POOL` / `_PI_MODEL_POOL` / `_OPENCODE_MODEL_POOL` / `_COPILOT_MODEL_POOL`, set by the user, not this skill) — round 1 of the loop below is index 0, round 2 is index 1, etc. All four backends share the same indexed-pool contract. An explicit index selects the pool entry for that call even when a single-model override (`SECOND_OPINION_<BACKEND>_MODEL`) is also set; without `--model-index` the single override (or the backend default) applies. An explicit index is a hard error if the selected backend's pool is unset/empty or the index is out of range — it no longer silently falls back. Because of that, don't assume a pool is configured: pass `--model-index` every round as before, but if that call exits nonzero with a `--model-index ... requires ... POOL ...` configuration error (not a backend-failure message), retry that same round's call once, identical except omitting `--model-index` — this is the safe, always-valid fallback (single-model override or backend default), not a skipped round. See the loop below for exactly where this retry sits. If only some backends are pool-configured, automatic selection stops on the first priority candidate with a pool config error; use `--backend <configured-backend>` to target a working one.
 
@@ -38,13 +30,10 @@ prior_critique = None
 loop:
     focus_hints = derive 2-3 plan-specific risk bullets from current_plan
                   (see above), or skip if nothing specific stands out
-    critique = second_opinion.py review <current_plan> \
-                   [--focus-file <focus-hints-path>] \
-                   --model-index <round - 1>   # one call
+{{REVIEW_CALL}}
     if that call exited nonzero with a "--model-index ... requires
        ... POOL ..." configuration error (not a backend-failure message):
-        critique = second_opinion.py review <current_plan> \
-                       [--focus-file <focus-hints-path>]   # retry, no index —
+{{REVIEW_CALL_RETRY}}
                                                             # no pool configured
                                                             # for this backend,
                                                             # not an error to
