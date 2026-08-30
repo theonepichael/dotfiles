@@ -8,7 +8,9 @@ export function isDangerousRm(command: string): boolean {
   const rmMatches = command.matchAll(/\brm\s+([^;&|`$()]+)/gi);
   for (const match of rmMatches) {
     const args = match[1] ?? "";
-    const flagSection = args.split(/\s--\s/)[0] ?? args;
+    // Leading space so a `--` in first position splits like any other one:
+    // everything after `--` is a file name, so "rm -- -rf" has no flags at all.
+    const flagSection = ` ${args}`.split(/\s--\s/)[0] ?? args;
     const hasR =
       /(?:^|\s)-[a-zA-Z]*r/i.test(flagSection) || /(?:^|\s)--recursive\b/i.test(flagSection);
     const hasF = /(?:^|\s)-[a-zA-Z]*f/i.test(flagSection) || /(?:^|\s)--force\b/i.test(flagSection);

@@ -35,11 +35,15 @@ describe("isDangerousRm", () => {
     expect(isDangerousRm("git commit -m 'rm -rf cleanup'")).toBe(true);
   });
 
-  test("leading -- separator still flags (conservative)", () => {
-    // The -- handling splits only after the capture begins, so "rm -- -rf"
-    // is flagged even though the file is literally named "-rf" —
-    // conservative-block beats allow.
-    expect(isDangerousRm("rm -- -rf")).toBe(true);
+  test("-- separator ends the flag section, leading or mid-command", () => {
+    // Everything after -- is a file name, never a flag. "rm -- -rf" deletes a
+    // file literally named "-rf" and is not recursive-force.
+    expect(isDangerousRm("rm -- -rf")).toBe(false);
+    expect(isDangerousRm("rm file1 -- -rf")).toBe(false);
+  });
+
+  test("flags before a -- separator still flag", () => {
+    expect(isDangerousRm("rm -rf -- ./build")).toBe(true);
   });
 });
 
