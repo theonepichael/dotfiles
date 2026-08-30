@@ -119,4 +119,75 @@ describe("getGitCommitTarget", () => {
   test("non-git commands are not a commit target", () => {
     expect(getGitCommitTarget("echo hello", "/repo")).toEqual({ isCommit: false, cwd: "/repo" });
   });
+
+  test("a leading cd sets the commit cwd", () => {
+    expect(getGitCommitTarget("cd /worktree && git commit -m 'x'", "/repo")).toEqual({
+      isCommit: true,
+      cwd: "/worktree",
+    });
+  });
+
+  test("a relative cd resolves against the default cwd", () => {
+    expect(getGitCommitTarget("cd sub && git commit", "/repo")).toEqual({
+      isCommit: true,
+      cwd: "/repo/sub",
+    });
+  });
+
+  test("cd works with ; and newline separators too", () => {
+    expect(getGitCommitTarget("cd /worktree ; git commit", "/repo")).toEqual({
+      isCommit: true,
+      cwd: "/worktree",
+    });
+    expect(getGitCommitTarget("cd /worktree\ngit commit", "/repo")).toEqual({
+      isCommit: true,
+      cwd: "/worktree",
+    });
+  });
+
+  test("a quoted cd target is unquoted", () => {
+    expect(getGitCommitTarget('cd "/my worktree" && git commit', "/repo")).toEqual({
+      isCommit: true,
+      cwd: "/my worktree",
+    });
+  });
+
+  test("an explicit -C beats a preceding cd", () => {
+    expect(getGitCommitTarget("cd /worktree && git -C /other commit", "/repo")).toEqual({
+      isCommit: true,
+      cwd: "/other",
+    });
+  });
+
+  test("a relative -C resolves against the cd'd directory", () => {
+    expect(getGitCommitTarget("cd /worktree && git -C sub commit", "/repo")).toEqual({
+      isCommit: true,
+      cwd: "/worktree/sub",
+    });
+  });
+
+  test("chained cds accumulate", () => {
+    expect(getGitCommitTarget("cd /worktree && cd sub && git commit", "/repo")).toEqual({
+      isCommit: true,
+      cwd: "/worktree/sub",
+    });
+  });
+
+  test("a cd with no resolvable target leaves the cwd alone", () => {
+    expect(getGitCommitTarget("cd && git commit", "/repo")).toEqual({
+      isCommit: true,
+      cwd: "/repo",
+    });
+    expect(getGitCommitTarget("cd - && git commit", "/repo")).toEqual({
+      isCommit: true,
+      cwd: "/repo",
+    });
+  });
+
+  test("a cd after the commit does not affect it", () => {
+    expect(getGitCommitTarget("git commit && cd /worktree", "/repo")).toEqual({
+      isCommit: true,
+      cwd: "/repo",
+    });
+  });
 });
