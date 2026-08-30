@@ -29,6 +29,10 @@ FIXTURE_PARAMS = gso.HarnessParams(
     ask_choose_cap="ask cap",
     instructions_ref="the docs'",
     adversary_ref="the",
+    io_entrypoint="the fixture entrypoint",
+    usage_block="```\nfixture usage   block\n```",
+    review_call="fixture review call",
+    review_call_retry="fixture retry call",
 )
 
 
@@ -52,6 +56,33 @@ class RenderBodyTests(unittest.TestCase):
         rendered = gso.render_body(template, FIXTURE_PARAMS)
         self.assertIn("```\nliteral   spacing\ncode\n```", rendered)
 
+    def test_a_lone_placeholder_line_is_emitted_verbatim(self) -> None:
+        """A whole-line placeholder is not reflowed, so its value can carry
+        its own fence, indentation, and line breaks — that is what lets one
+        harness render a fenced command block where another renders prose."""
+        template = "before.\n\n{{USAGE_BLOCK}}\n\nafter.\n"
+        rendered = gso.render_body(template, FIXTURE_PARAMS)
+        self.assertIn("```\nfixture usage   block\n```", rendered)
+
+    def test_a_lone_placeholder_value_does_not_break_fence_tracking(self) -> None:
+        """The emitted value's own ``` markers must not be read as opening a
+        fence in the template, or every later paragraph stops being wrapped."""
+        long_line = "word " * 40
+        template = f"{{{{USAGE_BLOCK}}}}\n\n{long_line.strip()}\n"
+        rendered = gso.render_body(template, FIXTURE_PARAMS)
+        body_lines = [ln for ln in rendered.splitlines() if ln.startswith("word")]
+        self.assertTrue(body_lines, rendered)
+        self.assertTrue(all(len(ln) <= gso.WRAP_WIDTH for ln in body_lines), body_lines)
+
+    def test_placeholders_inside_a_fence_are_substituted(self) -> None:
+        """Fenced pseudocode still needs per-harness call forms substituted in,
+        while everything else in the fence keeps its literal spacing."""
+        template = "```\n    critique = {{REVIEW_CALL}}\n    literal   spacing\n```\n"
+        rendered = gso.render_body(template, FIXTURE_PARAMS)
+        self.assertIn("    critique = fixture review call", rendered)
+        self.assertIn("    literal   spacing", rendered)
+        self.assertNotIn("{{", rendered)
+
     def test_headings_are_not_wrapped_or_altered(self) -> None:
         template = "## A heading that names {{BACKENDS_NEVER}} plainly\n\nbody.\n"
         rendered = gso.render_body(template, FIXTURE_PARAMS)
@@ -69,6 +100,10 @@ class RenderBodyTests(unittest.TestCase):
             ask_choose_cap="cap",
             instructions_ref="ref",
             adversary_ref="adv",
+            io_entrypoint="entry",
+            usage_block="```\nusage\n```",
+            review_call="call",
+            review_call_retry="retry",
         )
         rendered = gso.render_body("never {{BACKENDS_NEVER}} directly.\n", params)
         for line in rendered.splitlines():
@@ -129,7 +164,11 @@ class EndToEndTests(unittest.TestCase):
 
         for relpath in docs_test.COPIES:
             text = (REPO_ROOT / relpath).read_text(encoding="utf-8")
-            missing = [m for m in docs_test.REQUIRED_MARKERS if m not in text]
+            index_markers = docs_test.MODEL_INDEX_MARKERS.get(
+                relpath, docs_test.DEFAULT_MODEL_INDEX_MARKERS
+            )
+            markers = (*docs_test.REQUIRED_MARKERS, *index_markers)
+            missing = [m for m in markers if m not in text]
             self.assertFalse(missing, f"{relpath} missing markers: {missing}")
 
 
