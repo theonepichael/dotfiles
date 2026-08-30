@@ -56,10 +56,12 @@ install, not from search-engine summaries.
   and §5.
 - **Built-in tools**: `read`, `bash`, `powershell` (Windows), `edit`,
   `write`, `grep`, `find`, `ls` (`docs/usage.md`). No question/select tool
-  among them — every prompt file that needs a multi-choice decision from
-  the user states the options in plain text with a recommendation, the same
-  convention Copilot/agy use, per CLAUDE.md's harnesses-without-a-widget
-  rule.
+  among them — this repo now supplies one as an extension instead
+  (`question-tool.ts`, §5), so an interactive Pi session does get a
+  structured multi-choice prompt. The plain-text-with-a-recommendation
+  convention Copilot/agy use (CLAUDE.md's harnesses-without-a-widget rule)
+  is still the fallback, and still the only option in headless `-p`/JSON
+  modes, where the tool refuses to run.
 - **Headless invocation**: `pi -p [--no-session] [--provider <name>]
   [--model <pattern>] "<prompt>"` (`docs/usage.md`'s CLI Reference).
   `--list-models [search]` checks whether a model id actually resolves
@@ -295,6 +297,44 @@ actual tool list before assuming this" qualifier. Re-verified clean across
 generally: any Pi prompt template with a "primary: tool, fallback: bash"
 shape should keep the fallback out of a code fence, not just this repo's
 3 dev_status-calling files.
+
+### `question-tool.ts`
+
+Registers `question` — the AskUserQuestion equivalent Pi has no built-in
+for (§1). Takes 1–4 questions, each with a short `header`, an optional
+`multiSelect`, and 2–4 `{label, description}` options, and returns the
+user's choices. The TUI half is adapted from Pi's own shipped example
+(`examples/extensions/question.ts`: arrow-key option list, inline
+free-text editor, Escape to cancel); the schema shape, validation,
+multi-select, and the multi-question loop are this repo's.
+
+- **Headless is a hard error, never a silent default.** `ctx.hasUI` is
+  false in `-p` and JSON modes (§1, and the same check `permission-gate.ts`
+  and `guard-rails.ts` make), so there is nothing to prompt through.
+  Answering on the user's behalf would be worse than failing, so `execute`
+  throws with the fallback spelled out: state the options and the
+  recommendation in plain text. RPC mode has `hasUI === true` but no TUI,
+  so it routes to `ctx.ui.select()` instead of `ctx.ui.custom()` — which
+  `docs/extensions.md` documents as TUI-only — with multi-select degrading
+  to a single choice there.
+- **Cancellation is distinguishable from an answer** in both the returned
+  text and `details.cancelled`, and the returned text explicitly forbids
+  inferring a choice or falling back to the recommended option. A cancel
+  partway through a multi-question run reports what was already answered,
+  labelled as incomplete, rather than passing it off as the full result.
+- **The recommendation-first house rule is enforced, not just requested.**
+  CLAUDE.md's "Judgment calls — lead with a recommendation" says the
+  recommended option goes first and is labelled `(Recommended)`;
+  `assertQuestions` refuses a call that puts the marker anywhere but
+  `options[0]`, or on more than one option. Duplicate option labels are
+  refused too — the answer comes back by label, so identical labels are
+  unresolvable — as are duplicate question headers.
+
+**Verified**: unit tests over the exported pure helpers
+(`pi/test/question-tool.test.ts`) plus typecheck and lint. The interactive
+`ui.custom` path is not unit-testable and has not been driven live in a
+real TUI session — unlike the four extensions above, this one's UI is
+verified by adaptation from Pi's shipped example, not by observation.
 
 ## 6. second-opinion / dev_status recap backend
 
