@@ -235,9 +235,21 @@ def load_session(slug: str) -> Session:
     return cast(Session, data)
 
 
+def ensure_data_dir() -> None:
+    """Create ``DATA_DIR`` if it is missing.
+
+    Called once per invocation, before any subcommand runs, so the directory
+    is present even for read-only commands. It is shared artifact storage:
+    agents write plan and spec ``.md`` files there with their own file tools,
+    not through this script, and used to run ``mkdir -p`` defensively first.
+    Guaranteeing it here is what lets the skill docs drop that step.
+    """
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
 def save_session(session: Session) -> None:
     """Atomically persist ``session`` to its slug-derived path."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_data_dir()
     payload = json.dumps(session, indent=2)
     fd, tmp_path = tempfile.mkstemp(dir=DATA_DIR, prefix=".session_tmp_")
     try:
@@ -260,7 +272,7 @@ def all_session_slugs() -> list[str]:
 @contextmanager
 def _flock(path: Path) -> Iterator[None]:
     """Hold an exclusive advisory lock on ``path`` for the block's duration."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_data_dir()
     with open(path, "w") as f:
         fcntl.flock(f, fcntl.LOCK_EX)
         try:
@@ -1049,6 +1061,7 @@ def cmd_show(args: argparse.Namespace) -> None:
 
 def main() -> None:
     """Parse argv and dispatch to the matching subcommand handler."""
+    ensure_data_dir()
     parser = argparse.ArgumentParser(
         description="grill-me session state CLI (all mutations go through here)",
     )

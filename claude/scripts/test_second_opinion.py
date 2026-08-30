@@ -14,7 +14,9 @@ import argparse
 import io
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 import sys
 import unittest
 from collections.abc import Callable, Iterator
@@ -1325,6 +1327,60 @@ class BackendTimeoutDefaultSubprocessTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "120")
+
+
+class DataDirSelfEnsureTests(unittest.TestCase):
+    """second_opinion.py shares grill.py's artifact directory.
+
+    It writes nothing there itself — it reads a --focus-file an agent wrote —
+    but it is one of the two entry points that own the directory, so it
+    creates it too. That is what lets the skill docs promise the directory
+    exists and stop agents running `mkdir -p` defensively.
+    """
+
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.mkdtemp()
+        self.data_dir = Path(self.tmpdir) / "grill"
+        self._patch = patch.object(second_opinion, "DATA_DIR", self.data_dir)
+        self._patch.start()
+
+    def tearDown(self) -> None:
+        self._patch.stop()
+        shutil.rmtree(self.tmpdir)
+
+    def test_ensure_data_dir_creates_missing_directory(self) -> None:
+        self.assertFalse(self.data_dir.exists())
+        second_opinion.ensure_data_dir()
+        self.assertTrue(self.data_dir.is_dir())
+
+    def test_ensure_data_dir_is_idempotent(self) -> None:
+        second_opinion.ensure_data_dir()
+        marker = self.data_dir / "focus.md"
+        marker.write_text("focus")
+        second_opinion.ensure_data_dir()
+        self.assertEqual(marker.read_text(), "focus")
+
+    def test_data_dir_matches_grills(self) -> None:
+        """A second location would defeat the point — assert they are one dir."""
+        sys.path.insert(0, str(Path(second_opinion.__file__).parent))
+        import grill
+
+        self._patch.stop()
+        try:
+            self.assertEqual(second_opinion.DATA_DIR, grill.DATA_DIR)
+        finally:
+            self._patch.start()
+
+    def test_detect_subcommand_creates_the_directory(self) -> None:
+        self.assertFalse(self.data_dir.exists())
+        with (
+            patch.object(sys, "argv", ["second_opinion.py", "detect"]),
+            patch("sys.stdout", io.StringIO()),
+            patch("sys.stderr", io.StringIO()),
+            patch.object(second_opinion, "cmd_detect"),
+        ):
+            second_opinion.main()
+        self.assertTrue(self.data_dir.is_dir())
 
 
 if __name__ == "__main__":

@@ -99,6 +99,10 @@ from llm_backends import (
 
 BACKEND_PRIORITY = llm_backends.BACKEND_PRIORITY
 
+# Shared artifact storage, same directory grill.py owns. Kept in sync with
+# grill.py's DATA_DIR by test_second_opinion.py's DataDirSelfEnsureTests.
+DATA_DIR = Path.home() / ".claude" / "data" / "grill"
+
 _MAX_BACKEND_TIMEOUT_SECONDS = 300  # the previous global default, now a hard ceiling
 
 
@@ -728,8 +732,20 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def ensure_data_dir() -> None:
+    """Create ``DATA_DIR`` if it is missing.
+
+    This script only reads from the directory — a ``--focus-file`` an agent
+    wrote. It creates it anyway because it is one of the two entry points
+    that own the directory, so agents can rely on it existing after either
+    one runs instead of running ``mkdir -p`` first.
+    """
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
 def main() -> None:
     """Register termination handlers, parse argv, and dispatch to a subcommand."""
+    ensure_data_dir()
     signal.signal(signal.SIGTERM, _handle_termination)
     signal.signal(signal.SIGINT, _handle_termination)
 

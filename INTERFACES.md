@@ -460,6 +460,7 @@ grill.py — grill-me session state CLI. All session mutations go through here.
   - `parse_json_arg(raw: str, context: str) -> dict[str, object]` — Parse a CLI argument as a JSON object.
   - `session_path(slug: str) -> Path` — Return the on-disk path for the session identified by ``slug``.
   - `load_session(slug: str) -> Session` — Load one session by slug.
+  - `ensure_data_dir() -> None` — Create ``DATA_DIR`` if it is missing.
   - `save_session(session: Session) -> None` — Atomically persist ``session`` to its slug-derived path.
   - `all_session_slugs() -> list[str]` — Return every session slug on disk, sorted, or ``[]`` if none exist.
   - `session_lock(slug: str) -> Iterator[None]` — Hold an exclusive lock over one session's read-modify-write cycle.
@@ -471,7 +472,7 @@ grill.py — grill-me session state CLI. All session mutations go through here.
   - `frontier(session: Session) -> DecisionList` — Return every open decision whose dependencies are all resolved.
   - `render_markdown(session: Session) -> str` — Render a session's status as a Markdown document.
 - Subcommand handlers: `cmd_new`, `cmd_ask`, `cmd_decide`, `cmd_revise`, `cmd_rm`, `cmd_verdict`, `cmd_plan`, `cmd_mark_pending_execution`, `cmd_pending_plan`, `cmd_next`, `cmd_frontier`, `cmd_render`, `cmd_list`, `cmd_show`
-- Tested by: `claude/scripts/test_grill.py`
+- Tested by: `claude/scripts/test_grill.py`, `claude/scripts/test_second_opinion.py`
 
 ### `claude/scripts/llm_backends.py`
 
@@ -519,6 +520,8 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
     - `--focus-file` — path to a file of plan-specific risk hints, appended to the critique prompt as areas to scrutinize (supplements, not replaces, the generic adversarial mandate)
     - `--model-index` — 0-based index into the backend model pool (SECOND_OPINION_{AGY,PI,OPENCODE,COPILOT}_MODEL_POOL) for this call -- round 1 of a rotation is index 0, round 2 is index 1, etc. Supported for agy/pi/opencode/copilot; an explicit index selects the pool even when a single-model override is set, and is a hard error if the pool is unset/empty or the index is out of range (was previously a silent no-op/fallback).
 - Environment: `SECOND_OPINION_AGY_MODEL`, `SECOND_OPINION_AGY_MODEL_POOL`, `SECOND_OPINION_AGY_TIMEOUT_SECONDS`, `SECOND_OPINION_COPILOT_MODEL`, `SECOND_OPINION_COPILOT_MODEL_POOL`, `SECOND_OPINION_COPILOT_TIMEOUT_SECONDS`, `SECOND_OPINION_OPENCODE_MODEL`, `SECOND_OPINION_OPENCODE_MODEL_POOL`, `SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS`, `SECOND_OPINION_PI_MODEL`, `SECOND_OPINION_PI_MODEL_POOL`, `SECOND_OPINION_PI_TIMEOUT_SECONDS`, `SECOND_OPINION_TIMEOUT_SECONDS`
+- Filesystem constants:
+  - `DATA_DIR = Path.home() / '.claude' / 'data' / 'grill'`
 - Explicit exit codes: `1`
 - Depends on: `cli_common.py`, `llm_backends.py`
 - Public functions:
@@ -531,6 +534,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
   - `run_pi(prompt: str, *, model_index: int | None = None) -> str` — Run the ``pi`` backend and return its critique text.
   - `backend_label(backend: str, *, model_index: int | None = None) -> str` — Return ``backend``'s display label, appending the resolved model if any.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
+  - `ensure_data_dir() -> None` — Create ``DATA_DIR`` if it is missing.
 - Subcommand handlers: `cmd_detect`, `cmd_review`
 - Tested by: `claude/scripts/test_second_opinion.py`
 
