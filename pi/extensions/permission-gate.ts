@@ -96,7 +96,7 @@ const ALLOW_PATTERNS: string[] = [
 // one-line addition here, not a structural change.
 const DENY_PATTERNS: string[] = [];
 
-function patternToRegExp(pattern: string): RegExp {
+export function patternToRegExp(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
   return new RegExp(`^${escaped}$`);
 }
@@ -104,9 +104,9 @@ function patternToRegExp(pattern: string): RegExp {
 const ALLOW_REGEXPS = ALLOW_PATTERNS.map(patternToRegExp);
 const DENY_REGEXPS = DENY_PATTERNS.map(patternToRegExp);
 
-type Verdict = "allow" | "deny" | "ask";
+export type Verdict = "allow" | "deny" | "ask";
 
-function classify(command: string): Verdict {
+export function classify(command: string): Verdict {
   const trimmed = command.trim();
   if (DENY_REGEXPS.some((re) => re.test(trimmed))) return "deny";
   if (ALLOW_REGEXPS.some((re) => re.test(trimmed))) return "allow";

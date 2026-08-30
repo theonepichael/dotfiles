@@ -10,7 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // _start (as `args.path`), never on _end, so the path has to be stashed
 // keyed by toolCallId and looked up when the matching _end fires. This
 // differs from opencode's tool.execute.after, which carries args directly.
-function findPyprojectRoot(startDir: string): string | null {
+export function findPyprojectRoot(startDir: string): string | null {
   let dir = startDir;
   while (true) {
     if (existsSync(join(dir, "pyproject.toml"))) return dir;

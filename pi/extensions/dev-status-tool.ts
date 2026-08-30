@@ -14,18 +14,39 @@ import { Type } from "typebox";
 const DEV_STATUS_PATH = join(homedir(), ".claude", "scripts", "dev_status.py");
 
 const ACTIONS = [
-  "render", "list", "show", "add",
-  "update", "start", "done", "review", "approve", "reject",
-  "gate_set", "gate_pass", "backfill_gate",
-  "rename", "remove", "block", "unblock", "prune", "recap",
-  "pending_add", "pending_update", "pending_list",
-  "out_of_scope_add", "out_of_scope_link", "out_of_scope_unlink",
-  "out_of_scope_remove", "out_of_scope_list", "out_of_scope_show",
+  "render",
+  "list",
+  "show",
+  "add",
+  "update",
+  "start",
+  "done",
+  "review",
+  "approve",
+  "reject",
+  "gate_set",
+  "gate_pass",
+  "backfill_gate",
+  "rename",
+  "remove",
+  "block",
+  "unblock",
+  "prune",
+  "recap",
+  "pending_add",
+  "pending_update",
+  "pending_list",
+  "out_of_scope_add",
+  "out_of_scope_link",
+  "out_of_scope_unlink",
+  "out_of_scope_remove",
+  "out_of_scope_list",
+  "out_of_scope_show",
 ] as const;
 
-type Action = (typeof ACTIONS)[number];
+export type Action = (typeof ACTIONS)[number];
 
-type Field =
+export type Field =
   | "slug"
   | "secondarySlug"
   | "patch"
@@ -91,15 +112,27 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
 // "create" actions (add/pending_add, which never take slug at all) are
 // deliberately absent.
 const MUTATING_ACTIONS: ReadonlySet<Action> = new Set([
-  "update", "start", "done", "review", "approve", "reject",
-  "gate_set", "gate_pass", "rename", "remove", "block", "unblock",
-  "pending_update", "out_of_scope_link", "out_of_scope_unlink",
+  "update",
+  "start",
+  "done",
+  "review",
+  "approve",
+  "reject",
+  "gate_set",
+  "gate_pass",
+  "rename",
+  "remove",
+  "block",
+  "unblock",
+  "pending_update",
+  "out_of_scope_link",
+  "out_of_scope_unlink",
   "out_of_scope_remove",
 ]);
 
 const NUMERIC_ID = /^\d+$/;
 
-interface DevStatusParams {
+export interface DevStatusParams {
   action: Action;
   slug?: string;
   secondarySlug?: string;
@@ -114,7 +147,7 @@ interface DevStatusParams {
   reasonFile?: string;
 }
 
-function assertNotNumericIdentity(action: Action, params: DevStatusParams): void {
+export function assertNotNumericIdentity(action: Action, params: DevStatusParams): void {
   if (!MUTATING_ACTIONS.has(action)) return;
   for (const field of ["slug", "secondarySlug"] as const) {
     const value = params[field];
@@ -128,7 +161,7 @@ function assertNotNumericIdentity(action: Action, params: DevStatusParams): void
   }
 }
 
-function assertFields(action: Action, params: DevStatusParams): void {
+export function assertFields(action: Action, params: DevStatusParams): void {
   const { allowed, required } = ACTION_FIELDS[action];
   const allowedSet = new Set<Field>(allowed);
 
@@ -155,7 +188,7 @@ function assertFields(action: Action, params: DevStatusParams): void {
   }
 }
 
-function buildArgv(action: Action, params: DevStatusParams): string[] {
+export function buildArgv(action: Action, params: DevStatusParams): string[] {
   const patchJson = () => JSON.stringify(params.patch);
   switch (action) {
     case "render":
@@ -242,16 +275,22 @@ export default function (pi: ExtensionAPI) {
       "Never invoke dev_status.py via bash, for any reason, including a plain read like listing pending items or checking status -- always use dev_status instead. This applies to every action, not just ones a slash command already told you to use dev_status for.",
       "dev_status covers everything dev_status.py's CLI does: render, list, show, add, update, start, done, review, approve, reject, gate_set, gate_pass, backfill_gate, rename, remove, block, unblock, prune, recap, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.claude/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
       "dev_status's patch field is a plain object, not a JSON string -- never hand-encode it.",
-      "dev_status refuses a numeric slug on any mutating action -- call action: \"show\" first to resolve a numeric position to its real slug.",
+      'dev_status refuses a numeric slug on any mutating action -- call action: "show" first to resolve a numeric position to its real slug.',
     ],
     parameters: Type.Object({
       action: StringEnum(ACTIONS),
-      slug: Type.Optional(Type.String({
-        description: "Primary identifier: backlog item slug or number, or out-of-scope concept slug.",
-      })),
-      secondarySlug: Type.Optional(Type.String({
-        description: "Secondary identifier: new slug (rename), blocker slug (block/unblock), backlog slug (out_of_scope_link/unlink), or related item (out_of_scope_add).",
-      })),
+      slug: Type.Optional(
+        Type.String({
+          description:
+            "Primary identifier: backlog item slug or number, or out-of-scope concept slug.",
+        }),
+      ),
+      secondarySlug: Type.Optional(
+        Type.String({
+          description:
+            "Secondary identifier: new slug (rename), blocker slug (block/unblock), backlog slug (out_of_scope_link/unlink), or related item (out_of_scope_add).",
+        }),
+      ),
       patch: Type.Optional(
         Type.Record(Type.String(), Type.Unknown(), {
           description:
@@ -265,11 +304,17 @@ export default function (pi: ExtensionAPI) {
       feedback: Type.Optional(Type.String({ description: "reject: rejection feedback text." })),
       status: Type.Optional(Type.String({ description: "list: filter by status." })),
       raw: Type.Optional(Type.Boolean({ description: "list: machine-readable TSV output." })),
-      apply: Type.Optional(Type.Boolean({ description: "backfill_gate: write changes instead of a dry run." })),
-      force: Type.Optional(Type.Boolean({ description: "prune: must be true -- confirms the destructive prune." })),
+      apply: Type.Optional(
+        Type.Boolean({ description: "backfill_gate: write changes instead of a dry run." }),
+      ),
+      force: Type.Optional(
+        Type.Boolean({ description: "prune: must be true -- confirms the destructive prune." }),
+      ),
       refresh: Type.Optional(Type.Boolean({ description: "recap: bypass the freshness cache." })),
       backend: Type.Optional(Type.String({ description: "recap: force this backend." })),
-      reasonFile: Type.Optional(Type.String({ description: "out_of_scope_add: path to a file with the rejection reason." })),
+      reasonFile: Type.Optional(
+        Type.String({ description: "out_of_scope_add: path to a file with the rejection reason." }),
+      ),
     }),
     async execute(_toolCallId, params, signal) {
       const typed = params as DevStatusParams;
@@ -293,9 +338,7 @@ export default function (pi: ExtensionAPI) {
         throw new Error(result.stderr || result.stdout || `dev_status.py exited ${result.code}`);
       }
 
-      const text = result.stderr
-        ? `${result.stdout}\n\n${result.stderr}`
-        : result.stdout;
+      const text = result.stderr ? `${result.stdout}\n\n${result.stderr}` : result.stdout;
 
       return {
         content: [{ type: "text", text }],
