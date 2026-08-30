@@ -34,25 +34,40 @@ export function getGitCommitTarget(
   defaultCwd: string,
 ): { isCommit: boolean; cwd: string } {
   const subcommands = command.split(/[;&|\n]+/);
+  // Tracks `cd` between subcommands: `cd <worktree> && git commit` runs the
+  // commit in the worktree, not in the session cwd.
+  let shellCwd = defaultCwd;
   for (const sub of subcommands) {
     const trimmed = sub.trim();
+
+    const cd = trimmed.match(/^cd\s+(.+)$/i);
+    if (cd) {
+      const dir = (cd[1] ?? "").trim().replace(/^["']|["']$/g, "");
+      // `cd -` (and a bare `cd`, which never matches here) has no target we
+      // can resolve statically — leave the tracked cwd as it is.
+      if (dir && dir !== "-") {
+        shellCwd = path.isAbsolute(dir) ? dir : path.resolve(shellCwd, dir);
+      }
+      continue;
+    }
+
     const match = trimmed.match(/\bgit(?:\.exe)?\b\s+(.*)/i);
     if (!match) continue;
 
     const rest = match[1] ?? "";
     const words = rest.split(/\s+/);
-    let targetCwd = defaultCwd;
+    let targetCwd = shellCwd;
     let isCommit = false;
 
     for (let i = 0; i < words.length; i++) {
       const w = words[i]!;
       if (w === "-C" && i + 1 < words.length) {
         const dir = words[i + 1]!.replace(/^["']|["']$/g, "");
-        targetCwd = path.isAbsolute(dir) ? dir : path.resolve(defaultCwd, dir);
+        targetCwd = path.isAbsolute(dir) ? dir : path.resolve(shellCwd, dir);
         i++;
       } else if (w.startsWith("-C")) {
         const dir = w.slice(2).replace(/^["']|["']$/g, "");
-        targetCwd = path.isAbsolute(dir) ? dir : path.resolve(defaultCwd, dir);
+        targetCwd = path.isAbsolute(dir) ? dir : path.resolve(shellCwd, dir);
       } else if (w.startsWith("-")) {
         continue;
       } else {
