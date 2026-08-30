@@ -49,6 +49,16 @@ MODEL_INDEX_MARKERS = {
 }
 DEFAULT_MODEL_INDEX_MARKERS = ("[--model-index N]", "--model-index <round - 1>")
 
+# Resolving the target plan reaches for a grill session's `plan_path`. Five
+# copies say so as a `grill.py show` CLI invocation; pi's names its native
+# `grill` tool's `show` action instead, because grill.py is not on
+# pi/extensions/permission-gate.ts's bash allowlist — a bash call to it there
+# stalls on a confirmation prompt or fails outright headless.
+GRILL_LOOKUP_MARKERS = {
+    "pi/prompts/second-opinion.md": ("`grill` tool's `show` action",),
+}
+DEFAULT_GRILL_LOOKUP_MARKERS = ("`grill.py show`",)
+
 COPIES = (
     "claude/commands/second-opinion.md",
     "opencode/command/second-opinion.md",
@@ -65,7 +75,10 @@ def test_second_opinion_copy_carries_contract(rel_path: str) -> None:
     assert path.exists(), f"missing second-opinion copy: {rel_path}"
     text = path.read_text(encoding="utf-8")
     index_markers = MODEL_INDEX_MARKERS.get(rel_path, DEFAULT_MODEL_INDEX_MARKERS)
-    missing = [m for m in (*REQUIRED_MARKERS, *index_markers) if m not in text]
+    grill_markers = GRILL_LOOKUP_MARKERS.get(rel_path, DEFAULT_GRILL_LOOKUP_MARKERS)
+    missing = [
+        m for m in (*REQUIRED_MARKERS, *index_markers, *grill_markers) if m not in text
+    ]
     assert not missing, (
         f"{rel_path} is missing second-opinion contract markers: {missing}"
     )

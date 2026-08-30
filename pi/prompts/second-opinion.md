@@ -40,9 +40,10 @@ the first priority candidate with a pool config error; use `--backend
 ## Resolving the target plan
 
 If `$ARGUMENTS` is non-empty, treat it as an explicit file path or inline plan
-text. Otherwise infer it: prefer `grill.py show`'s most recent session
-`plan_path` if one exists, otherwise the plan or proposal visible in the
-current conversation. If neither exists, ask the user what to review.
+text. Otherwise infer it: prefer the most recent session's `plan_path` from the
+`grill` tool's `show` action if one exists, otherwise the plan or proposal
+visible in the current conversation. If neither exists, ask the user what to
+review.
 
 Whenever the resolved plan has no backing file yet — inline `$ARGUMENTS` text,
 or the "visible in the current conversation" fallback — write it to

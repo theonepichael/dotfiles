@@ -33,6 +33,7 @@ FIXTURE_PARAMS = gso.HarnessParams(
     usage_block="```\nfixture usage   block\n```",
     review_call="fixture review call",
     review_call_retry="fixture retry call",
+    grill_plan_lookup="the fixture plan lookup",
 )
 
 
@@ -104,6 +105,7 @@ class RenderBodyTests(unittest.TestCase):
             usage_block="```\nusage\n```",
             review_call="call",
             review_call_retry="retry",
+            grill_plan_lookup="lookup",
         )
         rendered = gso.render_body("never {{BACKENDS_NEVER}} directly.\n", params)
         for line in rendered.splitlines():
@@ -167,7 +169,10 @@ class EndToEndTests(unittest.TestCase):
             index_markers = docs_test.MODEL_INDEX_MARKERS.get(
                 relpath, docs_test.DEFAULT_MODEL_INDEX_MARKERS
             )
-            markers = (*docs_test.REQUIRED_MARKERS, *index_markers)
+            grill_markers = docs_test.GRILL_LOOKUP_MARKERS.get(
+                relpath, docs_test.DEFAULT_GRILL_LOOKUP_MARKERS
+            )
+            markers = (*docs_test.REQUIRED_MARKERS, *index_markers, *grill_markers)
             missing = [m for m in markers if m not in text]
             self.assertFalse(missing, f"{relpath} missing markers: {missing}")
 
