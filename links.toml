@@ -294,10 +294,25 @@ dest = "~/.copilot_aliases"
 harness = "copilot"
 
 # ── opencode ─────────────────────────────────────────────────────────────
-# AGENTS.md is intentionally unmanaged: opencode already reads
-# ~/.claude/CLAUDE.md directly as a legacy fallback when no AGENTS.md
-# exists (opencode/CLAUDE_CODE_PARITY.md §1), so a second copy of the same
-# content under another path buys nothing.
+# opencode reads AGENTS.md and nothing else. An earlier version of this
+# comment left AGENTS.md unmanaged on the grounds that opencode picked up
+# ~/.claude/CLAUDE.md as a legacy fallback; that fallback is gone. Probed
+# against opencode 1.18.25 on 2026-08-30 (a fixture repo with both filenames
+# and a distinct token in each): only the AGENTS.md tokens reached the
+# model, from the current directory and its parents up to the project root.
+# The binary's instruction loader targets "AGENTS.md" alone, plus an
+# AGENTS.md in its own config directory; it has no CLAUDE.md target at all.
+# So without the link below, opencode loaded no global instructions
+# whatsoever. See opencode/CLAUDE_CODE_PARITY.md §1.
+#
+# harness = "opencode" alone is the correct gating — no profile_exclude
+# needed. --profile=work --harness=opencode is rejected at argument-parsing
+# time, so an opencode-gated entry never evaluates on a work profile.
+
+[[link]]
+src = "claude/CLAUDE.md"
+dest = "~/.config/opencode/AGENTS.md"
+harness = "opencode"
 
 [[link]]
 src = "opencode/tui.json"
@@ -374,8 +389,8 @@ dest = "~/.config/opencode/plugin/ruff-format-on-edit.ts"
 harness = "opencode"
 
 # ── agy (Google Antigravity CLI, Gemini-backed) ──────────────────────────
-# agy specifically looks for ~/.gemini/GEMINI.md (no CLAUDE.md fallback
-# like opencode's), so it needs a real link of its own. Skills live under
+# agy specifically looks for ~/.gemini/GEMINI.md and reads no CLAUDE.md at
+# all, so it needs a real link of its own. Skills live under
 # the current post-migration global path ~/.gemini/antigravity-cli/skills/,
 # NOT the legacy bare ~/.gemini/skills/ — see agy/CLAUDE_CODE_PARITY.md.
 
@@ -443,9 +458,9 @@ harness = "agy"
 
 # ── Pi ───────────────────────────────────────────────────────────────────
 # Pi looks specifically under ~/.pi/agent/ for its global instructions file
-# (AGENTS.md, with CLAUDE.md read as a fallback name) — unlike opencode, it
-# has no legacy fallback to ~/.claude/CLAUDE.md, so it needs a real link of
-# its own, same as agy's GEMINI.md link above. Symlinked as AGENTS.md, not
+# (AGENTS.md, with CLAUDE.md read as a fallback name). It has no fallback to
+# ~/.claude/CLAUDE.md, so it needs a real link of its own, same as agy's
+# GEMINI.md link above and opencode's AGENTS.md link. Symlinked as AGENTS.md, not
 # CLAUDE.md, since the doc names AGENTS.md first when both are considered
 # for a directory. See pi/CLAUDE_CODE_PARITY.md §1.
 #

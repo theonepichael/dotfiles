@@ -785,8 +785,10 @@ are copy-once seeds for exactly that reason.
 
 | Source | Installed at |
 | --- | --- |
-| `claude/CLAUDE.md` | `~/.claude/CLAUDE.md` (claude), `~/.copilot/copilot-instructions.md` (copilot), `~/.gemini/GEMINI.md` (agy), `~/.pi/agent/AGENTS.md` (pi) |
+| `claude/CLAUDE.md` | `~/.claude/CLAUDE.md` (claude), `~/.copilot/copilot-instructions.md` (copilot), `~/.config/opencode/AGENTS.md` (opencode), `~/.gemini/GEMINI.md` (agy), `~/.pi/agent/AGENTS.md` (pi) |
 | `claude/output-styles/ConciseSTE.md` | `~/.claude/output-styles/ConciseSTE.md` (claude) |
+| `claude/scripts/AGENTS.md` | not symlinked by `links.toml` |
+| `claude/scripts/CLAUDE.md` | not symlinked by `links.toml` |
 | `claude/settings.json` | not symlinked by `links.toml` |
 | `claude/settings.work.json` | not symlinked by `links.toml` |
 | `copilot/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |

@@ -34,6 +34,43 @@ harness CLIs, flags, or behavior get an entry going forward.
   as the other three backends. See `pi/CLAUDE_CODE_PARITY.md` for the full
   verification notes.
 
+### Fixed
+
+- **opencode was loading no instructions at all.** `links.toml` and
+  `opencode/CLAUDE_CODE_PARITY.md` §1 both stated that opencode reads
+  `~/.claude/CLAUDE.md` as a legacy fallback when no `AGENTS.md` exists, and
+  used that as the reason no instruction-file link was managed for it. That
+  was compiled from opencode's docs on 2026-07-24 and does not hold against
+  opencode 1.18.25: probed live, it loads `AGENTS.md` only — from the
+  current directory up to the project root, plus one in its own config
+  directory — and never `CLAUDE.md`. The binary's instruction loader
+  confirms it, targeting `AGENTS.md` alone. Since nothing existed at
+  `~/.config/opencode/AGENTS.md` and this repo's root instructions were
+  named `CLAUDE.md`, opencode had neither global nor per-repo context.
+  `links.toml` now links `claude/CLAUDE.md` to
+  `~/.config/opencode/AGENTS.md` (gated `harness = "opencode"`; a work
+  profile rejects that harness at argument-parsing time, so no
+  `profile_exclude` is needed), and both prose claims are corrected. Takes
+  effect on the next `install.sh --harness=opencode` run.
+
+### Changed
+
+- **Agent instruction files are now `AGENTS.md` with a `CLAUDE.md` symlink
+  beside them.** No single filename reaches all five harnesses — Claude Code
+  2.1.251 reads `CLAUDE.md` and ignores `AGENTS.md`; opencode 1.18.25 reads
+  `AGENTS.md` and never `CLAUDE.md`; Pi 0.84.4 prefers `AGENTS.md` with a
+  `CLAUDE.md` fallback; Copilot 1.0.80 reads either; agy 1.1.22 reads no
+  project-level file at all. All five were probed live on 2026-08-30 with a
+  fixture repo; the full table is in `README.md`. The repo-root `CLAUDE.md`
+  is now `AGENTS.md` with `CLAUDE.md` symlinked to it, and `pi/`, `test/`
+  and `claude/scripts/` each gained the same pair, carrying the local
+  conventions an agent would otherwise get wrong. Only Claude Code attaches
+  a nested file automatically, so the root file also carries a one-line
+  index of each directory's main hazard.
+  `test/test_agents_md_links.py` enforces the pairing — it discovers
+  directories rather than listing them, and asserts each `CLAUDE.md` is
+  committed as a symlink (mode `120000`) pointing at its own sibling.
+
 ## 2026-08-29
 
 ### Fixed
