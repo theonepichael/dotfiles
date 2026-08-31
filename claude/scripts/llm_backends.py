@@ -15,8 +15,11 @@ import re
 import shutil
 import signal
 import subprocess
-from collections.abc import Callable
-from contextlib import suppress
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
+from datetime import UTC, datetime
+from pathlib import Path
 
 BACKEND_PRIORITY = ["agy", "pi", "opencode", "copilot"]
 
@@ -474,6 +477,16 @@ class BackendError(Exception):
     """A backend was invoked but failed (timeout or nonzero exit)."""
 
 
+class BackendTimeoutError(BackendError):
+    """A backend call failed because every attempt (initial + retries) timed
+    out -- the specific silent-stall failure mode instrumentation exists to
+    measure, distinct from a normal nonzero-exit or empty-output failure.
+
+    A strict BackendError subclass: every existing ``except BackendError``
+    call site keeps catching this unchanged.
+    """
+
+
 def available_backends() -> list[str]:
     """Return the backends in :data:`BACKEND_PRIORITY` that are on ``PATH``."""
     return [b for b in BACKEND_PRIORITY if shutil.which(b)]
@@ -615,8 +628,10 @@ def _run_command(
         ``(returncode, stdout, stderr)``.
 
     Raises:
-        BackendError: If ``cmd``'s executable can't be started, or every
-            attempt (the initial one plus ``retries``) times out.
+        BackendError: If ``cmd``'s executable can't be started.
+        BackendTimeoutError: If every attempt (the initial one plus
+            ``retries``) times out. A strict ``BackendError`` subclass, so
+            existing ``except BackendError`` call sites still catch it.
     """
     global _active_process
     attempt = 0
@@ -651,7 +666,7 @@ def _run_command(
                 attempt += 1
                 continue
             suffix = f" (all {retries + 1} attempts timed out)" if retries else ""
-            raise BackendError(f"timed out after {timeout}s — killed{suffix}")
+            raise BackendTimeoutError(f"timed out after {timeout}s — killed{suffix}")
         finally:
             _active_process = None
         return proc.returncode, stdout, stderr
@@ -685,16 +700,98 @@ def run_backend_command(cmd: list[str], timeout: float) -> str:
     return result
 
 
+def _backend_call_log_path() -> Path:
+    """Where each run_* call's outcome record is appended.
+
+    Computed fresh on every call rather than cached at import time, so the
+    repo-root pytest sandbox's HOME redirection (test/AGENTS.md) always
+    takes effect — a module-level constant would freeze whatever HOME was
+    set at import.
+    """
+    return Path.home() / ".claude" / "data" / "backend_calls.jsonl"
+
+
+def _log_backend_call(
+    backend: str,
+    model: str | None,
+    outcome: str,
+    wall_seconds: float,
+    prompt_bytes: int,
+) -> None:
+    """Best-effort: append one JSONL record of a backend-call attempt.
+
+    Never raises. Measures the real opencode-go stall rate from actual
+    usage instead of anecdote — see the 2026-08-17 bisection referenced in
+    :func:`run_opencode`. Logging a call is not part of any caller's
+    contract, so a failure here (bad data, disk full, permissions) must
+    never surface as a call failure.
+    """
+    try:
+        record = {
+            "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+            "backend": backend,
+            "model": model,
+            "outcome": outcome,  # "success" | "timeout" | "error"
+            "wall_seconds": round(wall_seconds, 2),
+            "prompt_bytes": prompt_bytes,
+        }
+        line = (json.dumps(record) + "\n").encode()
+        path = _backend_call_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Unbuffered, single write() of the whole line: guarantees exactly
+        # one write(2) syscall for a line well under PIPE_BUF (4096 on
+        # Linux), which is what makes O_APPEND interleaving-free across
+        # concurrent processes. A buffered text-mode open(path, "a") does
+        # not carry that guarantee.
+        with path.open("ab", buffering=0) as f:
+            f.write(line)
+    except Exception:
+        pass
+
+
+@contextmanager
+def _track_backend_call(backend: str, model: str | None, prompt: str) -> Iterator[None]:
+    """Time and log one backend-call attempt via :func:`_log_backend_call`.
+
+    Call only after :func:`build_isolated_command` has already succeeded —
+    an IsolationError raised before entering this context is a capability
+    failure, not an attempt, and must never be logged.
+
+    The final ``except Exception`` branch is deliberately broader than
+    ``BackendError``: it never masks anything (the original exception and
+    its traceback still propagate via ``raise``), it only guarantees that
+    every failure mode — including one this module doesn't raise today —
+    gets one logged "error" record instead of silently escaping uncounted.
+    """
+    start = time.monotonic()
+    prompt_bytes = len(prompt.encode())
+    outcome = "success"
+    try:
+        yield
+    except BackendTimeoutError:
+        outcome = "timeout"
+        raise
+    except Exception:
+        outcome = "error"
+        raise
+    finally:
+        _log_backend_call(
+            backend, model, outcome, time.monotonic() - start, prompt_bytes
+        )
+
+
 def run_agy(prompt: str, *, model: str, timeout: float) -> str:
     """Run the ``agy`` backend with the given model and return its text output.
 
     Raises IsolationError before running anything if this host cannot contain
     agy — it has no vendor mechanism for any contract clause, so containment
-    is its only qualifying path (see BACKEND_ISOLATION).
+    is its only qualifying path (see BACKEND_ISOLATION). Instrumented via
+    :func:`_track_backend_call`, entered only after the isolated command is
+    built, so an IsolationError is never logged as an attempt.
     """
-    return run_backend_command(
-        build_isolated_command("agy", prompt, model=model), timeout
-    )
+    cmd = build_isolated_command("agy", prompt, model=model)
+    with _track_backend_call("agy", model, prompt):
+        return run_backend_command(cmd, timeout)
 
 
 def run_copilot(prompt: str, *, model: str | None, timeout: float) -> str:
@@ -713,9 +810,9 @@ def run_copilot(prompt: str, *, model: str | None, timeout: float) -> str:
     should leave ``model`` unset/empty unless their account is confirmed to
     allow explicit model selection.
     """
-    return run_backend_command(
-        build_isolated_command("copilot", prompt, model=model), timeout
-    )
+    cmd = build_isolated_command("copilot", prompt, model=model)
+    with _track_backend_call("copilot", model, prompt):
+        return run_backend_command(cmd, timeout)
 
 
 _DEFAULT_PI_PROVIDER = "opencode-go"
@@ -743,11 +840,11 @@ def run_pi(prompt: str, *, model: str | None, timeout: float) -> str:
             (via :func:`run_backend_command`), or the output is dominated by
             leaked tool-call markup (via :func:`_raise_on_emitted_tool_call`).
     """
-    text = run_backend_command(
-        build_isolated_command("pi", prompt, model=model), timeout
-    )
-    _raise_on_emitted_tool_call(text, context="pi")
-    return text
+    cmd = build_isolated_command("pi", prompt, model=model)
+    with _track_backend_call("pi", model, prompt):
+        text = run_backend_command(cmd, timeout)
+        _raise_on_emitted_tool_call(text, context="pi")
+        return text
 
 
 def _opencode_json_events(raw_output: str) -> list[dict[str, object]]:
@@ -916,14 +1013,15 @@ def run_opencode(prompt: str, *, model: str | None, timeout: float) -> str:
     4-10%).
     """
     cmd = build_isolated_command("opencode", prompt, model=model)
-    _, stdout, stderr = _run_command(cmd, timeout, retries=1)
-    events = _opencode_json_events(stdout)
-    _raise_on_tool_use(events, context="opencode")
-    chunks = _opencode_text_chunks(events)
-    if chunks:
-        return _finalize_text_response(chunks, context="opencode")
-    for e in events:
-        if e.get("type") == "error":
-            message = _safe_get(e, "error", "data", "message")
-            raise BackendError(f"error: {message or e.get('error')}")
-    raise BackendError(f"no text output: {stderr.strip() or stdout.strip()[:200]}")
+    with _track_backend_call("opencode", model, prompt):
+        _, stdout, stderr = _run_command(cmd, timeout, retries=1)
+        events = _opencode_json_events(stdout)
+        _raise_on_tool_use(events, context="opencode")
+        chunks = _opencode_text_chunks(events)
+        if chunks:
+            return _finalize_text_response(chunks, context="opencode")
+        for e in events:
+            if e.get("type") == "error":
+                message = _safe_get(e, "error", "data", "message")
+                raise BackendError(f"error: {message or e.get('error')}")
+        raise BackendError(f"no text output: {stderr.strip() or stdout.strip()[:200]}")

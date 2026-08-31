@@ -770,6 +770,142 @@ class ToolCallLeakDetectionTests(unittest.TestCase):
         self.assertLess(time.monotonic() - start, 2.0)
 
 
+def _read_jsonl(path: Path) -> list[dict[str, object]]:
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line]
+
+
+class _LogPathRedirected(unittest.TestCase):
+    """Base for suites that exercise real logging: redirects
+    _backend_call_log_path to a tmp file so nothing touches the sandboxed
+    HOME's ~/.claude/data/ directly."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.log_path = Path(tempfile.mkdtemp()) / "backend_calls.jsonl"
+        patcher = patch.object(
+            llm_backends, "_backend_call_log_path", lambda: self.log_path
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+
+class LogBackendCallTests(_LogPathRedirected):
+    def test_66_appends_one_line_with_expected_fields(self) -> None:
+        llm_backends._log_backend_call("pi", "kimi-k2.6", "success", 1.234, 512)
+        lines = _read_jsonl(self.log_path)
+        self.assertEqual(len(lines), 1)
+        record = lines[0]
+        self.assertEqual(record["backend"], "pi")
+        self.assertEqual(record["model"], "kimi-k2.6")
+        self.assertEqual(record["outcome"], "success")
+        self.assertEqual(record["wall_seconds"], 1.23)
+        self.assertEqual(record["prompt_bytes"], 512)
+        self.assertIn("ts", record)
+
+    def test_67_model_none_serializes_to_null(self) -> None:
+        llm_backends._log_backend_call("opencode", None, "success", 0.5, 10)
+        record = _read_jsonl(self.log_path)[0]
+        self.assertIsNone(record["model"])
+
+    def test_68_creates_parent_directory(self) -> None:
+        nested = self.log_path.parent / "not-yet-created" / "backend_calls.jsonl"
+        with patch.object(llm_backends, "_backend_call_log_path", lambda: nested):
+            self.assertFalse(nested.parent.exists())
+            llm_backends._log_backend_call("agy", "m", "success", 0.1, 1)
+            self.assertTrue(nested.exists())
+
+    def test_69_write_failure_swallowed_not_raised(self) -> None:
+        with patch.object(Path, "open", side_effect=OSError("disk full")):
+            llm_backends._log_backend_call("agy", "m", "error", 0.1, 1)  # no raise
+
+    def test_70_two_calls_append_two_separate_lines(self) -> None:
+        llm_backends._log_backend_call("agy", "m1", "success", 0.1, 1)
+        llm_backends._log_backend_call("copilot", "m2", "timeout", 5.0, 999)
+        lines = _read_jsonl(self.log_path)
+        self.assertEqual(len(lines), 2)
+        self.assertEqual([r["backend"] for r in lines], ["agy", "copilot"])
+
+
+class TrackBackendCallTests(_LogPathRedirected):
+    def test_71_success_logs_success_outcome(self) -> None:
+        with llm_backends._track_backend_call("pi", "m", "a prompt"):
+            pass
+        record = _read_jsonl(self.log_path)[0]
+        self.assertEqual(record["outcome"], "success")
+        self.assertEqual(record["prompt_bytes"], len(b"a prompt"))
+
+    def test_72_backend_timeout_error_logs_timeout_and_reraises(self) -> None:
+        with (
+            self.assertRaises(llm_backends.BackendTimeoutError),
+            llm_backends._track_backend_call("opencode", "m", "p"),
+        ):
+            raise llm_backends.BackendTimeoutError("timed out after 60s — killed")
+        record = _read_jsonl(self.log_path)[0]
+        self.assertEqual(record["outcome"], "timeout")
+
+    def test_73_backend_error_logs_error_and_reraises(self) -> None:
+        with (
+            self.assertRaises(llm_backends.BackendError),
+            llm_backends._track_backend_call("copilot", "m", "p"),
+        ):
+            raise llm_backends.BackendError("exited 1: boom")
+        record = _read_jsonl(self.log_path)[0]
+        self.assertEqual(record["outcome"], "error")
+
+    def test_74_unanticipated_exception_logs_error_and_reraises(self) -> None:
+        # Not a BackendError at all -- proves the broad except in
+        # _track_backend_call still logs one "error" line and still
+        # re-raises the original exception unchanged, rather than either
+        # silently dropping the log line or masking the real error.
+        with (
+            self.assertRaises(ValueError),
+            llm_backends._track_backend_call("agy", "m", "p"),
+        ):
+            raise ValueError("something else broke")
+        record = _read_jsonl(self.log_path)[0]
+        self.assertEqual(record["outcome"], "error")
+
+
+class RunFunctionsLoggingTests(_ContainmentStubbed, _LogPathRedirected):
+    """Integration: each run_* function's actual logging wiring, not just
+    _track_backend_call in isolation."""
+
+    def test_75_run_pi_success_appends_line(self) -> None:
+        with patch.object(llm_backends, "run_backend_command", return_value="text"):
+            result = llm_backends.run_pi("my prompt", model="kimi-k2.6", timeout=60)
+        self.assertEqual(result, "text")
+        record = _read_jsonl(self.log_path)[0]
+        self.assertEqual(record, record | {"backend": "pi", "outcome": "success"})
+
+    def test_76_run_opencode_success_appends_line_no_extraction_break(self) -> None:
+        stdout = json.dumps({"type": "text", "part": {"text": "hi"}}) + "\n"
+        with patch.object(llm_backends, "_run_command", return_value=(0, stdout, "")):
+            result = llm_backends.run_opencode("prompt", model=None, timeout=60)
+        self.assertEqual(result, "hi")
+        record = _read_jsonl(self.log_path)[0]
+        self.assertEqual(record["backend"], "opencode")
+        self.assertEqual(record["outcome"], "success")
+
+    def test_77_run_opencode_backend_error_appends_error_line(self) -> None:
+        with (
+            patch.object(
+                llm_backends, "_run_command", return_value=(0, "not json", "")
+            ),
+            self.assertRaises(llm_backends.BackendError),
+        ):
+            llm_backends.run_opencode("prompt", model=None, timeout=60)
+        record = _read_jsonl(self.log_path)[0]
+        self.assertEqual(record["outcome"], "error")
+
+    def test_78_isolation_error_before_call_is_never_logged(self) -> None:
+        with patch.object(llm_backends, "containment_available", lambda: False):
+            with self.assertRaises(llm_backends.IsolationError):
+                llm_backends.run_agy("p", model="m", timeout=60)
+        self.assertEqual(_read_jsonl(self.log_path), [])
+
+
 class OpencodeToolUseEventsTests(unittest.TestCase):
     def test_46_filters_only_tool_use_events(self) -> None:
         events: list[dict[str, object]] = [
