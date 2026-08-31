@@ -115,18 +115,25 @@ actual reply):
   extension hooked to it to auto-surface the marked plan, so the typed
   command IS the resume path — step 1 sees the plan in related_files and
   skips to step 8.
-- **Different/cheaper model.** Confirm the model actually exists first —
-  `pi --list-models <search>` (documented in `docs/usage.md`), not a guess
-  at the id. From the worktree, hand off non-interactively: `pi -p
-  --no-session --provider <provider> --model <id> "Implement <plan path>
-  exactly as written — TDD, run the full suite, then STOP without
-  committing and report the diff."` Unlike opencode, Pi has no built-in
-  permission-prompt system to bypass in headless mode (`docs/usage.md`'s
-  Design Principles: no built-in permission popups) — tool calls execute
-  freely by default in `-p` mode, gated only by whatever this repo's
-  `permission-gate.ts` extension denies or blocks (see
-  `pi/CLAUDE_CODE_PARITY.md`). An external executor never gets the commit
-  gate. Once it reports back, review — that resumes at step 9.
+- **Different/cheaper model, or another harness.** Confirm the model
+  actually exists first — `pi --list-models <search>` (documented in
+  `docs/usage.md`), not a guess at the id. Then use the `delegate` tool
+  with `cwd` set to the worktree, a `prompt` along the lines of "Implement
+  <plan path> exactly as written — TDD, run the full suite, then STOP
+  without committing and report the diff", and the `harness`/`model` you
+  settled on. Never hand-compose an `opencode run` / `agy -p` / `pi -p`
+  bash command: `delegate` keeps the child's transcript out of this
+  session's context and gets the per-harness invocation right, including
+  two forms that fail silently by hand (opencode's `-p` is `--password`,
+  and a bare `agy -p` swallows the following flag as its prompt).
+  Set `autoApprove: true` for opencode or agy — without it opencode makes
+  no progress headless. Pi needs no such flag: it has no built-in
+  permission-prompt system (`docs/usage.md`'s Design Principles), so tool
+  calls execute freely in `-p` mode, gated only by whatever this repo's
+  `permission-gate.ts` denies (see `pi/CLAUDE_CODE_PARITY.md`).
+  opencode is for personal projects only — never a work-related item. An
+  external executor never gets the commit gate. Once it reports back,
+  review — that resumes at step 9.
 
 ## 8. Red, green
 TDD in the worktree: a failing test that proves the gap the plan names,
