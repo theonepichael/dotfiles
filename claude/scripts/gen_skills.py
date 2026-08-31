@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
-"""gen_skills.py — regenerate the dashboard/grill-me/backlog-item/make-skill
-skill copies (one per harness: claude, copilot, opencode, agy, pi) from one
-template per skill, plus a shared per-harness capability table.
+"""gen_skills.py — regenerate the dashboard/grill-me/backlog-item/make-skill/
+spec/standup/to-tickets skill copies from one template per skill, plus a
+shared per-harness capability table. dashboard/grill-me/backlog-item/
+make-skill cover all 5 harnesses (claude, copilot, opencode, agy, pi);
+spec/standup/to-tickets cover only claude/opencode/pi — see
+`SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section
+for why copilot/agy stop getting new generated skills.
 
-These 4 skills used to live as hand-forked copies, one per harness, with no
-mechanism keeping them in sync (see `meta-pi-skill-content-mismatch`'s
+The first 4 skills used to live as hand-forked copies, one per harness, with
+no mechanism keeping them in sync (see `meta-pi-skill-content-mismatch`'s
 backlog record for the drift this caused: Pi's copies were reused from
 agy's, describing agy's constraints — no structured multi-choice widget, no
-SessionStart hook — that are factually wrong for Pi, which has both). This
-script replaces those copies with generated output: one body template per
-skill (`templates/{dashboard,grill_me,backlog_item,make_skill}.md.tmpl`)
+SessionStart hook — that are factually wrong for Pi, which has both).
+spec/standup/to-tickets had the same drift for Pi specifically
+(`meta-pi-residual-skill-drift`). This script replaces those copies with
+generated output: one body template per skill
+(`templates/{dashboard,grill_me,backlog_item,make_skill,spec,standup,to_tickets}.md.tmpl`)
 plus the shared `CAPABILITY_TABLE` below, mirroring
 `gen_second_opinion.py`'s generator/--check/--stdout shape for the
 second-opinion skill (which this script does not touch — a separate,
@@ -17,7 +23,7 @@ already-working generator, decision recorded in the plan this script
 implements).
 
 Unlike `gen_second_opinion.py`'s single-template, prose-heavy body (where a
-textwrap reflow pass is safe), these 4 skills' bodies lean heavily on
+textwrap reflow pass is safe), these skills' bodies lean heavily on
 numbered/bulleted lists with no blank line between items — reflowing those
 by joining lines with `textwrap.fill` would merge list items into one
 paragraph and corrupt the list. `render_body` here is therefore a plainer,
@@ -34,9 +40,10 @@ Usage:
 
 Flags: --check, --stdout, --repo-root <path>, --quiet/-q, --verbose/-v.
 Env vars: none.
-Files read: <repo>/templates/{dashboard,grill_me,backlog_item,make_skill}.md.tmpl.
-Files written: the 20 (skill, harness) copies named in OUTPUT_PATHS
-(skipped by --check and --stdout).
+Files read: <repo>/templates/{dashboard,grill_me,backlog_item,make_skill,spec,standup,to_tickets}.md.tmpl.
+Files written: the 29 (skill, harness) copies named in OUTPUT_PATHS —
+4 skills x 5 harnesses (20) plus 3 skills x 3 harnesses (9), per
+`SKILL_HARNESSES` (skipped by --check and --stdout).
 Exit codes: 0 success; 1 --check found stale output; 2 bad usage.
 
 Requires Python 3.12+.
@@ -50,14 +57,41 @@ from pathlib import Path
 
 import cli_common
 
-SKILLS = ("dashboard", "grill-me", "backlog-item", "make-skill")
+SKILLS = (
+    "dashboard",
+    "grill-me",
+    "backlog-item",
+    "make-skill",
+    "spec",
+    "standup",
+    "to-tickets",
+)
 HARNESSES = ("claude", "copilot", "opencode", "agy", "pi")
+
+# Per skill, which harnesses get a generated copy. Every skill defaults to
+# the full HARNESSES tuple except spec/standup/to-tickets, which cover only
+# claude/opencode/pi -- per AGENTS.md's "Harness maintenance tiers": copilot
+# and agy are best-effort and not proactively extended with new generated
+# skills (meta-pi-residual-skill-drift's scope decision).
+_ACTIVE_TIER = ("claude", "opencode", "pi")
+SKILL_HARNESSES: dict[str, tuple[str, ...]] = {
+    "dashboard": HARNESSES,
+    "grill-me": HARNESSES,
+    "backlog-item": HARNESSES,
+    "make-skill": HARNESSES,
+    "spec": _ACTIVE_TIER,
+    "standup": _ACTIVE_TIER,
+    "to-tickets": _ACTIVE_TIER,
+}
 
 TEMPLATE_PATHS: dict[str, str] = {
     "dashboard": "templates/dashboard.md.tmpl",
     "grill-me": "templates/grill_me.md.tmpl",
     "backlog-item": "templates/backlog_item.md.tmpl",
     "make-skill": "templates/make_skill.md.tmpl",
+    "spec": "templates/spec.md.tmpl",
+    "standup": "templates/standup.md.tmpl",
+    "to-tickets": "templates/to_tickets.md.tmpl",
 }
 
 OUTPUT_PATHS: dict[tuple[str, str], str] = {
@@ -81,6 +115,15 @@ OUTPUT_PATHS: dict[tuple[str, str], str] = {
     ("make-skill", "opencode"): "opencode/command/make-skill.md",
     ("make-skill", "agy"): "agy/skills/make-skill/SKILL.md",
     ("make-skill", "pi"): "pi/skills/make-skill/SKILL.md",
+    ("spec", "claude"): "claude/commands/spec.md",
+    ("spec", "opencode"): "opencode/command/spec.md",
+    ("spec", "pi"): "pi/skills/spec/SKILL.md",
+    ("standup", "claude"): "claude/commands/standup.md",
+    ("standup", "opencode"): "opencode/command/standup.md",
+    ("standup", "pi"): "pi/skills/standup/SKILL.md",
+    ("to-tickets", "claude"): "claude/commands/to-tickets.md",
+    ("to-tickets", "opencode"): "opencode/command/to-tickets.md",
+    ("to-tickets", "pi"): "pi/skills/to-tickets/SKILL.md",
 }
 
 # A line that is nothing but one `{{TOKEN}}` -- see render_body.
@@ -272,7 +315,7 @@ def render_all(
     rendered: dict[str, str] = {}
     for skill in SKILLS:
         template_text = (repo_root / TEMPLATE_PATHS[skill]).read_text(encoding="utf-8")
-        for harness in HARNESSES:
+        for harness in SKILL_HARNESSES[skill]:
             relpath = OUTPUT_PATHS[(skill, harness)]
             params = skill_params[skill][harness]
             rendered[relpath] = render_one(skill, harness, template_text, params)

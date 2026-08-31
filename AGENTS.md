@@ -27,6 +27,30 @@ this repo.
   `opencode/CLAUDE_CODE_PARITY.md`, `pi/CLAUDE_CODE_PARITY.md`.
 - **Changelog of breaking/internal tooling changes** — `CHANGELOG.md`.
 
+## Harness maintenance tiers
+
+Decided 2026-08-31, after chasing a single 3-skill drift fix
+(`meta-pi-residual-skill-drift`) through a third layer of undiscovered
+divergence in one session: full generated content parity across every
+harness is not worth maintaining unconditionally. It costs a
+capability-verification pass per harness on every new skill or template
+change, and that cost is unbounded — each pass can surface more drift
+(wording, tooling, whole mechanisms) than it fixes.
+
+- **Actively maintained parity** — Claude Code, opencode, Pi. New skills get
+  generated copies for all three; capability facts (`CAPABILITY_TABLE` in
+  `claude/scripts/gen_skills.py`, and its `gen_second_opinion.py` analog) get
+  kept current for these three when touched.
+- **Best-effort** — Copilot, agy. Existing generated/hand-authored content
+  for these stays as-is; new skills do **not** get copilot/agy copies by
+  default. Fix drift there only when actually about to use that harness —
+  never as a proactive drift-chasing pass, and never let staleness there
+  block or expand an unrelated item's scope.
+
+This tier is a starting point, not a permanent ceiling — revisit it if usage
+patterns change (e.g. copilot or agy becomes a real daily fallback the way
+opencode already is for billing overflow).
+
 ## Directory instructions — read before working in these
 
 Each line names a hazard and where the details live. These are signposts,

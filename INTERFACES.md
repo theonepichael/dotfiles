@@ -40,7 +40,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`gen_interfaces.py`](#claudescriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`gen_second_opinion.py`](#claudescriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template. |
 | [`gen_shell_completion.py`](#claudescriptsgenshellcompletionpy) | Generate a zsh `#compdef` completion file for a harness CLI. |
-| [`gen_skills.py`](#claudescriptsgenskillspy) | gen_skills.py — regenerate the dashboard/grill-me/backlog-item/make-skill skill copies (one per harness: claude, copilot, opencode, agy, pi) from one template per skill, plus a shared per-harness capability table. |
+| [`gen_skills.py`](#claudescriptsgenskillspy) | gen_skills.py — regenerate the dashboard/grill-me/backlog-item/make-skill/ spec/standup/to-tickets skill copies from one template per skill, plus a shared per-harness capability table. dashboard/grill-me/backlog-item/ make-skill cover all 5 harnesses (claude, copilot, opencode, agy, pi); spec/standup/to-tickets cover only claude/opencode/pi — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section for why copilot/agy stop getting new generated skills. |
 | [`gen_skills_params.py`](#claudescriptsgenskillsparamspy) | gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py. |
 | [`grill.py`](#claudescriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
 | [`llm_backends.py`](#claudescriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
@@ -408,7 +408,7 @@ Generate a zsh `#compdef` completion file for a harness CLI.
 
 ### `claude/scripts/gen_skills.py`
 
-gen_skills.py — regenerate the dashboard/grill-me/backlog-item/make-skill skill copies (one per harness: claude, copilot, opencode, agy, pi) from one template per skill, plus a shared per-harness capability table.
+gen_skills.py — regenerate the dashboard/grill-me/backlog-item/make-skill/ spec/standup/to-tickets skill copies from one template per skill, plus a shared per-harness capability table. dashboard/grill-me/backlog-item/ make-skill cover all 5 harnesses (claude, copilot, opencode, agy, pi); spec/standup/to-tickets cover only claude/opencode/pi — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section for why copilot/agy stop getting new generated skills.
 
 - Installed at: `~/.claude/scripts/gen_skills.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
@@ -856,6 +856,7 @@ are copy-once seeds for exactly that reason.
 | `pi/extensions/dev-status-tool.ts` | `~/.pi/agent/extensions/dev-status-tool.ts` (pi) |
 | `pi/extensions/grill-tool.ts` | `~/.pi/agent/extensions/grill-tool.ts` (pi) |
 | `pi/extensions/guard-rails.ts` | `~/.pi/agent/extensions/guard-rails.ts` (pi) |
+| `pi/extensions/pending-plan-surface.ts` | `~/.pi/agent/extensions/pending-plan-surface.ts` (pi) |
 | `pi/extensions/permission-gate.ts` | `~/.pi/agent/extensions/permission-gate.ts` (pi) |
 | `pi/extensions/philosophy-header.ts` | `~/.pi/agent/extensions/philosophy-header.ts` (pi) |
 | `pi/extensions/question-tool.ts` | `~/.pi/agent/extensions/question-tool.ts` (pi) |
@@ -879,6 +880,7 @@ are copy-once seeds for exactly that reason.
 | `pi/test/dev-status-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/grill-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/guard-rails.test.ts` | not symlinked by `links.toml` |
+| `pi/test/pending-plan-surface.test.ts` | not symlinked by `links.toml` |
 | `pi/test/permission-gate.test.ts` | not symlinked by `links.toml` |
 | `pi/test/philosophy-header.test.ts` | not symlinked by `links.toml` |
 | `pi/test/question-tool.test.ts` | not symlinked by `links.toml` |
@@ -1101,6 +1103,7 @@ named doc, not regenerating this file.
 | `opencode/skills/second-opinion/SKILL.md` | OK |
 | `pi/skills/backlog-item/SKILL.md` | OK |
 | `pi/skills/dashboard/SKILL.md` | OK |
+| `pi/skills/standup/SKILL.md` | OK |
 
 ### `gen_interfaces.py`
 
@@ -1132,6 +1135,8 @@ named doc, not regenerating this file.
 | `opencode/skills/second-opinion/SKILL.md` | OK |
 | `opencode/skills/spec/SKILL.md` | OK |
 | `pi/skills/grill-me/SKILL.md` | OK |
+| `pi/skills/spec/SKILL.md` | OK |
+| `pi/skills/to-tickets/SKILL.md` | OK |
 
 ### `standup.py`
 
@@ -1141,6 +1146,7 @@ named doc, not regenerating this file.
 | `claude/commands/standup.md` | OK |
 | `copilot/skills/standup/SKILL.md` | OK |
 | `opencode/command/standup.md` | OK |
+| `pi/skills/standup/SKILL.md` | OK |
 
 ### `to_tickets_runner.py`
 
@@ -1150,6 +1156,7 @@ named doc, not regenerating this file.
 | `claude/commands/to-tickets.md` | OK |
 | `copilot/skills/to-tickets/SKILL.md` | OK |
 | `opencode/command/to-tickets.md` | OK |
+| `pi/skills/to-tickets/SKILL.md` | OK |
 
 ### `vitals_promotion.py`
 
