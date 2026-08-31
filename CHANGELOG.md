@@ -3,6 +3,30 @@
 This repo's internal tooling changes are logged here. Breaking changes to
 harness CLIs, flags, or behavior get an entry going forward.
 
+## 2026-08-31
+
+### Fixed
+
+- **Reverted yesterday's opencode "correction", which was itself wrong.**
+  The 2026-08-30 entry below claims opencode dropped its
+  `~/.claude/CLAUDE.md` global fallback and was loading no instructions at
+  all. It has not. That conclusion came from a fixture repo holding both
+  filenames at a project root and a subdirectory — a valid test of
+  **project-level** discovery, which is indeed `AGENTS.md`-only, but one
+  that never touched the home directory the global fallback reads from.
+  Bisected properly on 2026-08-31 from a cwd with no `AGENTS.md` up the
+  tree: a shadow `HOME` without `.claude` lost the instructions, and
+  symlinking `.claude` back in restored them. The live `opencode.jsonc` has
+  no `instructions` key and `opencode debug config` reports
+  `instructions: null`, ruling out config-driven injection.
+  Both statements are true and neither implies the other: **project-level
+  discovery targets `AGENTS.md` only; global instructions still come from
+  `~/.claude/CLAUDE.md`.** The `~/.config/opencode/AGENTS.md` link added
+  yesterday was redundant and is removed — opencode already had that content
+  and was loading a second copy of it. `links.toml`,
+  `opencode/CLAUDE_CODE_PARITY.md` §1 and the `README.md` harness table are
+  corrected to match. The dated 2026-08-30 entry below is left as written.
+
 ## 2026-08-30
 
 ### Added

@@ -8,15 +8,429 @@ its own timeout and model choices, without duplicating it.
 Requires Python 3.12+.
 """
 
+import functools
 import json
 import os
 import re
 import shutil
 import signal
 import subprocess
+from collections.abc import Callable
 from contextlib import suppress
 
 BACKEND_PRIORITY = ["agy", "pi", "opencode", "copilot"]
+
+# ── isolation contract ────────────────────────────────────────────────────
+#
+# Every backend invocation in this repo — adversarial critique and plain
+# completion alike — must satisfy all of these. A backend meets every clause
+# or it is not eligible; there is no partially-isolated tier, because a
+# weaker tier becomes the working default once its warning is normalised.
+#
+# Why this exists: measured 2026-08-31, a critique call could write files and,
+# through pi's dev_status tool, mutate the real backlog store, while every
+# backend was handed the user's own instruction files — so the "outside"
+# reviewer held the user's rulebook. _raise_on_emitted_tool_call below is not
+# a guard against that: it catches tool-call markup leaking through as *text*
+# and cannot see a real tool action.
+#
+# tools_execution and tools_reach are deliberately separate, because the two
+# available mechanisms deliver different things and conflating them would let
+# the contract claim more than it enforces. A vendor flag can remove the tools
+# outright; OS containment cannot -- it leaves them running with nothing of
+# yours in reach. Both clauses are mandatory either way, so this is still one
+# bar: a backend satisfies each clause by one mechanism or the other, and
+# containment satisfies tools_execution only in the sense that there is
+# nothing left to execute against.
+ISOLATION_CLAUSES: tuple[str, ...] = (
+    "tools_execution",
+    "tools_reach",
+    "context",
+    "templates",
+    "skills",
+    "mcp",
+    "session",
+)
+
+# Sentinel: this clause has no vendor mechanism and is satisfied only by
+# running the backend under OS containment. Never treat it as "no flags
+# needed" — a containment path that silently no-ops leaves a call that
+# believes it is isolated and is not.
+OS_CONTAINED = object()
+
+# Sentinel: this clause is moot for this backend because another clause
+# already removed the capability -- a backend with no tools at all has no
+# reach to constrain. Distinct from an empty flag list, which means "declared,
+# and satisfied by the base command".
+NOT_APPLICABLE = object()
+
+# Per-backend capability descriptor: for each contract clause, the concrete
+# mechanism that satisfies it. Coverage lives in data rather than in branches
+# so a backend added without a complete descriptor is unbuildable, instead of
+# depending on whoever adds it remembering to handle every clause.
+#
+# "_base" is the command prefix; the prompt is appended last by the builder.
+# Every mechanism below was verified by running it — see the plan artifact at
+# ~/.claude/data/grill/2026-08-31-meta-second-opinion-backend-isol-plan.md.
+BACKEND_ISOLATION: dict[str, dict[str, object]] = {
+    # Verified: --no-tools reports "no tools are available in this session";
+    # -nc/-np leave no instruction text in context. Skills and MCP servers
+    # reach pi as tools, so --no-tools covers them too.
+    "pi": {
+        "_base": ["pi", "-p", "--no-session", "--provider", "opencode-go"],
+        "tools_execution": ["--no-tools"],
+        "tools_reach": NOT_APPLICABLE,
+        "skills": ["--no-tools"],
+        "mcp": ["--no-tools"],
+        "context": ["--no-context-files"],
+        "templates": ["--no-prompt-templates"],
+        "session": ["--no-session"],
+    },
+    # Verified: --no-custom-instructions drops the instruction files, and
+    # --deny-tool blocks the tools explicitly. Headless copilot also happens
+    # to deny writes on its own, but "happens to" is not a mechanism — the
+    # contract requires a declared one.
+    "copilot": {
+        "_base": ["copilot", "-p", "--silent"],
+        "tools_execution": ["--deny-tool=write", "--deny-tool=shell"],
+        "tools_reach": NOT_APPLICABLE,
+        "skills": ["--deny-tool=write", "--deny-tool=shell"],
+        "mcp": ["--deny-tool=write", "--deny-tool=shell"],
+        "context": ["--no-custom-instructions"],
+        "templates": ["--no-custom-instructions"],
+        "session": [],
+    },
+    # The adversary agent's "permission": "deny" genuinely blocks tools —
+    # verified, it refused a canary write. But opencode reads
+    # ~/.claude/CLAUDE.md as a global instruction fallback with no flag to
+    # stop it (bisected 2026-08-31 by shadow-HOME removal), so the context
+    # clause needs containment.
+    "opencode": {
+        "_base": [
+            "opencode",
+            "run",
+            "--auto",
+            "--format",
+            "json",
+            "--agent",
+            "adversary",
+        ],
+        "_model_flag": "-m",
+        "_contain": {
+            "expose": [".config", ".local", ".cache", ".opencode", ".bun"],
+            "shadow": {},
+        },
+        "tools_execution": ["--agent", "adversary"],
+        "tools_reach": OS_CONTAINED,
+        "skills": ["--agent", "adversary"],
+        "mcp": ["--agent", "adversary"],
+        "context": OS_CONTAINED,
+        "templates": OS_CONTAINED,
+        "session": [],
+    },
+    # agy has no qualifying vendor mechanism for anything. Verified defeated:
+    # --sandbox (confines writes to agy's artifacts dir but arbitrary file
+    # read survives), a permissions {allow: [], deny: ["*"]} block, and a
+    # top-level disabledTools list naming all 17 of its tools. It exposes no
+    # tool-disable flag, so containment is its only qualifying path.
+    "agy": {
+        "_base": ["agy", "--print"],
+        # agy's --print takes the next argument as its prompt value, so the
+        # prompt binds to the flag rather than trailing the command. It says
+        # so itself: "--print took --model as its prompt".
+        "_prompt_follows_base": True,
+        "_contain": {
+            "expose": [".local", ".cache"],
+            "shadow": {".gemini": ["GEMINI.md"]},
+        },
+        "tools_execution": OS_CONTAINED,
+        "tools_reach": OS_CONTAINED,
+        "skills": OS_CONTAINED,
+        "mcp": OS_CONTAINED,
+        "context": OS_CONTAINED,
+        "templates": OS_CONTAINED,
+        "session": OS_CONTAINED,
+    },
+}
+
+
+class IsolationError(RuntimeError):
+    """A backend cannot be invoked because it does not meet the contract.
+
+    Distinct from BackendError, which means an eligible backend was tried and
+    failed. This one means it is never tried at all: a capability failure, not
+    a liveness failure, and never a fallback target.
+    """
+
+
+@functools.cache
+def containment_available() -> bool:
+    """Whether OS containment can actually be established on this host.
+
+    Checked by doing it, not by inspecting the platform: `unshare` exists on
+    a host whose kernel may still refuse unprivileged user namespaces, and a
+    containment path that silently no-ops is worse than no containment path.
+
+    Cached: the answer cannot change within a process, and probing on every
+    backend call would put a subprocess spawn in front of every critique.
+    """
+    if shutil.which("unshare") is None:
+        return False
+    try:
+        probe = subprocess.run(
+            ["unshare", "-Urm", "--map-root-user", "true"],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 0
+
+
+# A vendor daemon already listening holds session state that neither a CLI
+# flag nor a $HOME tmpfs can reach: the flags configure the client, and the
+# state lives in a process nobody in this repo started. Raised during the
+# 2026-08-31 critique as a leak path both isolation mechanisms miss.
+#
+# Detected by looking for a listening socket owned by the backend's own
+# binary, not by probing a fixed port: `opencode serve --port` defaults to 0,
+# i.e. the kernel picks an ephemeral port, so any hardcoded port number would
+# be wrong nearly always and would report "no daemon" while one is running.
+_DAEMON_BACKENDS: frozenset[str] = frozenset({"opencode"})
+
+
+def daemon_listening(backend: str) -> bool:
+    """Whether a daemon belonging to ``backend`` currently holds a listening
+    socket.
+
+    Returns False when the socket tooling is unavailable rather than guessing:
+    a false "no daemon" here is caught by the session-clause refusal only if
+    the daemon is real, so the honest failure mode is to under-report and let
+    the live canary tier catch it, not to fabricate certainty.
+    """
+    if backend not in _DAEMON_BACKENDS:
+        return False
+    if shutil.which("ss") is None:
+        return False
+    try:
+        listing = subprocess.run(
+            ["ss", "-lptn"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return f'"{backend}"' in listing.stdout
+
+
+def _uncovered_clauses(spec: dict[str, object]) -> list[str]:
+    return [clause for clause in ISOLATION_CLAUSES if clause not in spec]
+
+
+def build_isolated_command(
+    backend: str, prompt: str, *, model: str | None
+) -> list[str]:
+    """Build the only command any caller may run for ``backend``.
+
+    Refuses rather than degrading: an incomplete descriptor, an unknown
+    backend, or a containment-dependent backend on a host that cannot contain
+    all raise IsolationError.
+
+    Raises:
+        IsolationError: naming the backend and the specific unmet clause.
+    """
+    spec = BACKEND_ISOLATION.get(backend)
+    if spec is None:
+        raise IsolationError(
+            f"{backend}: no isolation descriptor — every backend must declare "
+            f"a mechanism for each of {', '.join(ISOLATION_CLAUSES)} before it "
+            "can be invoked"
+        )
+
+    uncovered = _uncovered_clauses(spec)
+    if uncovered:
+        raise IsolationError(
+            f"{backend}: isolation descriptor does not cover "
+            f"{', '.join(uncovered)} — refusing to build an unisolated command"
+        )
+
+    if daemon_listening(backend):
+        raise IsolationError(
+            f"{backend}: a vendor daemon is already listening, which can hold "
+            "session state that neither the isolation flags nor the $HOME "
+            "sandbox can reach — refusing the `session` clause. Stop it and "
+            "retry."
+        )
+
+    contained = [c for c in ISOLATION_CLAUSES if spec[c] is OS_CONTAINED]
+    if contained and not containment_available():
+        raise IsolationError(
+            f"{backend}: clause(s) {', '.join(contained)} can only be satisfied "
+            "by OS containment, which is unavailable on this host (no unshare, "
+            "or unprivileged user namespaces are disabled)"
+        )
+
+    cmd: list[str] = list(spec["_base"])  # type: ignore[arg-type]
+    if spec.get("_prompt_follows_base"):
+        cmd.append(prompt)
+    for clause in ISOLATION_CLAUSES:
+        mechanism = spec[clause]
+        if mechanism is OS_CONTAINED or mechanism is NOT_APPLICABLE:
+            continue
+        for flag in mechanism:  # type: ignore[union-attr]
+            if flag not in cmd:
+                cmd.append(flag)
+    if model:
+        cmd += [str(spec.get("_model_flag", "--model")), model]
+    if not spec.get("_prompt_follows_base"):
+        cmd.append(prompt)
+
+    if contained:
+        cmd = _wrap_in_containment(cmd, spec.get("_contain", {}))  # type: ignore[arg-type]
+    return cmd
+
+
+_CONTAINMENT_SCRIPT = r"""set -eu
+H="$SB_HOME"
+STAGE="$(mktemp -d)"
+
+# Stage every bind source BEFORE the tmpfs goes over $HOME. Mount order is
+# load-bearing: a tmpfs mounted first hides the very directories the later
+# binds read from, which presents as the backend binary vanishing rather
+# than as a mount error.
+i=0
+for src in $SB_EXPOSE; do
+    if [ -e "$H/$src" ]; then
+        mkdir -p "$STAGE/e$i"
+        mount --bind "$H/$src" "$STAGE/e$i"
+    fi
+    i=$((i + 1))
+done
+if [ -n "$SB_SHADOW_DIR" ] && [ -d "$H/$SB_SHADOW_DIR" ]; then
+    mkdir -p "$STAGE/real"
+    mount --bind "$H/$SB_SHADOW_DIR" "$STAGE/real"
+fi
+
+mount -t tmpfs tmpfs "$H"
+
+i=0
+for src in $SB_EXPOSE; do
+    if [ -e "$STAGE/e$i" ]; then
+        mkdir -p "$H/$src"
+        mount --bind "$STAGE/e$i" "$H/$src"
+    fi
+    i=$((i + 1))
+done
+
+# Rebuild the shadowed directory entry by entry, omitting the named ones.
+# Bind each entry rather than symlinking it: a symlink pointing back into
+# $H/<dir> would resolve to this very directory once it is mounted, and the
+# backend fails with ELOOP instead of anything legible.
+if [ -d "$STAGE/real" ]; then
+    mkdir -p "$H/$SB_SHADOW_DIR"
+    for entry in $(ls -A "$STAGE/real"); do
+        skip=0
+        for omit in $SB_SHADOW_OMIT; do
+            [ "$entry" = "$omit" ] && skip=1
+        done
+        [ "$skip" = "1" ] && continue
+        if [ -d "$STAGE/real/$entry" ]; then
+            mkdir -p "$H/$SB_SHADOW_DIR/$entry"
+        else
+            : > "$H/$SB_SHADOW_DIR/$entry"
+        fi
+        mount --bind "$STAGE/real/$entry" "$H/$SB_SHADOW_DIR/$entry"
+    done
+fi
+
+# Blank /tmp and land in an empty cwd. $HOME alone is not the user's data:
+# scratch files, worktrees and anything the caller happens to be sitting in
+# are all reachable otherwise, and a reviewer that can read the tree it is
+# reviewing is not an outside opinion.
+mount -t tmpfs tmpfs /tmp
+mkdir -p /tmp/cwd
+cd /tmp/cwd
+
+exec "$@"
+"""
+
+
+def _wrap_in_containment(cmd: list[str], contain: dict[str, object]) -> list[str]:
+    """Wrap ``cmd`` so it runs with the user's home blanked.
+
+    Everything under $HOME disappears except what the backend needs to
+    function: its own binary and its credentials. What the sandbox hides is a
+    design input, not a property of unshare — a wrapper that establishes a
+    namespace but mounts nothing contains nothing.
+
+    ``shadow`` handles the awkward case where credentials and the instruction
+    file live in the *same* directory: agy's OAuth token and its GEMINI.md are
+    both under ~/.gemini, so hiding the directory wholesale drops it into an
+    interactive Google OAuth flow. That directory is rebuilt entry by entry
+    with the named files omitted.
+    """
+    home = os.path.expanduser("~")
+    expose = list(contain.get("expose", []))  # type: ignore[arg-type]
+    shadow_spec: dict[str, list[str]] = contain.get("shadow", {})  # type: ignore[assignment]
+    shadow_dir = next(iter(shadow_spec), "")
+    omit = shadow_spec.get(shadow_dir, []) if shadow_dir else []
+
+    return [
+        "unshare",
+        "-Urm",
+        "--map-root-user",
+        "env",
+        f"SB_HOME={home}",
+        f"SB_EXPOSE={' '.join(expose)}",
+        f"SB_SHADOW_DIR={shadow_dir}",
+        f"SB_SHADOW_OMIT={' '.join(omit)}",
+        "/bin/sh",
+        "-c",
+        _CONTAINMENT_SCRIPT,
+        "sh",
+        *cmd,
+    ]
+
+
+def eligibility_report() -> dict[str, dict[str, object]]:
+    """Per-backend presence and contract eligibility, with a reason when not.
+
+    Surfaces an ineligible or unavailable backend before a critique is needed
+    rather than at the moment one is wanted.
+    """
+    can_contain = containment_available()
+    report: dict[str, dict[str, object]] = {}
+    for name in BACKEND_PRIORITY:
+        present = shutil.which(name) is not None
+        spec = BACKEND_ISOLATION.get(name)
+        if spec is None:
+            report[name] = {
+                "present": present,
+                "eligible": False,
+                "reason": "no isolation descriptor",
+            }
+            continue
+        uncovered = _uncovered_clauses(spec)
+        if uncovered:
+            reason = f"descriptor does not cover {', '.join(uncovered)}"
+        elif not present:
+            reason = "not installed"
+        elif (
+            any(spec[c] is OS_CONTAINED for c in ISOLATION_CLAUSES) and not can_contain
+        ):
+            reason = "requires OS containment, unavailable on this host"
+        else:
+            reason = ""
+        report[name] = {
+            "present": present,
+            "eligible": not reason,
+            "reason": reason,
+        }
+    return report
+
 
 # Each pattern captures one shape a tool-hungry model can emit as literal
 # text when every tool is denied (opencode's "permission": "deny") or a
@@ -65,10 +479,68 @@ def available_backends() -> list[str]:
     return [b for b in BACKEND_PRIORITY if shutil.which(b)]
 
 
+def eligible_backends() -> list[str]:
+    """Backends that are installed AND meet the isolation contract, in priority
+    order.
+
+    Capability and liveness are different failures and are handled in different
+    places. This is the capability filter: a backend that cannot meet the
+    contract is never returned, so it is never tried and never used as a
+    fallback. A backend that is eligible but hangs is a liveness failure, and
+    that is what :func:`run_with_fallback` handles.
+    """
+    report = eligibility_report()
+    return [b for b in BACKEND_PRIORITY if report.get(b, {}).get("eligible")]
+
+
 def resolve_backend() -> str | None:
-    """Return the highest-priority available backend, or ``None`` if none is."""
-    backends = available_backends()
+    """Return the highest-priority eligible backend, or ``None`` if none is."""
+    backends = eligible_backends()
     return backends[0] if backends else None
+
+
+def run_with_fallback(
+    runner: "Callable[[str], str]",
+    *,
+    backends: list[str] | None = None,
+) -> tuple[str, str]:
+    """Try each eligible backend in turn; return ``(backend, output)``.
+
+    A backend that raises :class:`BackendError` — a stall, a timeout, an empty
+    stream — is a liveness failure, and the next eligible backend is tried.
+    This is not a safety compromise: every candidate has already passed the
+    capability filter, so falling through never lands on an unisolated one.
+
+    Why this exists: on 2026-08-31 the opencode-go gateway stalled four
+    consecutive calls (a known intermittent fault bisected in this repo on
+    2026-08-17 at a 20-33% rate), which with no fallback took the whole
+    critique feature down even though every backend was contract-eligible.
+
+    Raises:
+        IsolationError: if no backend meets the contract at all — a capability
+            failure, deliberately distinct from every backend having been tried
+            and failed.
+        BackendError: if every eligible backend was tried and each failed.
+    """
+    candidates = backends if backends is not None else eligible_backends()
+    if not candidates:
+        report = eligibility_report()
+        detail = "; ".join(
+            f"{name}: {entry['reason']}"
+            for name, entry in report.items()
+            if entry.get("reason")
+        )
+        raise IsolationError(
+            f"no backend meets the isolation contract — {detail or 'none installed'}"
+        )
+
+    failures: list[str] = []
+    for backend in candidates:
+        try:
+            return backend, runner(backend)
+        except BackendError as exc:
+            failures.append(f"{backend}: {exc}")
+    raise BackendError("all eligible backends failed — " + "; ".join(failures))
 
 
 def _safe_get(obj: object, *keys: str) -> object | None:
@@ -214,8 +686,15 @@ def run_backend_command(cmd: list[str], timeout: float) -> str:
 
 
 def run_agy(prompt: str, *, model: str, timeout: float) -> str:
-    """Run the ``agy`` backend with the given model and return its text output."""
-    return run_backend_command(["agy", "-p", prompt, "--model", model], timeout)
+    """Run the ``agy`` backend with the given model and return its text output.
+
+    Raises IsolationError before running anything if this host cannot contain
+    agy — it has no vendor mechanism for any contract clause, so containment
+    is its only qualifying path (see BACKEND_ISOLATION).
+    """
+    return run_backend_command(
+        build_isolated_command("agy", prompt, model=model), timeout
+    )
 
 
 def run_copilot(prompt: str, *, model: str | None, timeout: float) -> str:
@@ -234,10 +713,9 @@ def run_copilot(prompt: str, *, model: str | None, timeout: float) -> str:
     should leave ``model`` unset/empty unless their account is confirmed to
     allow explicit model selection.
     """
-    cmd = ["copilot", "-p", prompt, "--silent"]
-    if model:
-        cmd += ["--model", model]
-    return run_backend_command(cmd, timeout)
+    return run_backend_command(
+        build_isolated_command("copilot", prompt, model=model), timeout
+    )
 
 
 _DEFAULT_PI_PROVIDER = "opencode-go"
@@ -265,11 +743,9 @@ def run_pi(prompt: str, *, model: str | None, timeout: float) -> str:
             (via :func:`run_backend_command`), or the output is dominated by
             leaked tool-call markup (via :func:`_raise_on_emitted_tool_call`).
     """
-    cmd = ["pi", "-p", "--no-session", "--provider", _DEFAULT_PI_PROVIDER]
-    if model:
-        cmd += ["--model", model]
-    cmd.append(prompt)
-    text = run_backend_command(cmd, timeout)
+    text = run_backend_command(
+        build_isolated_command("pi", prompt, model=model), timeout
+    )
     _raise_on_emitted_tool_call(text, context="pi")
     return text
 
@@ -439,10 +915,7 @@ def run_opencode(prompt: str, *, model: str | None, timeout: float) -> str:
     the practical mitigation (drops the practical failure rate to roughly
     4-10%).
     """
-    cmd = ["opencode", "run", "--auto", "--format", "json"]
-    if model:
-        cmd += ["-m", model]
-    cmd.append(prompt)
+    cmd = build_isolated_command("opencode", prompt, model=model)
     _, stdout, stderr = _run_command(cmd, timeout, retries=1)
     events = _opencode_json_events(stdout)
     _raise_on_tool_use(events, context="opencode")

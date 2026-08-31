@@ -294,25 +294,23 @@ dest = "~/.copilot_aliases"
 harness = "copilot"
 
 # ── opencode ─────────────────────────────────────────────────────────────
-# opencode reads AGENTS.md and nothing else. An earlier version of this
-# comment left AGENTS.md unmanaged on the grounds that opencode picked up
-# ~/.claude/CLAUDE.md as a legacy fallback; that fallback is gone. Probed
-# against opencode 1.18.25 on 2026-08-30 (a fixture repo with both filenames
-# and a distinct token in each): only the AGENTS.md tokens reached the
-# model, from the current directory and its parents up to the project root.
-# The binary's instruction loader targets "AGENTS.md" alone, plus an
-# AGENTS.md in its own config directory; it has no CLAUDE.md target at all.
-# So without the link below, opencode loaded no global instructions
-# whatsoever. See opencode/CLAUDE_CODE_PARITY.md §1.
+# AGENTS.md is intentionally unmanaged: opencode reads ~/.claude/CLAUDE.md
+# directly as a global fallback, so a second copy of the same content under
+# another path buys nothing but a duplicated file in every session's context.
 #
-# harness = "opencode" alone is the correct gating — no profile_exclude
-# needed. --profile=work --harness=opencode is rejected at argument-parsing
-# time, so an opencode-gated entry never evaluates on a work profile.
-
-[[link]]
-src = "claude/CLAUDE.md"
-dest = "~/.config/opencode/AGENTS.md"
-harness = "opencode"
+# Two different questions, and conflating them produced a wrong "correction"
+# here on 2026-08-30 that was reverted on 2026-08-31:
+#   * PROJECT-level discovery targets AGENTS.md only. A CLAUDE.md sitting in
+#     a project directory is never loaded. Probed against opencode 1.18.25
+#     with a fixture repo holding both filenames at a root and a subdirectory,
+#     each with a distinct token: only the AGENTS.md tokens came back.
+#   * GLOBAL instructions still come from ~/.claude/CLAUDE.md. Probed the
+#     same day by shadow-HOME bisection from a cwd with no AGENTS.md anywhere
+#     up the tree: a HOME without .claude lost the content, and symlinking
+#     .claude back in restored it.
+# The first result does not imply the second. The 2026-08-30 edit assumed it
+# did, declared the fallback dead, and added a redundant link here.
+# See opencode/CLAUDE_CODE_PARITY.md §1.
 
 [[link]]
 src = "opencode/tui.json"
@@ -460,7 +458,8 @@ harness = "agy"
 # Pi looks specifically under ~/.pi/agent/ for its global instructions file
 # (AGENTS.md, with CLAUDE.md read as a fallback name). It has no fallback to
 # ~/.claude/CLAUDE.md, so it needs a real link of its own, same as agy's
-# GEMINI.md link above and opencode's AGENTS.md link. Symlinked as AGENTS.md, not
+# GEMINI.md link above. (opencode needs no such link -- it reads
+# ~/.claude/CLAUDE.md directly.) Symlinked as AGENTS.md, not
 # CLAUDE.md, since the doc names AGENTS.md first when both are considered
 # for a directory. See pi/CLAUDE_CODE_PARITY.md §1.
 #

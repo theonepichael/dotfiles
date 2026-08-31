@@ -45,10 +45,45 @@ EXPECTED_MODEL_ENV_VARS = [
 ]
 
 
+_containment_patcher = None
+_daemon_patcher = None
+
+
 def setUpModule() -> None:
-    """Clear every model/pool variable so the suite is host-independent."""
+    """Clear every model/pool variable so the suite is host-independent, and
+    stub the containment probe.
+
+    Both halves matter and they must live in one function: defining a second
+    setUpModule shadows the first, which silently restores exactly the host
+    pool leakage the first half exists to prevent.
+
+    The containment stub is needed because build_isolated_command consults
+    containment_available() for any backend whose descriptor requires OS
+    containment, and that probe shells out to `unshare` — blocked by the
+    repo-root conftest, and otherwise making these tests depend on the host
+    kernel rather than on the behaviour under test.
+    """
+    global _containment_patcher
+    import llm_backends
+
     for var in EXPECTED_MODEL_ENV_VARS:
         os.environ.pop(var, None)
+    _containment_patcher = patch.object(
+        llm_backends, "containment_available", lambda: True
+    )
+    _containment_patcher.start()
+    # daemon_listening shells out to `ss` on every build; stubbed for the same
+    # reason as the containment probe.
+    global _daemon_patcher
+    _daemon_patcher = patch.object(llm_backends, "daemon_listening", lambda b: False)
+    _daemon_patcher.start()
+
+
+def tearDownModule() -> None:
+    if _containment_patcher is not None:
+        _containment_patcher.stop()
+    if _daemon_patcher is not None:
+        _daemon_patcher.stop()
 
 
 def ns(**kwargs: object) -> argparse.Namespace:
@@ -801,20 +836,49 @@ class RunOpencodeTests(unittest.TestCase):
 
 
 class CmdDetectTests(unittest.TestCase):
-    def test_41_detect_prints_availability_json(self) -> None:
+    def test_41_detect_reports_presence_and_eligibility(self) -> None:
+        """detect reports both halves. Presence alone was misleading: an
+        installed backend that cannot meet the isolation contract is never
+        used, so reporting it as simply available pushed the discovery to the
+        moment a critique was wanted."""
         out = io.StringIO()
         with (
             patch(
                 "shutil.which",
                 side_effect=lambda b: "/usr/bin/agy" if b == "agy" else None,
             ),
+            patch.object(second_opinion.llm_backends, "containment_available", lambda: True),
             patch("sys.stdout", out),
         ):
             second_opinion.cmd_detect(ns())
-        self.assertEqual(
-            json.loads(out.getvalue()),
-            {"agy": True, "opencode": False, "pi": False, "copilot": False},
-        )
+        report = json.loads(out.getvalue())
+        self.assertEqual(sorted(report), ["agy", "copilot", "opencode", "pi"])
+        self.assertTrue(report["agy"]["present"])
+        self.assertTrue(report["agy"]["eligible"])
+        for absent in ("opencode", "pi", "copilot"):
+            self.assertFalse(report[absent]["present"], absent)
+            self.assertFalse(report[absent]["eligible"], absent)
+            self.assertEqual(report[absent]["reason"], "not installed", absent)
+
+    def test_41b_detect_explains_an_installed_but_uncontainable_backend(self) -> None:
+        """Installed and still ineligible is the case worth surfacing early:
+        agy needs OS containment for every clause, so on a host without working
+        namespaces it is present but unusable, and the reason must say so."""
+        out = io.StringIO()
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion.llm_backends, "containment_available", lambda: False
+            ),
+            patch("sys.stdout", out),
+        ):
+            second_opinion.cmd_detect(ns())
+        report = json.loads(out.getvalue())
+        self.assertTrue(report["agy"]["present"])
+        self.assertFalse(report["agy"]["eligible"])
+        self.assertIn("containment", report["agy"]["reason"])
+        # pi isolates by flags alone, so it stays eligible on the same host.
+        self.assertTrue(report["pi"]["eligible"])
 
 
 class CmdReviewTests(unittest.TestCase):

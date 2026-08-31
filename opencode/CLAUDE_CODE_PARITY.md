@@ -18,7 +18,7 @@ directories in this repo, and get symlinked into `~/.config/opencode/` by
 
 | Claude Code behavior | opencode equivalent | Notes |
 |---|---|---|
-| `CLAUDE.md` project/global instructions | Reads **`AGENTS.md` only** — from the current directory up to the project root, plus one in its own config directory. No `CLAUDE.md` fallback of any kind. | **Corrected 2026-08-30, see below.** Needs a real link of its own, now wired in `links.toml`. |
+| `CLAUDE.md` project/global instructions | **Project:** `AGENTS.md` only, from cwd up to the project root — a project `CLAUDE.md` is never loaded. **Global:** reads `~/.claude/CLAUDE.md` automatically. | Our existing global `~/.claude/CLAUDE.md` is already picked up — nothing to port. See the note below on a wrong correction made and reverted. |
 | `Esc` interrupts current turn | `session_interrupt: escape` (default) | Exact match |
 | `Shift+Tab` cycles Default→AcceptEdits→Plan→Auto | `Tab` / `Shift+Tab` → `agent_cycle` / `agent_cycle_reverse`, cycles Build ↔ Plan | Same gesture, but only 2 states by default vs Claude Code's 4 — see §3 |
 | `Ctrl+G` opens external editor | `editor_open: <leader>e` (default) | Same feature, different key — rebind if wanted, see §4 |
@@ -27,30 +27,37 @@ directories in this repo, and get symlinked into `~/.config/opencode/` by
 | `claude --continue` / `--resume` | `opencode run --continue` / `-c`, `--session`/`-s <id>` | Same concept, different flag names |
 | Subagent naming (Explore, general-purpose) | Built-in subagents: `general`, `explore`, `scout` | opencode's `explore` is close to Claude Code's `Explore` agent already |
 
-### Correction, 2026-08-30 — the instruction-file row was wrong
+### Correction, 2026-08-30 — itself wrong, reverted 2026-08-31
 
-The row above previously read: *"Reads `CLAUDE.md` (project) and
-`~/.claude/CLAUDE.md` (global) as legacy fallbacks automatically — our
-existing global `~/.claude/CLAUDE.md` is already being picked up, nothing to
-port."* That was compiled from opencode's docs on 2026-07-24 and used as the
-stated reason `links.toml` managed no `AGENTS.md` entry for opencode.
+On 2026-08-30 this section was rewritten to claim opencode had dropped its
+`~/.claude/CLAUDE.md` fallback and was therefore loading no instructions at
+all, and a `links.toml` entry was added pointing `claude/CLAUDE.md` at
+`~/.config/opencode/AGENTS.md`. **That correction was wrong and has been
+reverted.**
 
-It does not hold against opencode 1.18.25. Probed by running `opencode run`
-in a fixture git repo holding an `AGENTS.md` and a `CLAUDE.md` at both the
-root and a subdirectory, each with a distinct token, and asking the model
-which tokens were in its context with tools forbidden: only the two
-`AGENTS.md` tokens came back. The binary's instruction loader confirms it —
-it walks up from the current directory targeting `AGENTS.md` alone, plus an
-`AGENTS.md` in its own config directory, with no `CLAUDE.md` target
-anywhere.
+The evidence behind it was a fixture repo holding an `AGENTS.md` and a
+`CLAUDE.md` at both a root and a subdirectory, each with a distinct token.
+Only the `AGENTS.md` tokens came back. That is a real result — but it tests
+**project-level discovery only**, because every file in the fixture sat
+inside the project. It says nothing about the global fallback, which reads a
+path in the home directory the fixture never touched. The conclusion "no
+`CLAUDE.md` fallback of any kind" did not follow from it.
 
-Consequence while this stood: opencode loaded **no instructions at all** on
-this machine — no global file (nothing existed at
-`~/.config/opencode/AGENTS.md`) and no per-repo file (this repo's root
-instructions were named `CLAUDE.md`). Both halves are now fixed —
-`links.toml` links `claude/CLAUDE.md` to `~/.config/opencode/AGENTS.md`, and
-the repo root carries a real `AGENTS.md`. The link takes effect on the next
-`install.sh --harness=opencode` run.
+Bisected properly on 2026-08-31, from a cwd (`/tmp`) with no `AGENTS.md`
+anywhere up the tree:
+
+- shadow `HOME` with `.config`, `.local`, `.cache`, `.opencode` symlinked
+  but **no** `.claude` → opencode could not see the global instructions.
+- same shadow `HOME` with `.claude` symlinked back in → it could.
+
+The live `~/.config/opencode/opencode.jsonc` has no `instructions` key and
+`opencode debug config` reports `instructions: null`, ruling out
+config-driven injection as the source.
+
+So both halves are true at once, and neither implies the other:
+**project-level discovery is `AGENTS.md`-only; global instructions still
+come from `~/.claude/CLAUDE.md`.** The added link was redundant — opencode
+already had that content — so it has been removed and this section restored.
 
 ---
 

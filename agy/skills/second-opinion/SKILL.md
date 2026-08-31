@@ -9,8 +9,9 @@ for harness-specific wording, then regenerate -->
 
 All backend I/O goes through `python3 ~/.claude/scripts/second_opinion.py` —
 never shell out to `agy`/`opencode`/`pi` directly. Two operations: `detect`
-lists which backends are present, `review` returns one critique. It is
-single-round: one call, one critique. The multi-round loop and plan revision
+reports each backend's presence AND whether it currently meets the isolation
+contract (with the reason when it does not), `review` returns one critique. It
+is single-round: one call, one critique. The multi-round loop and plan revision
 are your job, not the script's.
 
 ```
