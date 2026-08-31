@@ -539,6 +539,11 @@ dest = "~/.pi/agent/extensions/compaction-backlog-sync.ts"
 harness = "pi"
 
 [[link]]
+src = "pi/extensions/pending-plan-surface.ts"
+dest = "~/.pi/agent/extensions/pending-plan-surface.ts"
+harness = "pi"
+
+[[link]]
 src = "pi/extensions/custom-footer.ts"
 dest = "~/.pi/agent/extensions/custom-footer.ts"
 harness = "pi"
