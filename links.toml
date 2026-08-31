@@ -215,6 +215,10 @@ src = "claude/scripts/settings_seed_drift_check.py"
 dest = "~/.claude/scripts/settings_seed_drift_check.py"
 
 [[link]]
+src = "claude/scripts/harness_discovery_check.py"
+dest = "~/.claude/scripts/harness_discovery_check.py"
+
+[[link]]
 src = "claude/scripts/vitals_promotion.py"
 dest = "~/.claude/scripts/vitals_promotion.py"
 

@@ -43,6 +43,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`gen_skills.py`](#claudescriptsgenskillspy) | gen_skills.py — regenerate the dashboard/grill-me/backlog-item/make-skill/ spec/standup/to-tickets skill copies from one template per skill, plus a shared per-harness capability table. dashboard/grill-me/backlog-item/ make-skill cover all 5 harnesses (claude, copilot, opencode, agy, pi); spec/standup/to-tickets cover only claude/opencode/pi — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section for why copilot/agy stop getting new generated skills. |
 | [`gen_skills_params.py`](#claudescriptsgenskillsparamspy) | gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py. |
 | [`grill.py`](#claudescriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
+| [`harness_discovery_check.py`](#claudescriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md. |
 | [`llm_backends.py`](#claudescriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
 | [`opencode_skills_sync_activity.py`](#claudescriptsopencodeskillssyncactivitypy) | Print opencode-skills-sync's pause state and last known snapshot commit, so a session can tell whether the daemon is running and how current its mirror is -- mirrors watchcommit_activity.py's SessionStart banner role. |
 | [`second_opinion.py`](#claudescriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
@@ -508,6 +509,32 @@ grill.py — grill-me session state CLI. All session mutations go through here.
   - `render_markdown(session: Session) -> str` — Render a session's status as a Markdown document.
 - Subcommand handlers: `cmd_new`, `cmd_ask`, `cmd_decide`, `cmd_revise`, `cmd_rm`, `cmd_verdict`, `cmd_plan`, `cmd_mark_pending_execution`, `cmd_pending_plan`, `cmd_next`, `cmd_frontier`, `cmd_render`, `cmd_list`, `cmd_show`
 - Tested by: `claude/scripts/test_grill.py`, `claude/scripts/test_second_opinion.py`, `claude/scripts/test_to_tickets_runner.py`
+
+### `claude/scripts/harness_discovery_check.py`
+
+SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md.
+
+- Installed at: `~/.claude/scripts/harness_discovery_check.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Detect harness instruction-file discovery drift against README.md's version-pinned facts.
+  - `--quiet/-q`
+  - `--verbose/-v`
+- Subcommands:
+  - `check [--hook] [--strict]` — stateless version-pin comparison for load-bearing harnesses (default)
+    - `--hook` — format output for SessionStart hook consumption
+    - `--strict` — exit 2 when a version mismatch is noted (default: exit 0)
+  - `probe [--harness {claude,opencode,pi,copilot,agy}]` — on-demand live semantic verification (~10-15 API calls)
+    - `--harness` — probe a single harness instead of all five (choices: claude, opencode, pi, copilot, agy)
+- Environment: `OPENCODE_PROBE_MODEL`
+- Depends on: `cli_common.py`
+- Exceptions:
+  - `class HarnessCheckError(Exception)` — Raised when a harness check can't proceed (subprocess failure, not a missing binary).
+- Public functions:
+  - `resolve_binary(name: str) -> Path | None` — Resolve a harness binary via ``shutil.which`` then ``Path.resolve()``.
+  - `run_version(name: str, binary: Path, run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> str` — Run ``<binary> --version`` and return the extracted version string.
+  - `build_parser() -> argparse.ArgumentParser`
+- Subcommand handlers: `cmd_check`, `cmd_probe`
+- Tested by: `claude/scripts/test_harness_discovery_check.py`
 
 ### `claude/scripts/llm_backends.py`
 

@@ -46,6 +46,10 @@
           },
           {
             "type": "command",
+            "command": "timeout 5s python3 ~/.claude/scripts/harness_discovery_check.py check --hook || echo '[harness-discovery] checker failed — run it manually'"
+          },
+          {
+            "type": "command",
             "command": "if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo; echo 'recent commits:'; git log -n 5 --oneline; fi"
           },
           {

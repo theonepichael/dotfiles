@@ -269,7 +269,7 @@ context with tools forbidden:
 
 | Harness | Version | Filenames it loads | Where it looks |
 |---|---|---|---|
-| Claude Code | 2.1.251 | `CLAUDE.md` only — `AGENTS.md` is ignored even when no `CLAUDE.md` exists | cwd, plus a nested file **attached automatically** when it touches a file in that directory |
+| Claude Code | 2.1.252 | `CLAUDE.md` only — `AGENTS.md` is ignored even when no `CLAUDE.md` exists | cwd, plus a nested file **attached automatically** when it touches a file in that directory |
 | Pi | 0.84.4 | `AGENTS.md` preferred, `CLAUDE.md` when `AGENTS.md` is absent (`AGENTS.override.md` beats both) | cwd and its parents, at startup only |
 | opencode | 1.18.25 | project: `AGENTS.md` only, a project `CLAUDE.md` is never loaded; global: `~/.claude/CLAUDE.md` | cwd up to the project root, plus the global fallback above |
 | Copilot | 1.0.80 | `CLAUDE.md`, `GEMINI.md` and `AGENTS.md` — all of them | git root and cwd only |
