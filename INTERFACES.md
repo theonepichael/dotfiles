@@ -1,6 +1,6 @@
 # INTERFACES.md
 
-Scope: `claude/`, `copilot/`, `opencode/`, `agy/`, the shared scripts under
+Scope: `claude/`, `copilot/`, `opencode/`, `agy/`, `pi/`, the shared scripts under
 `claude/scripts/` that `links.toml` installs into `~/.claude/scripts/`, and the
 repo-root installer entrypoints those harnesses are provisioned by.
 
@@ -40,6 +40,8 @@ House style for these interfaces is in `STYLE.md`.
 | [`gen_interfaces.py`](#claudescriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`gen_second_opinion.py`](#claudescriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template. |
 | [`gen_shell_completion.py`](#claudescriptsgenshellcompletionpy) | Generate a zsh `#compdef` completion file for a harness CLI. |
+| [`gen_skills.py`](#claudescriptsgenskillspy) | gen_skills.py — regenerate the dashboard/grill-me/backlog-item/make-skill skill copies (one per harness: claude, copilot, opencode, agy, pi) from one template per skill, plus a shared per-harness capability table. |
+| [`gen_skills_params.py`](#claudescriptsgenskillsparamspy) | gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py. |
 | [`grill.py`](#claudescriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
 | [`llm_backends.py`](#claudescriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
 | [`opencode_skills_sync_activity.py`](#claudescriptsopencodeskillssyncactivitypy) | Print opencode-skills-sync's pause state and last known snapshot commit, so a session can tell whether the daemon is running and how current its mirror is -- mirrors watchcommit_activity.py's SessionStart banner role. |
@@ -404,6 +406,39 @@ Generate a zsh `#compdef` completion file for a harness CLI.
   - `generate(spec: HarnessSpec, *, verbose: bool = False) -> str | None`
 - Tested by: `claude/scripts/test_gen_shell_completion.py`
 
+### `claude/scripts/gen_skills.py`
+
+gen_skills.py — regenerate the dashboard/grill-me/backlog-item/make-skill skill copies (one per harness: claude, copilot, opencode, agy, pi) from one template per skill, plus a shared per-harness capability table.
+
+- Installed at: `~/.claude/scripts/gen_skills.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): regenerate the dashboard/grill-me/backlog-item/make-skill copies from one template per skill
+  - `--quiet/-q`
+  - `--verbose/-v`
+  - `--check` — exit 1 (with diffs on stderr) if any copy is stale
+  - `--stdout` — print the rendered copies, write nothing
+  - `--repo-root` — repository root (default: inferred from this script's path)
+- Explicit exit codes: `1`, `2`
+- Depends on: `cli_common.py`, `gen_skills_params.py`
+- Public functions:
+  - `do_not_edit_marker(skill: str) -> str` — Return this skill's marker, naming its own template file by name.
+  - `capability_tokens(harness: str) -> dict[str, str]` — Map the shared capability facts to the `{{TOKEN}}` names templates use.
+  - `apply_placeholders(text: str, values: dict[str, str]) -> str` — Replace every `{{TOKEN}}` in ``text`` with its harness-specific value.
+  - `render_body(template_text: str, values: dict[str, str]) -> str` — Render one harness's body: substitute placeholders, no reflow.
+  - `render_one(skill: str, harness: str, template_text: str, params: dict) -> str` — Render one (skill, harness) pair's complete file.
+  - `render_all(repo_root: Path, skill_params: dict[str, dict[str, dict]]) -> dict[str, str]` — Render every (skill, harness) pair, keyed by its repo-relative output path.
+  - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
+- Tested by: `claude/scripts/test_gen_skills.py`
+
+### `claude/scripts/gen_skills_params.py`
+
+gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py.
+
+- Installed at: `~/.claude/scripts/gen_skills_params.py` (all harnesses)
+- Entrypoint: not executable, no shebang
+- CLI: none (library module).
+- Tested by: `claude/scripts/test_gen_skills.py`
+
 ### `claude/scripts/grill.py`
 
 grill.py — grill-me session state CLI. All session mutations go through here.
@@ -737,18 +772,18 @@ Each harness gets a port of the same skill surface. Presence below is
 the file existing in the repo; the description is the canonical
 `claude/commands/` frontmatter.
 
-| Skill | claude | copilot | opencode | agy |
-| --- | --- | --- | --- | --- |
-| `/backlog-item` | yes | yes | yes | yes |
-| `/dashboard` | yes | yes | yes | yes |
-| `/draft-voice` | yes | — | — | — |
-| `/grill-me` | yes | yes | yes | yes |
-| `/make-skill` | yes | yes | yes | yes |
-| `/second-opinion` | yes | yes | yes | yes |
-| `/skill-map` | yes | — | — | — |
-| `/spec` | yes | yes | yes | yes |
-| `/standup` | yes | yes | yes | yes |
-| `/to-tickets` | yes | yes | yes | yes |
+| Skill | claude | copilot | opencode | agy | pi |
+| --- | --- | --- | --- | --- | --- |
+| `/backlog-item` | yes | yes | yes | yes | yes |
+| `/dashboard` | yes | yes | yes | yes | yes |
+| `/draft-voice` | yes | — | — | — | — |
+| `/grill-me` | yes | yes | yes | yes | yes |
+| `/make-skill` | yes | yes | yes | yes | yes |
+| `/second-opinion` | yes | yes | yes | yes | yes |
+| `/skill-map` | yes | — | — | — | — |
+| `/spec` | yes | yes | yes | yes | yes |
+| `/standup` | yes | yes | yes | yes | yes |
+| `/to-tickets` | yes | yes | yes | yes | yes |
 
 - **`/backlog-item`** — Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item.
   - Source: `claude/commands/backlog-item.md`
@@ -811,6 +846,48 @@ are copy-once seeds for exactly that reason.
 | `agy/hooks/agy-elapsed.js` | `~/.claude/hooks/agy-elapsed.js` (agy) |
 | `agy/hooks/agy-elapsed.test.js` | not symlinked by `links.toml` |
 | `agy/hooks.json` | `~/.gemini/config/hooks.json` (agy) |
+| `pi/AGENTS.md` | not symlinked by `links.toml` |
+| `pi/CLAUDE.md` | not symlinked by `links.toml` |
+| `pi/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
+| `pi/bun.lock` | not symlinked by `links.toml` |
+| `pi/extensions/compaction-backlog-sync.ts` | `~/.pi/agent/extensions/compaction-backlog-sync.ts` (pi) |
+| `pi/extensions/custom-footer.ts` | `~/.pi/agent/extensions/custom-footer.ts` (pi) |
+| `pi/extensions/delegate-tool.ts` | `~/.pi/agent/extensions/delegate-tool.ts` (pi) |
+| `pi/extensions/dev-status-tool.ts` | `~/.pi/agent/extensions/dev-status-tool.ts` (pi) |
+| `pi/extensions/grill-tool.ts` | `~/.pi/agent/extensions/grill-tool.ts` (pi) |
+| `pi/extensions/guard-rails.ts` | `~/.pi/agent/extensions/guard-rails.ts` (pi) |
+| `pi/extensions/permission-gate.ts` | `~/.pi/agent/extensions/permission-gate.ts` (pi) |
+| `pi/extensions/philosophy-header.ts` | `~/.pi/agent/extensions/philosophy-header.ts` (pi) |
+| `pi/extensions/question-tool.ts` | `~/.pi/agent/extensions/question-tool.ts` (pi) |
+| `pi/extensions/ruff-format-on-edit.ts` | `~/.pi/agent/extensions/ruff-format-on-edit.ts` (pi) |
+| `pi/extensions/second-opinion-tool.ts` | `~/.pi/agent/extensions/second-opinion-tool.ts` (pi) |
+| `pi/extensions/standup-tool.ts` | `~/.pi/agent/extensions/standup-tool.ts` (pi) |
+| `pi/extensions/to-tickets-tool.ts` | `~/.pi/agent/extensions/to-tickets-tool.ts` (pi) |
+| `pi/extensions/vitals-promotion-tool.ts` | `~/.pi/agent/extensions/vitals-promotion-tool.ts` (pi) |
+| `pi/package.json` | not symlinked by `links.toml` |
+| `pi/prompts/backlog-item.md` | `~/.pi/agent/prompts/backlog-item.md` (pi) |
+| `pi/prompts/dashboard.md` | `~/.pi/agent/prompts/dashboard.md` (pi) |
+| `pi/prompts/grill-me.md` | `~/.pi/agent/prompts/grill-me.md` (pi) |
+| `pi/prompts/make-skill.md` | `~/.pi/agent/prompts/make-skill.md` (pi) |
+| `pi/prompts/second-opinion.md` | `~/.pi/agent/prompts/second-opinion.md` (pi) |
+| `pi/prompts/spec.md` | `~/.pi/agent/prompts/spec.md` (pi) |
+| `pi/prompts/standup.md` | `~/.pi/agent/prompts/standup.md` (pi) |
+| `pi/prompts/to-tickets.md` | `~/.pi/agent/prompts/to-tickets.md` (pi) |
+| `pi/settings.json` | not symlinked by `links.toml` |
+| `pi/test/compaction-backlog-sync.test.ts` | not symlinked by `links.toml` |
+| `pi/test/delegate-tool.test.ts` | not symlinked by `links.toml` |
+| `pi/test/dev-status-tool.test.ts` | not symlinked by `links.toml` |
+| `pi/test/grill-tool.test.ts` | not symlinked by `links.toml` |
+| `pi/test/guard-rails.test.ts` | not symlinked by `links.toml` |
+| `pi/test/permission-gate.test.ts` | not symlinked by `links.toml` |
+| `pi/test/philosophy-header.test.ts` | not symlinked by `links.toml` |
+| `pi/test/question-tool.test.ts` | not symlinked by `links.toml` |
+| `pi/test/ruff-format-on-edit.test.ts` | not symlinked by `links.toml` |
+| `pi/test/second-opinion-tool.test.ts` | not symlinked by `links.toml` |
+| `pi/test/standup-tool.test.ts` | not symlinked by `links.toml` |
+| `pi/test/to-tickets-tool.test.ts` | not symlinked by `links.toml` |
+| `pi/test/vitals-promotion-tool.test.ts` | not symlinked by `links.toml` |
+| `pi/tsconfig.json` | not symlinked by `links.toml` |
 
 ---
 
@@ -1022,6 +1099,8 @@ named doc, not regenerating this file.
 | `opencode/command/second-opinion.md` | OK |
 | `opencode/command/standup.md` | OK |
 | `opencode/skills/second-opinion/SKILL.md` | OK |
+| `pi/skills/backlog-item/SKILL.md` | OK |
+| `pi/skills/dashboard/SKILL.md` | OK |
 
 ### `gen_interfaces.py`
 
@@ -1052,6 +1131,7 @@ named doc, not regenerating this file.
 | `opencode/skills/grill-me/SKILL.md` | OK |
 | `opencode/skills/second-opinion/SKILL.md` | OK |
 | `opencode/skills/spec/SKILL.md` | OK |
+| `pi/skills/grill-me/SKILL.md` | OK |
 
 ### `standup.py`
 
@@ -1080,6 +1160,7 @@ named doc, not regenerating this file.
 | `copilot/skills/grill-me/SKILL.md` | OK |
 | `opencode/command/grill-me.md` | OK |
 | `opencode/skills/grill-me/SKILL.md` | OK |
+| `pi/skills/grill-me/SKILL.md` | OK |
 
 ---
 
