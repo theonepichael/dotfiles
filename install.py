@@ -4452,10 +4452,11 @@ def _same_path(left: Path, right: Path) -> bool:
 def _implied_repo_root(target: Path, relative_src: str) -> Path | None:
     """Return the repo root ``target`` implies, if it ends with ``relative_src``.
 
-    ``/home/u/dotfiles-wt/claude/CLAUDE.md`` with a ``claude/CLAUDE.md``
-    entry implies ``/home/u/dotfiles-wt``. None if the tail doesn't match,
-    which means the link points at something unrelated rather than at the
-    same file in a different checkout.
+    ``/home/u/dotfiles-wt/claude/global-instructions.md`` with a
+    ``claude/global-instructions.md`` entry implies ``/home/u/dotfiles-wt``.
+    None if the tail doesn't match, which means the link points at
+    something unrelated rather than at the same file in a different
+    checkout.
     """
     tail = Path(relative_src).parts
     parts = target.parts

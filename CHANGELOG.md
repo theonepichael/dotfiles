@@ -27,6 +27,20 @@ harness CLIs, flags, or behavior get an entry going forward.
   `opencode/CLAUDE_CODE_PARITY.md` §1 and the `README.md` harness table are
   corrected to match. The dated 2026-08-30 entry below is left as written.
 
+- **Renamed `claude/CLAUDE.md` to `claude/global-instructions.md`.** Sitting
+  at `claude/CLAUDE.md` made Claude Code's nested-memory attachment treat it
+  as `claude/`'s own directory instruction file, on top of it already being
+  loaded as the user's global instructions — confirmed live: touching any
+  file under `claude/` loaded the same 27KB file twice in one context. The
+  file's role (global, cross-harness instructions symlinked out by
+  `links.toml`) never changed; only its repo-relative source path did. No
+  harness destination path changed. `links.toml`, `test/test_agents_md_links.py`
+  (the `GLOBAL_INSTRUCTIONS_FILE` exemption is no longer needed and was
+  removed), `test/scenarios.sh`, `README.md`, `AGENTS.md`,
+  `claude/scripts/AGENTS.md` (dropped the section documenting this as a
+  known quirk), `claude/scripts/gen_interfaces.py`, `install.py`, and the
+  four `CLAUDE_CODE_PARITY.md` docs are updated to match.
+
 ## 2026-08-30
 
 ### Added

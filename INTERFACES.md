@@ -855,7 +855,7 @@ are copy-once seeds for exactly that reason.
 
 | Source | Installed at |
 | --- | --- |
-| `claude/CLAUDE.md` | `~/.claude/CLAUDE.md` (claude), `~/.copilot/copilot-instructions.md` (copilot), `~/.gemini/GEMINI.md` (agy), `~/.pi/agent/AGENTS.md` (pi) |
+| `claude/global-instructions.md` | `~/.claude/CLAUDE.md` (claude), `~/.copilot/copilot-instructions.md` (copilot), `~/.gemini/GEMINI.md` (agy), `~/.pi/agent/AGENTS.md` (pi) |
 | `claude/output-styles/ConciseSTE.md` | `~/.claude/output-styles/ConciseSTE.md` (claude) |
 | `claude/scripts/AGENTS.md` | not symlinked by `links.toml` |
 | `claude/scripts/CLAUDE.md` | not symlinked by `links.toml` |

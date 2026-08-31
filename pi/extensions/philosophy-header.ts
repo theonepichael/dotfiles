@@ -2,7 +2,7 @@
  * Philosophy Header
  *
  * Replaces pi's built-in header (logo + keybinding hints) with a π wordmark
- * and a tagline drawn from ~/dotfiles — STYLE.md and claude/CLAUDE.md.
+ * and a tagline drawn from ~/dotfiles — STYLE.md and claude/global-instructions.md.
  *
  * The tagline is picked once per session, so it stays stable while you work
  * but varies across sessions.
