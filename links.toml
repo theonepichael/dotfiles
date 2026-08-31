@@ -559,6 +559,11 @@ src = "pi/extensions/philosophy-header.ts"
 dest = "~/.pi/agent/extensions/philosophy-header.ts"
 harness = "pi"
 
+[[link]]
+src = "pi/extensions/delegate-tool.ts"
+dest = "~/.pi/agent/extensions/delegate-tool.ts"
+harness = "pi"
+
 # ── watchcommit (personal machines only) ─────────────────────────────────
 # It auto-pushes to a personal remote under your personal Claude account
 # login, which has no place on work hardware.
