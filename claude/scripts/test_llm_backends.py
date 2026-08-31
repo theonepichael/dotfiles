@@ -126,12 +126,25 @@ class AvailableBackendsTests(unittest.TestCase):
             self.assertEqual(llm_backends.available_backends(), [])
 
     def test_18_resolve_backend_picks_first_priority(self) -> None:
+        """resolve_backend now filters on contract eligibility, not merely on
+        presence -- an installed backend that cannot be isolated must never be
+        selected."""
         with patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"):
-            self.assertEqual(llm_backends.resolve_backend(), "agy")
+            with patch.object(llm_backends, "containment_available", lambda: True):
+                self.assertEqual(llm_backends.resolve_backend(), "agy")
+
+    def test_18b_resolve_backend_skips_a_backend_it_cannot_isolate(self) -> None:
+        """On a host with no working namespaces, agy and opencode are
+        ineligible (both need containment) and resolution falls to pi, which
+        isolates by flags alone."""
+        with patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"):
+            with patch.object(llm_backends, "containment_available", lambda: False):
+                self.assertEqual(llm_backends.resolve_backend(), "pi")
 
     def test_19_resolve_backend_none_when_unavailable(self) -> None:
         with patch("shutil.which", return_value=None):
-            self.assertIsNone(llm_backends.resolve_backend())
+            with patch.object(llm_backends, "containment_available", lambda: False):
+                self.assertIsNone(llm_backends.resolve_backend())
 
 
 class RunCommandRealSubprocessTests(unittest.TestCase):
@@ -326,8 +339,61 @@ class RunBackendCommandTests(unittest.TestCase):
         self.assertIn("produced no output", str(cm.exception))
 
 
-class RunAgyTests(unittest.TestCase):
+# Command prefixes the isolation contract produces. Kept as constants so a
+# deliberate contract change updates one place, and so these argv assertions
+# read as "base plus this call's arguments" rather than as opaque lists.
+PI_ISOLATED = [
+    "pi",
+    "-p",
+    "--no-session",
+    "--provider",
+    "opencode-go",
+    "--no-tools",
+    "--no-context-files",
+    "--no-prompt-templates",
+]
+OPENCODE_ISOLATED = [
+    "unshare",
+    "-Urm",
+    "--map-root-user",
+    "opencode",
+    "run",
+    "--auto",
+    "--format",
+    "json",
+    "--agent",
+    "adversary",
+]
+
+
+class _ContainmentStubbed(unittest.TestCase):
+    """Base for suites whose backends consult containment_available().
+
+    That probe shells out to `unshare`, which the repo-root conftest blocks
+    and which would make these command-shape assertions depend on the host
+    kernel. Stubbed True so the assertions stay about argv.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = patch.object(llm_backends, "containment_available", lambda: True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        daemon = patch.object(llm_backends, "daemon_listening", lambda b: False)
+        daemon.start()
+        self.addCleanup(daemon.stop)
+
+
+class RunAgyTests(_ContainmentStubbed):
     def test_33_builds_expected_argv(self) -> None:
+        """agy runs under the containment wrapper, with its prompt bound to
+        --print and its model flag after it.
+
+        Asserted as properties rather than a literal argv: the wrapper carries
+        an inline shell script whose text changes whenever a mount is added,
+        and a literal comparison would fail on changes that do not affect the
+        contract.
+        """
         with patch.object(
             llm_backends, "run_backend_command", return_value="text"
         ) as mock_run:
@@ -335,9 +401,26 @@ class RunAgyTests(unittest.TestCase):
                 "my prompt", model="Gemini 3.6 Flash (High)", timeout=60
             )
         self.assertEqual(result, "text")
-        mock_run.assert_called_once_with(
-            ["agy", "-p", "my prompt", "--model", "Gemini 3.6 Flash (High)"], 60
-        )
+        argv, timeout = mock_run.call_args[0]
+        self.assertEqual(timeout, 60)
+        self.assertEqual(argv[:3], ["unshare", "-Urm", "--map-root-user"])
+        self.assertIn("agy", argv)
+        # --print takes the next argument as its prompt value.
+        self.assertEqual(argv[argv.index("--print") + 1], "my prompt")
+        self.assertEqual(argv[argv.index("--model") + 1], "Gemini 3.6 Flash (High)")
+
+    def test_33b_agy_containment_hides_home_and_tmp(self) -> None:
+        """The wrapper must actually blank things. A namespace that mounts
+        nothing contains nothing, and the descriptor would then be claiming an
+        isolation mechanism that does not work."""
+        with patch.object(
+            llm_backends, "run_backend_command", return_value="t"
+        ) as mock_run:
+            llm_backends.run_agy("p", model="m", timeout=60)
+        script = " ".join(mock_run.call_args[0][0])
+        self.assertIn('mount -t tmpfs tmpfs "$H"', script)
+        self.assertIn("mount -t tmpfs tmpfs /tmp", script)
+        self.assertIn("SB_SHADOW_OMIT=GEMINI.md", script)
 
 
 class RunCopilotTests(unittest.TestCase):
@@ -347,14 +430,36 @@ class RunCopilotTests(unittest.TestCase):
         ) as mock_run:
             result = llm_backends.run_copilot("my prompt", model=None, timeout=60)
         self.assertEqual(result, "text")
-        mock_run.assert_called_once_with(["copilot", "-p", "my prompt", "--silent"], 60)
+        mock_run.assert_called_once_with(
+            [
+                "copilot",
+                "-p",
+                "--silent",
+                "--deny-tool=write",
+                "--deny-tool=shell",
+                "--no-custom-instructions",
+                "my prompt",
+            ],
+            60,
+        )
 
     def test_35_empty_string_model_omits_flag(self) -> None:
         with patch.object(
             llm_backends, "run_backend_command", return_value="text"
         ) as mock_run:
             llm_backends.run_copilot("my prompt", model="", timeout=60)
-        mock_run.assert_called_once_with(["copilot", "-p", "my prompt", "--silent"], 60)
+        mock_run.assert_called_once_with(
+            [
+                "copilot",
+                "-p",
+                "--silent",
+                "--deny-tool=write",
+                "--deny-tool=shell",
+                "--no-custom-instructions",
+                "my prompt",
+            ],
+            60,
+        )
 
     def test_36_model_appends_flag(self) -> None:
         with patch.object(
@@ -362,7 +467,17 @@ class RunCopilotTests(unittest.TestCase):
         ) as mock_run:
             llm_backends.run_copilot("my prompt", model="claude-sonnet-4.6", timeout=60)
         mock_run.assert_called_once_with(
-            ["copilot", "-p", "my prompt", "--silent", "--model", "claude-sonnet-4.6"],
+            [
+                "copilot",
+                "-p",
+                "--silent",
+                "--deny-tool=write",
+                "--deny-tool=shell",
+                "--no-custom-instructions",
+                "--model",
+                "claude-sonnet-4.6",
+                "my prompt",
+            ],
             60,
         )
 
@@ -375,7 +490,7 @@ class RunPiTests(unittest.TestCase):
             result = llm_backends.run_pi("my prompt", model=None, timeout=60)
         self.assertEqual(result, "text")
         mock_run.assert_called_once_with(
-            ["pi", "-p", "--no-session", "--provider", "opencode-go", "my prompt"],
+            PI_ISOLATED + ["my prompt"],
             60,
         )
 
@@ -385,16 +500,7 @@ class RunPiTests(unittest.TestCase):
         ) as mock_run:
             llm_backends.run_pi("my prompt", model="kimi-k2.6", timeout=60)
         mock_run.assert_called_once_with(
-            [
-                "pi",
-                "-p",
-                "--no-session",
-                "--provider",
-                "opencode-go",
-                "--model",
-                "kimi-k2.6",
-                "my prompt",
-            ],
+            PI_ISOLATED + ["--model", "kimi-k2.6", "my prompt"],
             60,
         )
 
@@ -411,7 +517,7 @@ class RunPiTests(unittest.TestCase):
         self.assertIn("tool-call markup", str(cm.exception))
 
 
-class RunOpencodeTests(unittest.TestCase):
+class RunOpencodeTests(_ContainmentStubbed):
     def _run_command_returning(
         self, stdout: str, stderr: str = "", returncode: int = 0
     ) -> AbstractContextManager[object]:
@@ -439,33 +545,27 @@ class RunOpencodeTests(unittest.TestCase):
             return_value=(0, '{"type": "text", "part": {"text": "hi"}}\n', ""),
         ) as mock_run:
             llm_backends.run_opencode("prompt", model="claude-sonnet-4.6", timeout=60)
-        mock_run.assert_called_once_with(
-            [
-                "opencode",
-                "run",
-                "--auto",
-                "--format",
-                "json",
-                "-m",
-                "claude-sonnet-4.6",
-                "prompt",
-            ],
-            60,
-            retries=1,
-        )
+        argv = mock_run.call_args[0][0]
+        self.assertEqual(argv[argv.index("-m") + 1], "claude-sonnet-4.6")
+        self.assertEqual(argv[-1], "prompt")
 
     def test_39_no_model_argv(self) -> None:
+        """opencode always runs as the adversary agent -- that is its declared
+        tools mechanism -- and under containment, since it reads
+        ~/.claude/CLAUDE.md globally with no flag to stop it."""
         with patch.object(
             llm_backends,
             "_run_command",
             return_value=(0, '{"type": "text", "part": {"text": "hi"}}\n', ""),
         ) as mock_run:
             llm_backends.run_opencode("prompt", model=None, timeout=60)
-        mock_run.assert_called_once_with(
-            ["opencode", "run", "--auto", "--format", "json", "prompt"],
-            60,
-            retries=1,
-        )
+        argv, timeout = mock_run.call_args[0]
+        self.assertEqual(timeout, 60)
+        self.assertEqual(mock_run.call_args[1], {"retries": 1})
+        self.assertEqual(argv[:3], ["unshare", "-Urm", "--map-root-user"])
+        self.assertEqual(argv[argv.index("--agent") + 1], "adversary")
+        self.assertNotIn("-m", argv)
+        self.assertEqual(argv[-1], "prompt")
 
     def test_40_structured_error_event_raises_with_message(self) -> None:
         stdout = (

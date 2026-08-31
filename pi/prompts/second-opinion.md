@@ -8,10 +8,11 @@ edit the body template for shared wording or the per-harness parameter table
 for harness-specific wording, then regenerate -->
 
 All backend I/O goes through the `second_opinion` tool — never shell out to
-`agy`/`opencode`/`pi`/`copilot` directly. Two operations: `detect` lists which
-backends are present, `review` returns one critique. It is single-round: one
-call, one critique. The multi-round loop and plan revision are your job, not
-the script's.
+`agy`/`opencode`/`pi`/`copilot` directly. Two operations: `detect` reports each
+backend's presence AND whether it currently meets the isolation contract (with
+the reason when it does not), `review` returns one critique. It is
+single-round: one call, one critique. The multi-round loop and plan revision
+are your job, not the script's.
 
 Call the `second_opinion` tool. Action `detect` lists the available backends as
 JSON. Action `review` returns one critique of the plan at `planFile`,

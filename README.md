@@ -147,9 +147,7 @@ remove something.
   `second-opinion`, `spec`, `standup`, `to-tickets`) plus three
   model-invoked skills (`grill-me`, `second-opinion`, `spec`),
   `opencode/plugin/ruff-format-on-edit.ts` (formats and lint-fixes edited
-  Python), the global instructions link (`claude/CLAUDE.md` →
-  `~/.config/opencode/AGENTS.md` — opencode reads `AGENTS.md` and never
-  `CLAUDE.md`; see the instruction-file table below), and
+  Python), and
   `opencode.jsonc` (the bash permission policy, copy-once-and-report-drift
   same as Claude's `settings.json`): the shared workflow scripts
   (`dev_status.py`, `grill.py`, `second_opinion.py`, the drift/sync
@@ -273,7 +271,7 @@ context with tools forbidden:
 |---|---|---|---|
 | Claude Code | 2.1.251 | `CLAUDE.md` only — `AGENTS.md` is ignored even when no `CLAUDE.md` exists | cwd, plus a nested file **attached automatically** when it touches a file in that directory |
 | Pi | 0.84.4 | `AGENTS.md` preferred, `CLAUDE.md` when `AGENTS.md` is absent (`AGENTS.override.md` beats both) | cwd and its parents, at startup only |
-| opencode | 1.18.25 | `AGENTS.md` only — `CLAUDE.md` is never loaded | cwd up to the project root, plus `~/.config/opencode/AGENTS.md` |
+| opencode | 1.18.25 | project: `AGENTS.md` only, a project `CLAUDE.md` is never loaded; global: `~/.claude/CLAUDE.md` | cwd up to the project root, plus the global fallback above |
 | Copilot | 1.0.80 | `CLAUDE.md`, `GEMINI.md` and `AGENTS.md` — all of them | git root and cwd only |
 | agy | 1.1.22 | none at project level | global `~/.gemini/GEMINI.md` only |
 

@@ -476,23 +476,15 @@ def run_opencode(prompt: str, *, model_index: int | None = None) -> str:
     the practical mitigation (drops the practical failure rate to roughly
     4-10%).
     """
-    cmd = [
-        "opencode",
-        "run",
-        "--agent",
-        "adversary",
-        "--auto",
-        "--format",
-        "json",
-    ]
     model = _resolve_pooled_model(
         "SECOND_OPINION_OPENCODE_MODEL_POOL",
         "SECOND_OPINION_OPENCODE_MODEL",
         model_index,
     )
-    if model:
-        cmd += ["-m", model]
-    cmd.append(prompt)
+    # Built by llm_backends, not here. This function used to assemble its own
+    # argv, which is how it ended up as the only invocation path in the repo
+    # carrying the adversary agent while every other one ran unisolated.
+    cmd = llm_backends.build_isolated_command("opencode", prompt, model=model)
     _, stdout, stderr = _run_command(
         cmd,
         timeout=_resolve_timeout("SECOND_OPINION_OPENCODE_TIMEOUT_SECONDS"),
@@ -604,8 +596,18 @@ def backend_label(backend: str, *, model_index: int | None = None) -> str:
 
 
 def cmd_detect(args: argparse.Namespace) -> None:
-    """Handle ``detect``: print backend availability as a JSON object."""
-    print(json.dumps({b: shutil.which(b) is not None for b in BACKEND_PRIORITY}))
+    """Handle ``detect``: print backend presence AND contract eligibility.
+
+    Presence alone was misleading: an installed backend that cannot meet the
+    isolation contract is never used, so reporting it as simply available
+    invited the discovery to happen at the moment a critique was wanted rather
+    than before. Each entry carries ``present``, ``eligible`` and, when
+    ineligible, the ``reason``.
+
+    The legacy boolean shape is preserved under each backend's ``present``
+    key so existing callers keep a one-line migration.
+    """
+    print(json.dumps(llm_backends.eligibility_report(), indent=2))
 
 
 def cmd_review(args: argparse.Namespace) -> None:
