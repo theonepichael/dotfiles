@@ -100,7 +100,10 @@ remove something.
 
 - **`claude`** — installs Claude Code (`npm i -g @anthropic-ai/claude-code`)
   and its `~/.claude/*` wiring (`CLAUDE.md`, `commands/*.md`,
-  `settings.json` with its SessionStart hooks).
+  `settings.json` with its SessionStart hooks). The commands are
+  `backlog-item`, `dashboard`, `draft-voice`, `grill-me`, `make-skill`,
+  `second-opinion`, `skill-map`, `spec`, `standup` and `to-tickets`; the
+  other harnesses port all but `draft-voice` and `skill-map`.
 - **`copilot`** — installs [GitHub Copilot CLI](https://github.com/github/copilot-cli)
   (`npm i -g @github/copilot`) and its wiring:
   - **Shared instructions file**: `claude/CLAUDE.md` is symlinked to *both*
@@ -113,14 +116,21 @@ remove something.
     git-log/watchcommit lines). The hook schema's handler is bash-only as
     wired here, so `links.toml` links it on macOS/Linux only; it is
     deliberately not installed on Windows.
-  - **`copilot/skills/<name>/SKILL.md`**: ports of all 7 Claude Code commands
-    as skills (dashboard, standup, second-opinion, grill-me, make-skill,
-    backlog-item, spec). Copilot skills fire when their `description`
-    frontmatter matches the conversation, and can also be invoked by typing
-    `/<skill-name>` (e.g. `/dashboard`) — confirmed live on Copilot CLI
-    1.0.79 (see `copilot/CLAUDE_CODE_PARITY.md`). `second-opinion` and
-    `grill-me` also drop `AskUserQuestion` (Copilot has no structured
-    multi-choice prompt) in favor of plain conversational back-and-forth.
+  - **`copilot/skills/<name>/SKILL.md`**: ports of the Claude Code commands
+    as skills — `backlog-item`, `dashboard`, `grill-me`, `make-skill`,
+    `second-opinion`, `spec`, `standup`, `to-tickets`. (`draft-voice` and
+    `skill-map` are Claude Code only.) Copilot skills fire when their
+    `description` frontmatter matches the conversation, and can also be
+    invoked by typing `/<skill-name>` (e.g. `/dashboard`) — confirmed live
+    on Copilot CLI 1.0.79 (see `copilot/CLAUDE_CODE_PARITY.md`).
+    `second-opinion` and `grill-me` also drop `AskUserQuestion` (Copilot has
+    no structured multi-choice prompt) in favor of plain conversational
+    back-and-forth.
+  - **`copilot/hooks/post-tool-use.json`**: a `postToolUse` hook that runs
+    `ruff format` then `ruff check --fix` on any `.py` file Copilot creates
+    or edits, scoped to the nearest ancestor holding a `pyproject.toml`.
+    Bash-only like the `sessionStart` hook, so `links.toml` also links it on
+    macOS/Linux only.
   - **`copilot/aliases.zsh`** (symlinked to `~/.copilot_aliases`, sourced by
     `.zshrc` only when present): `copilot-work` launches `copilot` with
     `python3` shell calls and read-only `git` commands pre-approved.
@@ -132,10 +142,14 @@ remove something.
   - **Deliberately excluded**: Gmail/Calendar/Drive MCP servers are not
     configured under Copilot, per the work profile's
     no-personal-data-on-work-hardware rule.
-- **`opencode`** — wires `~/.config/opencode/tui.json`, the seven
-  user-typed commands (`dashboard`, `grill-me`, `make-skill`,
-  `second-opinion`, `spec`, `standup`, `backlog-item`) plus three
-  model-invoked skills (`grill-me`, `second-opinion`, `spec`), and
+- **`opencode`** — wires `~/.config/opencode/tui.json`, the user-typed
+  commands (`backlog-item`, `dashboard`, `grill-me`, `make-skill`,
+  `second-opinion`, `spec`, `standup`, `to-tickets`) plus three
+  model-invoked skills (`grill-me`, `second-opinion`, `spec`),
+  `opencode/plugin/ruff-format-on-edit.ts` (formats and lint-fixes edited
+  Python), the global instructions link (`claude/CLAUDE.md` →
+  `~/.config/opencode/AGENTS.md` — opencode reads `AGENTS.md` and never
+  `CLAUDE.md`; see the instruction-file table below), and
   `opencode.jsonc` (the bash permission policy, copy-once-and-report-drift
   same as Claude's `settings.json`): the shared workflow scripts
   (`dev_status.py`, `grill.py`, `second_opinion.py`, the drift/sync
@@ -181,37 +195,58 @@ remove something.
   (Google's Gemini-backed CLI); the binary itself is assumed already
   installed, same as `opencode` — this script only wires its config:
   - **Shared instructions file**: `claude/CLAUDE.md` is symlinked to
-    `~/.gemini/GEMINI.md`, agy's global-rules path (no `CLAUDE.md` fallback
-    like opencode has, so it needs a real link of its own).
-  - **`agy/skills/<name>/SKILL.md`**: ports of the dashboard, standup,
-    second-opinion, grill-me, make-skill, and spec skills (`backlog-item`
-    not yet ported), symlinked into `~/.gemini/antigravity-cli/skills/<name>/SKILL.md`
-    — agy's current global skills path. agy skills fire on description match
-    and, as of agy 1.1.12, also expand typed `/<skill-name>` invocations
-    (probed live; see `agy/CLAUDE_CODE_PARITY.md`). agy has no
-    `AskUserQuestion`-style prompt, so the ported skills use plain
-    conversational back-and-forth for judgment calls.
+    `~/.gemini/GEMINI.md`, agy's global-rules path. agy reads no `CLAUDE.md`
+    anywhere, so it needs a real link of its own.
+  - **`agy/skills/<name>/SKILL.md`**: ports of `backlog-item`, `dashboard`,
+    `grill-me`, `make-skill`, `second-opinion`, `spec`, `standup` and
+    `to-tickets`, symlinked into
+    `~/.gemini/antigravity-cli/skills/<name>/SKILL.md` — agy's current
+    global skills path. agy skills fire on description match and, as of agy
+    1.1.12, also expand typed `/<skill-name>` invocations (probed live; see
+    `agy/CLAUDE_CODE_PARITY.md`). agy has no `AskUserQuestion`-style prompt,
+    so the ported skills use plain conversational back-and-forth for
+    judgment calls.
+  - **`agy/hooks.json`** plus **`agy/hooks/agy-elapsed.js`**: a `PostToolUse`
+    hook that runs `ruff format` and `ruff check --fix` on edited Python,
+    and the status-line elapsed-time script.
   - agy has no `SessionStart`-equivalent hook event, so there's no
     auto-render-dashboard wiring for it, unlike Claude Code and Copilot.
+  - agy loads **no project-level instruction file at all** — not
+    `GEMINI.md`, not `AGENTS.md`, not `CLAUDE.md` (probed against agy 1.1.22,
+    2026-08-30). Only the global `~/.gemini/GEMINI.md` link reaches it.
   - See `agy/CLAUDE_CODE_PARITY.md` for the full verification notes.
 - **`pi`** — wires config for [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
   (`@earendil-works/pi-coding-agent`); the binary itself is assumed already
   installed, same as `opencode`/`agy` — this script only wires its config:
   - **Shared instructions file**: `claude/CLAUDE.md` is symlinked to
     `~/.pi/agent/AGENTS.md` — Pi looks specifically under `~/.pi/agent/`
-    for its global instructions (no fallback to `~/.claude/CLAUDE.md` like
-    opencode has), so it needs a real link of its own, same as agy's
-    `GEMINI.md` link.
-  - **`pi/prompts/*.md`** (8 files: `dashboard`, `grill-me`, `make-skill`,
-    `second-opinion`, `spec`, `standup`, `backlog-item`, `to-tickets`),
+    for its global instructions, with no fallback to `~/.claude/CLAUDE.md`,
+    so it needs a real link of its own — same as agy's `GEMINI.md` link and
+    opencode's `AGENTS.md` link.
+  - **`pi/prompts/*.md`** (`backlog-item`, `dashboard`, `grill-me`,
+    `make-skill`, `second-opinion`, `spec`, `standup`, `to-tickets`),
     symlinked into `~/.pi/agent/prompts/*.md` — Pi's command layer
     ("prompt templates"), invoked as `/name`.
-  - **`pi/extensions/permission-gate.ts`**,
-    **`pi/extensions/ruff-format-on-edit.ts`**, and
-    **`pi/extensions/guard-rails.ts`** (rm -rf/sudo confirmation gates,
-    blocks `git commit` on `main`/`master`, protects `.env`/`.git`/
-    `node_modules` from writes), symlinked into `~/.pi/agent/extensions/*.ts`
-    — all three live-tested against a real Pi session.
+  - **`pi/extensions/*.ts`**, symlinked into `~/.pi/agent/extensions/*.ts`.
+    Three shape the session itself — `permission-gate.ts`,
+    `ruff-format-on-edit.ts`, and `guard-rails.ts` (rm -rf/sudo confirmation
+    gates, blocks `git commit` on `main`/`master`, protects `.env`/`.git`/
+    `node_modules` from writes). `custom-footer.ts` and
+    `philosophy-header.ts` adjust the UI. The rest expose this repo's
+    workflow scripts as native Pi tools: `dev-status-tool.ts`,
+    `grill-tool.ts`, `second-opinion-tool.ts`, `standup-tool.ts`,
+    `to-tickets-tool.ts` and `vitals-promotion-tool.ts` wrap
+    `dev_status.py`, `grill.py`, `second_opinion.py`, `standup.py`,
+    `to_tickets_runner.py` and `vitals_promotion.py` respectively.
+    `question-tool.ts` supplies the structured multi-choice prompt Pi
+    otherwise lacks, and `delegate-tool.ts` hands a task off to another
+    harness's executor. Every extension needs its own `links.toml` entry or
+    it is never installed — `test/test_pi_extension_links.py` enforces that.
+  - **A TypeScript toolchain unique to this directory** — `bun`, `oxlint`,
+    `prettier` and `tsc`, with specs under `pi/test/`. Run from `pi/` via
+    `bun run test|typecheck|lint|format:check`; `test/test_pi_ts_checks.py`
+    drives all four from the Python suite, and skips them when
+    `pi/node_modules` is missing. See `pi/AGENTS.md`.
   - **No `pi/skills/` directory** — `pi/settings.json`'s `skills` array
     points straight at `agy/skills/` instead of duplicating a skills tree.
   - **`pi/settings.json`**, copy-once-and-report-drift same as Claude's
@@ -225,6 +260,37 @@ remove something.
 The shared `~/.claude/scripts/*.py` (dev_status, grill, second_opinion,
 standup, etc.) are symlinked regardless of which harness(es) are selected —
 all five harnesses' skills/hooks call these same paths.
+
+### Instruction files: which harness reads what
+
+No single filename reaches all five. Measured 2026-08-30 against the
+versions named, by running each harness non-interactively in a fixture git
+repo holding an `AGENTS.md` and a `CLAUDE.md` at both the root and a
+subdirectory, each with a distinct token, and asking which tokens were in
+context with tools forbidden:
+
+| Harness | Version | Filenames it loads | Where it looks |
+|---|---|---|---|
+| Claude Code | 2.1.251 | `CLAUDE.md` only — `AGENTS.md` is ignored even when no `CLAUDE.md` exists | cwd, plus a nested file **attached automatically** when it touches a file in that directory |
+| Pi | 0.84.4 | `AGENTS.md` preferred, `CLAUDE.md` when `AGENTS.md` is absent (`AGENTS.override.md` beats both) | cwd and its parents, at startup only |
+| opencode | 1.18.25 | `AGENTS.md` only — `CLAUDE.md` is never loaded | cwd up to the project root, plus `~/.config/opencode/AGENTS.md` |
+| Copilot | 1.0.80 | `CLAUDE.md`, `GEMINI.md` and `AGENTS.md` — all of them | git root and cwd only |
+| agy | 1.1.22 | none at project level | global `~/.gemini/GEMINI.md` only |
+
+The opencode and Claude Code rows are each corroborated in the binary
+itself, and the naming convention below depends only on those two. The
+Copilot and agy rows rest on a single probe apiece; nothing depends on them.
+
+This is why every directory in this repo that carries agent instructions
+holds a real `AGENTS.md` plus a `CLAUDE.md` symlink pointing at it —
+`AGENTS.md` is the only name opencode reads, `CLAUDE.md` the only name
+Claude Code reads, and a symlink makes them the same bytes. See `AGENTS.md`
+at the repo root.
+
+Note the second column of consequences: only Claude Code picks up a nested
+file on its own. Running any other harness from the repo root leaves the
+per-directory files unread, which is why the root `AGENTS.md` carries a
+one-line index of each directory's main hazard.
 
 The six `second-opinion` skill/command copies listed above are generated
 from one canonical body template (`templates/second_opinion.md.tmpl`) by
@@ -665,13 +731,19 @@ session, no separate config needed.
 - **Tests**: script tests live in `claude/scripts/test_*.py` alongside the
   scripts; they are not deployed to `~/.claude`
 - **installer tests**, two tiers:
-  - *fast* — `test/test_install.py` (pytest) covers argument validation,
-    the symlink engine, the history/rollback engine, and the copy-once +
-    drift logic against a throwaway `HOME` with every subprocess stubbed;
-    `test/test_lint.py` gates the pinned Ruff configuration. Everything —
-    script tests and installer tests — runs from the repo root with
-    `uv run pytest` (pytest is pinned in the uv dev dependency group);
-    they touch nothing real.
+  - *fast* — pytest suites under `test/`. `test_install.py` covers argument
+    validation, the symlink engine, the history/rollback engine and the
+    copy-once + drift logic; `test_depart*.py` cover departure mode;
+    `test_lint.py` gates the pinned Ruff configuration; and the rest guard
+    cross-harness invariants (`test_pi_extension_links.py`,
+    `test_pi_ts_checks.py`, `test_second_opinion_docs.py`,
+    `test_agents_md_links.py`, `test_conftest_guards.py`,
+    `test_agy_elapsed.py`, `test_watchcommit_repo_default.py`).
+    Everything — script tests and installer tests — runs from the repo root
+    with `uv run pytest` (pytest is pinned in the uv dev dependency group);
+    they touch nothing real, because the repo-root `conftest.py` sandboxes
+    `HOME` and blocks unmarked subprocess calls and production-path writes
+    for the whole suite. See `test/AGENTS.md`.
   - *lifecycle* — `test/run.sh` runs `test/scenarios.sh` (fresh install,
     rollback, backup-and-restore, work profile + guard, `--force`,
     argument errors) inside throwaway Docker containers, one Ubuntu (apt

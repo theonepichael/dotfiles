@@ -18,7 +18,7 @@ directories in this repo, and get symlinked into `~/.config/opencode/` by
 
 | Claude Code behavior | opencode equivalent | Notes |
 |---|---|---|
-| `CLAUDE.md` project/global instructions | Reads `CLAUDE.md` (project) and `~/.claude/CLAUDE.md` (global) as **legacy fallbacks** automatically | Our existing global `~/.claude/CLAUDE.md` is already being picked up — nothing to port |
+| `CLAUDE.md` project/global instructions | Reads **`AGENTS.md` only** — from the current directory up to the project root, plus one in its own config directory. No `CLAUDE.md` fallback of any kind. | **Corrected 2026-08-30, see below.** Needs a real link of its own, now wired in `links.toml`. |
 | `Esc` interrupts current turn | `session_interrupt: escape` (default) | Exact match |
 | `Shift+Tab` cycles Default→AcceptEdits→Plan→Auto | `Tab` / `Shift+Tab` → `agent_cycle` / `agent_cycle_reverse`, cycles Build ↔ Plan | Same gesture, but only 2 states by default vs Claude Code's 4 — see §3 |
 | `Ctrl+G` opens external editor | `editor_open: <leader>e` (default) | Same feature, different key — rebind if wanted, see §4 |
@@ -26,6 +26,31 @@ directories in this repo, and get symlinked into `~/.config/opencode/` by
 | `Ctrl+V` paste (incl. images) | `input_paste: ctrl+v` (default) | Works with opencode-vision (installed separately as a plugin) |
 | `claude --continue` / `--resume` | `opencode run --continue` / `-c`, `--session`/`-s <id>` | Same concept, different flag names |
 | Subagent naming (Explore, general-purpose) | Built-in subagents: `general`, `explore`, `scout` | opencode's `explore` is close to Claude Code's `Explore` agent already |
+
+### Correction, 2026-08-30 — the instruction-file row was wrong
+
+The row above previously read: *"Reads `CLAUDE.md` (project) and
+`~/.claude/CLAUDE.md` (global) as legacy fallbacks automatically — our
+existing global `~/.claude/CLAUDE.md` is already being picked up, nothing to
+port."* That was compiled from opencode's docs on 2026-07-24 and used as the
+stated reason `links.toml` managed no `AGENTS.md` entry for opencode.
+
+It does not hold against opencode 1.18.25. Probed by running `opencode run`
+in a fixture git repo holding an `AGENTS.md` and a `CLAUDE.md` at both the
+root and a subdirectory, each with a distinct token, and asking the model
+which tokens were in its context with tools forbidden: only the two
+`AGENTS.md` tokens came back. The binary's instruction loader confirms it —
+it walks up from the current directory targeting `AGENTS.md` alone, plus an
+`AGENTS.md` in its own config directory, with no `CLAUDE.md` target
+anywhere.
+
+Consequence while this stood: opencode loaded **no instructions at all** on
+this machine — no global file (nothing existed at
+`~/.config/opencode/AGENTS.md`) and no per-repo file (this repo's root
+instructions were named `CLAUDE.md`). Both halves are now fixed —
+`links.toml` links `claude/CLAUDE.md` to `~/.config/opencode/AGENTS.md`, and
+the repo root carries a real `AGENTS.md`. The link takes effect on the next
+`install.sh --harness=opencode` run.
 
 ---
 
