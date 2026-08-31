@@ -60,13 +60,13 @@ from pathlib import Path
 
 import cli_common
 
-HARNESS_DIRS = ("claude", "copilot", "opencode", "agy")
+HARNESS_DIRS = ("claude", "copilot", "opencode", "agy", "pi")
 SCRIPTS_DIR = "claude/scripts"
 ROOT_ENTRYPOINTS = ("install.py", "depart.py")
 OUTPUT_NAME = "INTERFACES.md"
 
 PREAMBLE = """\
-Scope: `claude/`, `copilot/`, `opencode/`, `agy/`, the shared scripts under
+Scope: `claude/`, `copilot/`, `opencode/`, `agy/`, `pi/`, the shared scripts under
 `claude/scripts/` that `links.toml` installs into `~/.claude/scripts/`, and the
 repo-root installer entrypoints those harnesses are provisioned by.
 
@@ -1099,6 +1099,7 @@ def render_command_matrix(repo_root: Path, links: LinkTable) -> list[str]:
         "copilot": ["copilot/skills/{name}/SKILL.md"],
         "opencode": ["opencode/command/{name}.md", "opencode/skills/{name}/SKILL.md"],
         "agy": ["agy/skills/{name}/SKILL.md"],
+        "pi": ["pi/skills/{name}/SKILL.md", "pi/prompts/{name}.md"],
     }
     names = sorted(
         path.stem for path in (repo_root / "claude" / "commands").glob("*.md")

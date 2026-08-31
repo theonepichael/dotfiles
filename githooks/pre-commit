@@ -1,12 +1,36 @@
 #!/usr/bin/env bash
-# Block a commit that lets a skill/command doc drift from the backing
-# script's real CLI contract (dev_status.py/grill.py/standup.py and any
-# other script gen_interfaces.py discovers), or that leaves INTERFACES.md
-# itself stale. See claude/scripts/gen_interfaces.py --check for the two
-# distinct exit codes this checks for (1 = stale file, 3 = doc drift).
+# Block a commit that leaves a generated skill/command doc stale relative to
+# its template (gen_skills.py: dashboard/grill-me/backlog-item/make-skill;
+# gen_second_opinion.py: second-opinion), or that lets a skill/command doc
+# drift from the backing script's real CLI contract (dev_status.py/grill.py/
+# standup.py and any other script gen_interfaces.py discovers), or that
+# leaves INTERFACES.md itself stale. gen_skills.py/gen_second_opinion.py run
+# first so a forgotten regeneration reports as that, not as a confusing
+# downstream CLI-contract-drift error from gen_interfaces.py reading stale
+# generated content. See claude/scripts/gen_interfaces.py --check for its
+# two distinct exit codes (1 = stale file, 3 = doc drift).
 set -uo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
+
+output="$(python3 "$repo_root/claude/scripts/gen_skills.py" --check --repo-root "$repo_root" 2>&1)"
+status=$?
+if [ "$status" -ne 0 ]; then
+    echo "$output" >&2
+    echo "" >&2
+    echo "pre-commit: a generated skill doc is stale -- run gen_skills.py, then re-stage and commit." >&2
+    exit "$status"
+fi
+
+output="$(python3 "$repo_root/claude/scripts/gen_second_opinion.py" --check --repo-root "$repo_root" 2>&1)"
+status=$?
+if [ "$status" -ne 0 ]; then
+    echo "$output" >&2
+    echo "" >&2
+    echo "pre-commit: a generated second-opinion doc is stale -- run gen_second_opinion.py, then re-stage and commit." >&2
+    exit "$status"
+fi
+
 output="$(python3 "$repo_root/claude/scripts/gen_interfaces.py" --check --repo-root "$repo_root" 2>&1)"
 status=$?
 
