@@ -825,7 +825,8 @@ def run_pi(prompt: str, *, model: str | None, timeout: float) -> str:
     dev_status.py's recap prose). Always targets the ``opencode-go`` gateway
     provider — the only provider confirmed authenticated on this machine
     (``pi auth check --provider opencode-go --json`` -> ``ready``) and the
-    one every configured model pool entry resolves through.
+    one every configured model pool entry resolves through; no alternative
+    provider is configured in ``~/.pi/agent/models.json`` on this machine.
 
     Unlike opencode's ``adversary`` agent (which sets ``permission: deny``
     so a swapped-in model can only return prose), no equivalent
@@ -834,6 +835,16 @@ def run_pi(prompt: str, *, model: str | None, timeout: float) -> str:
     below is the only backstop against a model leaking an attempted tool
     call as text; it cannot catch Pi actually taking a real tool action
     instead of returning a critique.
+
+    No retry on timeout (unlike :func:`run_opencode`): telemetry
+    (2026-08-31/09-01, ``~/.claude/data/backend_calls.jsonl``) showed a 3/3
+    failure rate on realistic review prompts (>14KB) through this same
+    ``opencode-go`` gateway — a deterministic payload-size stall (~14-20KB
+    band), not opencode's intermittent 20-33% flake. A retry there has real
+    odds of succeeding on the second attempt; here it would only double the
+    wasted wall time (120s -> 240s) before falling through to the next
+    backend, with no expected gain in success rate. Small prompts (<1KB)
+    succeed in ~3s, so this only bites realistic-sized review prompts.
 
     Raises:
         BackendError: If the process exits nonzero or produces no output
