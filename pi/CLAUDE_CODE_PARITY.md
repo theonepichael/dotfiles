@@ -36,11 +36,11 @@ install, not from search-engine summaries.
   explicitly supports pointing at *another* harness's skill directory via
   the `skills` setting — its own docs give `~/.claude/skills` as the
   worked example. **All 8 skills are generated into `pi/skills/`** (7 by
-  `gen_skills.py`, `second-opinion` by `gen_second_opinion.py`), and
-  `pi/settings.json`'s `skills` array lists `pi/skills/` followed by
-  `agy/skills/` as a fallback — Pi's first-found-wins collision rule ensures
-  `pi/skills/` wins for all 8, fully shadowing `agy/skills/`. Skills
-  register as `/skill:name` commands
+  `gen_skills.py`, `second-opinion` by `gen_second_opinion.py`) and found
+  purely through Pi's default scan of `~/.pi/agent/skills/` — symlinked
+  from `pi/skills/` — since `pi/settings.json` carries no `skills` key (see
+  §3 for why an explicit `pi/skills` entry there is wrong, not just
+  redundant). Skills register as `/skill:name` commands
   (`enableSkillCommands`, default `true`) and are also model-invoked from
   an `<available_skills>` XML block in the system prompt.
 - **Extensions**: TypeScript modules, auto-discovered from
@@ -107,25 +107,36 @@ have:
   (§1); the only gate is whatever `permission-gate.ts` (§5) itself denies
   or blocks.
 
-## 3. Skills — 8 generated skills in `pi/skills/`, `agy/skills/` fallback shadowed
+## 3. Skills — 8 generated skills in `pi/skills/`, found via Pi's default scan
 
 `pi/skills/` holds all 8 generated skills (`backlog-item`, `dashboard`,
 `grill-me`, `make-skill`, `spec`, `standup`, `to-tickets` via `gen_skills.py`,
 and `second-opinion` via `gen_second_opinion.py`). `pi/settings.json`
 (copy-once like `claude/settings.json` — Pi rewrites parts of this file
 live via `/settings`, `/model` Ctrl+S, etc., same detach risk that file's
-comment warns about) sets:
+comment warns about) carries **no** `skills` key:
 
 ```json
 {
-  "skills": ["/home/yanil/dotfiles/pi/skills", "/home/yanil/dotfiles/agy/skills"]
+  "lastChangelogVersion": "0.84.4"
 }
 ```
 
-Pi's documented collision rule (`docs/skills.md`: "name collisions... warn
-and keep the first skill found") ensures `pi/skills/` wins for all 8
-skills, fully shadowing `agy/skills/`. `agy/skills/` remains in the list
-purely as a legacy fallback for any future skill authored under agy only.
+All 8 skills are found purely through Pi's default, always-on scan of
+`~/.pi/agent/skills/`, which `links.toml` (§ below) symlinks straight to
+`pi/skills/`. An earlier version of this file explicitly listed
+`"skills": ["/home/yanil/dotfiles/pi/skills", "/home/yanil/dotfiles/agy/skills"]`
+— that was wrong, not just redundant: Pi's `skills` config is *additive* to
+the default scan, not a replacement for it (`docs/skills.md`), so listing
+`pi/skills` a second time made every one of the 8 skills resolve at two
+different absolute paths (the symlink target from the default scan, plus
+the explicit array entry) and collide with itself — a repo-wide collision
+warning on every skill. Dropping the `skills` key entirely is the fix;
+never reintroduce an explicit `pi/skills` entry. The `agy/skills` fallback
+for a hypothetical future agy-only skill is gone as a side effect; if one
+is ever needed, it takes its own dedicated entry (`"skills": ["agy/skills"]`,
+never paired with `pi/skills`) so the same double-discovery bug doesn't
+recur.
 
 `links.toml` manages `pi/skills` with a `dir = true` row that automatically
 symlinks all subdirectories under `pi/skills/` into `~/.pi/agent/skills/`.

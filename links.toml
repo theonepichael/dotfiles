@@ -591,9 +591,12 @@ harness = "agy"
 # (dashboard, grill-me, backlog-item, make-skill, spec, standup, to-tickets)
 # and claude/scripts/gen_second_opinion.py (second-opinion). pi/settings.json
 # (copy-once seeded by install.py, not a plain link; see the top-of-file
-# comment above) lists this directory *and* agy/skills/ in its `skills` setting:
-# Pi's first-found-wins collision rule ensures pi/skills/ wins for all 8,
-# fully shadowing agy/skills/. See pi/CLAUDE_CODE_PARITY.md §3.
+# comment above) has no `skills` key -- all 8 are found purely through Pi's
+# default, always-on scan of ~/.pi/agent/skills/, which this dir=true row
+# symlinks straight to pi/skills/. An earlier `skills` array that listed
+# pi/skills explicitly caused double-discovery (every skill resolving at
+# two paths and colliding with itself); never reintroduce it. See
+# pi/CLAUDE_CODE_PARITY.md §3.
 
 [[link]]
 src = "claude/global-instructions.md"

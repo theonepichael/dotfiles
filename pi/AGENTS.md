@@ -57,9 +57,18 @@ or `pi/test/` would start failing `format:check`. Leave them where they are.
   section — copilot/agy are best-effort and don't get new generated
   skills). Edit the template or the params tables, then regenerate.
   Hand-edits are overwritten.
-- `pi/settings.json` is a copy-once seed. Its `skills` array lists
-  `pi/skills` (all 8 generated skills above) **and** `agy/skills`, listed
-  second, purely as a legacy fallback — Pi's own docs (`docs/skills.md`)
-  document that a name collision across skill directories "warns and keeps
-  the first skill found," so `pi/skills` always wins and `agy/skills` has
-  no effect on any skill name `pi/skills` already covers.
+- `pi/settings.json` is a copy-once seed. It carries **no** `skills` key.
+  All 8 generated skills above are found purely through Pi's default,
+  always-on scan of `~/.pi/agent/skills/`, which `links.toml`'s `dir = true`
+  row symlinks straight to `pi/skills/`. An earlier version of this file
+  explicitly listed `"skills": ["pi/skills", "agy/skills"]` — that was
+  wrong, not just redundant: Pi's `skills` config is *additive* to the
+  default scan, not a replacement for it (`docs/skills.md`), so listing
+  `pi/skills` a second time made every one of the 8 skills resolve at two
+  different absolute paths (the symlink target from the default scan, plus
+  the explicit array entry) and collide with itself. Dropping the `skills`
+  key entirely is the fix — never reintroduce an explicit `pi/skills`
+  entry. The `agy/skills` fallback for a hypothetical future agy-only
+  skill is gone as a side effect of that fix; if one is ever needed, it
+  takes its own dedicated entry (`"skills": ["agy/skills"]`, never paired
+  with `pi/skills`) so the same double-discovery bug doesn't recur.
