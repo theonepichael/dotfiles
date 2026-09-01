@@ -72,6 +72,10 @@ def runtime_key(root: Path) -> str:
     return f"runtime:{root}"
 
 
+def gitconfig_key(name: str) -> str:
+    return f"gitconfig:{name}"
+
+
 def key_type(key: str) -> str:
     """Return the ``type`` half of an ownership key string."""
     type_, _, _ = key.partition(":")
@@ -1365,4 +1369,51 @@ def classify_service(
         BUCKET_DRIFTED,
         None,
         "service state changed since baseline in an unexpected way",
+    )
+
+
+# ── global git config (core.hooksPath) ────────────────────────────────────
+
+
+def build_gitconfig_record(value: str | None) -> dict[str, object]:
+    """Build a ``gitconfig:`` record from an already-read global config value."""
+    if value is None:
+        return {"state": STATE_ABSENT}
+    return {"state": STATE_PRESENT, "value": value}
+
+
+def classify_gitconfig(
+    recorded: dict[str, object] | None, live: dict[str, object], managed_value: str
+) -> Classification:
+    """Classify a single global git config key this installer manages.
+
+    Same conservative principle as :func:`classify_service`: the only
+    ``owned`` case is baseline recording something other than
+    ``managed_value`` (or absent) and live now showing exactly
+    ``managed_value`` -- this installer's own
+    ``install_global_git_hooks_path`` having set it. Anything else (someone
+    else set the same value independently, or the value drifted to a third
+    value outside this installer) is left ``drifted``/``unresolved`` rather
+    than guessed at.
+    """
+    if recorded is None:
+        return Classification(
+            BUCKET_UNRESOLVED, None, "no baseline record for this key"
+        )
+    if live.get("state") == STATE_UNKNOWN:
+        return Classification(
+            BUCKET_UNRESOLVED, None, "current value could not be read"
+        )
+    if _values_equal(recorded, live):
+        return Classification(BUCKET_PRESERVED, None, "unchanged since baseline")
+    if live.get("state") == STATE_PRESENT and live.get("value") == managed_value:
+        return Classification(
+            BUCKET_OWNED,
+            ACTION_RESTORE,
+            "set by this installer, differed at baseline",
+        )
+    return Classification(
+        BUCKET_DRIFTED,
+        None,
+        "changed since baseline, not to this installer's managed value",
     )

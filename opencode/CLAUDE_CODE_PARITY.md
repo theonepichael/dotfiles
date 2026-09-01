@@ -472,3 +472,13 @@ surfaced on this harness — a `warn` verdict degrades to a silent allow. This
 is a real gap, not an oversight: Claude Code has `additionalContext`, Pi has
 `ctx.ui.notify`, agy can return `decision: allow` with a `reason`, and
 opencode has no equivalent.
+
+**Bash-family payload, confirmed live 2026-09-01** the same way (a
+throwaway `tool.execute.before` plugin dumping raw `input`/`output`, run
+against a real `opencode run --auto` bash call):
+
+    input  = {tool: "bash", sessionID, callID}
+    output = {args: {command}}
+
+No `cwd` field, same as the write-family payload — the guard-rails plugin
+uses `process.cwd()` for the bash-family call.

@@ -104,10 +104,19 @@ async function currentGitBranch(pi: ExtensionAPI, cwd: string): Promise<string |
   return null;
 }
 
-// R2/R3 (main-checkout writes, stale worktree base) live in
-// claude/scripts/guard_rails.py so all five harnesses share one source of
-// truth. The rm -rf / sudo / protected-path / git-commit rules above stay
-// here: they need ctx.ui.confirm(), which a subprocess cannot do.
+// R2/R3 (main-checkout writes, stale worktree base) and the bash-family
+// core.hooksPath-override companion check live in claude/scripts/
+// guard_rails.py so all five harnesses share one source of truth. The rm -rf
+// / sudo / protected-path / git-commit rules above stay here: they need
+// ctx.ui.confirm(), which a subprocess cannot do. The git-commit-on-main
+// rule above is the same proven-bypassable shell-string parser this item
+// replaced with a real git hook for every other harness -- it stays here,
+// unmodified, as a non-authoritative accidental-catch layer (see
+// meta-git-commit-main-guard-mechanism's spec: no anchoring choice avoids
+// trading a bypass for a false positive, so it isn't worth trying to fix).
+// The companion check's own known gaps (git commit -n not checked, no full
+// shell-evaluation of .git/config writes) are documented on
+// evaluate_bash_override's docstring in guard_rails.py.
 type SharedVerdict = { decision: "allow" | "deny" | "warn"; reason?: string };
 
 async function sharedGuard(
@@ -126,6 +135,38 @@ async function sharedGuard(
         path.dirname(filePath),
         "--path",
         filePath,
+      ],
+      { timeout: 5000 },
+    );
+    if (result.code !== 0) return null;
+    return JSON.parse(result.stdout) as SharedVerdict;
+  } catch {
+    // Fail open: a guard that cannot answer must not block the loop.
+    return null;
+  }
+}
+
+// Bash-family companion check (core.hooksPath override/redirect, --no-verify,
+// direct .git/config writes) -- see claude/scripts/guard_rails.py's module
+// docstring for the full rule. Only fires on a protected branch; everywhere
+// else guard_rails.py itself allows without even needing the git-commit
+// blocking logic above, since the two checks are independent.
+async function sharedBashGuard(
+  pi: ExtensionAPI,
+  cwd: string,
+  command: string,
+): Promise<SharedVerdict | null> {
+  try {
+    const result = await pi.exec(
+      "python3",
+      [
+        `${process.env.HOME}/.claude/scripts/guard_rails.py`,
+        "--tool",
+        "bash",
+        "--cwd",
+        cwd,
+        "--command",
+        command,
       ],
       { timeout: 5000 },
     );
@@ -183,6 +224,11 @@ export default function (pi: ExtensionAPI) {
             reason: `git commit blocked on '${branch}' branch. House policy: never commit directly to main. Use a worktree or create a feature branch.`,
           };
         }
+      }
+
+      const bashVerdict = await sharedBashGuard(pi, ctx.cwd, command);
+      if (bashVerdict?.decision === "deny") {
+        return { block: true, reason: bashVerdict.reason ?? "Blocked by guard-rails" };
       }
 
       return undefined;

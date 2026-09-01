@@ -18,6 +18,38 @@ export const GuardRails: Plugin = async () => {
   return {
     "tool.execute.before": async (input: { tool?: string }, output: { args?: Record<string, unknown> }) => {
       const tool = input?.tool
+
+      if (tool === "bash") {
+        // No cwd field in this payload (confirmed live 2026-09-01, same
+        // probe technique as the write-family payload below) -- opencode's
+        // plugin runs in-process, so process.cwd() is the session's cwd.
+        const command = output?.args?.command
+        if (typeof command !== "string" || !command) return
+
+        let bashVerdict: Verdict
+        try {
+          const { stdout } = await run(
+            "python3",
+            [
+              `${process.env.HOME}/.claude/scripts/guard_rails.py`,
+              "--tool", "bash",
+              "--cwd", process.cwd(),
+              "--command", command,
+            ],
+            { timeout: 5000 },
+          )
+          bashVerdict = JSON.parse(stdout)
+        } catch {
+          // Fail open: a guard that cannot answer must not block the loop.
+          return
+        }
+
+        if (bashVerdict.decision === "deny") {
+          throw new Error(bashVerdict.reason || "Blocked by guard-rails")
+        }
+        return
+      }
+
       if (tool !== "edit" && tool !== "write") return
       const filePath = output?.args?.filePath
       if (typeof filePath !== "string" || !filePath) return

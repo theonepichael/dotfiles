@@ -34,6 +34,13 @@ class NormalizeToolTests(unittest.TestCase):
         for name in ("Bash", "bash", "run_command", "Read", "", "Glob"):
             self.assertNotEqual(guard_rails.tool_family(name), "write", name)
 
+    def test_bash_spelling_covers_both_cases(self) -> None:
+        self.assertEqual(guard_rails.tool_family("Bash"), "bash")
+        self.assertEqual(guard_rails.tool_family("bash"), "bash")
+
+    def test_write_tools_are_not_bash_family(self) -> None:
+        self.assertNotEqual(guard_rails.tool_family("Edit"), "bash")
+
 
 class PayloadParsingTests(unittest.TestCase):
     def test_claude_payload(self) -> None:
@@ -52,7 +59,12 @@ class PayloadParsingTests(unittest.TestCase):
     def test_agy_payload_is_not_double_encoded(self) -> None:
         req = guard_rails.parse_payload(
             "agy",
-            {"toolCall": {"name": "write_to_file", "args": {"TargetFile": "/repo/a.py"}}},
+            {
+                "toolCall": {
+                    "name": "write_to_file",
+                    "args": {"TargetFile": "/repo/a.py"},
+                }
+            },
         )
         self.assertEqual(req.tool, "write")
         self.assertEqual(req.path, "/repo/a.py")
@@ -68,6 +80,35 @@ class PayloadParsingTests(unittest.TestCase):
     def test_malformed_payload_yields_no_request_rather_than_raising(self) -> None:
         self.assertIsNone(guard_rails.parse_payload("claude", {"nonsense": True}))
         self.assertIsNone(guard_rails.parse_payload("agy", []))
+
+    def test_claude_bash_payload_extracts_the_command(self) -> None:
+        req = guard_rails.parse_payload(
+            "claude",
+            {
+                "cwd": "/repo",
+                "tool_name": "Bash",
+                "tool_input": {"command": "git commit --no-verify -m x"},
+            },
+        )
+        self.assertEqual(req.tool, "bash")
+        self.assertEqual(req.command, "git commit --no-verify -m x")
+        self.assertEqual(req.cwd, "/repo")
+
+    def test_agy_and_copilot_get_no_bash_family_wiring(self) -> None:
+        """Best-effort tier: even a harness whose own tool name happens to
+        be literally "bash" must not get the companion check -- only
+        claude is wired for bash-family."""
+        self.assertIsNone(
+            guard_rails.parse_payload(
+                "agy", {"toolCall": {"name": "bash", "args": {"command": "ls"}}}
+            )
+        )
+        self.assertIsNone(
+            guard_rails.parse_payload(
+                "copilot",
+                {"toolName": "bash", "toolArgs": json.dumps({"command": "ls"})},
+            )
+        )
 
 
 class VerdictRenderingTests(unittest.TestCase):
@@ -86,8 +127,12 @@ class VerdictRenderingTests(unittest.TestCase):
         self.assertIn("behind", body["additionalContext"])
 
     def test_agy_deny_and_warn_both_use_decision_field(self) -> None:
-        deny = json.loads(guard_rails.render("agy", guard_rails.Verdict("deny", "x"))[0])
-        warn = json.loads(guard_rails.render("agy", guard_rails.Verdict("warn", "y"))[0])
+        deny = json.loads(
+            guard_rails.render("agy", guard_rails.Verdict("deny", "x"))[0]
+        )
+        warn = json.loads(
+            guard_rails.render("agy", guard_rails.Verdict("warn", "y"))[0]
+        )
         self.assertEqual(deny["decision"], "deny")
         self.assertEqual(warn["decision"], "allow")
         self.assertIn("y", warn["reason"])
@@ -132,8 +177,11 @@ class FailurePostureTests(unittest.TestCase):
 
     def test_worktree_short_circuits_before_the_backlog_read(self) -> None:
         info = guard_rails.RepoInfo(
-            toplevel="/wt", common_dir="/repo/.git", is_worktree=True,
-            is_bare=False, branch="feature",
+            toplevel="/wt",
+            common_dir="/repo/.git",
+            is_worktree=True,
+            is_bare=False,
+            branch="feature",
         )
         with mock.patch.object(guard_rails, "repo_info", return_value=info):
             with mock.patch.object(guard_rails, "load_in_progress") as load:
@@ -152,8 +200,11 @@ class FailurePostureTests(unittest.TestCase):
         self,
     ) -> None:
         info = guard_rails.RepoInfo(
-            toplevel="/wt", common_dir="/repo/.git", is_worktree=True,
-            is_bare=False, branch="feature",
+            toplevel="/wt",
+            common_dir="/repo/.git",
+            is_worktree=True,
+            is_bare=False,
+            branch="feature",
         )
         with mock.patch.object(guard_rails, "repo_info", return_value=info):
             with mock.patch.object(guard_rails, "load_in_progress") as load:
@@ -169,8 +220,11 @@ class FailurePostureTests(unittest.TestCase):
 
     def test_bare_repo_allows(self) -> None:
         info = guard_rails.RepoInfo(
-            toplevel="", common_dir="/repo.git", is_worktree=False,
-            is_bare=True, branch="main",
+            toplevel="",
+            common_dir="/repo.git",
+            is_worktree=False,
+            is_bare=True,
+            branch="main",
         )
         with mock.patch.object(guard_rails, "repo_info", return_value=info):
             with mock.patch.object(guard_rails, "load_in_progress") as load:
@@ -182,8 +236,11 @@ class FailurePostureTests(unittest.TestCase):
 
     def test_feature_branch_in_a_main_checkout_allows(self) -> None:
         info = guard_rails.RepoInfo(
-            toplevel="/repo", common_dir="/repo/.git", is_worktree=False,
-            is_bare=False, branch="feature",
+            toplevel="/repo",
+            common_dir="/repo/.git",
+            is_worktree=False,
+            is_bare=False,
+            branch="feature",
         )
         with mock.patch.object(guard_rails, "repo_info", return_value=info):
             with mock.patch.object(guard_rails, "load_in_progress") as load:
@@ -195,8 +252,11 @@ class FailurePostureTests(unittest.TestCase):
 
     def test_unreadable_backlog_store_allows(self) -> None:
         info = guard_rails.RepoInfo(
-            toplevel="/repo", common_dir="/repo/.git", is_worktree=False,
-            is_bare=False, branch="main",
+            toplevel="/repo",
+            common_dir="/repo/.git",
+            is_worktree=False,
+            is_bare=False,
+            branch="main",
         )
         with mock.patch.object(guard_rails, "repo_info", return_value=info):
             with mock.patch.object(guard_rails, "load_in_progress", return_value=None):
@@ -208,8 +268,11 @@ class FailurePostureTests(unittest.TestCase):
 
 class BusyMainCheckoutTests(unittest.TestCase):
     MAIN = guard_rails.RepoInfo(
-        toplevel="/repo", common_dir="/repo/.git", is_worktree=False,
-        is_bare=False, branch="main",
+        toplevel="/repo",
+        common_dir="/repo/.git",
+        is_worktree=False,
+        is_bare=False,
+        branch="main",
     )
 
     def _evaluate(self, items, common_dirs):
@@ -270,6 +333,152 @@ class BusyMainCheckoutTests(unittest.TestCase):
         self.assertEqual(verdict.decision, "allow")
 
 
+_MAIN_INFO = guard_rails.RepoInfo(
+    toplevel="/repo",
+    common_dir="/repo/.git",
+    is_worktree=False,
+    is_bare=False,
+    branch="main",
+)
+_FEATURE_INFO = guard_rails.RepoInfo(
+    toplevel="/repo",
+    common_dir="/repo/.git",
+    is_worktree=False,
+    is_bare=False,
+    branch="feature",
+)
+
+
+class BashOverrideTests(unittest.TestCase):
+    """evaluate_bash_override's deny/allow logic, with repo_info mocked so
+    these stay fast and branch-independent; the real end-to-end behaviour
+    against actual git repos is covered by
+    test/test_guard_rails_topology.py."""
+
+    def _on_main(self, command: str) -> guard_rails.Verdict:
+        with mock.patch.object(guard_rails, "repo_info", return_value=_MAIN_INFO):
+            return guard_rails.evaluate_bash_override(command, "/repo")
+
+    def _on_feature(self, command: str) -> guard_rails.Verdict:
+        with mock.patch.object(guard_rails, "repo_info", return_value=_FEATURE_INFO):
+            return guard_rails.evaluate_bash_override(command, "/repo")
+
+    def test_evaluate_dispatches_bash_family_here_not_to_write_logic(self) -> None:
+        with mock.patch.object(
+            guard_rails,
+            "evaluate_bash_override",
+            return_value=guard_rails.Verdict("deny", "x"),
+        ) as ev:
+            verdict = guard_rails.evaluate(
+                guard_rails.Request(
+                    "bash", "/repo", "", command="git commit --no-verify"
+                )
+            )
+        ev.assert_called_once_with("git commit --no-verify", "/repo")
+        self.assertEqual(verdict.decision, "deny")
+
+    def test_not_a_repo_or_unknown_branch_allows(self) -> None:
+        with mock.patch.object(guard_rails, "repo_info", return_value=None):
+            verdict = guard_rails.evaluate_bash_override(
+                "git config --unset core.hooksPath", "/tmp"
+            )
+        self.assertEqual(verdict.decision, "allow")
+
+    def test_feature_branch_allows_every_override_attempt(self) -> None:
+        for command in (
+            "git commit --no-verify -m x",
+            "git -c core.hooksPath=/tmp/x commit -m x",
+            "git config --unset core.hooksPath",
+            "GIT_CONFIG_GLOBAL=/tmp/x git commit -m x",
+        ):
+            self.assertEqual(self._on_feature(command).decision, "allow", command)
+
+    def test_no_verify_denied_but_short_n_alias_allowed(self) -> None:
+        self.assertEqual(self._on_main("git commit --no-verify -m x").decision, "deny")
+        self.assertEqual(self._on_main("git commit -n -m x").decision, "allow")
+
+    def test_config_override_flag_denied(self) -> None:
+        self.assertEqual(
+            self._on_main("git -c core.hooksPath=/tmp/evil commit -m x").decision,
+            "deny",
+        )
+
+    def test_config_override_flag_denied_when_not_the_first_dash_c(self) -> None:
+        self.assertEqual(
+            self._on_main(
+                "git -c other=y -c core.hooksPath=/tmp/evil commit -m x"
+            ).decision,
+            "deny",
+        )
+
+    def test_env_var_forms_denied(self) -> None:
+        for command in (
+            "GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/x GIT_CONFIG_COUNT=1 git commit -m x",
+            "GIT_CONFIG_GLOBAL=/tmp/evil git commit -m x",
+            "GIT_CONFIG_SYSTEM=/tmp/evil git commit -m x",
+            "GIT_CONFIG_PARAMETERS=\"'core.hooksPath='\" git commit -m x",
+        ):
+            self.assertEqual(self._on_main(command).decision, "deny", command)
+
+    def test_git_config_mutation_forms_denied(self) -> None:
+        for command in (
+            "git config --unset core.hooksPath",
+            "git config --unset-all core.hooksPath",
+            "git config --replace-all core.hooksPath /tmp/x",
+            "git config --edit",
+            "git config core.hooksPath /tmp/x",
+            "git config set core.hooksPath /tmp/x",
+            "git config unset core.hooksPath",
+        ):
+            self.assertEqual(self._on_main(command).decision, "deny", command)
+
+    def test_git_config_read_forms_and_chained_reads_allowed(self) -> None:
+        for command in (
+            "git config --get core.hooksPath",
+            "git config core.hooksPath",
+            "git config get core.hooksPath",
+            "git config core.hooksPath || echo unset",
+            "git config --get core.hooksPath && echo ok",
+            "git config core.hooksPath | grep -q githooks",
+        ):
+            self.assertEqual(self._on_main(command).decision, "allow", command)
+
+    def test_dollar_or_backtick_near_hookspath_denied(self) -> None:
+        self.assertEqual(
+            self._on_main('VAL=""; git config core.hooksPath $VAL').decision, "deny"
+        )
+        self.assertEqual(
+            self._on_main("git config core.hooksPath `echo x`").decision, "deny"
+        )
+
+    def test_git_config_file_direct_write_denied_bare_reference_allowed(self) -> None:
+        for command in (
+            "> .git/config",
+            "echo x >> .git/config",
+            "sed -i s/x/y/ .git/config",
+            "tee .git/config",
+        ):
+            self.assertEqual(self._on_main(command).decision, "deny", command)
+        for command in (
+            "cat .git/config",
+            "grep hooksPath .git/config",
+            "test -f .git/config",
+        ):
+            self.assertEqual(self._on_main(command).decision, "allow", command)
+
+    def test_combined_benign_and_denied_call_in_one_command_line_is_caught(
+        self,
+    ) -> None:
+        verdict = self._on_main(
+            "git config user.name && git config --unset core.hooksPath"
+        )
+        self.assertEqual(verdict.decision, "deny")
+
+    def test_ordinary_commands_allowed(self) -> None:
+        for command in ("ls -la", "git status", "git log --oneline -5"):
+            self.assertEqual(self._on_main(command).decision, "allow", command)
+
+
 class MainTests(unittest.TestCase):
     def _run(self, argv, stdin_text=""):
         out = io.StringIO()
@@ -278,14 +487,26 @@ class MainTests(unittest.TestCase):
                 code = guard_rails.main(argv)
         return out.getvalue(), code
 
-    def test_bash_calls_are_ignored_entirely(self) -> None:
+    def test_bash_calls_reach_evaluate_as_bash_family(self) -> None:
+        """Bash calls are no longer ignored entirely -- they reach evaluate()
+        as tool="bash", which dispatches to evaluate_bash_override rather
+        than the write-family R2/R3 logic (see BashOverrideTests)."""
         payload = json.dumps(
-            {"cwd": "/repo", "tool_name": "Bash", "tool_input": {"command": "git commit"}}
+            {
+                "cwd": "/repo",
+                "tool_name": "Bash",
+                "tool_input": {"command": "git commit"},
+            }
         )
-        with mock.patch.object(guard_rails, "evaluate") as ev:
+        with mock.patch.object(
+            guard_rails, "evaluate", return_value=guard_rails.Verdict("allow")
+        ) as ev:
             _, code = self._run(["--harness", "claude"], payload)
         self.assertEqual(code, 0)
-        ev.assert_not_called()
+        ev.assert_called_once()
+        (req,), _ = ev.call_args
+        self.assertEqual(req.tool, "bash")
+        self.assertEqual(req.command, "git commit")
 
     def test_unparseable_stdin_allows_and_does_not_raise(self) -> None:
         _, code = self._run(["--harness", "claude"], "not json at all")

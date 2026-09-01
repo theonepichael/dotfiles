@@ -1,26 +1,36 @@
 #!/usr/bin/env python3
 """Pre-tool guard shared by every harness: refuse a write into a repository's
-main checkout while a backlog item for that repository is in progress, and
-warn when the current worktree's base has fallen behind ``origin/main``.
+main checkout while a backlog item for that repository is in progress, warn
+when the current worktree's base has fallen behind ``origin/main``, and (Bash,
+Claude Code only) deny the git-native ways to defeat the no-commit-on-main
+git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``).
 
 Claude Code, agy and Copilot pipe their native hook payload in on stdin and
 get their native verdict back on stdout. Pi and opencode already hold the
 parsed values, so they pass them as flags and read a neutral JSON verdict.
 
-Only write-family tool calls are inspected. Bash is deliberately not
-intercepted: blocking ``git commit`` by parsing a shell string was shown to
-be bypassable (``bash -c``, a heredoc fed to ``sh``, a mid-word backslash),
-so that rule is tracked separately rather than half-enforced here.
+Write-family tool calls get the full R2/R3 check above. Bash calls get a
+narrower check: blocking ``git commit`` itself by parsing a shell string was
+shown to be bypassable (``bash -c``, a heredoc fed to ``sh``, a mid-word
+backslash) and is not attempted here -- that job now belongs to the git hook,
+which sees the fully shell-resolved state. What Bash *is* checked for is the
+git-native ways to defeat that hook on a protected branch: ``--no-verify``,
+overriding or redirecting ``core.hooksPath`` (``-c``, ``GIT_CONFIG_*`` env
+vars, a plain ``git config`` mutation), and a direct write to
+``.git/config``. agy and Copilot get no bash-family wiring (best-effort
+tier); their Bash calls fall through unrecognized, same as before.
 
 Usage:
     guard_rails.py --harness claude|agy|copilot        read stdin, write that harness's verdict
-    guard_rails.py --tool T --cwd D --path P           neutral form for Pi/opencode
+    guard_rails.py --tool T --cwd D --path P           neutral write-family form for Pi/opencode
+    guard_rails.py --tool bash --cwd D --command C     neutral bash-family form for Pi/opencode
 
 Flags
   --harness NAME  read the named harness's payload on stdin and answer in its shape
   --tool NAME     tool name, for the neutral form
   --cwd DIR       session working directory, for the neutral form
-  --path PATH     target file path, for the neutral form
+  --path PATH     target file path, for the neutral write-family form
+  --command CMD   shell command, for the neutral bash-family form
   --quiet, -q     suppress non-essential output
   --verbose, -v   emit extra diagnostic messages to stderr
 
@@ -38,6 +48,8 @@ never reaches this script.
 import argparse
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -60,14 +72,22 @@ WRITE_TOOLS = {
     "str_replace_editor",
 }
 
+# Shell control operators a value-token scan must stop at -- past one of
+# these, whatever follows belongs to a different command, not an argument to
+# the git-config invocation being scanned (e.g. `git config core.hooksPath ||
+# echo unset` must read as a plain read, not a write with value `||`).
+_CONTROL_OPERATORS = {"&&", "||", "|", ";", ">", ">>", "<", "\n"}
+
 
 @dataclass(frozen=True)
 class Request:
-    """A normalized tool call: what family, from where, against which path."""
+    """A normalized tool call: what family, from where, against which path
+    (write-family) or command (bash-family)."""
 
     tool: str
     cwd: str
     path: str
+    command: str = ""
 
 
 @dataclass(frozen=True)
@@ -91,7 +111,12 @@ def tool_family(name: object) -> str:
     opencode and Pi say ``edit`` -- so nothing matches a literal name."""
     if not isinstance(name, str):
         return ""
-    return "write" if name.strip().lower() in WRITE_TOOLS else ""
+    lowered = name.strip().lower()
+    if lowered in WRITE_TOOLS:
+        return "write"
+    if lowered == "bash":
+        return "bash"
+    return ""
 
 
 def git(*args: str, cwd: str | None = None) -> str | None:
@@ -239,10 +264,220 @@ def _behind_origin_main(directory: str) -> bool:
     return behind > 0
 
 
+def _shell_tokens(command: str) -> list[str]:
+    """Tokenize a shell command, keeping control operators (``&&``, ``||``,
+    ``|``, ``;``, ``>``, ``>>``, ``<``) as their own tokens rather than
+    folding them into neighbouring words. This is what lets the scans below
+    stop a value-token search at the right place instead of misreading `git
+    config core.hooksPath || echo unset` as a write with value `||`."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        return list(lexer)
+    except ValueError:
+        # Unbalanced quote or similar -- fall back to a plain split so the
+        # scans below still see *something* rather than raising.
+        return command.split()
+
+
+def _has_config_override_flag(tokens: list[str]) -> bool:
+    """Whether a ``-c``/``--config core.hooksPath=...`` override appears
+    anywhere in the command. Scans every occurrence, not just the first --
+    the override can ride alongside an unrelated ``-c`` in the same
+    invocation (`git -c core.hooksPath=x -c other=y config ...`)."""
+    n = len(tokens)
+    for i, tok in enumerate(tokens):
+        if tok in ("-c", "--config") and i + 1 < n:
+            if tokens[i + 1].startswith("core.hooksPath="):
+                return True
+        elif tok.startswith(("--config=core.hooksPath=", "-ccore.hooksPath=")):
+            return True
+    return False
+
+
+def _find_hookspath_mutation(tokens: list[str]) -> bool:
+    """Whether the tokenized command contains a ``git config`` mutation of
+    ``core.hooksPath``.
+
+    Old syntax: ``git config [scope] core.hooksPath [value]`` -- a write iff
+    a value token follows before a control operator, or an explicit
+    ``--unset``/``--unset-all``/``--replace-all`` flag appears in the same
+    invocation. New syntax (git >= 2.46): ``git config set|unset
+    core.hooksPath ...`` -- ``set``/``unset`` subcommands are always a
+    write; ``get``/``--get`` is always a read. ``--edit``/``-e`` opens an
+    interactive editor on the whole file with no key argument to check, so
+    it is treated as an unconditional mutation risk.
+    """
+    n = len(tokens)
+    for i, tok in enumerate(tokens):
+        if tok != "git":
+            continue
+        j = i + 1
+        config_idx = None
+        while j < n and tokens[j] not in _CONTROL_OPERATORS:
+            if tokens[j] == "config":
+                config_idx = j
+                break
+            j += 1
+        if config_idx is None:
+            continue
+
+        k = config_idx + 1
+        explicit_write_flag = False
+        explicit_subcommand: str | None = None
+        saw_hookspath = False
+        saw_value_after_hookspath = False
+        while k < n and tokens[k] not in _CONTROL_OPERATORS:
+            t = tokens[k]
+            if t in ("--edit", "-e"):
+                return True
+            if t in ("--unset", "--unset-all", "--replace-all"):
+                explicit_write_flag = True
+            elif t in ("--get", "--get-all", "--get-regexp"):
+                explicit_subcommand = explicit_subcommand or "get"
+            elif t in ("set", "unset", "get") and not saw_hookspath:
+                explicit_subcommand = explicit_subcommand or t
+            elif t == "core.hooksPath":
+                saw_hookspath = True
+                if explicit_write_flag or explicit_subcommand in ("set", "unset"):
+                    return True
+            elif saw_hookspath and not t.startswith("-"):
+                saw_value_after_hookspath = True
+            k += 1
+        if saw_hookspath and saw_value_after_hookspath and explicit_subcommand != "get":
+            return True
+    return False
+
+
+def _is_git_config_path(token: str) -> bool:
+    """Whether ``token`` names a path whose basename is ``config`` inside a
+    ``.git`` directory -- narrow on purpose, see :func:`_writes_git_config_file`."""
+    normalized = token.strip("\"'").replace("\\", "/")
+    parts = [p for p in normalized.split("/") if p]
+    return len(parts) >= 2 and parts[-1] == "config" and parts[-2] == ".git"
+
+
+def _writes_git_config_file(tokens: list[str]) -> bool:
+    """Whether the command redirects, ``sed -i``s, or ``tee``s onto a
+    ``.git/config`` path. Deliberately narrow: a bare reference with no
+    write syntax (``cat .git/config``, ``grep hooksPath .git/config``) must
+    stay allowed -- those are ordinary diagnostic commands. Not exhaustive:
+    ``cp``/``mv``/``install``/an inline interpreter writing the file, or a
+    wrapper script written elsewhere and executed, are accepted gaps (would
+    require executing the shell to resolve, defeating a fast PreToolUse
+    check)."""
+    n = len(tokens)
+    for i, tok in enumerate(tokens):
+        if tok in (">", ">>"):
+            if i + 1 < n and _is_git_config_path(tokens[i + 1]):
+                return True
+        elif tok == "sed":
+            j = i + 1
+            saw_inplace = False
+            while j < n and tokens[j] not in _CONTROL_OPERATORS:
+                if tokens[j] == "-i" or (
+                    tokens[j].startswith("-i") and not tokens[j].startswith("--")
+                ):
+                    saw_inplace = True
+                if saw_inplace and _is_git_config_path(tokens[j]):
+                    return True
+                j += 1
+        elif tok == "tee":
+            j = i + 1
+            while j < n and tokens[j] not in _CONTROL_OPERATORS:
+                if _is_git_config_path(tokens[j]):
+                    return True
+                j += 1
+    return False
+
+
+def evaluate_bash_override(command: str, cwd: str) -> Verdict:
+    """Deny the git-native ways to defeat the no-commit-on-main git hook, on
+    a protected branch only -- see the module docstring. Fails open (allow)
+    when the branch can't be determined, same posture as every other check
+    here: a guard that cannot answer must not block the loop.
+
+    Known, accepted gaps (see the spec this implements): ``git commit -n``
+    (the short ``--no-verify`` alias) is not checked -- too generic a
+    single-letter flag to deny without real false-positive risk. This
+    covers only agent-mediated Bash tool calls, never arbitrary manual
+    shell use outside the harness.
+    """
+    info = repo_info(cwd)
+    if info is None or info.branch not in PROTECTED_BRANCHES:
+        return Verdict("allow")
+
+    if "core.hooksPath" in command and ("$" in command or "`" in command):
+        return Verdict(
+            "deny",
+            "Referencing core.hooksPath through a shell variable or command "
+            "substitution is blocked on a protected branch -- this could "
+            "supply an override value a static check can't otherwise see.",
+        )
+
+    tokens = _shell_tokens(command)
+
+    if "git" in tokens and "--no-verify" in tokens:
+        return Verdict(
+            "deny",
+            "git --no-verify is blocked on a protected branch -- it would "
+            "skip the no-commit-on-main hook entirely.",
+        )
+
+    if _has_config_override_flag(tokens):
+        return Verdict(
+            "deny",
+            "git -c/--config core.hooksPath=... is blocked on a protected "
+            "branch -- it would override the no-commit-on-main hook for "
+            "this invocation.",
+        )
+
+    if re.search(r"\bGIT_CONFIG_KEY_\d+\s*=\s*[\"']?core\.hooksPath", command):
+        return Verdict(
+            "deny",
+            "GIT_CONFIG_KEY_N=core.hooksPath is blocked on a protected "
+            "branch -- it redirects core.hooksPath via git's positional "
+            "config-override env vars.",
+        )
+    if re.search(r"\bGIT_CONFIG_(GLOBAL|SYSTEM)=", command):
+        return Verdict(
+            "deny",
+            "GIT_CONFIG_GLOBAL=/GIT_CONFIG_SYSTEM= is blocked on a "
+            "protected branch -- it redirects which config file git reads, "
+            "which can hide core.hooksPath the same way overriding it directly would.",
+        )
+    if re.search(r"\bGIT_CONFIG_PARAMETERS=", command):
+        return Verdict(
+            "deny",
+            "GIT_CONFIG_PARAMETERS= is blocked on a protected branch -- "
+            "it is git's env-var form of -c-style config overrides.",
+        )
+
+    if _find_hookspath_mutation(tokens):
+        return Verdict(
+            "deny",
+            "Setting or unsetting core.hooksPath is blocked on a protected "
+            "branch -- it would disable the no-commit-on-main hook.",
+        )
+
+    if _writes_git_config_file(tokens):
+        return Verdict(
+            "deny",
+            "Writing directly to .git/config is blocked on a protected "
+            "branch -- it can rewrite core.hooksPath outside git's own "
+            "config-mutation commands.",
+        )
+
+    return Verdict("allow")
+
+
 def evaluate(req: Request) -> Verdict:
-    """Apply R2 then R3. Fails open on anything it cannot answer."""
+    """Apply R2 then R3 to write-family calls, and the bash-family override
+    check to Bash calls. Fails open on anything it cannot answer."""
     if os.environ.get("GUARD_RAILS_OFF") == "1":
         return Verdict("allow")
+    if req.tool == "bash":
+        return evaluate_bash_override(req.command, req.cwd)
     if req.tool != "write":
         return Verdict("allow")
 
@@ -291,12 +526,14 @@ def parse_payload(harness: str, payload: object) -> Request | None:
             args = payload.get("tool_input") or {}
             name = payload.get("tool_name")
             path = args.get("file_path") or args.get("path") or ""
+            command = args.get("command") or ""
             cwd = payload.get("cwd") or ""
         elif harness == "agy":
             call = payload.get("toolCall") or {}
             args = call.get("args") or {}
             name = call.get("name")
             path = args.get("TargetFile") or args.get("path") or ""
+            command = ""
             cwd = payload.get("cwd") or ""
         elif harness == "copilot":
             name = payload.get("toolName")
@@ -304,6 +541,7 @@ def parse_payload(harness: str, payload: object) -> Request | None:
             # Copilot nests its arguments as a JSON *string*.
             args = json.loads(raw) if isinstance(raw, str) else (raw or {})
             path = args.get("path") or args.get("file_path") or ""
+            command = ""
             cwd = payload.get("cwd") or ""
         else:
             return None
@@ -312,9 +550,14 @@ def parse_payload(harness: str, payload: object) -> Request | None:
     if not isinstance(args, dict) or not isinstance(path, str):
         return None
     family = tool_family(name)
+    # Bash-family wiring is Claude Code only (best-effort tier: agy and
+    # Copilot get none, regardless of what their own tool names happen to
+    # be) -- see the module docstring.
+    if family == "bash" and harness != "claude":
+        family = ""
     if not family:
         return None
-    return Request(tool=family, cwd=cwd, path=path)
+    return Request(tool=family, cwd=cwd, path=path, command=command)
 
 
 def render(harness: str | None, verdict: Verdict) -> tuple[str, int]:
@@ -360,7 +603,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--tool", help="tool name, for the neutral form")
     parser.add_argument("--cwd", help="session working directory, for the neutral form")
-    parser.add_argument("--path", help="target file path, for the neutral form")
+    parser.add_argument(
+        "--path", help="target file path, for the neutral write-family form"
+    )
+    parser.add_argument(
+        "--command", help="shell command, for the neutral bash-family form"
+    )
     cli_common.add_verbosity_args(parser)
     return parser
 
@@ -389,7 +637,12 @@ def main(argv: list[str] | None = None) -> int:
         print(out)
         return code
 
-    req = Request(tool=tool_family(args.tool), cwd=args.cwd or "", path=args.path or "")
+    req = Request(
+        tool=tool_family(args.tool),
+        cwd=args.cwd or "",
+        path=args.path or "",
+        command=args.command or "",
+    )
     verdict = evaluate(req)
     out, code = render(None, verdict)
     print(out)
