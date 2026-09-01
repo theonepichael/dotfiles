@@ -51,7 +51,7 @@ class WcGuardTestCase(unittest.TestCase):
         while time.monotonic() < deadline:
             if predicate():
                 return True
-            time.sleep(0.05)
+            time.sleep(0.01)
         return predicate()
 
     def test_exit_code_zero_propagates(self) -> None:
@@ -63,7 +63,9 @@ class WcGuardTestCase(unittest.TestCase):
         self.assertEqual(result.returncode, 7)
 
     def test_guard_active_during_run_gone_after(self) -> None:
-        proc = subprocess.Popen([str(WC_GUARD), "bash", "-c", "sleep 1"], env=self.env)
+        proc = subprocess.Popen(
+            [str(WC_GUARD), "bash", "-c", "sleep 0.1"], env=self.env
+        )
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
         self.assertTrue(
             self._wait_until(watchcommit.guard_active), "guard never registered"
@@ -106,10 +108,10 @@ class WcGuardTestCase(unittest.TestCase):
         )
 
     def test_concurrent_overlap_stays_active_until_both_exit(self) -> None:
-        p1 = subprocess.Popen([str(WC_GUARD), "bash", "-c", "sleep 0.6"], env=self.env)
+        p1 = subprocess.Popen([str(WC_GUARD), "bash", "-c", "sleep 0.1"], env=self.env)
         self.addCleanup(lambda: p1.poll() is None and p1.kill())
-        time.sleep(0.15)
-        p2 = subprocess.Popen([str(WC_GUARD), "bash", "-c", "sleep 1.5"], env=self.env)
+        time.sleep(0.03)
+        p2 = subprocess.Popen([str(WC_GUARD), "bash", "-c", "sleep 0.25"], env=self.env)
         self.addCleanup(lambda: p2.poll() is None and p2.kill())
 
         self.assertTrue(self._wait_until(watchcommit.guard_active))

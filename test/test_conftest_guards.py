@@ -52,3 +52,29 @@ def test_real_home_write_allowed_with_marker(tmp_path):
         assert target.exists()
     finally:
         target.unlink(missing_ok=True)
+
+
+def test_real_config_write_blocked_without_marker(tmp_path):
+    target = _REAL_HOME / ".config" / f"conftest-guard-probe-{os.getpid()}.txt"
+    with pytest.raises(RuntimeError, match="allow_production_paths"):
+        target.write_text("should never land on disk")
+    assert not target.exists()
+
+
+def test_builtins_open_write_blocked_without_marker(tmp_path):
+    target = _REAL_HOME / ".claude" / f"conftest-guard-probe-{os.getpid()}.txt"
+    with pytest.raises(RuntimeError, match="allow_production_paths"):
+        with open(str(target), "w") as f:
+            f.write("should fail")
+
+
+def test_os_open_write_blocked_without_marker(tmp_path):
+    target = _REAL_HOME / ".claude" / f"conftest-guard-probe-{os.getpid()}.txt"
+    with pytest.raises(RuntimeError, match="allow_production_paths"):
+        os.open(str(target), os.O_WRONLY | os.O_CREAT)
+
+
+def test_tmp_path_writes_allowed_without_marker(tmp_path):
+    target = tmp_path / "normal_test_file.txt"
+    target.write_text("allowed")
+    assert target.read_text() == "allowed"
