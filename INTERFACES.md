@@ -963,6 +963,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `--depart`
   - `--yes`
   - `--check-links`
+  - `--report-uninstalled`
   - `-h/--help`
 - Environment: `LOGNAME`, `NO_COLOR`, `PATH`, `TERM`, `USER`, `WSL_DISTRO_NAME`
 - Explicit exit codes: `0`, `2`

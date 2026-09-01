@@ -389,6 +389,7 @@ repointed — so it is safe to run at any time:
 ```sh
 ./install.sh --check-links                     # audit every harness's entries
 ./install.sh --check-links --harness=claude    # scope it to one harness
+./install.sh --check-links --report-uninstalled  # also flag never-installed links
 ```
 
 This covers most of a gap neither of the flags above does. `--rollback` only
@@ -402,7 +403,7 @@ happily creates a dangling symlink). The one exception is a destination
 automatically (see **orphaned** below) instead of only `--check-links`
 reporting it.
 
-Five buckets are reported:
+Five buckets are reported by default, plus a sixth, opt-in one:
 
 - **broken-source** — the link points exactly where `links.toml` says, but
   that file no longer exists in the repo. A dangling symlink.
@@ -420,6 +421,15 @@ Five buckets are reported:
 - **unmanaged** — a file sitting in a directory `links.toml` declares
   exclusive via a `[[managed_dir]]` row, that no `[[link]]` row produces.
   See **Exclusive directories** below.
+- **never-installed** (opt-in, via `--report-uninstalled`) — an applicable
+  row whose repo-side source exists, but whose destination was never linked
+  on this machine at all, and never has been per the install history — as
+  opposed to one that was linked once and later removed (`--rollback`, or
+  by hand), which stays silent either way. Off by default: a machine that
+  simply hasn't run `install.sh` yet for some entries is not a defect, so a
+  bare `--check-links` never reports this bucket; pass the flag when you
+  want to catch a case like "this row's backing work merged, but the link
+  itself was never installed here."
 
 `--harness` and `--profile` scope which entries are considered; with neither,
 every harness's entries are checked. Widening cannot produce false positives:

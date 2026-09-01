@@ -529,6 +529,7 @@ class Options:
     depart: bool = False
     yes: bool = False
     check_links: bool = False
+    report_uninstalled: bool = False
     quiet: bool = False
     verbose: bool = False
 
@@ -662,6 +663,9 @@ def parse_args(argv: Sequence[str]) -> Options:
     parser.add_argument("--depart", action="store_true")
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--check-links", dest="check_links", action="store_true")
+    parser.add_argument(
+        "--report-uninstalled", dest="report_uninstalled", action="store_true"
+    )
     parser.add_argument("-h", "--help", dest="help", action="store_true")
 
     args, extras = parser.parse_known_args(list(argv))
@@ -762,6 +766,9 @@ def parse_args(argv: Sequence[str]) -> Options:
     if args.wipe and not args.rollback:
         _fail("--wipe can only be used with --rollback")
 
+    if args.report_uninstalled and not args.check_links:
+        _fail("--report-uninstalled can only be used with --check-links")
+
     if (
         not args.rollback
         and not args.depart
@@ -794,6 +801,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         depart=args.depart,
         yes=args.yes,
         check_links=args.check_links,
+        report_uninstalled=args.report_uninstalled,
         quiet=args.quiet,
         verbose=args.verbose,
     )
@@ -4475,6 +4483,7 @@ CHECK_BUCKET_WRONG_TARGET = "wrong-target"
 CHECK_BUCKET_NOT_A_SYMLINK = "not-a-symlink"
 CHECK_BUCKET_ORPHANED = "orphaned"
 CHECK_BUCKET_UNMANAGED = "unmanaged"
+CHECK_BUCKET_NEVER_INSTALLED = "never-installed"
 
 CHECK_BUCKETS = (
     CHECK_BUCKET_BROKEN_SOURCE,
@@ -4482,6 +4491,7 @@ CHECK_BUCKETS = (
     CHECK_BUCKET_NOT_A_SYMLINK,
     CHECK_BUCKET_ORPHANED,
     CHECK_BUCKET_UNMANAGED,
+    CHECK_BUCKET_NEVER_INSTALLED,
 )
 
 
@@ -4531,14 +4541,21 @@ def _is_dotfiles_checkout(root: Path) -> bool:
 
 
 def _check_applicable_links(
-    ctx: Context, links: Sequence[tuple[Path, Path, str, bool]]
+    ctx: Context,
+    links: Sequence[tuple[Path, Path, str, bool]],
+    report_uninstalled: bool = False,
 ) -> tuple[dict[str, list[str]], dict[Path, int]]:
     """Classify every applicable expanded entry that has something on disk.
 
-    Entries whose destination does not exist at all are silently fine: that
-    is simply a link this machine has not installed (yet), not a defect.
-    That is also what makes the widened-harness default safe — an entry for
-    a harness that was never provisioned has no destination to report on.
+    Entries whose destination does not exist at all are silently fine by
+    default: that is simply a link this machine has not installed (yet), not
+    a defect. That is also what makes the widened-harness default safe — an
+    entry for a harness that was never provisioned has no destination to
+    report on. Passing ``report_uninstalled`` additionally flags a missing
+    destination whose source exists but that the manifest has never once
+    recorded creating — genuinely never installed, as distinct from a link
+    that was installed and later removed (rollback or manual cleanup), which
+    a manifest record still explains and which stays silent either way.
 
     Returns:
         The findings by bucket, and a count per *other* checkout the live
@@ -4549,10 +4566,22 @@ def _check_applicable_links(
     """
     findings: dict[str, list[str]] = {bucket: [] for bucket in CHECK_BUCKETS}
     foreign: dict[Path, int] = {}
+    installed_dests: set[Path] = set()
+    if report_uninstalled:
+        installed_dests = {
+            Path(str(entry["dest"]))
+            for entry in ctx.manifest.entries()
+            if entry.get("kind") == "symlink-created" and "dest" in entry
+        }
     for src, dest, rel, applicable in links:
         if not applicable:
             continue
         if not dest.is_symlink() and not dest.exists():
+            if report_uninstalled and src.exists() and dest not in installed_dests:
+                findings[CHECK_BUCKET_NEVER_INSTALLED].append(
+                    f"{ctx.display(dest)} — {src} exists in the repo but was "
+                    "never linked here; run install.sh to link it"
+                )
             continue
 
         if not dest.is_symlink():
@@ -4846,7 +4875,9 @@ def do_check_links(ctx: Context) -> int:
     specs = load_links(ctx.dotfiles / "links.toml")
     managed_dirs = load_managed_dirs(ctx.dotfiles / "links.toml")
     links = gather_links(ctx, specs)
-    findings, foreign = _check_applicable_links(ctx, links)
+    findings, foreign = _check_applicable_links(
+        ctx, links, report_uninstalled=ctx.opts.report_uninstalled
+    )
     _check_orphaned_links(ctx, links, findings)
     dirs_audited = _check_unmanaged_files(ctx, specs, links, managed_dirs, findings)
 

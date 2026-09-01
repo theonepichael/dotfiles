@@ -69,6 +69,8 @@ def make_ctx(
     adopt=False,
     depart=False,
     yes=False,
+    check_links=False,
+    report_uninstalled=False,
     system="Linux",
     is_wsl=False,
     dotfiles=REPO_ROOT,
@@ -85,6 +87,8 @@ def make_ctx(
         adopt=adopt,
         depart=depart,
         yes=yes,
+        check_links=check_links,
+        report_uninstalled=report_uninstalled,
     )
     state_dir = home / ".local" / "state" / "dotfiles"
     return install.Context(
@@ -189,6 +193,14 @@ def parse_error(argv, capsys):
         (["--depart", "--reseed"], "--depart must be used alone"),
         (["--depart", "--adopt"], "--depart must be used alone"),
         (["--check-links", "--adopt"], "--check-links must be used alone"),
+        (
+            ["--report-uninstalled"],
+            "--report-uninstalled can only be used with --check-links",
+        ),
+        (
+            ["--report-uninstalled", "--harness=claude"],
+            "--report-uninstalled can only be used with --check-links",
+        ),
         (["--depart", "--no-nvim-pin"], "--depart must be used alone"),
         # --depart --rollback names the --depart conflict, not rollback's —
         # the --depart-alone check runs first.
@@ -4424,6 +4436,12 @@ def test_check_links_accepts_harness_and_profile():
     assert opts.profile == "work"
 
 
+def test_check_links_accepts_report_uninstalled():
+    opts = install.parse_args(["--check-links", "--report-uninstalled"])
+    assert opts.check_links is True
+    assert opts.report_uninstalled is True
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -4452,6 +4470,153 @@ def test_usage_documents_check_links(capsys):
     with pytest.raises(SystemExit):
         install.parse_args(["--help"])
     assert "--check-links" in capsys.readouterr().out
+
+
+# ── --check-links --report-uninstalled: never-installed detection ──────────
+
+
+def test_check_links_never_installed_fires_with_flag(home, fake_repo, capsys):
+    """Applicable, src exists, dest missing, no manifest record: a real gap."""
+    ctx = check_links_ctx(home, fake_repo, report_uninstalled=True)
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "never-installed" in out
+
+
+def test_check_links_never_installed_silent_without_flag(home, fake_repo, capsys):
+    """Same gap, but the opt-in flag was never passed: default stays silent."""
+    ctx = check_links_ctx(home, fake_repo)
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "never-installed" not in out
+
+
+def test_check_links_never_installed_silent_when_manifest_recorded(
+    home, fake_repo, capsys
+):
+    """A dest with prior manifest history is a legitimate removal, not a gap.
+
+    The claude and copilot rows are also wired so they cannot fire and mask
+    the assertion about zsh specifically.
+    """
+    ctx = check_links_ctx(home, fake_repo, report_uninstalled=True)
+    wire_check_links(
+        ctx,
+        ("zsh/.zshrc", "~/.zshrc"),
+        ("claude/CLAUDE.md", "~/.claude/CLAUDE.md"),
+        ("copilot/instructions.md", "~/.copilot/instructions.md"),
+    )
+    (home / ".zshrc").unlink()
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "never-installed" not in out
+
+
+def test_check_links_never_installed_silent_for_gated_off_row(home, fake_repo, capsys):
+    """A row never applicable on this machine never counts as never-installed.
+
+    Scoped to just ``claude`` so the ``copilot`` row is not applicable, while
+    the zsh and claude rows are wired so they cannot also fire and mask the
+    assertion.
+    """
+    ctx = check_links_ctx(
+        home, fake_repo, harnesses=("claude",), report_uninstalled=True
+    )
+    wire_check_links(
+        ctx,
+        ("zsh/.zshrc", "~/.zshrc"),
+        ("claude/CLAUDE.md", "~/.claude/CLAUDE.md"),
+    )
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "never-installed" not in out
+
+
+def test_check_links_never_installed_silent_for_dual_fault(home, fake_repo, capsys):
+    """No dest and no src: a different, pre-existing, out-of-scope gap.
+
+    The claude and copilot rows are also wired so they cannot fire and mask
+    the assertion about zsh specifically.
+    """
+    ctx = check_links_ctx(home, fake_repo, report_uninstalled=True)
+    wire_check_links(
+        ctx,
+        ("claude/CLAUDE.md", "~/.claude/CLAUDE.md"),
+        ("copilot/instructions.md", "~/.copilot/instructions.md"),
+    )
+    (fake_repo / "zsh" / ".zshrc").unlink()
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "never-installed" not in out
+
+
+def test_check_links_never_installed_ignores_dangling_symlink(home, fake_repo, capsys):
+    """A dangling symlink is broken-source, never never-installed, flag or not.
+
+    claude and copilot are also wired so they cannot fire never-installed
+    and mask the assertion about zsh's dangling symlink.
+    """
+    ctx = check_links_ctx(home, fake_repo, report_uninstalled=True)
+    wire_check_links(
+        ctx,
+        ("zsh/.zshrc", "~/.zshrc"),
+        ("claude/CLAUDE.md", "~/.claude/CLAUDE.md"),
+        ("copilot/instructions.md", "~/.copilot/instructions.md"),
+    )
+    (fake_repo / "zsh" / ".zshrc").unlink()
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "broken-source (1)" in out
+    assert "never-installed" not in out
+
+
+def test_check_links_never_installed_ignores_real_file_in_the_way(
+    home, fake_repo, capsys
+):
+    """A real file where a symlink belongs is not-a-symlink, never never-installed.
+
+    claude and copilot are also wired so they cannot fire never-installed
+    and mask the assertion about zsh's real-file collision.
+    """
+    ctx = check_links_ctx(home, fake_repo, report_uninstalled=True)
+    wire_check_links(
+        ctx,
+        ("claude/CLAUDE.md", "~/.claude/CLAUDE.md"),
+        ("copilot/instructions.md", "~/.copilot/instructions.md"),
+    )
+    (home / ".zshrc").write_text("hand-written\n")
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "not-a-symlink (1)" in out
+    assert "never-installed" not in out
 
 
 # ── --check-links: unmanaged files in declared-exclusive directories ────────
