@@ -399,7 +399,7 @@ happily creates a dangling symlink). The one exception is a destination
 automatically (see **orphaned** below) instead of only `--check-links`
 reporting it.
 
-Four buckets are reported:
+Five buckets are reported:
 
 - **broken-source** — the link points exactly where `links.toml` says, but
   that file no longer exists in the repo. A dangling symlink.
@@ -414,13 +414,51 @@ Four buckets are reported:
   the symlink, its manifest entry, and its now-possibly-empty parent
   directory — and prints each removal; `--check-links` still only reports
   them, changing nothing, since it is read-only by design.
+- **unmanaged** — a file sitting in a directory `links.toml` declares
+  exclusive via a `[[managed_dir]]` row, that no `[[link]]` row produces.
+  See **Exclusive directories** below.
 
 `--harness` and `--profile` scope which entries are considered; with neither,
-every harness's entries are checked. Widening cannot produce false positives,
-because every bucket requires the destination to already exist on disk — an
-entry for a harness this machine never provisioned has nothing to report on.
-Destinations gated off by platform, WSL, or profile are still exempt from the
-orphan check, since a gated-off entry has not been removed from `links.toml`.
+every harness's entries are checked. Widening cannot produce false positives:
+the first four buckets need a destination that already exists on disk, and an
+entry for a harness this machine never provisioned has nothing to report on,
+while the fifth is scoped per directory by the harness of the rows inside it,
+so widening only ever brings more directories into scope and never
+reclassifies a file within one. Destinations gated off by platform, WSL, or
+profile are still exempt from the orphan check, since a gated-off entry has
+not been removed from `links.toml`.
+
+**Exclusive directories.** A `[[managed_dir]]` row declares that dotfiles owns
+every file in a directory, and `unmanaged` reports anything else found there:
+
+```toml
+[[managed_dir]]
+dest = "~/.claude/scripts"
+```
+
+Exclusivity is deliberately opt-in. Inferring it from each link's
+`dest.parent` surfaces 230 unmanaged entries to find 2 real ones — 68 of them
+in `$HOME` alone, because seven separate rows happen to land there. Only
+directories dotfiles genuinely owns belong in the table, and `links.toml`'s
+header names the ones that must not be added.
+
+Three things the bucket deliberately does not report:
+
+- **Live `--rollback` payload.** A `.bak` the history recorded, whose
+  destination is still present, is the user's pre-dotfiles original and
+  `--rollback` restores from it. It is skipped. An *unrecorded* `.bak` is a
+  stray and is reported.
+- **Junk.** Dotfiles and editor swap/backup files (`~`, `.swp`, `.swo`,
+  `.tmp`) are skipped, as are plain subdirectories. Hidden files are skipped
+  too, because macOS drops `.DS_Store` into any directory the user merely
+  opens in Finder.
+- **Anything in a directory that is not in scope.** A `[[managed_dir]]` row
+  carries no gating fields of its own; it inherits the harness, platform,
+  WSL, and profile scoping of the `[[link]]` rows inside it. So
+  `--harness=claude` does not audit a pi-only directory. A declared directory
+  that does not exist on this machine is skipped silently, and one that
+  cannot be read is reported rather than passed over, since a clean exit code
+  asserts the directory really was verified.
 
 **Running it from a worktree.** The audit compares against the checkout it was
 launched from, so from a worktree every live link legitimately points at the

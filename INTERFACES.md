@@ -959,6 +959,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `class Context` — Everything a step needs: paths, options, history, and the skip tally.
   - `class CommandResult` — Outcome of one external command: whether it succeeded, and its stdout.
   - `class LinkSpec` — One row of ``links.toml``: a repo file and where it gets linked.
+  - `class ManagedDirSpec` — One row of ``links.toml``: a directory dotfiles owns exclusively.
   - `class ManagedService` — One systemd --user service this installer enables/disables/tracks.
 - Public functions:
   - `color_enabled(stream: object) -> bool` — Return whether ANSI codes should be emitted to ``stream``.
@@ -972,6 +973,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `install_node(ctx: Context) -> None` — Install NVM and a Node LTS — only for the harnesses that need npm.
   - `install_npm_harness(ctx: Context, harness: str, label: str, package: str) -> None` — Install one npm-distributed harness CLI, if it was selected.
   - `load_links(path: Path) -> list[LinkSpec]` — Parse ``links.toml`` into an ordered list of link specs.
+  - `load_managed_dirs(path: Path) -> list[ManagedDirSpec]` — Parse the ``[[managed_dir]]`` rows declaring directories we own exclusively.
   - `link_applies(spec: LinkSpec, ctx: Context) -> bool` — Return whether ``spec`` should be linked for this run's machine/options.
   - `expand_dest(dest: str, home: Path) -> Path` — Expand a ``links.toml`` destination against ``home``.
   - `iter_concrete_links(spec: LinkSpec, ctx: Context) -> Iterator[tuple[Path, Path, str]]` — Expand one ``links.toml`` row into concrete ``(src, dest, relative_src)`` triples.

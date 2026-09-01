@@ -4454,6 +4454,237 @@ def test_usage_documents_check_links(capsys):
     assert "--check-links" in capsys.readouterr().out
 
 
+# ── --check-links: unmanaged files in declared-exclusive directories ────────
+
+# One declared directory is pi-only (every row inside it carries
+# harness = "pi"), the other carries no harness at all, so the two exercise
+# both sides of the inherited-scoping rule.
+MANAGED_DIR_TOML = """\
+[[link]]
+src = "ext/one.ts"
+dest = "~/.pi/agent/extensions/one.ts"
+harness = "pi"
+
+[[link]]
+src = "scripts/one.py"
+dest = "~/.claude/scripts/one.py"
+
+[[managed_dir]]
+dest = "~/.pi/agent/extensions"
+
+[[managed_dir]]
+dest = "~/.claude/scripts"
+"""
+
+
+@pytest.fixture
+def managed_repo(tmp_path):
+    """A fake repo whose links.toml declares two exclusive directories."""
+    repo = tmp_path / "repo"
+    for relative in ("ext/one.ts", "scripts/one.py"):
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{relative}\n")
+    (repo / "links.toml").write_text(MANAGED_DIR_TOML)
+    return repo
+
+
+def test_check_links_declared_dirs_clean_report_nothing(home, managed_repo, capsys):
+    """A declared directory holding only what links.toml produces stays quiet."""
+    ctx = check_links_ctx(home, managed_repo, harnesses=("pi", "claude", "copilot"))
+    wire_check_links(
+        ctx,
+        ("ext/one.ts", "~/.pi/agent/extensions/one.ts"),
+        ("scripts/one.py", "~/.claude/scripts/one.py"),
+    )
+    capsys.readouterr()
+
+    assert install.do_check_links(ctx) == 0
+
+    assert "unmanaged (" not in capsys.readouterr().out
+
+
+def test_check_links_reports_foreign_file_in_declared_dir(home, managed_repo, capsys):
+    ctx = check_links_ctx(home, managed_repo, harnesses=("pi",))
+    wire_check_links(ctx, ("ext/one.ts", "~/.pi/agent/extensions/one.ts"))
+    (home / ".pi/agent/extensions/stray.ts").write_text("not ours\n")
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "unmanaged (1)" in out
+    assert "~/.pi/agent/extensions/stray.ts" in out
+    assert "no links.toml entry produces it" in out
+
+
+def test_check_links_skips_manifest_recorded_backup(home, managed_repo, capsys):
+    """A backup whose destination is still present is live --rollback payload.
+
+    Telling the user to delete it would destroy the only copy of their
+    pre-dotfiles original, so it must never read as a foreign file.
+    """
+    ctx = check_links_ctx(home, managed_repo, harnesses=("claude",))
+    target = home / ".claude/scripts/one.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("the user's original\n")
+
+    install.symlink(ctx, managed_repo / "scripts/one.py", target)
+
+    assert target.is_symlink()
+    assert (home / ".claude/scripts/one.py.bak").exists()
+    capsys.readouterr()
+
+    assert install.do_check_links(ctx) == 0
+
+    assert "unmanaged (" not in capsys.readouterr().out
+
+
+def test_check_links_reports_unrecorded_bak_in_declared_dir(home, managed_repo, capsys):
+    """A .bak the manifest never recorded is a stray, not rollback payload."""
+    ctx = check_links_ctx(home, managed_repo, harnesses=("claude",))
+    wire_check_links(ctx, ("scripts/one.py", "~/.claude/scripts/one.py"))
+    (home / ".claude/scripts/one.py.bak").write_text("hand-made\n")
+    capsys.readouterr()
+
+    assert install.do_check_links(ctx) == 1
+
+    assert "one.py.bak" in capsys.readouterr().out
+
+
+def test_check_links_absent_declared_dir_is_silent(home, managed_repo, capsys):
+    """A directory that was never provisioned here has nothing to audit."""
+    ctx = check_links_ctx(home, managed_repo, harnesses=("pi",))
+    capsys.readouterr()
+
+    assert install.do_check_links(ctx) == 0
+
+    assert "unmanaged (" not in capsys.readouterr().out
+
+
+def test_check_links_declared_dir_inherits_harness_from_its_rows(
+    home, managed_repo, capsys
+):
+    """Scoping the run to claude must not audit a pi-only directory."""
+    wire_ctx = check_links_ctx(home, managed_repo, harnesses=("pi",))
+    wire_check_links(wire_ctx, ("ext/one.ts", "~/.pi/agent/extensions/one.ts"))
+    (home / ".pi/agent/extensions/stray.ts").write_text("not ours\n")
+
+    claude_only = check_links_ctx(home, managed_repo, harnesses=("claude",))
+    capsys.readouterr()
+    assert install.do_check_links(claude_only) == 0
+    assert "unmanaged (" not in capsys.readouterr().out
+
+    with_pi = check_links_ctx(home, managed_repo, harnesses=("claude", "pi"))
+    capsys.readouterr()
+    assert install.do_check_links(with_pi) == 1
+    assert "unmanaged (1)" in capsys.readouterr().out
+
+
+def test_check_links_unharnessed_declared_dir_audited_under_any_harness(
+    home, managed_repo, capsys
+):
+    """A declared directory whose rows carry no harness is always in scope."""
+    ctx = check_links_ctx(home, managed_repo, harnesses=("copilot",))
+    wire_check_links(ctx, ("scripts/one.py", "~/.claude/scripts/one.py"))
+    (home / ".claude/scripts/stray.py").write_text("not ours\n")
+    capsys.readouterr()
+
+    assert install.do_check_links(ctx) == 1
+
+    assert ".claude/scripts/stray.py" in capsys.readouterr().out
+
+
+def test_check_links_skips_directories_and_junk_in_declared_dir(
+    home, managed_repo, capsys
+):
+    ctx = check_links_ctx(home, managed_repo, harnesses=("claude",))
+    wire_check_links(ctx, ("scripts/one.py", "~/.claude/scripts/one.py"))
+    scripts = home / ".claude/scripts"
+    (scripts / ".ruff_cache").mkdir()
+    (scripts / "__pycache__").mkdir()
+    (scripts / "notes.py~").write_text("editor swap\n")
+    (scripts / ".hidden").write_text("hidden\n")
+    capsys.readouterr()
+
+    assert install.do_check_links(ctx) == 0
+
+    assert "unmanaged (" not in capsys.readouterr().out
+
+
+def test_check_links_reports_unreadable_declared_dir(home, managed_repo, capsys):
+    """A declared directory that cannot be read was not verified, so it fails."""
+    if os.geteuid() == 0:
+        pytest.skip("root can read a 000 directory, so the fault cannot occur")
+
+    ctx = check_links_ctx(home, managed_repo, harnesses=("claude",))
+    wire_check_links(ctx, ("scripts/one.py", "~/.claude/scripts/one.py"))
+    scripts = home / ".claude/scripts"
+    mode = scripts.stat().st_mode
+    capsys.readouterr()
+    try:
+        scripts.chmod(0o000)
+        code = install.do_check_links(ctx)
+        out = capsys.readouterr().out
+    finally:
+        scripts.chmod(mode)
+
+    assert code == 1
+    assert "could not be audited" in out
+
+
+def test_load_managed_dirs_parses_and_rejects(tmp_path):
+    path = tmp_path / "links.toml"
+
+    path.write_text('[[managed_dir]]\ndest = "~/.claude/scripts"\n')
+    assert [spec.dest for spec in install.load_managed_dirs(path)] == [
+        "~/.claude/scripts"
+    ]
+
+    path.write_text("")
+    assert install.load_managed_dirs(path) == []
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        '[[managed_dir]]\ndest = "~/.x"\nharness = "pi"\n',
+        "[[managed_dir]]\n",
+        '[[managed_dir]]\ndest = ""\n',
+        '[[managed_dir]] = "not a table"\n',
+    ],
+)
+def test_load_managed_dirs_rejects_invalid_rows(tmp_path, bad):
+    path = tmp_path / "links.toml"
+    path.write_text(bad)
+
+    with pytest.raises((ValueError, TypeError)):
+        install.load_managed_dirs(path)
+
+
+# Measured 2026-08-31: inferring managed directories from every link's
+# dest.parent surfaces 230 unmanaged entries, 68 of them in $HOME alone. That
+# is why exclusivity is opt-in, and why widening it has to be a deliberate act.
+_FORBIDDEN_MANAGED_DIRS = frozenset({"~", "~/.pi/agent", "~/.claude/output-styles"})
+
+
+def test_declared_managed_dirs_stay_narrow():
+    """Pin the declared set itself, not the state of any one machine.
+
+    CI runs against a fake home and so cannot catch a too-wide declaration;
+    without this, adding dest = "~" would pass CI and then fail on every real
+    machine. This reads the repo's own links.toml, not user state.
+    """
+    home = Path.home()
+
+    for spec in install.load_managed_dirs(REPO_ROOT / "links.toml"):
+        assert spec.dest not in _FORBIDDEN_MANAGED_DIRS, spec.dest
+        expanded = install.expand_dest(spec.dest, home)
+        assert expanded != home, f"{spec.dest} declares $HOME itself"
+        assert expanded.is_relative_to(home), f"{spec.dest} escapes $HOME"
+
+
 # ── --check-links: message units and the worktree/second-checkout case ──────
 
 

@@ -1520,6 +1520,21 @@ class LinkSpec:
 _LINK_FIELDS = {"src", "dest", "harness", "platform", "wsl", "profile_exclude", "dir"}
 
 
+@dataclass(frozen=True)
+class ManagedDirSpec:
+    """One row of ``links.toml``: a directory dotfiles owns exclusively.
+
+    Exclusivity is opt-in rather than inferred. Inferring it from every link's
+    ``dest.parent`` surfaces 230 unmanaged entries to find 2 real ones, 68 of
+    them in ``$HOME`` alone, because seven separate rows happen to land there.
+    """
+
+    dest: str
+
+
+_MANAGED_DIR_FIELDS = {"dest"}
+
+
 def load_links(path: Path) -> list[LinkSpec]:
     """Parse ``links.toml`` into an ordered list of link specs.
 
@@ -1583,6 +1598,49 @@ def load_links(path: Path) -> list[LinkSpec]:
                 dir=dir_flag,
             )
         )
+    return specs
+
+
+def load_managed_dirs(path: Path) -> list[ManagedDirSpec]:
+    """Parse the ``[[managed_dir]]`` rows declaring directories we own exclusively.
+
+    Mirrors :func:`load_links` in refusing to guess — unknown keys and bad
+    values are rejected loudly, because a typo'd row would otherwise silently
+    widen or narrow the audit. An absent table is not an error: every
+    ``links.toml`` predating this mechanism has none, and the audit then finds
+    nothing declared.
+
+    Args:
+        path: Path to the TOML table.
+
+    Returns:
+        The specs, in file order.
+
+    Raises:
+        ValueError: If the file is malformed or an entry is invalid.
+    """
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+
+    rows = data.get("managed_dir", [])
+    if not isinstance(rows, list):
+        raise TypeError(f"{path}: expected a [[managed_dir]] array")
+
+    specs: list[ManagedDirSpec] = []
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            raise TypeError(f"{path}: managed_dir entry {index} is not a table")
+        unknown = sorted(set(row) - _MANAGED_DIR_FIELDS)
+        if unknown:
+            raise ValueError(
+                f"{path}: managed_dir entry {index} has unknown key(s): {unknown}"
+            )
+        dest = row.get("dest")
+        if not isinstance(dest, str) or not dest:
+            raise ValueError(f"{path}: managed_dir entry {index} is missing 'dest'")
+        specs.append(ManagedDirSpec(dest=dest))
     return specs
 
 
@@ -4416,12 +4474,14 @@ CHECK_BUCKET_BROKEN_SOURCE = "broken-source"
 CHECK_BUCKET_WRONG_TARGET = "wrong-target"
 CHECK_BUCKET_NOT_A_SYMLINK = "not-a-symlink"
 CHECK_BUCKET_ORPHANED = "orphaned"
+CHECK_BUCKET_UNMANAGED = "unmanaged"
 
 CHECK_BUCKETS = (
     CHECK_BUCKET_BROKEN_SOURCE,
     CHECK_BUCKET_WRONG_TARGET,
     CHECK_BUCKET_NOT_A_SYMLINK,
     CHECK_BUCKET_ORPHANED,
+    CHECK_BUCKET_UNMANAGED,
 )
 
 
@@ -4587,6 +4647,114 @@ def _check_orphaned_links(
         )
 
 
+def _live_backup_paths(ctx: Context) -> set[Path]:
+    """Return manifest-recorded backups that are still live ``--rollback`` payload.
+
+    Liveness means "the destination is still present at all", not "it
+    resolves": ``shutil.move(backup, dest)`` replaces a dangling symlink just
+    as readily as a healthy one, so a broken link does not make its backup
+    disposable. Reporting one would tell the user to delete the only copy of
+    their pre-dotfiles original, which is the opposite of what the backup is
+    for.
+    """
+    live: set[Path] = set()
+    for entry in ctx.manifest.entries():
+        if entry.get("kind") != "file-backed-up":
+            continue
+        dest = Path(str(entry.get("dest", "")))
+        backup = Path(str(entry.get("backup", "")))
+        if not dest.parts or not backup.parts:
+            continue
+        if backup.exists() and (dest.exists() or dest.is_symlink()):
+            live.add(backup)
+    return live
+
+
+def _dir_applies(
+    dir_spec: ManagedDirSpec, specs: Sequence[LinkSpec], ctx: Context
+) -> bool:
+    """Return whether a declared directory is in scope for this run.
+
+    A declared directory inherits its harness, platform, WSL, and profile
+    scoping from the ``[[link]]`` rows whose destinations fall inside it,
+    rather than carrying gating fields of its own. Reusing
+    :func:`link_applies` picks up all four for free. A directory no row targets
+    is audited unconditionally, since there is no evidence to gate on.
+    """
+    directory = expand_dest(dir_spec.dest, ctx.home)
+    related = [
+        spec
+        for spec in specs
+        if expand_dest(spec.dest, ctx.home).is_relative_to(directory)
+    ]
+    if not related:
+        return True
+    return any(link_applies(spec, ctx) for spec in related)
+
+
+def _check_unmanaged_files(
+    ctx: Context,
+    specs: Sequence[LinkSpec],
+    links: Sequence[tuple[Path, Path, str, bool]],
+    managed_dirs: Sequence[ManagedDirSpec],
+    findings: dict[str, list[str]],
+) -> int:
+    """Report foreign entries in directories ``links.toml`` owns exclusively.
+
+    Nothing else catches these. ``--rollback`` only inspects what the history
+    recorded, ``--depart`` compares against an install-time baseline, and the
+    repo-to-links.toml parity tests check both directions of the mapping yet
+    cannot see a file that exists only on the installed side.
+
+    Args:
+        specs: Parsed ``[[link]]`` rows, for :func:`_dir_applies`.
+        links: Every gathered triple, applicable or not — a gated row's
+            destination is still ours, so it must never read as foreign.
+        managed_dirs: Parsed ``[[managed_dir]]`` rows.
+        findings: Bucket map to append into.
+
+    Returns:
+        How many declared directories were actually audited.
+    """
+    live_backups = _live_backup_paths(ctx)
+    audited = 0
+    for dir_spec in managed_dirs:
+        directory = expand_dest(dir_spec.dest, ctx.home)
+        if not directory.is_dir():
+            continue
+        if not _dir_applies(dir_spec, specs, ctx):
+            continue
+        audited += 1
+        managed = {
+            dest
+            for _src, dest, _rel, _applicable in links
+            if dest.is_relative_to(directory)
+        }
+        try:
+            entries = sorted(os.listdir(directory))
+        except OSError as exc:
+            findings[CHECK_BUCKET_UNMANAGED].append(
+                f"{ctx.display(directory)} — declared exclusive, but unreadable "
+                f"({exc.strerror or exc}), so it could not be audited"
+            )
+            continue
+        for name in entries:
+            path = directory / name
+            if path in managed or path in live_backups:
+                continue
+            # Hidden files are skipped: macOS drops .DS_Store into any directory
+            # the user merely opens in Finder.
+            if name.startswith(".") or name.endswith(_JUNK_SUFFIXES):
+                continue
+            if path.is_dir() and not path.is_symlink():
+                continue
+            findings[CHECK_BUCKET_UNMANAGED].append(
+                f"{ctx.display(path)} — {dir_spec.dest} is declared exclusive "
+                "to dotfiles, but no links.toml entry produces it"
+            )
+    return audited
+
+
 def _cleanup_orphaned_links(
     ctx: Context, links: Sequence[tuple[Path, Path, str, bool]]
 ) -> None:
@@ -4655,6 +4823,16 @@ def do_check_links(ctx: Context) -> int:
     line per entry would make the tool useless exactly when it is most
     likely to be reached for.
 
+    ``unmanaged`` additionally audits every directory ``links.toml`` declares
+    exclusive through a ``[[managed_dir]]`` row, reporting any file there that
+    no link produces. Those rows carry no gating fields of their own: each
+    directory inherits its scope from the ``[[link]]`` rows inside it, so
+    widening ``--harness`` only ever brings more directories into scope and
+    never reclassifies a file within one. The older justification for that not
+    producing false positives — that every bucket requires a destination
+    already on disk — stopped being true when this bucket arrived, since it
+    reads directory contents instead.
+
     Returns:
         Exit status — 0 if every bucket is empty, 1 if anything was found.
     """
@@ -4665,9 +4843,11 @@ def do_check_links(ctx: Context) -> int:
         ctx = replace(ctx, opts=replace(ctx.opts, harnesses=VALID_HARNESSES))
 
     specs = load_links(ctx.dotfiles / "links.toml")
+    managed_dirs = load_managed_dirs(ctx.dotfiles / "links.toml")
     links = gather_links(ctx, specs)
     findings, foreign = _check_applicable_links(ctx, links)
     _check_orphaned_links(ctx, links, findings)
+    dirs_audited = _check_unmanaged_files(ctx, specs, links, managed_dirs, findings)
 
     _header("==> links.toml audit (read-only)", quiet=ctx.opts.quiet)
     for root, count in sorted(foreign.items()):
@@ -4689,6 +4869,14 @@ def do_check_links(ctx: Context) -> int:
                 "link is present, correct, and backed by a file that exists."
             )
         )
+        if dirs_audited:
+            noun = "directory" if dirs_audited == 1 else "directories"
+            print(
+                PALETTE.ok(
+                    f"  {dirs_audited} declared exclusive {noun} checked — "
+                    "nothing foreign in any of them."
+                )
+            )
         return 0
 
     for bucket in CHECK_BUCKETS:

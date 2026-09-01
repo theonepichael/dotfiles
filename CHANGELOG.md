@@ -5,6 +5,36 @@ harness CLIs, flags, or behavior get an entry going forward.
 
 ## 2026-08-31
 
+### Added
+
+- **`--check-links` gains an `unmanaged` bucket**, catching files that exist
+  only on the installed side of a link. A new `[[managed_dir]]` row declares a
+  directory `links.toml` owns exclusively, and the audit reports anything
+  there that no `[[link]]` row produces. Nothing else caught this class:
+  `--rollback` only inspects what the history recorded, `--depart` compares
+  against an install-time baseline, and the repo-to-`links.toml` parity tests
+  check both directions of the mapping yet cannot see a file present only on
+  disk. Shipped with `~/.claude/scripts` and `~/.pi/agent/extensions`
+  declared; every other directory stays undeclared on purpose, because
+  inferring exclusivity from each link's `dest.parent` surfaces 230 unmanaged
+  entries to find 2 real ones, 68 of them in `$HOME` alone.
+
+  Three deliberate non-findings. A `.bak` recorded in the history whose
+  destination is still present is live `--rollback` payload — the user's
+  pre-dotfiles original — and is skipped; only an *unrecorded* `.bak` is a
+  stray. Dotfiles, editor swap files, and subdirectories are skipped.
+  A declared directory inherits the harness, platform, WSL, and profile
+  scoping of the `[[link]]` rows inside it, so `--harness=claude` does not
+  audit a pi-only directory. A declared directory that cannot be read is
+  reported rather than passed over, since a clean exit code asserts it really
+  was verified.
+
+  This changes what a clean run means, and both places that described it are
+  updated: `do_check_links`'s docstring and `README.md` had justified the
+  "widening `--harness` cannot produce false positives" invariant by claiming
+  every bucket requires a destination already on disk, which stopped being
+  true once a bucket began reading directory contents.
+
 ### Fixed
 
 - **Reverted yesterday's opencode "correction", which was itself wrong.**

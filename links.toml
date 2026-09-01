@@ -44,6 +44,29 @@
 #   * The WSL VS Code destination (Windows-side AppData), derived at run
 #     time as described above.
 
+# ── [[managed_dir]] ───────────────────────────────────────────────────────
+#
+# Declares a directory dotfiles owns *exclusively*: every file in it is
+# expected to be produced by a [[link]] row, and --check-links reports
+# anything else there under the `unmanaged` bucket. Exclusivity is opt-in on
+# purpose — inferring it from each link's dest.parent surfaces 230 unmanaged
+# entries to find 2 real ones, 68 of them in $HOME alone, because seven rows
+# happen to land there.
+#
+# Fields:
+#   dest  (required) the directory, "~"-relative exactly as a link's is.
+#
+# Only directories dotfiles genuinely owns belong here. Do not add:
+#   * $HOME itself — seven rows land there among 68 unmanaged files.
+#   * ~/.pi/agent — its 10 unmanaged entries are Pi runtime state
+#     (sessions/, auth.json, settings.json, npm/).
+#   * ~/.claude/output-styles — holds ELI5.md, which is not ours and may be
+#     legitimately hand-written.
+#
+# These rows carry no gating fields of their own: a directory inherits the
+# harness/platform/wsl/profile scoping of the [[link]] rows inside it, so
+# --harness=claude does not audit a pi-only directory.
+
 # ── common (both platforms, every harness) ───────────────────────────────
 
 [[link]]
@@ -711,3 +734,11 @@ src = "vscode/keybindings.json"
 dest = "~/.config/Code/User/keybindings.json"
 platform = "linux"
 wsl = "exclude"
+
+# ── exclusive directories (audited by --check-links) ─────────────────────
+
+[[managed_dir]]
+dest = "~/.claude/scripts"
+
+[[managed_dir]]
+dest = "~/.pi/agent/extensions"
