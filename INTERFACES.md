@@ -894,6 +894,7 @@ are copy-once seeds for exactly that reason.
 | `pi/extensions/second-opinion-tool.ts` | `~/.pi/agent/extensions/second-opinion-tool.ts` (pi) |
 | `pi/extensions/standup-tool.ts` | `~/.pi/agent/extensions/standup-tool.ts` (pi) |
 | `pi/extensions/to-tickets-tool.ts` | `~/.pi/agent/extensions/to-tickets-tool.ts` (pi) |
+| `pi/extensions/trust-session.ts` | `~/.pi/agent/extensions/trust-session.ts` (pi) |
 | `pi/extensions/vitals-promotion-tool.ts` | `~/.pi/agent/extensions/vitals-promotion-tool.ts` (pi) |
 | `pi/package.json` | not symlinked by `links.toml` |
 | `pi/prompts/backlog-item.md` | `~/.pi/agent/prompts/backlog-item.md` (pi) |
@@ -918,6 +919,7 @@ are copy-once seeds for exactly that reason.
 | `pi/test/second-opinion-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/standup-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/to-tickets-tool.test.ts` | not symlinked by `links.toml` |
+| `pi/test/toggle-check.test.ts` | not symlinked by `links.toml` |
 | `pi/test/vitals-promotion-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/tsconfig.json` | not symlinked by `links.toml` |
 

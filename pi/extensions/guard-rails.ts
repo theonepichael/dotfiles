@@ -4,6 +4,12 @@ import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 
 let enabled = true;
 
+// Exported so trust-session.ts can flip this gate alongside
+// permission-gate.ts's without reaching into module-private state.
+export function setGuardRailsEnabled(value: boolean): void {
+  enabled = value;
+}
+
 export function isDangerousRm(command: string): boolean {
   const rmMatches = command.matchAll(/\brm\s+([^;&|`$()]+)/gi);
   for (const match of rmMatches) {

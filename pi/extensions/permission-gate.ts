@@ -113,8 +113,17 @@ export function classify(command: string): Verdict {
   return "ask";
 }
 
+let enabled = true;
+
+// Exported so trust-session.ts can flip this gate alongside guard-rails.ts's
+// without reaching into module-private state.
+export function setPermissionGateEnabled(value: boolean): void {
+  enabled = value;
+}
+
 export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
+    if (!enabled) return undefined;
     if (!isToolCallEventType("bash", event)) return;
 
     const command = event.input.command;
@@ -139,5 +148,21 @@ export default function (pi: ExtensionAPI) {
 
     const ok = await ctx.ui.confirm("Run bash command?", command);
     if (!ok) return { block: true, reason: "Blocked by user" };
+  });
+
+  pi.registerCommand("permission-gate-disable", {
+    description: "Disable the bash permission-gate for this session (trust mode)",
+    handler: async (_args, ctx) => {
+      enabled = false;
+      ctx.ui.notify("Permission gate disabled — all bash commands run unconfirmed", "warning");
+    },
+  });
+
+  pi.registerCommand("permission-gate-enable", {
+    description: "Re-enable the bash permission-gate",
+    handler: async (_args, ctx) => {
+      enabled = true;
+      ctx.ui.notify("Permission gate enabled", "info");
+    },
   });
 }

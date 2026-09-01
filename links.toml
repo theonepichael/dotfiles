@@ -70,6 +70,10 @@ dest = "~/.poshtheme.omp.json"
 src = "tmux/.tmux.conf"
 dest = "~/.tmux.conf"
 
+[[link]]
+src = "alacritty/alacritty.toml"
+dest = "~/.config/alacritty/alacritty.toml"
+
 # ── Claude Code wiring ───────────────────────────────────────────────────
 
 [[link]]
@@ -545,6 +549,11 @@ harness = "pi"
 [[link]]
 src = "pi/extensions/guard-rails.ts"
 dest = "~/.pi/agent/extensions/guard-rails.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/trust-session.ts"
+dest = "~/.pi/agent/extensions/trust-session.ts"
 harness = "pi"
 
 [[link]]
