@@ -269,7 +269,9 @@ DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py reject <slug|N> "<feed
 ```
 
 When passing a numeric position (not a slug) to `start`/`done`/`update`/`block`/
-`unblock`/`pending update`/`review`/`approve`/`reject`/`run`, fetch the current rev first —
+`unblock`/`pending update`/`review`/`approve`/`reject`/`run`/`gate-set`/
+`gate-pass`/`remove`/`rename` (rename's numeric position is its `old_slug`
+argument), fetch the current rev first —
 the `item-map:` line of `render` (or `# rev=N` of `list`/`show`) output — in the
 same tool-call step immediately before the mutating call, and pass it as
 `--if-rev <N>`. This pre-mutation `render` must run **without**
