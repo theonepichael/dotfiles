@@ -527,3 +527,19 @@ keys), same pattern as Claude Code's `~/.claude/settings.json` +
   model `kimi-k2.6`: skill discovery, `permission-gate.ts`'s allow/block
   paths, `ruff-format-on-edit.ts`'s auto-fix path — all in this doc's own
   sections above, not asserted separately.
+
+## Pre-tool guard: worktree rules delegated to the shared script
+
+`pi/extensions/guard-rails.ts` keeps its own `rm -rf`, `sudo`,
+protected-path and `git commit` guards — those need `ctx.ui.confirm()`,
+which a subprocess cannot do — and gains a write/edit branch that calls
+`claude/scripts/guard_rails.py`, the single source of truth for the
+main-checkout and stale-base rules across all five harnesses.
+
+A `deny` becomes `{block: true, reason}`; a `warn` becomes
+`ctx.ui.notify(reason, "warning")`. Failure to run the script fails open.
+
+**Verified live 2026-09-01**, with a control: the write was blocked with the
+guard active, and the same prompt under `GUARD_RAILS_OFF=1` wrote the file
+successfully — so the block was the guard, not an unrelated failure. That
+control also confirms the escape hatch works end to end in a real harness.

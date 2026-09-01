@@ -432,19 +432,21 @@ used for backlog capture.
   ecosystem.
 
   This sidesteps concurrent-session collisions by construction — repos
-  routinely get worked from more than one tool in parallel (Claude Code,
-  opencode, Copilot, agy, Pi) against the same checkout — rather than relying
-  solely on detecting and reacting to them after the fact. `dev_status.py
-  start`'s claim markers and worktree guard (above) are a backstop for when
-  this policy is skipped, not a substitute for following it. If you're
-  already mid-task in a worktree
-  this session created, keep working there; don't spin up a second one for
-  the same task just because a new tool call starts. Mention the worktree
-  path when the work is done — it needs a manual merge or PR back into the
-  main branch, since it doesn't live in the main checkout. Avoid repo-wide
-  operations (a full reformat, a rename-everywhere refactor) that could
-  conflict with whatever else is active in the repo — scope changes to just
-  the files the current task actually needs.
+  routinely get worked from more than one tool in parallel against the same
+  checkout. On a machine where `install.py` has run, a pre-tool guard
+  enforces it: every harness refuses a write into a repo's main checkout
+  while a backlog item for that repo is in progress, and warns when a
+  worktree's base is behind `origin/main`. Only the user can switch it off,
+  by setting `GUARD_RAILS_OFF=1` in the environment the harness is launched
+  from — an agent's own `export` never reaches the hook. Elsewhere, this
+  rule is on you.
+
+  If you're already mid-task in a worktree this session created, keep
+  working there; don't spin up a second one for the same task. Mention the
+  worktree path when the work is done — it needs a manual merge or PR back
+  into the main branch. Avoid repo-wide operations (a full reformat, a
+  rename-everywhere refactor) that could conflict with whatever else is
+  active in the repo.
 - Committing itself always needs its own explicit confirmation — never
   commit, in any repo or worktree, without asking first and getting a yes,
   no exceptions for being mid-pipeline or in auto-mode.

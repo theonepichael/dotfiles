@@ -266,6 +266,14 @@ dest = "~/.claude/scripts/notify.py"
 src = "claude/scripts/analyze_sessions.py"
 dest = "~/.claude/scripts/analyze_sessions.py"
 
+# Pre-tool guard shared by all five harnesses: refuses a write into a repo's
+# main checkout while a backlog item for that repo is in progress, and warns
+# when a worktree's base is behind origin/main. Each harness has a thin
+# adapter; the verdict logic lives only here.
+[[link]]
+src = "claude/scripts/guard_rails.py"
+dest = "~/.claude/scripts/guard_rails.py"
+
 # ── GitHub Copilot CLI wiring ────────────────────────────────────────────
 # claude/global-instructions.md is deliberately the same file on both sides — the
 # backlog/pending-items workflow prose is tool-agnostic, so there is no
@@ -305,6 +313,22 @@ platform = "mac"
 [[link]]
 src = "copilot/hooks/post-tool-use.json"
 dest = "~/.copilot/hooks/post-tool-use.json"
+harness = "copilot"
+platform = "linux"
+
+# preToolUse guard. Probed 2026-09-01: Copilot honours the hook's EXIT CODE
+# only -- a JSON deny verdict on exit 0 was ignored and the write went through
+# -- and it surfaces no reason to the model beyond "hook exited with code 2".
+# Details in copilot/CLAUDE_CODE_PARITY.md.
+[[link]]
+src = "copilot/hooks/pre-tool-use.json"
+dest = "~/.copilot/hooks/pre-tool-use.json"
+harness = "copilot"
+platform = "mac"
+
+[[link]]
+src = "copilot/hooks/pre-tool-use.json"
+dest = "~/.copilot/hooks/pre-tool-use.json"
 harness = "copilot"
 platform = "linux"
 
@@ -471,6 +495,14 @@ harness = "opencode"
 [[link]]
 src = "opencode/plugin/notify.ts"
 dest = "~/.config/opencode/plugin/notify.ts"
+harness = "opencode"
+
+# tool.execute.before guard. opencode can throw or return and has nothing in
+# between, so a "warn" verdict degrades to a silent allow here -- R3 is not
+# surfaced on this harness.
+[[link]]
+src = "opencode/plugin/guard-rails.ts"
+dest = "~/.config/opencode/plugin/guard-rails.ts"
 harness = "opencode"
 
 # ── agy (Google Antigravity CLI, Gemini-backed) ──────────────────────────

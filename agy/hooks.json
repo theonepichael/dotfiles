@@ -30,5 +30,19 @@
         "matcher": "write_to_file|replace_file_content"
       }
     ]
+  },
+  "worktree-guard": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "python3 ~/.claude/scripts/guard_rails.py --harness agy",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "write_to_file|replace_file_content"
+      }
+    ]
   }
 }

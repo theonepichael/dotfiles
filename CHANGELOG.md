@@ -7,6 +7,37 @@ harness CLIs, flags, or behavior get an entry going forward.
 
 ### Added
 
+- **Cross-harness pre-tool worktree guard (`claude/scripts/guard_rails.py`).**
+  One stdlib-only script, called by all five harnesses, that refuses a write
+  into a repository's main checkout while a backlog item for that repository
+  is in progress, and warns when a worktree's base is behind `origin/main`.
+  Repository identity is matched on canonicalized `git rev-parse
+  --git-common-dir`, which is equal across a repo and its linked worktrees;
+  `--show-toplevel` is not, and using it would have made the rule silently
+  never fire. Wired as `PreToolUse` in `claude/settings.json` and
+  `claude/settings.work.json`, a `worktree-guard` set in `agy/hooks.json`,
+  `copilot/hooks/pre-tool-use.json`, a new `opencode/plugin/guard-rails.ts`,
+  and a write/edit branch in `pi/extensions/guard-rails.ts` (whose existing
+  `rm -rf`, `sudo`, protected-path and `git commit` guards are untouched).
+  Blocking was verified live in all five harnesses, not only unit-tested.
+  Fails open on any error, timeout, or unrecognized payload. Disabled with
+  `GUARD_RAILS_OFF=1`, which is deliberately reachable only from the
+  environment the harness was launched in — hooks are spawned by the host
+  process, so an agent's own `export` never reaches them.
+
+  Two harness limitations found by probing and recorded in the parity docs:
+  **Copilot honours the hook's exit code only** (a JSON `deny` verdict on
+  exit 0 was ignored, and the write proceeded) and surfaces no reason to the
+  model beyond `hook exited with code 2`; **opencode has no warn channel** at
+  all, so the stale-base warning is not surfaced there.
+
+  Blocking `git commit` on `main`/`master` is deliberately **not** part of
+  this. Parsing the shell string was shown bypassable by `bash -c`, by a
+  quoted heredoc fed to `sh`, and by a mid-word backslash (`g\it commit`) —
+  each reproduced by execution — and the command-position anchoring needed to
+  avoid flagging `echo "git commit"` is itself what opens the indirect-
+  invocation hole. That rule is tracked separately.
+
 - **Cross-platform agent toast notifications (`claude/scripts/notify.py`).**
   Dispatches native desktop notifications across Windows/WSL, macOS, and Linux
   when agents settle or prompt for interactive input. On WSL, registers

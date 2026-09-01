@@ -308,3 +308,25 @@ Installed CLI surface (cross-checked against the above):
 - `copilot skill --help` / `copilot skill list` — non-interactive skill management + live skill discovery
 - Live probe: `copilot -p "<activate dashboard; run dev_status.py render; show stdout verbatim>" --allow-all-tools` → produced `skill(dashboard)` tool call + dashboard verbatim
 - Live probe (2026-08-13): a diagnostic `postToolUse` hook dumping raw stdin, wired at `~/.copilot/hooks/zz-probe.json`, fired against a real `copilot -p` edit and a real `copilot -p` create → captured payload showed `toolArgs` as a **JSON-encoded string**, not a nested object as the *Post-tool use hook* doc's example implies; correct extraction is `.toolArgs | fromjson | .path`, confirmed for both `edit` (`old_str`/`new_str` keys) and `create` (`file_text` key)
+
+## Pre-tool guard (`preToolUse`) — mechanism established by probe
+
+GitHub's docs say `preToolUse` "can approve or deny tool executions" but
+never document *how*. Probed live 2026-09-01, three runs:
+
+1. JSON `{"decision":"deny"}` on stdout **with exit 2** -> blocked.
+2. The same JSON on stdout **with exit 0** -> **not blocked**; the write went
+   through.
+3. A reason on **stderr** with exit 2 -> blocked, but the reason was not
+   shown.
+
+**Copilot honours the exit code only.** `copilot/hooks/pre-tool-use.json`
+therefore relies on `guard_rails.py --harness copilot` exiting 2, and the
+JSON verdict it also prints is inert today, kept only in case a later
+release starts reading it.
+
+**The block carries no reason.** Whatever the hook writes to stdout or
+stderr, the model sees exactly `Denied by preToolUse hook: hook exited with
+code 2` — confirmed in run 3. So on Copilot the guard stops the write but
+cannot say why, and cannot suggest the worktree remedy. Every other harness
+surfaces the reason in full.

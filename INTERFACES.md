@@ -44,6 +44,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`gen_skills.py`](#claudescriptsgenskillspy) | gen_skills.py — regenerate the dashboard/grill-me/backlog-item/make-skill/ spec/standup/to-tickets skill copies from one template per skill, plus a shared per-harness capability table. dashboard/grill-me/backlog-item/ make-skill cover all 5 harnesses (claude, copilot, opencode, agy, pi); spec/standup/to-tickets cover only claude/opencode/pi — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section for why copilot/agy stop getting new generated skills. |
 | [`gen_skills_params.py`](#claudescriptsgenskillsparamspy) | gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py. |
 | [`grill.py`](#claudescriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
+| [`guard_rails.py`](#claudescriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, and warn when the current worktree's base has fallen behind ``origin/main``. |
 | [`harness_discovery_check.py`](#claudescriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md. |
 | [`llm_backends.py`](#claudescriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
 | [`notify.py`](#claudescriptsnotifypy) | Cross-platform agent notification dispatcher. |
@@ -589,6 +590,40 @@ grill.py — grill-me session state CLI. All session mutations go through here.
 - Subcommand handlers: `cmd_new`, `cmd_ask`, `cmd_decide`, `cmd_revise`, `cmd_rm`, `cmd_verdict`, `cmd_plan`, `cmd_mark_pending_execution`, `cmd_pending_plan`, `cmd_next`, `cmd_frontier`, `cmd_render`, `cmd_list`, `cmd_show`
 - Tested by: `claude/scripts/test_grill.py`, `claude/scripts/test_second_opinion.py`, `claude/scripts/test_to_tickets_runner.py`
 
+### `claude/scripts/guard_rails.py`
+
+Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, and warn when the current worktree's base has fallen behind ``origin/main``.
+
+- Installed at: `~/.claude/scripts/guard_rails.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): pre-tool guard shared by every harness
+  - `--harness` — read this harness's payload on stdin and answer in its shape (choices: claude, agy, copilot)
+  - `--tool` — tool name, for the neutral form
+  - `--cwd` — session working directory, for the neutral form
+  - `--path` — target file path, for the neutral form
+  - `--quiet/-q`
+  - `--verbose/-v`
+- Environment: `GUARD_RAILS_OFF`, `GUARD_RAILS_STORE`
+- Filesystem constants:
+  - `DEFAULT_BACKLOG_ITEMS = Path.home() / '.claude' / 'data' / 'backlog' / 'items.json'`
+- Depends on: `cli_common.py`
+- Public classes:
+  - `class Request` — A normalized tool call: what family, from where, against which path.
+  - `class Verdict`
+  - `class RepoInfo`
+- Public functions:
+  - `tool_family(name: object) -> str` — Collapse a harness's tool name to a family.
+  - `git(*args: str, cwd: str | None = None) -> str | None` — Run git, returning stripped stdout, or None on any failure.
+  - `common_dir_of(directory: str) -> str | None` — Canonical git common directory for a path, or None if it is not in a repo.
+  - `repo_info(directory: str) -> RepoInfo | None` — Classify a directory: which repo, worktree or main checkout, bare or not, and on which branch.
+  - `backlog_items_path() -> Path` — Where the backlog store lives.
+  - `load_in_progress() -> list[dict] | None` — In-progress backlog items, or None when the store cannot be read.
+  - `evaluate(req: Request) -> Verdict` — Apply R2 then R3.
+  - `parse_payload(harness: str, payload: object) -> Request | None` — Normalize a harness's native hook payload.
+  - `render(harness: str | None, verdict: Verdict) -> tuple[str, int]` — Shape a verdict into the harness's own reply.
+  - `build_parser() -> argparse.ArgumentParser`
+- Tested by: `claude/scripts/test_guard_rails.py`, `test/test_guard_rails_topology.py`
+
 ### `claude/scripts/harness_discovery_check.py`
 
 SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md.
@@ -986,9 +1021,11 @@ are copy-once seeds for exactly that reason.
 | `copilot/aliases.zsh` | `~/.copilot_aliases` (copilot) |
 | `copilot/hooks/agent-stop.json` | `~/.copilot/hooks/agent-stop.json` (copilot, mac, linux) |
 | `copilot/hooks/post-tool-use.json` | `~/.copilot/hooks/post-tool-use.json` (copilot, mac, linux) |
+| `copilot/hooks/pre-tool-use.json` | `~/.copilot/hooks/pre-tool-use.json` (copilot, mac, linux) |
 | `copilot/hooks/session-start.json` | `~/.copilot/hooks/session-start.json` (copilot, mac, linux) |
 | `opencode/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
 | `opencode/opencode.jsonc` | not symlinked by `links.toml` |
+| `opencode/plugin/guard-rails.ts` | `~/.config/opencode/plugin/guard-rails.ts` (opencode) |
 | `opencode/plugin/notify.ts` | `~/.config/opencode/plugin/notify.ts` (opencode) |
 | `opencode/plugin/ruff-format-on-edit.ts` | `~/.config/opencode/plugin/ruff-format-on-edit.ts` (opencode) |
 | `opencode/tui.json` | `~/.config/opencode/tui.json` (opencode) |
