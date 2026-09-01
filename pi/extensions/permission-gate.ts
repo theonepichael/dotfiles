@@ -48,6 +48,16 @@ const ALLOW_PATTERNS: string[] = [
   "uv run pytest*",
   "uv run ruff check*",
   "uv run ruff format*",
+  // backlog-item --auto's own worktree/baseline/verify steps (CLAUDE.md's
+  // worktree-first policy, backlog-item.md steps 3/4/9). git add/git commit
+  // stay off this list on purpose -- backlog-item's steps 10-11 require
+  // those to stop for live user approval even in --auto mode.
+  "git worktree add*",
+  "git -C * worktree add*",
+  "bun install*",
+  "bun run test*",
+  "bun run lint*",
+  "bunx tsc*",
   "lsof *",
   "ps *",
   "ls*",

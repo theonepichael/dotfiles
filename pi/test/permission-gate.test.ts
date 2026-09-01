@@ -37,6 +37,20 @@ describe("classify", () => {
     expect(classify("python3 ~/.claude/scripts/dev_status.py render")).toBe("ask");
   });
 
+  test("backlog-item --auto's worktree/build/test commands are allowed", () => {
+    expect(classify("git worktree add ../repo-slug -b slug")).toBe("allow");
+    expect(classify("git -C /repo worktree add ../repo-slug -b slug")).toBe("allow");
+    expect(classify("bun install")).toBe("allow");
+    expect(classify("bun run test")).toBe("allow");
+    expect(classify("bun run lint")).toBe("allow");
+    expect(classify("bunx tsc --noEmit")).toBe("allow");
+  });
+
+  test("commit-gate commands stay on ask even after the --auto allowlist extension", () => {
+    expect(classify("git add -A")).toBe("ask");
+    expect(classify("git commit -m msg")).toBe("ask");
+  });
+
   test("leading and trailing whitespace does not bypass the gate", () => {
     expect(classify("  git status  ")).toBe("allow");
     expect(classify("  rm -rf /  ")).toBe("ask");
