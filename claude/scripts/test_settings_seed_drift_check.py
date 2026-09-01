@@ -36,6 +36,7 @@ EXPECTED_SETTINGS_COSMETIC = frozenset(
         "theme",
         "statusLine",
         "model",
+        "agentPushNotifEnabled",
     }
 )
 EXPECTED_SETTINGS_NONCOSMETIC = frozenset(
