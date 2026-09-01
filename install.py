@@ -224,24 +224,33 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi>[,...] [--profile=
   --check-links
               audit the live symlinks against links.toml and exit. Strictly
               read-only: nothing is created, removed, or repointed, so this
-              is safe to run at any time. Reports four buckets —
+              is safe to run at any time. Reports several buckets —
               broken-source (the link is correct but its repo file is
               gone), wrong-target (the link points somewhere other than
               links.toml says), not-a-symlink (a real file sits where a
-              link belongs) and orphaned (a symlink an earlier run recorded
+              link belongs), orphaned (a symlink an earlier run recorded
               in the history that no links.toml entry produces anymore,
-              e.g. the entry was deleted or its dest renamed) — none of
-              which a plain re-run surfaces, since symlink() happily
-              creates a dangling link and never revisits a dest that
-              links.toml stopped mentioning. --harness and --profile scope
-              which entries are considered; with no --harness, every
-              harness's entries are checked, which cannot produce false
-              positives because every bucket requires the destination to
-              already exist on disk. Links pointing at the same file in a
-              different checkout of this repo — the normal state of affairs
-              when auditing from a worktree — are collapsed into a single
-              informational note instead of one finding each, and do not
-              affect the exit code. No other flag may be combined with it.
+              e.g. the entry was deleted or its dest renamed), and
+              unmanaged (a file sitting in a directory links.toml declares
+              exclusive via a [[managed_dir]] row, that no [[link]] row
+              produces) — none of which a plain re-run surfaces, since
+              symlink() happily creates a dangling link and never revisits
+              a dest that links.toml stopped mentioning. --harness and
+              --profile scope which entries are considered; with no
+              --harness, every harness's entries are checked, which cannot
+              produce false positives because every bucket requires the
+              destination to already exist on disk. Links pointing at the
+              same file in a different checkout of this repo — the normal
+              state of affairs when auditing from a worktree — are
+              collapsed into a single informational note instead of one
+              finding each, and do not affect the exit code. --report-
+              uninstalled additionally reports never-installed: an
+              applicable row whose repo source exists but whose
+              destination was never linked here at all, as opposed to one
+              that was linked once and later removed, which stays silent
+              either way; off by default, since a machine that simply
+              hasn't run install.sh yet for some entries is not a defect.
+              No other flag may be combined with --check-links.
               Exits 0 when nothing is wrong, 1 when any bucket is
               non-empty, 2 if links.toml itself cannot be read.
 
@@ -254,6 +263,7 @@ Examples:
   ./install.sh --dry-run --rollback
   ./install.sh --rollback --wipe        # full rollback to a blank slate
   ./install.sh --check-links            # read-only symlink audit
+  ./install.sh --check-links --report-uninstalled  # also flag never-installed links
 
 Exits 0 if every step ran, 1 if any step was skipped (see summary)."""
 

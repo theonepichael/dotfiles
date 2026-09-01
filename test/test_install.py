@@ -4472,6 +4472,18 @@ def test_usage_documents_check_links(capsys):
     assert "--check-links" in capsys.readouterr().out
 
 
+def test_usage_mentions_every_check_links_bucket(capsys):
+    """CHECK_BUCKETS has grown without the hand-written --help text keeping
+    pace before (twice: unmanaged, then never-installed) and nothing caught
+    it either time. This makes a future miss a hard test failure instead of
+    something a human has to notice by hand."""
+    with pytest.raises(SystemExit):
+        install.parse_args(["--help"])
+    out = capsys.readouterr().out
+    for bucket in install.CHECK_BUCKETS:
+        assert bucket in out, f"--help text is missing the {bucket!r} bucket"
+
+
 # ── --check-links --report-uninstalled: never-installed detection ──────────
 
 
