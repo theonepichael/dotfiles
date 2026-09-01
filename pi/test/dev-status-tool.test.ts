@@ -67,6 +67,19 @@ describe("assertFields", () => {
     );
     expect(() => assertFields("prune", { action: "prune", force: true })).not.toThrow();
   });
+
+  test("start accepts optional force/allowMain/claimedBy", () => {
+    expect(() =>
+      assertFields("start", {
+        action: "start",
+        slug: "abc",
+        force: true,
+        allowMain: true,
+        claimedBy: "pi",
+      }),
+    ).not.toThrow();
+    expect(() => assertFields("start", { action: "start", slug: "abc" })).not.toThrow();
+  });
 });
 
 describe("buildArgv", () => {
@@ -92,6 +105,35 @@ describe("buildArgv", () => {
       "gate-pass",
       "abc",
     ]);
+  });
+
+  test("start carries optional force/allowMain/claimedBy flags", () => {
+    expect(buildArgv("start", { action: "start", slug: "abc" })).toEqual(["start", "abc"]);
+    expect(buildArgv("start", { action: "start", slug: "abc", force: true })).toEqual([
+      "start",
+      "abc",
+      "--force",
+    ]);
+    expect(buildArgv("start", { action: "start", slug: "abc", allowMain: true })).toEqual([
+      "start",
+      "abc",
+      "--allow-main",
+    ]);
+    expect(buildArgv("start", { action: "start", slug: "abc", claimedBy: "pi" })).toEqual([
+      "start",
+      "abc",
+      "--claimed-by",
+      "pi",
+    ]);
+    expect(
+      buildArgv("start", {
+        action: "start",
+        slug: "abc",
+        force: true,
+        allowMain: true,
+        claimedBy: "pi",
+      }),
+    ).toEqual(["start", "abc", "--force", "--allow-main", "--claimed-by", "pi"]);
   });
 
   test("patch actions serialize the patch", () => {

@@ -292,6 +292,19 @@ that shape the code:
   that flag and observing empty stderr. The forwarding stays in as a
   backstop against anything not similarly gated, not because a real
   reminder was ever caught by it.
+- **2026-08-31, `start` gained `force`/`allowMain`/`claimedBy`.**
+  `dev_status.py start` (66aa8aa) added `--force`/`-f`,
+  `--allow-main`/`--no-worktree-check`, and `--claimed-by <harness>` — a
+  claim-collision refusal and a main/master worktree guard, both new. This
+  tool's `start` action initially shipped with none of the three wired
+  (`force` existed on the `Field` union already, but only for `prune`),
+  so Pi had no typed-tool way to clear either refusal and no raw-bash
+  fallback either (`permission-gate.ts` blocks it). Backlog item
+  `meta-pi-dev-status-tool-start-flags` closed the gap: `force`/
+  `allowMain`/`claimedBy` added to `start`'s `ACTION_FIELDS` (allowed,
+  not required — `start` still works with just `slug`) and `buildArgv`,
+  following the same conditional-spread pattern already used by
+  `list`/`recap`/`backfill_gate`.
 
 **Verified live**: extension loads cleanly (`pi -e
 dev-status-tool.ts "..."` with no error); `render` returns the real
