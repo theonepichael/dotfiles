@@ -4536,23 +4536,86 @@ class BacklogTestCase(unittest.TestCase):
         self.assertEqual(args.reason_file, "/tmp/r.txt")
 
 
+# Every env var _detect_harness consults, in its documented resolution order.
+_HARNESS_ENV_VARS = (
+    "DEVSTATUS_HARNESS",
+    "PI_SESSION",
+    "PI_CODING_AGENT",
+    "CLAUDE_CODE",
+    "ANTHROPIC_CLI",
+    "ANTIGRAVITY",
+    "AGY_SESSION",
+    "OPENCODE_GATEWAY",
+    "OPENCODE",
+    "GITHUB_COPILOT",
+    "COPILOT",
+)
+
+
+def _only_harness_env(**active: str) -> dict[str, str]:
+    """Build an env dict asserting exactly one harness is detected.
+
+    _detect_harness resolves by priority and only truthiness-checks each var,
+    so whatever the session running the suite happens to export leaks in and
+    outranks the branch under test: a Pi session exports PI_CODING_AGENT,
+    which sits above CLAUDE_CODE and made the claude assertion fail. Blanking
+    every other var makes each assertion depend only on the var it sets.
+    """
+    env = {name: "" for name in _HARNESS_ENV_VARS}
+    env.update(active)
+    return env
+
+
 class ClaimMarkerAndWorktreeGuardTestCase(BacklogTestCase):
     def test_detect_harness(self):
         self.assertEqual(dev_status._detect_harness("custom"), "custom")
-        with patch.dict(os.environ, {"DEVSTATUS_HARNESS": "my-env"}):
+        with patch.dict(os.environ, _only_harness_env(DEVSTATUS_HARNESS="my-env")):
             self.assertEqual(dev_status._detect_harness(), "my-env")
-        with patch.dict(os.environ, {"PI_SESSION": "1", "DEVSTATUS_HARNESS": ""}):
+        with patch.dict(os.environ, _only_harness_env(PI_SESSION="1")):
             self.assertEqual(dev_status._detect_harness(), "pi")
-        with patch.dict(os.environ, {"CLAUDE_CODE": "1", "DEVSTATUS_HARNESS": ""}):
+        with patch.dict(os.environ, _only_harness_env(PI_CODING_AGENT="1")):
+            self.assertEqual(dev_status._detect_harness(), "pi")
+        with patch.dict(os.environ, _only_harness_env(CLAUDE_CODE="1")):
             self.assertEqual(dev_status._detect_harness(), "claude")
-        with patch.dict(os.environ, {"ANTIGRAVITY": "1", "DEVSTATUS_HARNESS": ""}):
+        with patch.dict(os.environ, _only_harness_env(ANTHROPIC_CLI="1")):
+            self.assertEqual(dev_status._detect_harness(), "claude")
+        with patch.dict(os.environ, _only_harness_env(ANTIGRAVITY="1")):
             self.assertEqual(dev_status._detect_harness(), "agy")
-        with patch.dict(os.environ, {"OPENCODE_GATEWAY": "1", "DEVSTATUS_HARNESS": ""}):
+        with patch.dict(os.environ, _only_harness_env(AGY_SESSION="1")):
+            self.assertEqual(dev_status._detect_harness(), "agy")
+        with patch.dict(os.environ, _only_harness_env(OPENCODE_GATEWAY="1")):
             self.assertEqual(dev_status._detect_harness(), "opencode")
-        with patch.dict(os.environ, {"GITHUB_COPILOT": "1", "DEVSTATUS_HARNESS": ""}):
+        with patch.dict(os.environ, _only_harness_env(OPENCODE="1")):
+            self.assertEqual(dev_status._detect_harness(), "opencode")
+        with patch.dict(os.environ, _only_harness_env(GITHUB_COPILOT="1")):
+            self.assertEqual(dev_status._detect_harness(), "copilot")
+        with patch.dict(os.environ, _only_harness_env(COPILOT="1")):
             self.assertEqual(dev_status._detect_harness(), "copilot")
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(dev_status._detect_harness(), "cli")
+
+    def test_detect_harness_priority_order(self):
+        """Higher-priority vars win when several are set at once.
+
+        The one-var-at-a-time assertions above cannot see branch order: they
+        blank every other var, so they still pass if the branches are
+        reordered. These adjacent pairs pin the documented priority chain.
+        """
+        with patch.dict(
+            os.environ,
+            _only_harness_env(DEVSTATUS_HARNESS="my-env", PI_SESSION="1"),
+        ):
+            self.assertEqual(dev_status._detect_harness(), "my-env")
+        with patch.dict(os.environ, _only_harness_env(PI_SESSION="1", CLAUDE_CODE="1")):
+            self.assertEqual(dev_status._detect_harness(), "pi")
+        with patch.dict(
+            os.environ, _only_harness_env(CLAUDE_CODE="1", ANTIGRAVITY="1")
+        ):
+            self.assertEqual(dev_status._detect_harness(), "claude")
+        with patch.dict(os.environ, _only_harness_env(ANTIGRAVITY="1", OPENCODE="1")):
+            self.assertEqual(dev_status._detect_harness(), "agy")
+        with patch.dict(os.environ, _only_harness_env(OPENCODE="1", COPILOT="1")):
+            self.assertEqual(dev_status._detect_harness(), "opencode")
 
     @patch("dev_status._check_worktree_guard")
     def test_claim_creation_on_start(self, mock_wt):
