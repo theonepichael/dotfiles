@@ -172,13 +172,15 @@ skills (including `spec`) are present at
     A hook that exits without emitting valid JSON was not tested for
     failure behavior — always emit `{}` regardless of which branch a
     handler script takes, don't rely on early `exit 0`.
-  - Wired at `agy/hooks.json` → `~/.gemini/config/hooks.json`: runs `ruff
-    format` + `ruff check --fix` on any `.py` file `write_to_file`/
-    `replace_file_content` touches, inside a uv/ruff project (walks up for
-    `pyproject.toml`) — ported from the same Claude Code/Copilot
-    PostToolUse mechanism. Verified end-to-end: introduced a real
-    formatting violation, ran a live `agy -p` edit, confirmed the hook
-    auto-fixed it before the next tool call saw the file.
+  - Wired at `agy/hooks.json` → `~/.gemini/config/hooks.json`:
+    - `PostToolUse`: runs `ruff format` + `ruff check --fix` on any `.py` file
+      `write_to_file`/`replace_file_content` touches, inside a uv/ruff project
+      (walks up for `pyproject.toml`) — ported from the same Claude Code/Copilot
+      PostToolUse mechanism. Verified end-to-end: introduced a real
+      formatting violation, ran a live `agy -p` edit, confirmed the hook
+      auto-fixed it before the next tool call saw the file.
+    - `Stop`: runs `notify-on-stop` invoking `~/.claude/scripts/notify.py --harness AGY`
+      to dispatch desktop toast notifications when agy stops.
 - **MCP config format differs**: `~/.gemini/config/mcp_config.json` with a
   `serverUrl` key, replacing inline `~/.gemini/settings.json` declarations
   from the Gemini CLI era. Not touched by this port; this repo doesn't

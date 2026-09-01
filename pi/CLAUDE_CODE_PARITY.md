@@ -143,14 +143,14 @@ user typing the slash form at all. `pi/prompts/backlog-item.md`,
 
 ## 5. Extensions (`pi/extensions/`)
 
-Twelve extensions. Their verification states genuinely differ, so this
+Thirteen extensions. Their verification states genuinely differ, so this
 section records each one's rather than asserting a single claim over all of
 them:
 
 - **Exercised live in a real Pi session**, with the tool call read back out
   of the session JSONL rather than inferred from the reply text —
   `guard-rails`, `permission-gate`, `ruff-format-on-edit`,
-  `dev-status-tool`, and the five script wrappers below
+  `dev-status-tool`, `notify`, and the five script wrappers below
   (`grill`, `second-opinion`, `standup`, `to-tickets`,
   `vitals-promotion`). Provider `opencode-go`, model `kimi-k2.6`.
 - **`question-tool`**: both paths exercised — the headless refusal, and the
@@ -444,6 +444,11 @@ section less useful, not more.
   the stock one. It imports only a type, so no `pi.exec`, no filesystem, no
   network, and `ctx.mode !== "tui"` makes it inert in print, RPC and JSON
   modes.
+
+- **`notify.ts`** — listens to `agent_settled` (when Pi returns to idle)
+  and `ui_prompt_start` (when Pi prompts the user for interactive choices),
+  dispatching cross-platform desktop toasts with the official `pi.dev`
+  geometric logo via `~/.claude/scripts/notify.py`.
 
 `philosophy-header.ts` is also the cautionary tale for this whole
 directory. It was authored straight into `~/.pi/agent/extensions/` and

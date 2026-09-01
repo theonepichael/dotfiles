@@ -430,6 +430,11 @@ conflicting keys), same pattern as Claude Code's `~/.claude/settings.json` +
    without any extra file. Confirmed no local `AGENTS.md` shadows it on
    this machine.
 
+## 8. Plugins (`opencode/plugin/`)
+
+- **`ruff-format-on-edit.ts`** — auto-formats Python files on `tool.execute.after` for `edit` and `write`.
+- **`notify.ts`** — listens to `session.idle` event and dispatches cross-platform desktop toasts with the official OpenCode logo via `~/.claude/scripts/notify.py`.
+
 ## Sources
 
 - https://opencode.ai/docs/keybinds/

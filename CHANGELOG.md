@@ -3,6 +3,29 @@
 This repo's internal tooling changes are logged here. Breaking changes to
 harness CLIs, flags, or behavior get an entry going forward.
 
+## 2026-09-01
+
+### Added
+
+- **Cross-platform agent toast notifications (`claude/scripts/notify.py`).**
+  Dispatches native desktop notifications across Windows/WSL, macOS, and Linux
+  when agents settle or prompt for interactive input. On WSL, registers
+  per-harness `AppUserModelId` identities (`Agent.Claude`, `Agent.AGY`,
+  `Agent.Pi`, `Agent.Copilot`, `Agent.OpenCode`) in `HKCU` and triggers native
+  WinRT toast notifications via `powershell.exe` with circular branding icons
+  (`appLogoOverride`) and the agent's real name in the header. Emits OSC 777
+  and OSC 9 terminal sequences to controlling TTYs (with tmux passthrough).
+- **Official branding icons (`claude/icons/`).** Sourced official high-res PNG
+  logos for Pi (from `pi.dev/press-kit`), Claude Code (Anthropic spark), GitHub
+  Copilot (robot mark), OpenCode (terminal mark), and AGY (Gemini sparkle).
+  Symlinked via `links.toml` to `~/.claude/icons/`.
+- **Harness hook and extension wiring:**
+  - Claude Code: `Notification` and `Stop` hooks in `claude/settings.json` & `claude/settings.work.json`.
+  - Pi: `pi/extensions/notify.ts` listening to `agent_settled` and `ui_prompt_start`.
+  - OpenCode: `opencode/plugin/notify.ts` listening to `session.idle`.
+  - GitHub Copilot CLI: `copilot/hooks/agent-stop.json` on `agentStop`.
+  - AGY: `Stop` hook (`notify-on-stop`) in `agy/hooks.json`.
+
 ## 2026-08-31
 
 ### Added

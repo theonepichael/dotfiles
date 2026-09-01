@@ -82,16 +82,16 @@ the locally-installed CLI surface, except where noted.
   `cwd`, optional `env`, and a `timeoutSec` (default 30). `copilot help
   config` corroborates (`hooks` keyed by event name, same schema as
   `.github/hooks/*.json`; `disableAllHooks` global toggle).
-   This repo wires one at `copilot/hooks/session-start.json` (symlinked to
-   `~/.copilot/hooks/session-start.json` via two same-destination
-   `links.toml` entries gated `platform = "mac"` / `"linux"` — the handler
-   is bash-only as wired, so nothing is installed on Windows) running
-   `dev_status.py render` + `dotfiles_sync_check.py` on session start —
-  the auto-render dashboard affordance that agy and opencode can't
-  replicate (agy's `hooks.md` has no `SessionStart` event; opencode needs
-  a TypeScript plugin). Note that `dashboard`'s Copilot version correctly
-  flags this in its description, so the SKILL is not re-run unprompted by
-  the user's "status" phrasing once the hook has surfaced the backlog.
+   This repo wires hooks under `copilot/hooks/` (symlinked to
+   `~/.copilot/hooks/` via `links.toml` gated `platform = "mac"` / `"linux"`):
+   - `session-start.json` running `dev_status.py render` + `dotfiles_sync_check.py`
+     on session start.
+   - `post-tool-use.json` for tool tracking.
+   - `agent-stop.json` on `agentStop` running `~/.claude/scripts/notify.py --harness Copilot`
+     for desktop toast notifications with GitHub Copilot branding.
+   Note that `dashboard`'s Copilot version correctly flags this in its
+   description, so the SKILL is not re-run unprompted by the user's "status"
+   phrasing once the hook has surfaced the backlog.
 
 - **Non-interactive print mode**: `copilot -p "<prompt>"` (alias
   `--prompt`) with `--allow-all-tools` (required for non-interactive mode)
