@@ -33,15 +33,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 SYMLINK_MODE = "120000"
 
-# claude/CLAUDE.md is the user's global, cross-project instructions file,
-# authored here and symlinked out to ~/.claude/CLAUDE.md,
-# ~/.copilot/copilot-instructions.md, ~/.gemini/GEMINI.md and
-# ~/.pi/agent/AGENTS.md by links.toml. It is not a directory-level
-# instruction file for claude/, so the pairing rule does not apply to it.
-# This is a named exemption from the scan below, not a whitelist the scan is
-# built from.
-GLOBAL_INSTRUCTIONS_FILE = "claude/CLAUDE.md"
-
 
 def _git(*args: str) -> str:
     return subprocess.run(
@@ -126,12 +117,11 @@ def test_no_claude_md_without_an_agents_md() -> None:
     orphans = [
         p
         for p in _paths_named(entries, "CLAUDE.md")
-        if p != GLOBAL_INSTRUCTIONS_FILE
-        and str(Path(p).parent / "AGENTS.md") not in entries
+        if str(Path(p).parent / "AGENTS.md") not in entries
     ]
 
     assert not orphans, (
         "CLAUDE.md with no AGENTS.md beside it: "
         f"{orphans}. Make AGENTS.md the real file and CLAUDE.md a symlink to "
-        "it, or add the exemption to GLOBAL_INSTRUCTIONS_FILE with a reason."
+        "it."
     )

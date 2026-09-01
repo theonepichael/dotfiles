@@ -1,10 +1,11 @@
 # AGENTS.md — this repo
 
 Project-specific pointers for agents working *in* this repo. Not to be
-confused with `claude/CLAUDE.md`: that file is the user's global,
-cross-project instructions — authored here, then symlinked out to
+confused with `claude/global-instructions.md`: that file is the user's
+global, cross-project instructions — authored here, then symlinked out to
 `~/.claude/CLAUDE.md`, `~/.copilot/copilot-instructions.md`,
-`~/.gemini/GEMINI.md` and `~/.pi/agent/AGENTS.md` (see `links.toml`).
+`~/.gemini/GEMINI.md`, `~/.pi/agent/AGENTS.md` (see `links.toml`), and read
+directly by opencode as its own global fallback.
 General workflow conventions (backlog via `dev_status.py`, git
 worktree-first policy, verification standards, etc.) are already loaded from
 there — this file doesn't repeat them, only points at what's specific to

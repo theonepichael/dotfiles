@@ -7,6 +7,23 @@ harness CLIs, flags, or behavior get an entry going forward.
 
 ### Added
 
+- **`dev_status.py start` gains claim markers and a worktree guard.** A
+  `claimed_by` field (harness, machine id, PID, `claimed_at`/`last_active`
+  timestamps) is stamped on an item when it goes `in-progress`, and cleared
+  when it leaves that status. `start` now refuses to hand out an already-
+  actively-claimed item to a second live session (exit 1, unless `--force`/
+  `-f`); a dead PID or a claim idle past `DEVSTATUS_CLAIM_TTL_SECONDS`
+  (default 2h) is taken over automatically. `start` also refuses to run from
+  a main/master checkout of a git repository — the worktree-first policy in
+  `claude/global-instructions.md` was previously convention-only — unless
+  `--allow-main`/`--no-worktree-check` is passed. New `--claimed-by` flag
+  overrides harness auto-detection (`DEVSTATUS_HARNESS` env var, or
+  per-harness env var sniffing: `CLAUDE_CODE`/`ANTHROPIC_CLI`, `PI_SESSION`/
+  `PI_CODING_AGENT`, `AGY_SESSION`/`ANTIGRAVITY`, `OPENCODE`/
+  `OPENCODE_GATEWAY`, `COPILOT`/`GITHUB_COPILOT`). The dashboard's IN
+  PROGRESS section now shows the claiming harness in brackets next to each
+  item. `INTERFACES.md` and `claude/global-instructions.md` updated to
+  match; see `claude/scripts/test_dev_status.py` for the new coverage.
 - **`--check-links` gains an `unmanaged` bucket**, catching files that exist
   only on the installed side of a link. A new `[[managed_dir]]` row declares a
   directory `links.toml` owns exclusively, and the audit reports anything
@@ -56,6 +73,20 @@ harness CLIs, flags, or behavior get an entry going forward.
   and was loading a second copy of it. `links.toml`,
   `opencode/CLAUDE_CODE_PARITY.md` §1 and the `README.md` harness table are
   corrected to match. The dated 2026-08-30 entry below is left as written.
+
+- **Renamed `claude/CLAUDE.md` to `claude/global-instructions.md`.** Sitting
+  at `claude/CLAUDE.md` made Claude Code's nested-memory attachment treat it
+  as `claude/`'s own directory instruction file, on top of it already being
+  loaded as the user's global instructions — confirmed live: touching any
+  file under `claude/` loaded the same 27KB file twice in one context. The
+  file's role (global, cross-harness instructions symlinked out by
+  `links.toml`) never changed; only its repo-relative source path did. No
+  harness destination path changed. `links.toml`, `test/test_agents_md_links.py`
+  (the `GLOBAL_INSTRUCTIONS_FILE` exemption is no longer needed and was
+  removed), `test/scenarios.sh`, `README.md`, `AGENTS.md`,
+  `claude/scripts/AGENTS.md` (dropped the section documenting this as a
+  known quirk), `claude/scripts/gen_interfaces.py`, `install.py`, and the
+  four `CLAUDE_CODE_PARITY.md` docs are updated to match.
 
 ## 2026-08-30
 

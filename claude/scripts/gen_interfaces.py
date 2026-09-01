@@ -877,10 +877,10 @@ def link_gates(entry: dict[str, object]) -> list[str]:
 def load_link_table(repo_root: Path) -> LinkTable:
     """Map each repo-relative source in links.toml to its symlink destinations.
 
-    One source can be linked more than once — ``claude/CLAUDE.md`` lands in
-    three harness homes, and the Copilot hooks repeat the same destination once
-    per platform — so destinations are collected per source and merged by path,
-    accumulating each entry's gates.
+    One source can be linked more than once — ``claude/global-instructions.md``
+    lands in four harness homes, and the Copilot hooks repeat the same
+    destination once per platform — so destinations are collected per source
+    and merged by path, accumulating each entry's gates.
     """
     links_file = repo_root / "links.toml"
     if not links_file.is_file():

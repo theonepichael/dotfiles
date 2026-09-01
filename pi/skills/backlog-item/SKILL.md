@@ -35,7 +35,7 @@ non-quiet `render` immediately before each mutating call to read the
 current rev for `--if-rev` (CLAUDE.md's Backlog section).
 
 ## 2. Start
-If not already in-progress: call the `dev_status` tool with `action: "start", slug: "<resolved slug>"` (or the bash fallback named in step 1).
+If not already in-progress: call the `dev_status` tool with `action: "start", slug: "<resolved slug>"` (or the bash fallback named in step 1). On a main/master checkout, `start` now refuses (worktree guard), and the typed tool has no `--allow-main` escape hatch — do step 3 first, then run `start` from inside the fresh worktree.
 
 ## 3. Branch
 related_files names exactly one project repo → worktree it per the shared instructions file's Git section: `git -C <repo> worktree add ../<repo-name>-<slug> -b <slug>`. Reuse a worktree this session already made for this item instead of a second one. Multiple repos, or none: ask which repo — never guess.

@@ -16,8 +16,8 @@ install, not from search-engine summaries.
 - **Global instructions file: `~/.pi/agent/AGENTS.md`, with `CLAUDE.md` read
   as a fallback name** (`docs/usage.md`'s Context Files section: "Pi loads
   `AGENTS.md` or `CLAUDE.md` at startup from: `~/.pi/agent/AGENTS.md` for
-  global instructions..."). `links.toml` symlinks `claude/CLAUDE.md` to this
-  path (as `AGENTS.md`, not `CLAUDE.md` — do not shadow `AGENTS.md` with a
+  global instructions..."). `links.toml` symlinks `claude/global-instructions.md`
+  to this path (as `AGENTS.md`, not `CLAUDE.md` — do not shadow `AGENTS.md` with a
   same-directory `CLAUDE.md`; when both are considered for a directory the
   doc names `AGENTS.md` first). No frontmatter support — always active,
   same as every other harness's shared-instructions file.
@@ -292,6 +292,19 @@ that shape the code:
   that flag and observing empty stderr. The forwarding stays in as a
   backstop against anything not similarly gated, not because a real
   reminder was ever caught by it.
+- **2026-08-31, `start` gained `force`/`allowMain`/`claimedBy`.**
+  `dev_status.py start` (66aa8aa) added `--force`/`-f`,
+  `--allow-main`/`--no-worktree-check`, and `--claimed-by <harness>` — a
+  claim-collision refusal and a main/master worktree guard, both new. This
+  tool's `start` action initially shipped with none of the three wired
+  (`force` existed on the `Field` union already, but only for `prune`),
+  so Pi had no typed-tool way to clear either refusal and no raw-bash
+  fallback either (`permission-gate.ts` blocks it). Backlog item
+  `meta-pi-dev-status-tool-start-flags` closed the gap: `force`/
+  `allowMain`/`claimedBy` added to `start`'s `ACTION_FIELDS` (allowed,
+  not required — `start` still works with just `slug`) and `buildArgv`,
+  following the same conditional-spread pattern already used by
+  `list`/`recap`/`backfill_gate`.
 
 **Verified live**: extension loads cleanly (`pi -e
 dev-status-tool.ts "..."` with no error); `render` returns the real
@@ -430,7 +443,7 @@ section less useful, not more.
   real logic worth covering.
 - **`philosophy-header.ts`** — replaces Pi's startup header with a wordmark
   and one of six taglines quoted from this repo's own `STYLE.md` and
-  `claude/CLAUDE.md`, picked once per session; `/builtin-header` restores
+  `claude/global-instructions.md`, picked once per session; `/builtin-header` restores
   the stock one. It imports only a type, so no `pi.exec`, no filesystem, no
   network, and `ctx.mode !== "tui"` makes it inert in print, RPC and JSON
   modes.

@@ -55,6 +55,8 @@ export type Field =
   | "raw"
   | "apply"
   | "force"
+  | "allowMain"
+  | "claimedBy"
   | "refresh"
   | "backend"
   | "reasonFile";
@@ -71,7 +73,10 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
   show: { allowed: ["slug"], required: ["slug"] },
   add: { allowed: ["patch"], required: ["patch"] },
   update: { allowed: ["slug", "patch"], required: ["slug", "patch"] },
-  start: { allowed: ["slug"], required: ["slug"] },
+  start: {
+    allowed: ["slug", "force", "allowMain", "claimedBy"],
+    required: ["slug"],
+  },
   done: { allowed: ["slug"], required: ["slug"] },
   review: { allowed: ["slug"], required: ["slug"] },
   approve: { allowed: ["slug"], required: ["slug"] },
@@ -142,6 +147,8 @@ export interface DevStatusParams {
   raw?: boolean;
   apply?: boolean;
   force?: boolean;
+  allowMain?: boolean;
+  claimedBy?: string;
   refresh?: boolean;
   backend?: string;
   reasonFile?: string;
@@ -206,7 +213,13 @@ export function buildArgv(action: Action, params: DevStatusParams): string[] {
     case "update":
       return ["update", params.slug!, patchJson()];
     case "start":
-      return ["start", params.slug!];
+      return [
+        "start",
+        params.slug!,
+        ...(params.force ? ["--force"] : []),
+        ...(params.allowMain ? ["--allow-main"] : []),
+        ...(params.claimedBy ? ["--claimed-by", params.claimedBy] : []),
+      ];
     case "done":
       return ["done", params.slug!];
     case "review":
@@ -276,6 +289,7 @@ export default function (pi: ExtensionAPI) {
       "dev_status covers everything dev_status.py's CLI does: render, list, show, add, update, start, done, review, approve, reject, gate_set, gate_pass, backfill_gate, rename, remove, block, unblock, prune, recap, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.claude/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
       "dev_status's patch field is a plain object, not a JSON string -- never hand-encode it.",
       'dev_status refuses a numeric slug on any mutating action -- call action: "show" first to resolve a numeric position to its real slug.',
+      "start refuses to run from a main/master checkout (worktree guard) or when the item is actively claimed by another live session (claim collision) -- pass allowMain or force respectively to override, or claimedBy to correct a wrong auto-detected harness name.",
     ],
     parameters: Type.Object({
       action: StringEnum(ACTIONS),
@@ -308,7 +322,22 @@ export default function (pi: ExtensionAPI) {
         Type.Boolean({ description: "backfill_gate: write changes instead of a dry run." }),
       ),
       force: Type.Optional(
-        Type.Boolean({ description: "prune: must be true -- confirms the destructive prune." }),
+        Type.Boolean({
+          description:
+            "prune: must be true -- confirms the destructive prune. start: take over " +
+            "an item actively claimed by another live session.",
+        }),
+      ),
+      allowMain: Type.Optional(
+        Type.Boolean({
+          description:
+            "start: allow starting from a main/master checkout, bypassing the worktree guard.",
+        }),
+      ),
+      claimedBy: Type.Optional(
+        Type.String({
+          description: "start: override the auto-detected claiming harness name.",
+        }),
       ),
       refresh: Type.Optional(Type.Boolean({ description: "recap: bypass the freshness cache." })),
       backend: Type.Optional(Type.String({ description: "recap: force this backend." })),

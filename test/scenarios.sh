@@ -110,7 +110,7 @@ check "exit code 0 or 1 (0/1 = ok-with-skips, not a hard error)" \
 check "manifest recorded profile=personal" manifest_has run profile=personal
 check "$HOME/.vimrc symlinks into repo" bash -c '[[ "$(readlink -f ~/.vimrc)" == "'"$DOTFILES"'/vim/.vimrc" ]]'
 check "$HOME/.zshrc symlinks into repo" bash -c '[[ "$(readlink -f ~/.zshrc)" == "'"$DOTFILES"'/zsh/.zshrc" ]]'
-check "$HOME/.claude/CLAUDE.md symlinks into repo" bash -c '[[ "$(readlink -f ~/.claude/CLAUDE.md)" == "'"$DOTFILES"'/claude/CLAUDE.md" ]]'
+check "$HOME/.claude/CLAUDE.md symlinks into repo" bash -c '[[ "$(readlink -f ~/.claude/CLAUDE.md)" == "'"$DOTFILES"'/claude/global-instructions.md" ]]'
 check "$HOME/.claude/settings.json copied (not symlinked)" bash -c '[[ -f ~/.claude/settings.json && ! -L ~/.claude/settings.json ]]'
 check "$HOME/.claude/settings.json matches personal seed" diff -q ~/.claude/settings.json "$DOTFILES/claude/settings.json"
 check "watchcommit symlinked on personal profile" bash -c '[[ -L ~/.local/bin/watchcommit ]]'
@@ -310,7 +310,7 @@ check "Claude Code wired (pi combo)" bash -c '[[ -L ~/.claude/CLAUDE.md ]]'
 check "Pi wired (combo)" bash -c '[[ -f ~/.pi/agent/settings.json ]]'
 check "Copilot still NOT wired (pi combo omits it)" bash -c '[[ ! -e ~/.copilot/copilot-instructions.md ]]'
 check "pi AGENTS.md symlinks into repo's shared CLAUDE.md" bash -c \
-  '[[ "$(readlink -f ~/.pi/agent/AGENTS.md)" == "'"$DOTFILES"'/claude/CLAUDE.md" ]]'
+  '[[ "$(readlink -f ~/.pi/agent/AGENTS.md)" == "'"$DOTFILES"'/claude/global-instructions.md" ]]'
 check "pi dashboard prompt symlinked" bash -c \
   '[[ "$(readlink -f ~/.pi/agent/prompts/dashboard.md)" == "'"$DOTFILES"'/pi/prompts/dashboard.md" ]]'
 check "pi backlog-item prompt symlinked" bash -c \
@@ -834,7 +834,7 @@ echo "same" >"$LOCAL_CMDS/collide.md"
 cat >>"$DOTFILES/links.toml" <<'TOML'
 
 [[link]]
-src = "claude/CLAUDE.md"
+src = "claude/global-instructions.md"
 dest = "~/.claude/scenario-local-commands/collide.md"
 harness = "claude"
 TOML
@@ -843,7 +843,7 @@ collision_code=$?
 cat /tmp/dirtrue-collision.out
 check "collision aborts with exit 2" bash -c "[[ $collision_code -eq 2 ]]"
 check "collision names both sources" bash -c \
-  'grep -q "claude/CLAUDE.md" /tmp/dirtrue-collision.out && grep -q "local/claude/commands/collide.md" /tmp/dirtrue-collision.out'
+  'grep -q "claude/global-instructions.md" /tmp/dirtrue-collision.out && grep -q "local/claude/commands/collide.md" /tmp/dirtrue-collision.out'
 check "no symlink created at the colliding destination" bash -c '[[ ! -e "'"$DEST"'/collide.md" ]]'
 check "collision left the still-good sub/bar.md symlink untouched" bash -c '[[ -e "'"$DEST"'/sub/bar.md" ]]'
 

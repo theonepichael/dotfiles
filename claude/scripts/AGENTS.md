@@ -53,12 +53,3 @@ without a `uv sync`. They are *also* collected by `uv run pytest` from the
 repo root — `testpaths` includes this directory — which means the root
 `conftest.py` sandbox applies when they run that way and not when they are
 run directly. See `test/AGENTS.md` before writing one.
-
-## `claude/CLAUDE.md` is not a directory instruction file
-
-It is the user's global, cross-project instructions, symlinked out to four
-harnesses by `links.toml`. Because it happens to sit one level up, Claude
-Code's nested attachment loads it a second time whenever a file under
-`claude/` is touched. That is a known, pre-existing quirk of where the file
-lives — not a bug in this directory, and not something to "fix" by moving or
-renaming it without tracing every `links.toml` destination first.

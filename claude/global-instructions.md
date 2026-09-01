@@ -359,6 +359,19 @@ Follow the Git section's worktree-first policy below: create a fresh
 worktree scoped to the item's slug before touching the repo under
 `related_files`, rather than branching in the main checkout.
 
+`dev_status.py start` now enforces part of this itself, as a backstop: it
+refuses to run from a main/master checkout of a git repository (exit 1,
+with a message telling you to create a worktree first), unless you pass
+`--allow-main`/`--no-worktree-check`. It also stamps a `claimed_by` marker
+(harness, machine id, PID, timestamps) on the item and refuses `start` if
+another live session already holds an active claim — pass `--force`/`-f`
+to take over. A dead process or an expired claim (idle past
+`DEVSTATUS_CLAIM_TTL_SECONDS`, default 2 hours) is taken over automatically,
+no `--force` needed. `--claimed-by <harness>` overrides the auto-detected
+harness name if it's ever wrong. The claim clears itself when the item
+leaves `in-progress`. The dashboard's IN PROGRESS section shows the
+claiming harness in brackets, e.g. `[claude]`.
+
 #### Cross-machine sync
 
 The backlog/pending store is per-machine by default. If the user wants it
@@ -420,8 +433,11 @@ used for backlog capture.
 
   This sidesteps concurrent-session collisions by construction — repos
   routinely get worked from more than one tool in parallel (Claude Code,
-  opencode, Copilot, agy, Pi) against the same checkout — instead of detecting
-  and reacting to them after the fact. If you're already mid-task in a worktree
+  opencode, Copilot, agy, Pi) against the same checkout — rather than relying
+  solely on detecting and reacting to them after the fact. `dev_status.py
+  start`'s claim markers and worktree guard (above) are a backstop for when
+  this policy is skipped, not a substitute for following it. If you're
+  already mid-task in a worktree
   this session created, keep working there; don't spin up a second one for
   the same task just because a new tool call starts. Mention the worktree
   path when the work is done — it needs a manual merge or PR back into the

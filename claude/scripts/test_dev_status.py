@@ -113,6 +113,9 @@ class BacklogTestCase(unittest.TestCase):
         # author to remember it.
         self._popen_patch = patch("subprocess.Popen")
         self.mock_popen = self._popen_patch.start()
+        self.mock_popen.return_value.communicate.return_value = ("", "")
+        self.mock_popen.return_value.poll.return_value = 0
+        self.mock_popen.return_value.returncode = 0
 
     def tearDown(self):
         self._popen_patch.stop()
@@ -4533,6 +4536,221 @@ class BacklogTestCase(unittest.TestCase):
         self.assertEqual(args.reason_file, "/tmp/r.txt")
 
 
+class ClaimMarkerAndWorktreeGuardTestCase(BacklogTestCase):
+    def test_detect_harness(self):
+        self.assertEqual(dev_status._detect_harness("custom"), "custom")
+        with patch.dict(os.environ, {"DEVSTATUS_HARNESS": "my-env"}):
+            self.assertEqual(dev_status._detect_harness(), "my-env")
+        with patch.dict(os.environ, {"PI_SESSION": "1", "DEVSTATUS_HARNESS": ""}):
+            self.assertEqual(dev_status._detect_harness(), "pi")
+        with patch.dict(os.environ, {"CLAUDE_CODE": "1", "DEVSTATUS_HARNESS": ""}):
+            self.assertEqual(dev_status._detect_harness(), "claude")
+        with patch.dict(os.environ, {"ANTIGRAVITY": "1", "DEVSTATUS_HARNESS": ""}):
+            self.assertEqual(dev_status._detect_harness(), "agy")
+        with patch.dict(os.environ, {"OPENCODE_GATEWAY": "1", "DEVSTATUS_HARNESS": ""}):
+            self.assertEqual(dev_status._detect_harness(), "opencode")
+        with patch.dict(os.environ, {"GITHUB_COPILOT": "1", "DEVSTATUS_HARNESS": ""}):
+            self.assertEqual(dev_status._detect_harness(), "copilot")
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(dev_status._detect_harness(), "cli")
+
+    @patch("dev_status._check_worktree_guard")
+    def test_claim_creation_on_start(self, mock_wt):
+        item = make_item("task-a", status="open")
+        self.write_items([item])
+        with patch.dict(os.environ, {"DEVSTATUS_HARNESS": "pi"}):
+            dev_status.cmd_start(_args(id="task-a", claimed_by=None, force=False))
+        items = dev_status.load_items()
+        claim = items[0].get("claimed_by")
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim["harness"], "pi")
+        self.assertEqual(claim["machine_id"], dev_status.machine_id())
+        self.assertEqual(claim["pid"], os.getpid())
+        self.assertIn("claimed_at", claim)
+        self.assertIn("last_active", claim)
+
+    @patch("dev_status._check_worktree_guard")
+    def test_claim_cleared_on_done(self, mock_wt):
+        item = make_item("task-a", status="open")
+        self.write_items([item])
+        dev_status.cmd_start(_args(id="task-a", claimed_by="claude", force=False))
+        dev_status.cmd_done(_args(id="task-a"))
+        items = dev_status.load_items()
+        self.assertEqual(items[0]["status"], "done")
+        self.assertNotIn("claimed_by", items[0])
+
+    @patch("dev_status._check_worktree_guard")
+    def test_claim_cleared_on_review(self, mock_wt):
+        item = make_item("task-a", status="open")
+        self.write_items([item])
+        dev_status.cmd_start(_args(id="task-a", claimed_by="claude", force=False))
+        dev_status.cmd_review(_args(id="task-a"))
+        items = dev_status.load_items()
+        self.assertEqual(items[0]["status"], "in-review")
+        self.assertNotIn("claimed_by", items[0])
+
+    @patch("dev_status._check_worktree_guard")
+    def test_claim_cleared_on_block(self, mock_wt):
+        item_a = make_item("task-a", status="open")
+        item_b = make_item("task-b", status="open")
+        self.write_items([item_a, item_b])
+        dev_status.cmd_start(_args(id="task-a", claimed_by="claude", force=False))
+        dev_status.cmd_update(_args(id="task-a", patch='{"status": "open"}'))
+        dev_status.cmd_block(_args(id="task-a", blocker="task-b"))
+        items = dev_status.load_items()
+        self.assertEqual(items[0]["status"], "open")
+        self.assertNotIn("claimed_by", items[0])
+
+    @patch("dev_status._check_worktree_guard")
+    def test_claim_cleared_on_update_status_open(self, mock_wt):
+        item = make_item("task-a", status="open")
+        self.write_items([item])
+        dev_status.cmd_start(_args(id="task-a", claimed_by="claude", force=False))
+        dev_status.cmd_update(_args(id="task-a", patch='{"status": "open"}'))
+        items = dev_status.load_items()
+        self.assertEqual(items[0]["status"], "open")
+        self.assertNotIn("claimed_by", items[0])
+
+    @patch("dev_status._is_pid_alive", return_value=True)
+    @patch("dev_status._check_worktree_guard")
+    def test_claim_collision_active_pid_refuses(self, mock_wt, mock_pid):
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        item = make_item("task-a", status="in-progress")
+        item["claimed_by"] = {
+            "harness": "pi",
+            "machine_id": dev_status.machine_id(),
+            "pid": 999999,
+            "claimed_at": now_iso,
+            "last_active": now_iso,
+        }
+        self.write_items([item])
+        with self.assertRaises(SystemExit) as ctx:
+            dev_status.cmd_start(_args(id="task-a", claimed_by="claude", force=False))
+        self.assertEqual(ctx.exception.code, 1)
+
+    @patch("dev_status._is_pid_alive", return_value=True)
+    @patch("dev_status._check_worktree_guard")
+    def test_claim_collision_active_pid_force_succeeds(self, mock_wt, mock_pid):
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        item = make_item("task-a", status="in-progress")
+        item["claimed_by"] = {
+            "harness": "pi",
+            "machine_id": dev_status.machine_id(),
+            "pid": 999999,
+            "claimed_at": now_iso,
+            "last_active": now_iso,
+        }
+        self.write_items([item])
+        dev_status.cmd_start(_args(id="task-a", claimed_by="claude", force=True))
+        items = dev_status.load_items()
+        self.assertEqual(items[0]["claimed_by"]["harness"], "claude")
+
+    @patch("dev_status._is_pid_alive", return_value=False)
+    @patch("dev_status._check_worktree_guard")
+    def test_claim_collision_dead_pid_takeover(self, mock_wt, mock_pid):
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        item = make_item("task-a", status="in-progress")
+        item["claimed_by"] = {
+            "harness": "pi",
+            "machine_id": dev_status.machine_id(),
+            "pid": 999999,
+            "claimed_at": now_iso,
+            "last_active": now_iso,
+        }
+        self.write_items([item])
+        dev_status.cmd_start(_args(id="task-a", claimed_by="claude", force=False))
+        items = dev_status.load_items()
+        self.assertEqual(items[0]["claimed_by"]["harness"], "claude")
+
+    @patch("dev_status._check_worktree_guard")
+    def test_claim_collision_ttl_active_refuses(self, mock_wt):
+        now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        item = make_item("task-a", status="in-progress")
+        item["claimed_by"] = {
+            "harness": "pi",
+            "machine_id": "other-machine",
+            "pid": 999999,
+            "claimed_at": now_iso,
+            "last_active": now_iso,
+        }
+        self.write_items([item])
+        with self.assertRaises(SystemExit) as ctx:
+            dev_status.cmd_start(_args(id="task-a", claimed_by="claude", force=False))
+        self.assertEqual(ctx.exception.code, 1)
+
+    @patch("dev_status._check_worktree_guard")
+    def test_claim_collision_ttl_expired_takeover(self, mock_wt):
+        old_iso = (datetime.now(UTC) - timedelta(hours=3)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        item = make_item("task-a", status="in-progress")
+        item["claimed_by"] = {
+            "harness": "pi",
+            "machine_id": "other-machine",
+            "pid": 999999,
+            "claimed_at": old_iso,
+            "last_active": old_iso,
+        }
+        self.write_items([item])
+        dev_status.cmd_start(_args(id="task-a", claimed_by="claude", force=False))
+        items = dev_status.load_items()
+        self.assertEqual(items[0]["claimed_by"]["harness"], "claude")
+
+    @patch("subprocess.run")
+    def test_worktree_guard_refuses_main_checkout(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="/repo/.git\n/repo/.git\nmain\n",
+        )
+        with self.assertRaises(SystemExit) as ctx:
+            dev_status._check_worktree_guard(allow_main=False)
+        self.assertEqual(ctx.exception.code, 1)
+
+    @patch("subprocess.run")
+    def test_worktree_guard_allows_with_flag(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="/repo/.git\n/repo/.git\nmain\n",
+        )
+        # Should not raise
+        dev_status._check_worktree_guard(allow_main=True)
+
+    @patch("subprocess.run")
+    def test_worktree_guard_allows_in_secondary_worktree(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="/repo/.git\n/repo/.git/worktrees/wt1\nmain\n",
+        )
+        # Different git-dir means secondary worktree
+        dev_status._check_worktree_guard(allow_main=False)
+
+    @patch("subprocess.run")
+    def test_worktree_guard_allows_in_feature_branch(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="/repo/.git\n/repo/.git\nfeat-new-thing\n",
+        )
+        dev_status._check_worktree_guard(allow_main=False)
+
+    @patch("subprocess.run")
+    def test_worktree_guard_graceful_non_git(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=128,
+            stdout="",
+        )
+        dev_status._check_worktree_guard(allow_main=False)
+
+    def test_render_displays_harness_tag(self):
+        item = make_item("task-a", status="in-progress", summary="Do something")
+        item["claimed_by"] = {"harness": "pi"}
+        self.write_items([item])
+        out = io.StringIO()
+        err = io.StringIO()
+        dev_status.render([item], [], out=out, err=err, rev=1)
+        rendered = out.getvalue()
+        self.assertIn("[pi]", rendered)
+
+
 # ── arg helper ────────────────────────────────────────────────────────────────
 
 
@@ -4544,6 +4762,9 @@ class _args:
     raw = False  # default; argparse sets --raw (default False) for `list`
     apply = False  # default; argparse sets --apply (default False) for backfill-gate
     force = False  # default; argparse sets --force (required) for `prune`
+    allow_main = False
+    no_worktree_check = False
+    claimed_by = None
     refresh = False  # default; argparse sets --refresh (default False) for `recap`
     backend = None  # default; argparse sets --backend (default None) for `recap`
     quiet = (

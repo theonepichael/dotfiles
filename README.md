@@ -106,8 +106,9 @@ remove something.
   other harnesses port all but `draft-voice` and `skill-map`.
 - **`copilot`** — installs [GitHub Copilot CLI](https://github.com/github/copilot-cli)
   (`npm i -g @github/copilot`) and its wiring:
-  - **Shared instructions file**: `claude/CLAUDE.md` is symlinked to *both*
-    `~/.claude/CLAUDE.md` and `~/.copilot/copilot-instructions.md` — no
+  - **Shared instructions file**: `claude/global-instructions.md` is
+    symlinked to *both* `~/.claude/CLAUDE.md` and
+    `~/.copilot/copilot-instructions.md` — no
     separate Copilot-specific instructions file to maintain, since the
     backlog/pending-items workflow is already tool-agnostic prose.
   - **`copilot/hooks/session-start.json`**: a `sessionStart` hook sharing a
@@ -192,8 +193,9 @@ remove something.
 - **`agy`** — wires config for [Antigravity CLI](https://antigravity.google/docs/cli)
   (Google's Gemini-backed CLI); the binary itself is assumed already
   installed, same as `opencode` — this script only wires its config:
-  - **Shared instructions file**: `claude/CLAUDE.md` is symlinked to
-    `~/.gemini/GEMINI.md`, agy's global-rules path. agy reads no `CLAUDE.md`
+  - **Shared instructions file**: `claude/global-instructions.md` is
+    symlinked to `~/.gemini/GEMINI.md`, agy's global-rules path. agy reads
+    no `CLAUDE.md`
     anywhere, so it needs a real link of its own.
   - **`agy/skills/<name>/SKILL.md`**: ports of `backlog-item`, `dashboard`,
     `grill-me`, `make-skill`, `second-opinion`, `spec`, `standup` and
@@ -216,8 +218,9 @@ remove something.
 - **`pi`** — wires config for [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
   (`@earendil-works/pi-coding-agent`); the binary itself is assumed already
   installed, same as `opencode`/`agy` — this script only wires its config:
-  - **Shared instructions file**: `claude/CLAUDE.md` is symlinked to
-    `~/.pi/agent/AGENTS.md` — Pi looks specifically under `~/.pi/agent/`
+  - **Shared instructions file**: `claude/global-instructions.md` is
+    symlinked to `~/.pi/agent/AGENTS.md` — Pi looks specifically under
+    `~/.pi/agent/`
     for its global instructions, with no fallback to `~/.claude/CLAUDE.md`,
     so it needs a real link of its own — same as agy's `GEMINI.md` link and
     opencode's `AGENTS.md` link.
@@ -601,7 +604,7 @@ against, because there's nothing there at all.
 | `tmux/.tmux.conf` | `~/.tmux.conf` |
 | `vscode/settings.json` | macOS: `~/Library/Application Support/Code/User/settings.json`; WSL: Windows-side `AppData/Roaming/Code/User/settings.json` (derived from the `code` CLI on PATH); native Linux: `~/.config/Code/User/settings.json` |
 | `vscode/keybindings.json` | same per-OS destination as `settings.json`, `keybindings.json` |
-| `claude/CLAUDE.md` | `~/.claude/CLAUDE.md` and, with `--harness=copilot`, also `~/.copilot/copilot-instructions.md` |
+| `claude/global-instructions.md` | `~/.claude/CLAUDE.md` and, with `--harness=copilot`, also `~/.copilot/copilot-instructions.md` |
 | `copilot/aliases.zsh` | `~/.copilot_aliases` (only with `--harness=copilot`) |
 | `opencode/opencode.jsonc` | `~/.config/opencode/opencode.jsonc` (only with `--harness=opencode`; never on `--profile=work`) |
 | `pi/settings.json` | `~/.pi/agent/settings.json` (only with `--harness=pi`) |

@@ -29,7 +29,7 @@ implemented, uncommitted changes (e.g. handed back from an external
 executor)? Skip straight to step 9.
 
 ## 2. Start
-If not already in-progress: `dev_status.py start <slug|N>` (`--if-rev <N>` for numeric ids).
+If not already in-progress: `dev_status.py start <slug|N>` (`--if-rev <N>` for numeric ids). On a main/master checkout, `start` now refuses (worktree guard) — do step 3 first, then run `start` from inside the fresh worktree.
 
 ## 3. Branch
 related_files names exactly one project repo → worktree it per CLAUDE.md's Git section: `git -C <repo> worktree add ../<repo-name>-<slug> -b <slug>`. Reuse a worktree this session already made for this item instead of a second one. Multiple repos, or none: ask which repo — never guess.

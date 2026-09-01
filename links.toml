@@ -96,7 +96,7 @@ dest = "~/.tmux.conf"
 # ── Claude Code wiring ───────────────────────────────────────────────────
 
 [[link]]
-src = "claude/CLAUDE.md"
+src = "claude/global-instructions.md"
 dest = "~/.claude/CLAUDE.md"
 harness = "claude"
 
@@ -246,12 +246,12 @@ src = "claude/scripts/vitals_promotion.py"
 dest = "~/.claude/scripts/vitals_promotion.py"
 
 # ── GitHub Copilot CLI wiring ────────────────────────────────────────────
-# claude/CLAUDE.md is deliberately the same file on both sides — the
+# claude/global-instructions.md is deliberately the same file on both sides — the
 # backlog/pending-items workflow prose is tool-agnostic, so there is no
 # separate Copilot instructions file to maintain.
 
 [[link]]
-src = "claude/CLAUDE.md"
+src = "claude/global-instructions.md"
 dest = "~/.copilot/copilot-instructions.md"
 harness = "copilot"
 
@@ -432,7 +432,7 @@ harness = "opencode"
 # NOT the legacy bare ~/.gemini/skills/ — see agy/CLAUDE_CODE_PARITY.md.
 
 [[link]]
-src = "claude/CLAUDE.md"
+src = "claude/global-instructions.md"
 dest = "~/.gemini/GEMINI.md"
 harness = "agy"
 
@@ -511,7 +511,7 @@ harness = "agy"
 # duplicated into pi/skills/. See pi/CLAUDE_CODE_PARITY.md §3.
 
 [[link]]
-src = "claude/CLAUDE.md"
+src = "claude/global-instructions.md"
 dest = "~/.pi/agent/AGENTS.md"
 harness = "pi"
 

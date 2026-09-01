@@ -101,7 +101,9 @@ BACKLOG_MUTABLE_FIELDS = {
     "next_steps",
     "priority",
     "status",
+    "claimed_by",
 }
+DEFAULT_CLAIM_TTL_SECONDS = 2 * 60 * 60  # 2 hours
 # Subcommand names blocked from use as item slugs. Match is exact: only a
 # slug equal to one of these bare verbs is refused — `remove-probe`,
 # `add-feature`, etc. are accepted. Argparse never confuses a hyphenated
@@ -263,6 +265,226 @@ def _content_hash(item: BacklogItem) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _detect_harness(explicit: str | None = None) -> str:
+    """Detect current agent/environment harness name.
+
+    Priority:
+    1. explicit argument / --claimed-by flag
+    2. DEVSTATUS_HARNESS environment variable
+    3. PI_SESSION / PI_CODING_AGENT -> 'pi'
+    4. CLAUDE_CODE / ANTHROPIC_CLI -> 'claude'
+    5. ANTIGRAVITY / AGY_SESSION -> 'agy'
+    6. OPENCODE_GATEWAY / OPENCODE -> 'opencode'
+    7. GITHUB_COPILOT / COPILOT -> 'copilot'
+    8. Fallback: 'cli'
+    """
+    if explicit:
+        return explicit.strip()
+    if env := os.environ.get("DEVSTATUS_HARNESS"):
+        return env.strip()
+    if os.environ.get("PI_SESSION") or os.environ.get("PI_CODING_AGENT"):
+        return "pi"
+    if os.environ.get("CLAUDE_CODE") or os.environ.get("ANTHROPIC_CLI"):
+        return "claude"
+    if os.environ.get("ANTIGRAVITY") or os.environ.get("AGY_SESSION"):
+        return "agy"
+    if os.environ.get("OPENCODE_GATEWAY") or os.environ.get("OPENCODE"):
+        return "opencode"
+    if os.environ.get("GITHUB_COPILOT") or os.environ.get("COPILOT"):
+        return "copilot"
+    return "cli"
+
+
+def _claim_ttl_seconds() -> float:
+    """Return configured claim TTL in seconds."""
+    try:
+        return float(
+            os.environ.get(
+                "DEVSTATUS_CLAIM_TTL_SECONDS", str(DEFAULT_CLAIM_TTL_SECONDS)
+            )
+        )
+    except (ValueError, TypeError):
+        return float(DEFAULT_CLAIM_TTL_SECONDS)
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """Check whether a process with `pid` is currently alive on the local machine."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        # Process exists but belongs to another user
+        return True
+    except ProcessLookupError:
+        # ESRCH: no such process
+        return False
+    except OSError as e:
+        import errno
+
+        if e.errno == errno.EPERM:
+            return True
+        if e.errno == errno.ESRCH:
+            return False
+        return False
+    else:
+        return True
+
+
+def machine_id() -> str:
+    """Return this machine's stable short id, creating it on first use.
+
+    Not hostname — hostnames change/collide across machines this store is
+    shared between. Matches the ``_meta.json``/``_sync-base.json`` aux-file
+    convention: a small file alongside the data files, not part of the
+    schema itself.
+    """
+    try:
+        existing = MACHINE_ID_FILE.read_text().strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+    new_id = secrets.token_hex(4)
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        MACHINE_ID_FILE.write_text(new_id)
+    except OSError:
+        pass
+    return new_id
+
+
+_machine_id = machine_id
+
+
+def _make_claim(harness: str | None = None) -> dict[str, object]:
+    """Create a fresh claim dictionary for the current session."""
+    h = _detect_harness(harness)
+    now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "harness": h,
+        "machine_id": machine_id(),
+        "pid": os.getpid(),
+        "claimed_at": now_iso,
+        "last_active": now_iso,
+    }
+
+
+def _check_worktree_guard(allow_main: bool = False, quiet: bool = False) -> None:
+    """Check that start is not being executed from the main branch root of a git repository."""
+    if allow_main:
+        return
+    try:
+        res = subprocess.run(
+            [
+                "git",
+                "rev-parse",
+                "--git-common-dir",
+                "--git-dir",
+                "--abbrev-ref",
+                "HEAD",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        if getattr(res, "returncode", 1) != 0:
+            return
+        stdout = getattr(res, "stdout", "")
+        if not isinstance(stdout, str):
+            return
+        lines = [line.strip() for line in stdout.strip().splitlines() if line.strip()]
+        if len(lines) < 3:
+            return
+        git_common_dir, git_dir, branch = lines[0], lines[1], lines[2]
+        common_path = Path(git_common_dir).resolve()
+        dir_path = Path(git_dir).resolve()
+        is_main_worktree = common_path == dir_path
+        if is_main_worktree and branch in ("main", "master"):
+            print(
+                "[start] Refusing to start item on main/master checkout in a git repository.\n"
+                "Create a dedicated worktree first (`git worktree add ../<repo>-<slug> -b <slug>`), "
+                "or pass --allow-main to override.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    except Exception:
+        pass
+
+
+def _check_claim_collision(
+    item: BacklogItem,
+    current_harness: str,
+    current_machine: str,
+    current_pid: int,
+    force: bool = False,
+    quiet: bool = False,
+) -> None:
+    """Refuse start if item is already actively claimed by another session."""
+    claim = cast(dict[str, object], item.get("claimed_by"))
+    if not isinstance(claim, dict):
+        return
+    claim_harness = str(claim.get("harness", "unknown"))
+    claim_machine = str(claim.get("machine_id", ""))
+    claim_pid = int(claim.get("pid") or 0) if str(claim.get("pid", "")).isdigit() else 0
+    claim_last_active = str(claim.get("last_active") or claim.get("claimed_at") or "")
+
+    if force:
+        return
+
+    if (
+        claim_machine == current_machine
+        and claim_pid == current_pid
+        and current_pid > 0
+    ):
+        return
+
+    if claim_machine == current_machine and claim_pid > 0:
+        if _is_pid_alive(claim_pid):
+            print(
+                f"[start] {item.get('id', '?')} is actively claimed by {claim_harness} "
+                f"(PID {claim_pid} on this machine). Use --force to take over the claim.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        else:
+            if not _agent_quiet() and not quiet:
+                print(
+                    f"[start] Previous claim by {claim_harness} (PID {claim_pid}) is dead. "
+                    "Taking over claim.",
+                    file=sys.stderr,
+                )
+            return
+
+    ttl = _claim_ttl_seconds()
+    if claim_last_active:
+        try:
+            ts_str = claim_last_active.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(ts_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            now = datetime.now(UTC)
+            elapsed = (now - dt).total_seconds()
+            if elapsed < ttl:
+                rem_mins = int((ttl - elapsed) / 60)
+                print(
+                    f"[start] {item.get('id', '?')} was claimed by {claim_harness} on machine {claim_machine[:6]} "
+                    f"{int(elapsed / 60)}m ago (active for {rem_mins}m more). Use --force to take over.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            else:
+                if not _agent_quiet() and not quiet:
+                    print(
+                        f"[start] Previous claim by {claim_harness} expired (idle {int(elapsed / 60)}m). "
+                        "Taking over claim.",
+                        file=sys.stderr,
+                    )
+        except (ValueError, TypeError):
+            pass
+
+
 def _apply_status_transition(
     item: dict[str, object], new_status: str, stamp_field: str, done_value: str
 ) -> None:
@@ -271,7 +493,8 @@ def _apply_status_transition(
     Stamps ``stamp_field`` with today's date when ``new_status`` enters
     ``done_value``, and clears it when the item's status leaves
     ``done_value``. Called from every path that can change status, so the
-    stamp can't be bypassed or left stale.
+    stamp can't be bypassed or left stale. Also clears ``claimed_by``
+    when transitioning away from ``in-progress``.
 
     Args:
         item: The backlog or pending item being mutated, in place.
@@ -287,6 +510,8 @@ def _apply_status_transition(
         item[stamp_field] = today()
     elif old_status == done_value and new_status != done_value:
         item.pop(stamp_field, None)
+    if new_status != "in-progress":
+        item.pop("claimed_by", None)
 
 
 def _gate_blocks(gate: Mapping[str, object] | None) -> bool:
@@ -1260,6 +1485,17 @@ def _gate_suffix(item: dict[str, object], color: bool) -> str:
     return " " + _colorize("\U0001f512 gate", _COLORS["warn"], color)
 
 
+def _in_progress_suffix(item: dict[str, object], color: bool) -> str:
+    """Render gate suffix and claimed harness tag for in-progress items."""
+    res = _gate_suffix(item, color)
+    claim = cast(dict[str, object] | None, item.get("claimed_by"))
+    if isinstance(claim, dict):
+        harness = claim.get("harness")
+        if harness and str(harness).strip():
+            res += f" [{str(harness).strip()}]"
+    return res
+
+
 def render(
     items: list[BacklogItem] | None = None,
     pending_items: list[PendingItem] | None = None,
@@ -1421,7 +1657,7 @@ def render(
         show_age=True,
         show_priority=True,
         color_code="in_progress",
-        line_suffix=_gate_suffix,
+        line_suffix=_in_progress_suffix,
     )
     add_section(
         "READY", ready, show_priority=True, color_code="ready", line_suffix=_gate_suffix
@@ -1464,29 +1700,6 @@ def render(
 
 
 # ── recap: event journal ────────────────────────────────────────────────────
-
-
-def machine_id() -> str:
-    """Return this machine's stable short id, creating it on first use.
-
-    Not hostname — hostnames change/collide across machines this store is
-    shared between. Matches the ``_meta.json``/``_sync-base.json`` aux-file
-    convention: a small file alongside the data files, not part of the
-    schema itself.
-    """
-    try:
-        existing = MACHINE_ID_FILE.read_text().strip()
-        if existing:
-            return existing
-    except OSError:
-        pass
-    new_id = secrets.token_hex(4)
-    try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        MACHINE_ID_FILE.write_text(new_id)
-    except OSError:
-        pass
-    return new_id
 
 
 def _journal_entry(
@@ -2733,12 +2946,29 @@ def cmd_update(args: argparse.Namespace) -> None:
         if unset_priority:
             m.item.pop("priority", None)
             del patch["priority"]
+        if "status" in patch:
+            new_st = patch["status"]
+            if new_st != "in-progress":
+                m.item.pop("claimed_by", None)
+            elif (
+                new_st == "in-progress"
+                and "claimed_by" not in patch
+                and "claimed_by" not in m.item
+            ):
+                m.item["claimed_by"] = _make_claim()
         cast(dict[str, object], m.item).update(patch)
         m.item["updated"] = today()
 
 
 def cmd_start(args: argparse.Namespace) -> None:
     """Handle ``start``: mark a backlog item in-progress."""
+    _check_worktree_guard(
+        allow_main=bool(
+            getattr(args, "allow_main", False)
+            or getattr(args, "no_worktree_check", False)
+        ),
+        quiet=args.quiet,
+    )
     with _backlog_mutation(
         "start",
         args.id,
@@ -2755,12 +2985,21 @@ def cmd_start(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        _check_claim_collision(
+            m.item,
+            current_harness=_detect_harness(getattr(args, "claimed_by", None)),
+            current_machine=_machine_id(),
+            current_pid=os.getpid(),
+            force=bool(getattr(args, "force", False)),
+            quiet=args.quiet,
+        )
         # Use the shared transition helper so completed_at is cleared when
         # moving an item off "done", mirroring cmd_done's behavior.
         _apply_status_transition(
             cast(dict[str, object], m.item), "in-progress", "completed_at", "done"
         )
         m.item["status"] = "in-progress"
+        m.item["claimed_by"] = _make_claim(getattr(args, "claimed_by", None))
         m.item["updated"] = today()
 
 
@@ -2813,6 +3052,9 @@ def cmd_review(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        _apply_status_transition(
+            cast(dict[str, object], m.item), "in-review", "completed_at", "done"
+        )
         m.item["status"] = "in-review"
         m.item["review_content_hash"] = _content_hash(m.item)
         m.item.pop("review_feedback", None)
@@ -3785,6 +4027,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_id_arg(p)
     _add_if_rev_arg(p)
+    p.add_argument(
+        "--force",
+        "-f",
+        action="store_true",
+        help="force start even if item is actively claimed by another session",
+    )
+    p.add_argument(
+        "--allow-main",
+        "--no-worktree-check",
+        dest="allow_main",
+        action="store_true",
+        help="allow starting item from the main/master repository checkout",
+    )
+    p.add_argument(
+        "--claimed-by",
+        metavar="HARNESS",
+        default=None,
+        help="override claimed harness/session identifier",
+    )
 
     p = sub.add_parser("done", help="mark item done", parents=[verbosity_parent])
     _add_id_arg(p)
