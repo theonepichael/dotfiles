@@ -248,8 +248,9 @@ remove something.
     `bun run test|typecheck|lint|format:check`; `test/test_pi_ts_checks.py`
     drives all four from the Python suite, and skips them when
     `pi/node_modules` is missing. See `pi/AGENTS.md`.
-  - **No `pi/skills/` directory** — `pi/settings.json`'s `skills` array
-    points straight at `agy/skills/` instead of duplicating a skills tree.
+  - **`pi/skills/` directory** — holds Pi's 8 generated skills;
+    `pi/settings.json`'s `skills` array lists `pi/skills/` and `agy/skills/`
+    (with `pi/skills/` winning on collisions).
   - **`pi/settings.json`**, copy-once-and-report-drift same as Claude's
     `settings.json` (no bash permission allowlist to seed — that lives in
     `permission-gate.ts` instead).

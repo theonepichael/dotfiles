@@ -560,6 +560,85 @@ argument-hint: [plan file or text]
             "`show` action"
         ),
     ),
+    "pi/skills/second-opinion/SKILL.md": HarnessParams(
+        frontmatter="""\
+---
+name: second-opinion
+description: "Send a plan to a non-Claude model for adversarial critique, then iterate — revise, re-send, repeat — until the critique stops surfacing anything new or a round cap is hit. Use when the user wants a second opinion, an outside critique, or to stress-test a plan against a different model."
+---
+""",
+        # Pi's skill form has no restriction on which backend CLIs it can
+        # shell out to, same as pi/prompts/second-opinion.md (2026-09-01)
+        backends_never="`agy`/`opencode`/`pi`/`copilot`",
+        # same reasoning as pi/prompts/second-opinion.md above, 2026-09-01
+        backends_none="none of `agy`, `opencode`, `pi`, or `copilot`",
+        # the model-invoked/slash-invoked skill form has no $ARGUMENTS; it
+        # sees what the user named or pasted, 2026-09-01
+        target_source_opening=(
+            "If the user named a specific file path or pasted plan text, "
+            "treat that as the target."
+        ),
+        # echoes the same user-typed/pasted convention as the opening
+        # sentence above, 2026-09-01
+        target_source_echo="pasted text",
+        # no structured multi-choice widget for Pi is confirmed from
+        # research so far; plain text per the shared instructions file's
+        # harnesses-without-a-widget convention, 2026-09-01
+        ask_choose_overwrite=(
+            "apply the shared instructions file's convention for asking the "
+            "user to choose: overwrite (recommended) or leave as-is"
+        ),
+        # same plain-text convention as the overwrite choice above,
+        # 2026-09-01
+        ask_choose_cap=(
+            "apply the shared instructions file's convention for asking the "
+            "user to choose: keep your approach (recommended), use the "
+            "reviewer's suggestion, or let the user decide manually"
+        ),
+        # Pi has no CLAUDE.md equivalent of its own, 2026-09-01
+        instructions_ref="the shared instructions file's",
+        # Pi is naming opencode's `adversary` agent (Pi has no adversary-
+        # agent equivalent of its own) but leaves it unnamed, same as
+        # copilot/agy/pi-prompts, 2026-09-01
+        adversary_ref="the",
+        # Pi routes backend I/O through its native second_opinion tool
+        # (pi/extensions/second-opinion-tool.ts), 2026-09-01
+        io_entrypoint="the `second_opinion` tool",
+        # Pi calls the native second_opinion tool
+        # (pi/extensions/second-opinion-tool.ts), so its usage block is
+        # prose, deliberately with no code fence: pi-tool-dev-status showed
+        # a fenced command block is read as an instruction to run bash no
+        # matter what the surrounding prose says, 2026-09-01
+        usage_block=(
+            "Call the `second_opinion` tool. Action `detect` lists the "
+            "available backends as JSON. Action `review` returns one "
+            "critique of the plan at `planFile`, optionally scoped with "
+            "`focusFile` and `modelIndex`. Never run `second_opinion.py` "
+            "via bash."
+        ),
+        # the loop's per-round call, naming the tool and its parameter
+        # names rather than the script and its CLI flags, 2026-09-01
+        review_call="""\
+    critique = second_opinion review
+                   planFile = <current_plan>
+                   [focusFile = <focus-hints-path>]
+                   modelIndex = <round - 1>   # one call\
+""",
+        # the same call without the index, for the no-pool retry, 2026-09-01
+        review_call_retry="""\
+    critique = second_opinion review
+                   planFile = <current_plan>
+                   [focusFile = <focus-hints-path>]   # retry, no index —\
+""",
+        # Pi reaches grill.py only through its native grill tool
+        # (pi/extensions/grill-tool.ts); grill.py is off permission-gate.ts's
+        # bash allowlist, so a bash call to it stalls on a confirmation
+        # prompt or fails outright headless, 2026-09-01
+        grill_plan_lookup=(
+            "the most recent session's `plan_path` from the `grill` tool's "
+            "`show` action"
+        ),
+    ),
 }
 
 
@@ -837,7 +916,9 @@ def main() -> None:
         sys.exit(1)
 
     for relpath, text in rendered.items():
-        (repo_root / relpath).write_text(text, encoding="utf-8")
+        out_path = repo_root / relpath
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(text, encoding="utf-8")
     cli_common.qprint(
         f"[gen_second_opinion] wrote {len(rendered)} copies", quiet=args.quiet
     )

@@ -46,6 +46,7 @@ REQUIRED_MARKERS = (
 # every copy and stays there.
 MODEL_INDEX_MARKERS = {
     "pi/prompts/second-opinion.md": ("modelIndex", "modelIndex = <round - 1>"),
+    "pi/skills/second-opinion/SKILL.md": ("modelIndex", "modelIndex = <round - 1>"),
 }
 DEFAULT_MODEL_INDEX_MARKERS = ("[--model-index N]", "--model-index <round - 1>")
 
@@ -56,6 +57,7 @@ DEFAULT_MODEL_INDEX_MARKERS = ("[--model-index N]", "--model-index <round - 1>")
 # stalls on a confirmation prompt or fails outright headless.
 GRILL_LOOKUP_MARKERS = {
     "pi/prompts/second-opinion.md": ("`grill` tool's `show` action",),
+    "pi/skills/second-opinion/SKILL.md": ("`grill` tool's `show` action",),
 }
 DEFAULT_GRILL_LOOKUP_MARKERS = ("`grill.py show`",)
 
@@ -66,6 +68,7 @@ COPIES = (
     "copilot/skills/second-opinion/SKILL.md",
     "agy/skills/second-opinion/SKILL.md",
     "pi/prompts/second-opinion.md",
+    "pi/skills/second-opinion/SKILL.md",
 )
 
 

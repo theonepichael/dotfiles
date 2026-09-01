@@ -1149,6 +1149,7 @@ named doc, not regenerating this file.
 | `opencode/skills/second-opinion/SKILL.md` | OK |
 | `pi/skills/backlog-item/SKILL.md` | OK |
 | `pi/skills/dashboard/SKILL.md` | OK |
+| `pi/skills/second-opinion/SKILL.md` | OK |
 | `pi/skills/standup/SKILL.md` | OK |
 
 ### `gen_interfaces.py`
@@ -1181,6 +1182,7 @@ named doc, not regenerating this file.
 | `opencode/skills/second-opinion/SKILL.md` | OK |
 | `opencode/skills/spec/SKILL.md` | OK |
 | `pi/skills/grill-me/SKILL.md` | OK |
+| `pi/skills/second-opinion/SKILL.md` | OK |
 | `pi/skills/spec/SKILL.md` | OK |
 | `pi/skills/to-tickets/SKILL.md` | OK |
 
@@ -1204,6 +1206,7 @@ named doc, not regenerating this file.
 | `opencode/skills/second-opinion/SKILL.md` | OK |
 | `opencode/skills/spec/SKILL.md` | OK |
 | `pi/skills/grill-me/SKILL.md` | OK |
+| `pi/skills/second-opinion/SKILL.md` | OK |
 | `pi/skills/spec/SKILL.md` | OK |
 
 ### `standup.py`

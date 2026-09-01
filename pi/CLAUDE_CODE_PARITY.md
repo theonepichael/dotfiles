@@ -35,9 +35,12 @@ install, not from search-engine summaries.
   standard](https://agentskills.io/specification) (`docs/skills.md`), and
   explicitly supports pointing at *another* harness's skill directory via
   the `skills` setting — its own docs give `~/.claude/skills` as the
-  worked example. **This repo points Pi at `agy/skills/` instead of
-  duplicating a `pi/skills/` tree** (`pi/settings.json`'s `skills` array —
-  see §3). Skills register as `/skill:name` commands
+  worked example. **All 8 skills are generated into `pi/skills/`** (7 by
+  `gen_skills.py`, `second-opinion` by `gen_second_opinion.py`), and
+  `pi/settings.json`'s `skills` array lists `pi/skills/` followed by
+  `agy/skills/` as a fallback — Pi's first-found-wins collision rule ensures
+  `pi/skills/` wins for all 8, fully shadowing `agy/skills/`. Skills
+  register as `/skill:name` commands
   (`enableSkillCommands`, default `true`) and are also model-invoked from
   an `<available_skills>` XML block in the system prompt.
 - **Extensions**: TypeScript modules, auto-discovered from
@@ -104,34 +107,28 @@ have:
   (§1); the only gate is whatever `permission-gate.ts` (§5) itself denies
   or blocks.
 
-## 3. Skills — no duplication (`pi/settings.json` points at `agy/skills/`)
+## 3. Skills — 8 generated skills in `pi/skills/`, `agy/skills/` fallback shadowed
 
-**No `pi/skills/` directory exists in this repo.** `pi/settings.json`
+`pi/skills/` holds all 8 generated skills (`backlog-item`, `dashboard`,
+`grill-me`, `make-skill`, `spec`, `standup`, `to-tickets` via `gen_skills.py`,
+and `second-opinion` via `gen_second_opinion.py`). `pi/settings.json`
 (copy-once like `claude/settings.json` — Pi rewrites parts of this file
 live via `/settings`, `/model` Ctrl+S, etc., same detach risk that file's
 comment warns about) sets:
 
 ```json
 {
-  "skills": ["/home/yanil/dotfiles/agy/skills"]
+  "skills": ["/home/yanil/dotfiles/pi/skills", "/home/yanil/dotfiles/agy/skills"]
 }
 ```
 
-Confirmed live: `pi -p --skill /home/yanil/dotfiles/agy/skills
---no-context-files "list every skill available"` (provider `opencode-go`,
-model `kimi-k2.6`) discovered all 8 real skill names (`backlog-item`,
-`dashboard`, `grill-me`, `make-skill`, `second-opinion`, `spec`, `standup`,
-`to-tickets`) with no duplication and no name-must-match-directory issue —
-`docs/skills.md` explicitly documents that Pi, unlike the Agent Skills
-standard it otherwise implements, does not require a skill's `name` to
-match its parent directory, "because that requirement is suboptimal for
-shared skill directories used across multiple agent harnesses." That's this
-repo's exact use case.
+Pi's documented collision rule (`docs/skills.md`: "name collisions... warn
+and keep the first skill found") ensures `pi/skills/` wins for all 8
+skills, fully shadowing `agy/skills/`. `agy/skills/` remains in the list
+purely as a legacy fallback for any future skill authored under agy only.
 
-`agy/skills/*/SKILL.md` bodies needed no Pi-specific rewording beyond what
-was already true for agy/Copilot — they were already written in the
-harness-neutral "the shared instructions file's ..." / plain-text-question
-style every non-Claude harness shares.
+`links.toml` manages `pi/skills` with a `dir = true` row that automatically
+symlinks all subdirectories under `pi/skills/` into `~/.pi/agent/skills/`.
 
 ## 4. Delegation mechanics — `/skill:name`
 

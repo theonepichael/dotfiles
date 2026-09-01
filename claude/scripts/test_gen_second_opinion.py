@@ -131,7 +131,7 @@ class ContractShapeCheckTests(unittest.TestCase):
 
 
 class EndToEndTests(unittest.TestCase):
-    def test_five_copies_are_not_stale(self) -> None:
+    def test_copies_are_not_stale(self) -> None:
         rendered = gso.render_all(REPO_ROOT)
         self.assertEqual(set(rendered), set(gso.HARNESS_TABLE))
         for relpath, expected in rendered.items():
