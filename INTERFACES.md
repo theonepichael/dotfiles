@@ -271,6 +271,7 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `--verbose/-v`
   - `--check` — exit 3 (with a report on stderr) if a doc's shown command example no longer matches its script, else exit 1 if the file on disk is stale
   - `--stdout` — print the document, write nothing
+  - `--update-fingerprints` — recompute and record every in-scope script's contract fingerprint in contract_fingerprints.json, accepting its current behavior as the new baseline — run this only after re-reading the --check diff, never blind
   - `--repo-root` — repository root (default: inferred from this script's path)
   - `--output`
 - Explicit exit codes: `1`, `2`, `3`
@@ -285,6 +286,7 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `class HelperSpec` — A module function that adds arguments to a parser passed as its first arg.
   - `class DocInvocation` — One doc's code-span example of running a target script.
   - `class DriftProblem` — One doc invocation using a subcommand/flag the script doesn't have.
+  - `class FingerprintProblem` — One contract-fingerprint failure for ``--check`` to report.
 - Public functions:
   - `first_paragraph(text: str | None) -> str` — Collapse the first blank-line-delimited paragraph of ``text`` to one line.
   - `first_sentence(text: str | None) -> str | None` — Return the first sentence of ``text``, or ``None`` when it is empty.
@@ -304,6 +306,9 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `helper_bindings(spec: HelperSpec, call: ast.Call) -> dict[str, str]` — Bind a helper's parameters to the literal values at one call site.
   - `build_argument(call: ast.Call, bindings: dict[str, str]) -> CliArgument | None` — Turn one ``add_argument`` call into a displayable argument record.
   - `extract_cli(tree: ast.Module, module_doc: str) -> CliSpec | None` — Extract the argparse surface, or ``None`` when the module has no CLI.
+  - `leaf_subcommand_paths(subcommands: list[Subcommand]) -> set[tuple[str, ...]]` — Return the paths with no other subcommand nested under them.
+  - `match_leaf_handlers(tree: ast.Module, cli: CliSpec) -> tuple[dict[tuple[str, ...], str], list[tuple[str, ...]]]` — Match every leaf subcommand to its ``cmd_<path>`` handler's docstring.
+  - `fingerprint_lines(cli: CliSpec, leaf_docstrings: dict[tuple[str, ...], str], module_purpose: str, exit_codes: list[int]) -> list[str]` — Render a script's behavior-carrying CLI surface as sorted, diffable lines.
   - `extract_env_vars(tree: ast.Module) -> list[str]` — Collect the environment variable names the module reads.
   - `extract_exit_codes(tree: ast.Module) -> list[int]` — Collect the literal integer codes passed to ``sys.exit``/``SystemExit``.
   - `extract_path_constants(tree: ast.Module) -> list[str]` — Collect module-level uppercase constants that name a filesystem location.
@@ -333,12 +338,17 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `validate_invocation(cli: CliSpec, tokens: list[str]) -> list[str]` — Walk one invocation's tokens against ``cli``; return problem strings.
   - `check_doc_drift(repo_root: Path, modules: Sequence[ModuleInterface]) -> tuple[list[DriftProblem], dict[str, dict[str, bool]]]` — Validate every doc's shown invocations against each module's ``CliSpec``.
   - `render_doc_drift_section(coverage: dict[str, dict[str, bool]]) -> list[str]` — Render the per-script per-doc coverage summary, sorted for determinism.
+  - `load_contract_fingerprints(repo_root: Path) -> dict[str, list[str]]` — Read ``contract_fingerprints.json``, treating anything unreadable as empty.
+  - `load_repo_modules(repo_root: Path, links: LinkTable) -> list[ModuleInterface]` — Parse every shared script under ``SCRIPTS_DIR`` into a ``ModuleInterface``.
+  - `check_contract_fingerprints(repo_root: Path, modules: Sequence[ModuleInterface], coverage: dict[str, dict[str, bool]]) -> list[FingerprintProblem]` — Check every in-scope script's live fingerprint against the recorded one.
+  - `write_contract_fingerprints(repo_root: Path) -> dict[str, list[str]]` — Recompute and write ``contract_fingerprints.json`` for ``--update-fingerprints``.
   - `extract_skill_mentions(source: Path, names: Sequence[str]) -> list[str]` — Return which other skill names this skill's own file text mentions.
   - `render_skill_graph_section(repo_root: Path) -> list[str]` — Render which skill mentions which other skills, by name, in its own text.
   - `build_document(repo_root: Path) -> str` — Build the complete INTERFACES.md text for ``repo_root``.
-  - `build_document_and_drift(repo_root: Path) -> tuple[str, list[DriftProblem]]` — Build INTERFACES.md text alongside the doc-drift problems found.
+  - `build_document_and_drift(repo_root: Path) -> tuple[str, list[DriftProblem], list[FingerprintProblem]]` — Build INTERFACES.md text alongside the doc-drift and fingerprint problems.
   - `anchor(relpath: str) -> str` — Return the GitHub heading anchor for a module section.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
+- Subcommand handlers: `cmd_function_name`
 - Tested by: `claude/scripts/test_gen_interfaces.py`
 
 ### `claude/scripts/gen_second_opinion.py`
@@ -364,7 +374,6 @@ gen_second_opinion.py — regenerate the second-opinion skill copies (one per ha
   - `render_file(template_text: str, relpath: str, params: HarnessParams) -> str` — Render one harness's complete file: frontmatter, marker, body.
   - `render_all(repo_root: Path) -> dict[str, str]` — Render every harness's file, keyed by its repo-relative output path.
   - `check_contract_shape(repo_root: Path, template_text: str) -> list[str]` — Return problems where a CONTRACT_TOKENS entry is missing from the template.
-  - `check_guard_phrases(repo_root: Path, template_text: str) -> list[str]` — Return problems where a guard phrase drifted out of either source.
   - `check_row_comments(repo_root: Path) -> list[str]` — Return problems where a HARNESS_TABLE keyword argument has no comment on the line immediately above it.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
 - Tested by: `claude/scripts/test_gen_second_opinion.py`
@@ -862,6 +871,7 @@ are copy-once seeds for exactly that reason.
 | `claude/output-styles/ConciseSTE.md` | `~/.claude/output-styles/ConciseSTE.md` (claude) |
 | `claude/scripts/AGENTS.md` | not symlinked by `links.toml` |
 | `claude/scripts/CLAUDE.md` | not symlinked by `links.toml` |
+| `claude/scripts/contract_fingerprints.json` | not symlinked by `links.toml` |
 | `claude/settings.json` | not symlinked by `links.toml` |
 | `claude/settings.work.json` | not symlinked by `links.toml` |
 | `copilot/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
@@ -1169,6 +1179,28 @@ named doc, not regenerating this file.
 | `pi/skills/grill-me/SKILL.md` | OK |
 | `pi/skills/spec/SKILL.md` | OK |
 | `pi/skills/to-tickets/SKILL.md` | OK |
+
+### `second_opinion.py`
+
+| Doc | Status |
+| --- | --- |
+| `agy/skills/grill-me/SKILL.md` | OK |
+| `agy/skills/second-opinion/SKILL.md` | OK |
+| `agy/skills/spec/SKILL.md` | OK |
+| `claude/commands/grill-me.md` | OK |
+| `claude/commands/second-opinion.md` | OK |
+| `claude/commands/spec.md` | OK |
+| `copilot/skills/grill-me/SKILL.md` | OK |
+| `copilot/skills/second-opinion/SKILL.md` | OK |
+| `copilot/skills/spec/SKILL.md` | OK |
+| `opencode/command/grill-me.md` | OK |
+| `opencode/command/second-opinion.md` | OK |
+| `opencode/command/spec.md` | OK |
+| `opencode/skills/grill-me/SKILL.md` | OK |
+| `opencode/skills/second-opinion/SKILL.md` | OK |
+| `opencode/skills/spec/SKILL.md` | OK |
+| `pi/skills/grill-me/SKILL.md` | OK |
+| `pi/skills/spec/SKILL.md` | OK |
 
 ### `standup.py`
 

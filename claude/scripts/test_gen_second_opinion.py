@@ -119,7 +119,7 @@ class RenderBodyTests(unittest.TestCase):
         )
 
 
-class ContractAndGuardCheckTests(unittest.TestCase):
+class ContractShapeCheckTests(unittest.TestCase):
     def test_contract_shape_flags_a_missing_token(self) -> None:
         problems = gso.check_contract_shape(REPO_ROOT, "no flags mentioned here")
         self.assertTrue(problems)
@@ -128,12 +128,6 @@ class ContractAndGuardCheckTests(unittest.TestCase):
     def test_contract_shape_passes_when_every_token_present(self) -> None:
         template = " ".join(gso.CONTRACT_TOKENS)
         self.assertEqual(gso.check_contract_shape(REPO_ROOT, template), [])
-
-    def test_guard_phrase_flags_drift_from_the_template(self) -> None:
-        problems = gso.check_guard_phrases(
-            REPO_ROOT, "template text without the phrase"
-        )
-        self.assertTrue(any("second_opinion.md.tmpl" in p for p in problems))
 
 
 class EndToEndTests(unittest.TestCase):
@@ -152,10 +146,6 @@ class EndToEndTests(unittest.TestCase):
     def test_contract_shape_holds_against_the_real_template(self) -> None:
         template_text = (REPO_ROOT / gso.TEMPLATE_PATH).read_text(encoding="utf-8")
         self.assertEqual(gso.check_contract_shape(REPO_ROOT, template_text), [])
-
-    def test_guard_phrases_hold_against_the_real_sources(self) -> None:
-        template_text = (REPO_ROOT / gso.TEMPLATE_PATH).read_text(encoding="utf-8")
-        self.assertEqual(gso.check_guard_phrases(REPO_ROOT, template_text), [])
 
     def test_every_harness_table_row_has_a_freshness_comment(self) -> None:
         self.assertEqual(gso.check_row_comments(REPO_ROOT), [])
