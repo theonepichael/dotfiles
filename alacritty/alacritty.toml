@@ -1,0 +1,139 @@
+# ==============================================================================
+# Alacritty Configuration
+# Tailored for: WSL2 / Ubuntu + Tmux (prefix C-a) + Neovim + Oh-My-Posh
+# ==============================================================================
+
+[general]
+live_config_reload = true
+
+[env]
+TERM = "xterm-256color"
+COLORTERM = "truecolor"
+
+# ── Shell Integration ────────────────────────────────────────────────────────
+[terminal.shell]
+program = "wsl.exe"
+args = ["-d", "Ubuntu", "--cd", "~"]
+
+# ── Window Appearance ────────────────────────────────────────────────────────
+[window]
+dimensions = { columns = 120, lines = 35 }
+padding = { x = 10, y = 8 }
+dynamic_padding = true
+decorations = "Full"
+opacity = 1.0
+blur = false
+dynamic_title = true
+
+# ── Typography (Nerd Fonts for Oh-My-Posh, Eza icons, Neovim) ─────────────────
+[font]
+size = 18.0
+
+[font.normal]
+family = "CaskaydiaCove Nerd Font Mono"
+style = "Regular"
+
+[font.bold]
+family = "CaskaydiaCove Nerd Font Mono"
+style = "Bold"
+
+[font.italic]
+family = "CaskaydiaCove Nerd Font Mono"
+style = "Italic"
+
+[font.bold_italic]
+family = "CaskaydiaCove Nerd Font Mono"
+style = "Bold Italic"
+
+[font.offset]
+x = 0
+y = 0
+
+# ── Cursor (Dynamic DECSCUSR escape sequences supported for Vim/Tmux) ─────────
+[cursor]
+style = { shape = "Block", blinking = "On" }
+blink_interval = 500
+unfocused_hollow = true
+
+# ── Scrollback & Selection ───────────────────────────────────────────────────
+[scrolling]
+history = 10000
+multiplier = 3
+
+[selection]
+save_to_clipboard = true
+
+# ── Color Palette: Ocean Pi (Slate 900 Background + Teal Accent) ─────────────
+[colors.primary]
+background = "#0f172a"
+foreground = "#94a3b8"
+
+[colors.cursor]
+text = "#0f172a"
+cursor = "#2dd4bf"
+
+[colors.selection]
+text = "CellForeground"
+background = "#1e293b"
+
+# Normal colors (0-7)
+[colors.normal]
+black = "#0f172a"
+red = "#f87171"
+green = "#4ade80"
+yellow = "#fbbf24"
+blue = "#38bdf8"
+magenta = "#818cf8"
+cyan = "#2dd4bf"
+white = "#cbd5e1"
+
+# Bright colors (8-15)
+[colors.bright]
+black = "#334155"
+red = "#fca5a5"
+green = "#86efac"
+yellow = "#fde047"
+blue = "#7dd3fc"
+magenta = "#a5b4fc"
+cyan = "#5eead4"
+white = "#f1f5f9"
+
+# ── Mouse & URL Clicking ─────────────────────────────────────────────────────
+[mouse]
+hide_when_typing = true
+
+# ── Keyboard Shortcuts (Non-conflicting with Tmux prefix C-a / Vim) ──────────
+[[keyboard.bindings]]
+key = "C"
+mods = "Control|Shift"
+action = "Copy"
+
+[[keyboard.bindings]]
+key = "V"
+mods = "Control|Shift"
+action = "Paste"
+
+[[keyboard.bindings]]
+key = "F"
+mods = "Control|Shift"
+action = "SearchForward"
+
+[[keyboard.bindings]]
+key = "B"
+mods = "Control|Shift"
+action = "SearchBackward"
+
+[[keyboard.bindings]]
+key = "Equals"
+mods = "Control"
+action = "IncreaseFontSize"
+
+[[keyboard.bindings]]
+key = "Minus"
+mods = "Control"
+action = "DecreaseFontSize"
+
+[[keyboard.bindings]]
+key = "Key0"
+mods = "Control"
+action = "ResetFontSize"

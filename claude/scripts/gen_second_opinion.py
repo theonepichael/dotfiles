@@ -11,19 +11,21 @@ shared body template (`templates/second_opinion.md.tmpl`) plus a small
 per-harness parameter table below, mirroring `gen_interfaces.py`'s
 generator/--check/--stdout shape.
 
-This does not close every drift class. A second, distinct failure mode is
-the copies (or now, the one template) going stale relative to the actual
-backing script (`second_opinion.py`) they describe — the `--model-index`
-bug was exactly this: the flag already existed everywhere, only its real
-behavior changed, and no doc followed. `--check` also runs a narrow guard
-against that: a contract-shape check (every flag/subcommand
-`INTERFACES.md` lists for `second_opinion.py`'s `review`/`detect`
-subcommands is named somewhere in the template) and a guard-phrase check
-(a short, hand-maintained list of exact substrings that must appear in both
-`INTERFACES.md`'s help text and the template, for flags where the template
-makes a specific behavioral claim). Both are doc-of-doc checks: they prove
-the template still agrees with `INTERFACES.md`, not that `INTERFACES.md`
-itself was kept accurate when the script's real behavior last changed.
+This does not close every drift class on its own. A second, distinct
+failure mode is the copies (or now, the one template) going stale relative
+to the actual backing script (`second_opinion.py`) they describe — the
+`--model-index` bug was exactly this: the flag already existed everywhere,
+only its real behavior changed, and no doc followed. `--check` runs a
+contract-shape check for that: every flag/subcommand `INTERFACES.md` lists
+for `second_opinion.py`'s `review`/`detect` subcommands must be named
+somewhere in the template — a completeness guard (nothing real is
+undocumented), not a behavioral one. Catching the `--model-index` class of
+drift itself — a doc that names a flag correctly but describes its
+behavior wrongly — is `gen_interfaces.py --check`'s job now, via its
+contract-fingerprint check (see that module's docstring); it covers
+`second_opinion.py` the same as every other script skill docs describe,
+which used to require a separate, hand-maintained guard-phrase list here
+that only covered whichever flags someone remembered to add an entry for.
 
 The generator is pure and deterministic: no subprocesses, no network, no
 writes to `~/.claude` — only reading the template + `INTERFACES.md` and
@@ -32,9 +34,9 @@ writing the repo files named in HARNESS_TABLE (skipped in
 
 Usage:
     python3 claude/scripts/gen_second_opinion.py            rewrite every copy
-    python3 claude/scripts/gen_second_opinion.py --check     exit 1 if any copy,
-                                                              the contract shape, or
-                                                              a guard phrase is stale
+    python3 claude/scripts/gen_second_opinion.py --check     exit 1 if any copy or
+                                                              the contract shape
+                                                              is stale
     python3 claude/scripts/gen_second_opinion.py --stdout    print the rendered
                                                               copies, write nothing
 
@@ -43,8 +45,8 @@ Env vars: none.
 Files read: <repo>/templates/second_opinion.md.tmpl, <repo>/INTERFACES.md.
 Files written: the copies named in HARNESS_TABLE (skipped by --check
 and --stdout).
-Exit codes: 0 success; 1 --check found drift (sibling, contract-shape, or
-guard-phrase); 2 bad usage.
+Exit codes: 0 success; 1 --check found drift (sibling or contract-shape);
+2 bad usage.
 
 Requires Python 3.12+.
 """
@@ -80,16 +82,6 @@ for harness-specific wording, then regenerate -->"""
 # plumbing common to every script in this repo and were never part of any
 # skill doc's documented usage).
 CONTRACT_TOKENS = ("detect", "review", "--backend", "--focus-file", "--model-index")
-
-# A short, hand-maintained list of exact substrings that must appear in both
-# INTERFACES.md's help text for the named flag and the template — see the
-# module docstring. Only flags where the template makes a specific
-# behavioral claim get an entry; a flag mentioned only by name has nothing
-# to guard. Each value must currently be an exact substring of both files —
-# --check fails loudly (with the two texts) if it drifts out of either.
-GUARD_PHRASES: dict[str, str] = {
-    "--model-index": "pool is unset/empty or the index is out of range",
-}
 
 
 @dataclass(frozen=True)
@@ -708,28 +700,6 @@ def check_contract_shape(repo_root: Path, template_text: str) -> list[str]:
     return problems
 
 
-def check_guard_phrases(repo_root: Path, template_text: str) -> list[str]:
-    """Return problems where a guard phrase drifted out of either source."""
-    interfaces_text = (repo_root / INTERFACES_PATH).read_text(encoding="utf-8")
-    problems = []
-    for flag, phrase in GUARD_PHRASES.items():
-        if phrase not in interfaces_text:
-            problems.append(
-                f"guard-phrase: {flag!r}'s guard phrase {phrase!r} is no "
-                f"longer a substring of {INTERFACES_PATH} — {flag}'s help "
-                "text moved on; re-copy the phrase from its current help= "
-                "string"
-            )
-        if phrase not in template_text:
-            problems.append(
-                f"guard-phrase: {flag!r}'s guard phrase {phrase!r} is no "
-                f"longer a substring of {TEMPLATE_PATH} — the template's "
-                f"claim about {flag} changed; update the phrase or the "
-                "template text to match"
-            )
-    return problems
-
-
 def check_row_comments(repo_root: Path) -> list[str]:
     """Return problems where a HARNESS_TABLE keyword argument has no comment
     on the line immediately above it.
@@ -835,7 +805,6 @@ def main() -> None:
         template_text = template_file.read_text(encoding="utf-8")
         problems = [
             *check_contract_shape(repo_root, template_text),
-            *check_guard_phrases(repo_root, template_text),
             *check_row_comments(repo_root),
         ]
         stale: list[str] = []
