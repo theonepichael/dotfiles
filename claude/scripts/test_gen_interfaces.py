@@ -14,6 +14,7 @@ parsed with ast.parse, exactly as the generator does it.
 """
 
 import ast
+import json
 import subprocess
 import sys
 import tempfile
@@ -315,6 +316,223 @@ class CliExtractionTests(unittest.TestCase):
         self.assertEqual(
             [a.label for a in subcommand(spec, "second").arguments], ["--session"]
         )
+
+
+HANDLER_FIXTURE = """
+    \"\"\"fixture.py — a small CLI with real handlers.\"\"\"
+
+    import argparse
+
+
+    def main():
+        parser = argparse.ArgumentParser(description="a small CLI")
+        sub = parser.add_subparsers(dest="cmd")
+
+        sub.add_parser("render", help="render it")
+        sub.add_parser("show", help="show one")
+
+        nested = sub.add_parser("pending", help="nested group")
+        nested_sub = nested.add_subparsers(dest="pending_cmd")
+        nested_sub.add_parser("list", help="list them")
+        nested_sub.add_parser("update", help="patch one")
+
+        oos = sub.add_parser("out-of-scope", help="rejected concepts")
+        oos_sub = oos.add_subparsers(dest="oos_cmd")
+        oos_sub.add_parser("add", help="record one")
+
+        sub.add_parser("broken", help="has no matching handler")
+
+
+    def cmd_render(args):
+        \"\"\"Render the thing.\"\"\"
+
+
+    def cmd_show(args):
+        pass
+
+
+    def cmd_pending_list(args):
+        \"\"\"List pending items.\"\"\"
+
+
+    def cmd_pending_update(args):
+        \"\"\"Patch one pending item.\"\"\"
+
+
+    def cmd_out_of_scope_add(args):
+        \"\"\"Record a rejected concept.\"\"\"
+"""
+
+FLAT_HANDLER_FIXTURE = """
+    \"\"\"flat.py — a bare top-level-flags CLI, no subcommands.\"\"\"
+
+    import argparse
+
+
+    def main():
+        parser = argparse.ArgumentParser(description="a flat CLI")
+        parser.add_argument("--verbose", action="store_true")
+"""
+
+
+class HandlerMatchingTests(unittest.TestCase):
+    """Leaf-vs-group handler docstring matching (contract-fingerprint feature)."""
+
+    def setUp(self) -> None:
+        self.tree = parse(HANDLER_FIXTURE)
+        self.cli = cli_of(HANDLER_FIXTURE)
+
+    def test_leaf_subcommand_paths_excludes_group_nodes(self) -> None:
+        leaves = gi.leaf_subcommand_paths(self.cli.subcommands)
+        self.assertNotIn(("pending",), leaves)
+        self.assertNotIn(("out-of-scope",), leaves)
+        self.assertIn(("render",), leaves)
+        self.assertIn(("pending", "list"), leaves)
+        self.assertIn(("pending", "update"), leaves)
+        self.assertIn(("out-of-scope", "add"), leaves)
+        self.assertIn(("broken",), leaves)
+
+    def test_top_level_leaf_handler_is_matched(self) -> None:
+        docstrings, unmatched = gi.match_leaf_handlers(self.tree, self.cli)
+        self.assertEqual(docstrings[("render",)], "Render the thing.")
+        self.assertEqual(unmatched, [("broken",)])
+
+    def test_leaf_handler_with_no_docstring_is_empty_not_unmatched(self) -> None:
+        docstrings, unmatched = gi.match_leaf_handlers(self.tree, self.cli)
+        self.assertEqual(docstrings[("show",)], "")
+        self.assertNotIn(("show",), unmatched)
+
+    def test_group_node_contributes_no_docstring_and_is_never_unmatched(self) -> None:
+        docstrings, unmatched = gi.match_leaf_handlers(self.tree, self.cli)
+        self.assertNotIn(("pending",), docstrings)
+        self.assertNotIn(("pending",), unmatched)
+        self.assertNotIn(("out-of-scope",), docstrings)
+        self.assertNotIn(("out-of-scope",), unmatched)
+
+    def test_nested_leaf_handler_is_matched_by_joined_path(self) -> None:
+        docstrings, _ = gi.match_leaf_handlers(self.tree, self.cli)
+        self.assertEqual(docstrings[("pending", "list")], "List pending items.")
+        self.assertEqual(docstrings[("pending", "update")], "Patch one pending item.")
+
+    def test_hyphenated_path_segment_normalizes_to_underscore(self) -> None:
+        docstrings, unmatched = gi.match_leaf_handlers(self.tree, self.cli)
+        self.assertEqual(
+            docstrings[("out-of-scope", "add")], "Record a rejected concept."
+        )
+        self.assertNotIn(("out-of-scope", "add"), unmatched)
+
+    def test_unmatched_leaf_is_reported_not_silently_dropped(self) -> None:
+        docstrings, unmatched = gi.match_leaf_handlers(self.tree, self.cli)
+        self.assertEqual(unmatched, [("broken",)])
+        self.assertNotIn(("broken",), docstrings)
+
+    def test_real_repo_scripts_have_zero_unmatched_leaf_handlers(self) -> None:
+        """Empirical check behind the spec's design: every leaf subcommand
+        across the 4 in-scope scripts resolves to a real cmd_<path> handler."""
+        for name in ("dev_status.py", "grill.py", "second_opinion.py", "standup.py"):
+            source = (REPO_ROOT / gi.SCRIPTS_DIR / name).read_text(encoding="utf-8")
+            tree = ast.parse(source)
+            cli = gi.extract_cli(tree, gi.first_paragraph(ast.get_docstring(tree)))
+            assert cli is not None
+            _, unmatched = gi.match_leaf_handlers(tree, cli)
+            self.assertEqual(unmatched, [], f"{name} has unmatched leaf handlers")
+
+
+class FingerprintTests(unittest.TestCase):
+    """The contract-fingerprint line composition (spec Output format step 2)."""
+
+    def setUp(self) -> None:
+        self.cli = cli_of(HANDLER_FIXTURE)
+        self.tree = parse(HANDLER_FIXTURE)
+        self.docstrings, _ = gi.match_leaf_handlers(self.tree, self.cli)
+
+    def fp(self, exit_codes: list[int] | None = None) -> list[str]:
+        return gi.fingerprint_lines(
+            self.cli, self.docstrings, "module purpose text", exit_codes or [0, 1]
+        )
+
+    def test_subcommand_help_text_contributes_a_line(self) -> None:
+        lines = self.fp()
+        self.assertTrue(any("render it" in line for line in lines))
+        self.assertTrue(any("nested group" in line for line in lines))
+
+    def test_leaf_handler_docstring_contributes_a_line(self) -> None:
+        lines = self.fp()
+        self.assertTrue(any("Render the thing." in line for line in lines))
+        self.assertTrue(any("Patch one pending item." in line for line in lines))
+
+    def test_group_node_docstring_does_not_appear(self) -> None:
+        # "pending"/"out-of-scope" are groups -- match_leaf_handlers never
+        # produces an entry for them, so nothing derived from a
+        # (nonexistent) cmd_pending/cmd_out_of_scope docstring can leak in.
+        lines = self.fp()
+        joined = "\n".join(lines)
+        self.assertNotIn("cmd_pending", joined)
+        self.assertNotIn("cmd_out_of_scope", joined)
+
+    def test_exit_codes_are_one_sorted_line(self) -> None:
+        lines = self.fp(exit_codes=[3, 0, 1])
+        exit_lines = [line for line in lines if "exit" in line.lower()]
+        self.assertEqual(len(exit_lines), 1)
+        self.assertIn("0", exit_lines[0])
+        self.assertIn("1", exit_lines[0])
+        self.assertIn("3", exit_lines[0])
+
+    def test_reformatting_help_text_does_not_change_the_fingerprint(self) -> None:
+        cli_a = cli_of(HANDLER_FIXTURE)
+        cli_b = cli_of(HANDLER_FIXTURE.replace("render it", "render   it"))
+        lines_a = gi.fingerprint_lines(cli_a, self.docstrings, "x", [0])
+        lines_b = gi.fingerprint_lines(cli_b, self.docstrings, "x", [0])
+        self.assertEqual(lines_a, lines_b)
+
+    def test_changed_wording_changes_the_fingerprint(self) -> None:
+        cli_a = cli_of(HANDLER_FIXTURE)
+        cli_b = cli_of(HANDLER_FIXTURE.replace("render it", "render it now"))
+        lines_a = gi.fingerprint_lines(cli_a, self.docstrings, "x", [0])
+        lines_b = gi.fingerprint_lines(cli_b, self.docstrings, "x", [0])
+        self.assertNotEqual(lines_a, lines_b)
+
+    def test_flag_choices_default_required_are_captured_not_just_help(self) -> None:
+        cli = cli_of(
+            """
+            import argparse
+
+
+            def main():
+                parser = argparse.ArgumentParser(description="x")
+                parser.add_argument(
+                    "--format", choices=["json", "text"], default="text",
+                    help="output format",
+                )
+            """
+        )
+        lines_before = gi.fingerprint_lines(cli, {}, "x", [0])
+        cli_after = cli_of(
+            """
+            import argparse
+
+
+            def main():
+                parser = argparse.ArgumentParser(description="x")
+                parser.add_argument(
+                    "--format", choices=["json", "text", "yaml"], default="text",
+                    help="output format",
+                )
+            """
+        )
+        lines_after = gi.fingerprint_lines(cli_after, {}, "x", [0])
+        self.assertNotEqual(lines_before, lines_after)
+
+    def test_flat_cli_fingerprints_module_docstring_instead_of_handlers(self) -> None:
+        flat_cli = cli_of(FLAT_HANDLER_FIXTURE)
+        lines_a = gi.fingerprint_lines(flat_cli, {}, "does one thing", [0])
+        lines_b = gi.fingerprint_lines(flat_cli, {}, "does a different thing", [0])
+        self.assertNotEqual(lines_a, lines_b)
+        self.assertTrue(any("does one thing" in line for line in lines_a))
+
+    def test_output_is_sorted_regardless_of_source_order(self) -> None:
+        lines = self.fp()
+        self.assertEqual(lines, sorted(lines))
 
 
 class ModuleFactExtractionTests(unittest.TestCase):
@@ -940,6 +1158,184 @@ class DocDriftTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 3, result.stderr)
             self.assertIn("--fast", result.stderr)
+
+
+class ContractFingerprintTests(unittest.TestCase):
+    """The `--check`/`--update-fingerprints` semantic-doc-drift layer."""
+
+    def _write_synthetic_repo(
+        self, root: Path, doc_invocation: str, handler_body: str = "pass\n"
+    ) -> None:
+        scripts = root / gi.SCRIPTS_DIR
+        scripts.mkdir(parents=True, exist_ok=True)
+        (scripts / "foo.py").write_text(
+            textwrap.dedent(
+                f'''\
+                #!/usr/bin/env python3
+                """foo.py — test fixture."""
+                import argparse
+
+                def main() -> None:
+                    parser = argparse.ArgumentParser(prog="foo")
+                    sub = parser.add_subparsers(dest="command")
+                    run = sub.add_parser("run", help="run it")
+                    run.add_argument("--slow", action="store_true")
+
+                def cmd_run(args) -> None:
+                    {handler_body}
+
+                if __name__ == "__main__":
+                    main()
+                '''
+            ),
+            encoding="utf-8",
+        )
+        commands = root / "claude" / "commands"
+        commands.mkdir(parents=True, exist_ok=True)
+        (commands / "foo.md").write_text(doc_invocation, encoding="utf-8")
+        for harness in ("copilot", "opencode", "agy"):
+            (root / harness).mkdir(exist_ok=True)
+
+    def _modules_and_coverage(
+        self, root: Path
+    ) -> tuple[list[gi.ModuleInterface], dict[str, dict[str, bool]]]:
+        links = gi.load_link_table(root)
+        module = gi.analyze_module(scripts_path(root, "foo.py"), root, {"foo"}, links)
+        _, coverage = gi.check_doc_drift(root, [module])
+        return [module], coverage
+
+    def test_missing_fingerprints_file_loads_as_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(gi.load_contract_fingerprints(Path(tmp)), {})
+
+    def test_malformed_json_loads_as_empty_not_a_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / gi.SCRIPTS_DIR).mkdir(parents=True)
+            (root / gi.CONTRACT_FINGERPRINTS_PATH).write_text(
+                "{not valid json", encoding="utf-8"
+            )
+            self.assertEqual(gi.load_contract_fingerprints(root), {})
+
+    def test_no_recorded_fingerprint_is_a_problem_not_a_skip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_synthetic_repo(root, "Use `foo.py run --slow` to go.\n")
+            modules, coverage = self._modules_and_coverage(root)
+            problems = gi.check_contract_fingerprints(root, modules, coverage)
+            self.assertEqual(len(problems), 1)
+            self.assertEqual(problems[0].kind, "mismatch")
+            self.assertIn("no prior fingerprint", problems[0].message)
+
+    def test_matching_recorded_fingerprint_has_no_problem(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_synthetic_repo(root, "Use `foo.py run --slow` to go.\n")
+            gi.write_contract_fingerprints(root)
+            modules, coverage = self._modules_and_coverage(root)
+            problems = gi.check_contract_fingerprints(root, modules, coverage)
+            self.assertEqual(problems, [])
+
+    def test_changed_handler_docstring_is_a_mismatch_with_a_diff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_synthetic_repo(
+                root, "Use `foo.py run --slow` to go.\n", handler_body='"""Old."""\n'
+            )
+            gi.write_contract_fingerprints(root)
+            self._write_synthetic_repo(
+                root, "Use `foo.py run --slow` to go.\n", handler_body='"""New."""\n'
+            )
+            modules, coverage = self._modules_and_coverage(root)
+            problems = gi.check_contract_fingerprints(root, modules, coverage)
+            self.assertEqual(len(problems), 1)
+            self.assertEqual(problems[0].kind, "mismatch")
+            self.assertIn("Old", problems[0].message)
+            self.assertIn("New", problems[0].message)
+
+    def test_unmatched_leaf_handler_is_reported_distinctly_and_blocks_comparison(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_synthetic_repo(root, "Use `foo.py run --slow` to go.\n")
+            # rename the handler so cmd_run no longer resolves
+            source = scripts_path(root, "foo.py").read_text(encoding="utf-8")
+            scripts_path(root, "foo.py").write_text(
+                source.replace("def cmd_run", "def cmd_run_renamed"), encoding="utf-8"
+            )
+            modules, coverage = self._modules_and_coverage(root)
+            problems = gi.check_contract_fingerprints(root, modules, coverage)
+            self.assertEqual(len(problems), 1)
+            self.assertEqual(problems[0].kind, "unmatched-handler")
+            self.assertIn("run", problems[0].message)
+
+    def test_update_fingerprints_seeds_a_file_check_then_accepts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_synthetic_repo(root, "Use `foo.py run --slow` to go.\n")
+            written = gi.write_contract_fingerprints(root)
+            self.assertIn("foo.py", written)
+            on_disk = json.loads(
+                (root / gi.CONTRACT_FINGERPRINTS_PATH).read_text(encoding="utf-8")
+            )
+            self.assertEqual(on_disk, written)
+            modules, coverage = self._modules_and_coverage(root)
+            self.assertEqual(
+                gi.check_contract_fingerprints(root, modules, coverage), []
+            )
+
+    def test_update_fingerprints_drops_a_script_no_longer_referenced(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_synthetic_repo(root, "Use `foo.py run --slow` to go.\n")
+            gi.write_contract_fingerprints(root)
+            (root / "claude" / "commands" / "foo.md").write_text(
+                "no longer mentions the script\n", encoding="utf-8"
+            )
+            written = gi.write_contract_fingerprints(root)
+            self.assertNotIn("foo.py", written)
+
+    @pytest.mark.allow_real_subprocess
+    def test_check_exits_3_on_fingerprint_mismatch_end_to_end(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_synthetic_repo(
+                root, "Use `foo.py run --slow` to go.\n", handler_body='"""Old."""\n'
+            )
+            update = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / gi.SCRIPTS_DIR / "gen_interfaces.py"),
+                    "--update-fingerprints",
+                    "--repo-root",
+                    str(root),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(update.returncode, 0, update.stderr)
+            self._write_synthetic_repo(
+                root, "Use `foo.py run --slow` to go.\n", handler_body='"""New."""\n'
+            )
+            # avoid the unrelated stale-INTERFACES.md exit-1 path masking this
+            gi.build_document(root)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / gi.SCRIPTS_DIR / "gen_interfaces.py"),
+                    "--check",
+                    "--repo-root",
+                    str(root),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 3, result.stderr)
+            self.assertIn("contract", result.stderr.lower())
+            self.assertIn("update-fingerprints", result.stderr)
 
 
 class SkillMentionTests(unittest.TestCase):

@@ -22,9 +22,12 @@ asset table to tracked files — read-only, and not one of the scripts being
 documented. See :func:`tracked_files` for why that filter is load-bearing.
 
 Usage:
-    python3 claude/scripts/gen_interfaces.py            rewrite INTERFACES.md
-    python3 claude/scripts/gen_interfaces.py --check    exit 1/3 if it is stale
-    python3 claude/scripts/gen_interfaces.py --stdout   print, write nothing
+    python3 claude/scripts/gen_interfaces.py                  rewrite INTERFACES.md
+    python3 claude/scripts/gen_interfaces.py --check           exit 1/3 if it is stale
+    python3 claude/scripts/gen_interfaces.py --stdout          print, write nothing
+    python3 claude/scripts/gen_interfaces.py --update-fingerprints
+                                                                accept current behavior
+                                                                as the new baseline
 
 Section 5 of the generated document cross-references each backing script's
 real CLI contract against every skill/command doc's shown example of running
@@ -32,16 +35,29 @@ it (a doc→script invocation check: does the doc's copy-pasteable command
 still use subcommands/flags the script actually has). ``--check`` treats a
 mismatch there as a distinct failure from a stale file — see Exit codes.
 
-Flags: --check, --stdout, --repo-root <path>, --output <path>,
---quiet/-q, --verbose/-v.
+``--check`` also compares each in-scope script's *behavior* — subcommand and
+argument help text (including ``choices=``/``default=``/``required``), and
+leaf-subcommand handler docstrings — against a recorded fingerprint in
+``contract_fingerprints.json``. This catches a flag or subcommand that kept
+its name while its real behavior changed underneath it, which the invocation
+check above cannot see. A mismatch prints a diff and the docs to re-read;
+accept the new behavior with ``--update-fingerprints`` only after reading
+that diff, never blind. See :func:`check_contract_fingerprints`.
+
+Flags: --check, --stdout, --update-fingerprints, --repo-root <path>,
+--output <path>, --quiet/-q, --verbose/-v.
 Env vars: none.
-Files read: <repo>/links.toml and every file under claude/, copilot/,
-opencode/, agy/.
-Files written: <repo>/INTERFACES.md (skipped by --check and --stdout).
+Files read: <repo>/links.toml, <repo>/contract_fingerprints.json, and every
+file under claude/, copilot/, opencode/, agy/.
+Files written: <repo>/INTERFACES.md (skipped by --check and --stdout);
+<repo>/claude/scripts/contract_fingerprints.json (only with
+--update-fingerprints).
 Exit codes: 0 success; 1 --check found the file itself stale (fix: rerun
 without --check); 2 bad usage or unreadable input; 3 --check found a doc's
-shown command example drifted from its script's real CLI contract (fix:
-edit the named doc, not this file).
+shown command example drifted from its script's real CLI contract, or a
+script's recorded contract fingerprint no longer matches its live behavior
+(fix: edit the named doc(s), or run --update-fingerprints after reading the
+diff — never regenerate INTERFACES.md to fix this).
 
 Requires Python 3.12+.
 """
@@ -49,6 +65,7 @@ Requires Python 3.12+.
 import argparse
 import ast
 import difflib
+import json
 import re
 import shlex
 import subprocess
@@ -170,6 +187,8 @@ class ModuleInterface:
     functions: list[ApiSymbol] = field(default_factory=list)
     handlers: list[str] = field(default_factory=list)
     tests: list[str] = field(default_factory=list)
+    leaf_handler_docstrings: dict[tuple[str, ...], str] = field(default_factory=dict)
+    unmatched_leaf_subcommands: list[tuple[str, ...]] = field(default_factory=list)
 
 
 @dataclass
@@ -601,6 +620,106 @@ def extract_cli(tree: ast.Module, module_doc: str) -> CliSpec | None:
     return spec
 
 
+# ── leaf handler matching (contract-fingerprint doc-drift check) ───────────────
+
+
+def leaf_subcommand_paths(subcommands: list[Subcommand]) -> set[tuple[str, ...]]:
+    """Return the paths with no other subcommand nested under them.
+
+    A subcommand whose path is a strict prefix of another (``("pending",)``
+    under ``("pending", "add")``) is a pure routing node with no handler of
+    its own by construction — it must never be treated as a match failure
+    by :func:`match_leaf_handlers`.
+    """
+    all_paths = {sc.path for sc in subcommands}
+    return {
+        path
+        for path in all_paths
+        if not any(
+            len(other) > len(path) and other[: len(path)] == path for other in all_paths
+        )
+    }
+
+
+def cmd_function_name(path: tuple[str, ...]) -> str:
+    """Render the expected handler function name for a subcommand path.
+
+    Hyphens in any path segment are normalized to underscores before
+    joining — e.g. ``("out-of-scope", "add")`` -> ``cmd_out_of_scope_add``,
+    matching this repo's actual naming convention even where a subcommand
+    group is dispatched through an explicit dict rather than this lookup.
+    """
+    return "cmd_" + "_".join(segment.replace("-", "_") for segment in path)
+
+
+def match_leaf_handlers(
+    tree: ast.Module, cli: CliSpec
+) -> tuple[dict[tuple[str, ...], str], list[tuple[str, ...]]]:
+    """Match every leaf subcommand to its ``cmd_<path>`` handler's docstring.
+
+    Returns ``(docstrings, unmatched)``: a leaf's docstring is ``""`` when
+    the handler exists but is undocumented (legitimate), and its path is
+    reported in ``unmatched`` only when no handler function of that name
+    exists at all (an extraction gap that must not be silent). Group nodes
+    (see :func:`leaf_subcommand_paths`) never appear in either return value.
+    """
+    functions = {
+        node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
+    }
+    docstrings: dict[tuple[str, ...], str] = {}
+    unmatched: list[tuple[str, ...]] = []
+    for path in sorted(leaf_subcommand_paths(cli.subcommands)):
+        node = functions.get(cmd_function_name(path))
+        if node is None:
+            unmatched.append(path)
+            continue
+        docstrings[path] = ast.get_docstring(node) or ""
+    return docstrings, unmatched
+
+
+def fingerprint_lines(
+    cli: CliSpec,
+    leaf_docstrings: dict[tuple[str, ...], str],
+    module_purpose: str,
+    exit_codes: list[int],
+) -> list[str]:
+    """Render a script's behavior-carrying CLI surface as sorted, diffable lines.
+
+    One line per subcommand's ``help=`` text (leaf and group alike — a
+    group's own help text is still meaningful), one line per argument
+    (flag or positional, via :func:`render_notes` so ``choices=``/
+    ``default=``/``required`` are covered, not just prose ``help=``), one
+    line per matched leaf handler's docstring, and one line for the sorted
+    exit codes. A flat CLI (no subcommands at all) fingerprints
+    ``module_purpose`` in place of handler docstrings. Every field is
+    canonicalized with :func:`inline`, so pure re-wrapping never changes
+    the result; sorting the final list makes source order irrelevant too.
+    """
+    lines: list[str] = []
+    for subcommand in cli.subcommands:
+        lines.append(
+            f"subcommand {subcommand.name}: {inline(subcommand.help_text or '')}"
+        )
+        for argument in subcommand.arguments:
+            lines.append(
+                f"arg {subcommand.name} {argument.label}: "
+                f"{inline(render_notes(argument))}"
+            )
+    for argument in cli.options:
+        lines.append(
+            f"arg (top-level) {argument.label}: {inline(render_notes(argument))}"
+        )
+
+    if cli.subcommands:
+        for path, docstring in leaf_docstrings.items():
+            lines.append(f"handler {' '.join(path)}: {inline(docstring)}")
+    else:
+        lines.append(f"module docstring: {inline(module_purpose)}")
+
+    lines.append("exit codes: " + ", ".join(str(code) for code in sorted(exit_codes)))
+    return sorted(lines)
+
+
 # ── module-wide extraction ───────────────────────────────────────────────────
 
 ENV_ACCESSORS = frozenset({"os.environ.get", "os.getenv", "environ.get", "getenv"})
@@ -974,6 +1093,9 @@ def analyze_module(
     cli = extract_cli(tree, first_paragraph(module_doc))
     exceptions, classes, functions, handlers = extract_api(tree, cli)
     first_line = source.split("\n", 1)[0]
+    leaf_docstrings, unmatched_leaves = (
+        match_leaf_handlers(tree, cli) if cli is not None else ({}, [])
+    )
     return ModuleInterface(
         relpath=relpath,
         purpose=first_paragraph(module_doc) or "(no module docstring)",
@@ -991,6 +1113,8 @@ def analyze_module(
         functions=functions,
         handlers=handlers,
         tests=find_tests(path, repo_root),
+        leaf_handler_docstrings=leaf_docstrings,
+        unmatched_leaf_subcommands=unmatched_leaves,
     )
 
 
@@ -1219,12 +1343,13 @@ def render_assets(
 
 # ── skill/command doc contract drift ────────────────────────────────────────
 
-DOC_DRIFT_CHECK_EXCLUDE = frozenset({"second_opinion.py"})
-"""Scripts checked elsewhere already.
+CONTRACT_FINGERPRINTS_PATH = "claude/scripts/contract_fingerprints.json"
+"""Where the recorded per-script behavior fingerprints live.
 
-``second_opinion.py``'s skill/command docs are already validated by
-``gen_second_opinion.py --check`` (a narrower, earlier version of this same
-idea). Checking it again here would double-cover it, not add safety.
+Covers ``second_opinion.py`` too — the general fingerprint check
+(:func:`check_contract_fingerprints`) subsumes what
+``gen_second_opinion.py``'s narrower ``GUARD_PHRASES``/``CONTRACT_TOKENS``
+used to guard, so there is no longer a separate exclusion for it here.
 """
 
 SHELL_PROMPT_TOKENS = frozenset({"$", "#", "&&", ";", "|", "|&"})
@@ -1427,8 +1552,6 @@ def check_doc_drift(
         if module.cli is None:
             continue
         script = Path(module.relpath).name
-        if script in DOC_DRIFT_CHECK_EXCLUDE:
-            continue
         invocations = find_invocations(doc_paths, repo_root, script)
         if not invocations:
             continue
@@ -1471,6 +1594,163 @@ def render_doc_drift_section(coverage: dict[str, dict[str, bool]]) -> list[str]:
             lines.append(f"| `{doc}` | {status} |")
         lines.append("")
     return lines
+
+
+# ── contract fingerprints (semantic doc-drift check) ────────────────────────
+
+
+@dataclass
+class FingerprintProblem:
+    """One contract-fingerprint failure for ``--check`` to report."""
+
+    script: str
+    kind: str  # "unmatched-handler" | "mismatch"
+    message: str
+
+
+def load_contract_fingerprints(repo_root: Path) -> dict[str, list[str]]:
+    """Read ``contract_fingerprints.json``, treating anything unreadable as empty.
+
+    A missing or malformed file is not a crash — it just means every
+    in-scope script looks like it has no prior fingerprint recorded, the
+    same outcome as a script newly entering scope.
+    """
+    path = repo_root / CONTRACT_FINGERPRINTS_PATH
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        key: value
+        for key, value in data.items()
+        if isinstance(key, str)
+        and isinstance(value, list)
+        and all(isinstance(item, str) for item in value)
+    }
+
+
+def load_repo_modules(repo_root: Path, links: LinkTable) -> list[ModuleInterface]:
+    """Parse every shared script under ``SCRIPTS_DIR`` into a ``ModuleInterface``."""
+    script_dir = repo_root / SCRIPTS_DIR
+    modules_paths = sorted(
+        path for path in script_dir.glob("*.py") if not path.name.startswith("test_")
+    )
+    siblings = {path.stem for path in script_dir.glob("*.py")}
+    return [analyze_module(path, repo_root, siblings, links) for path in modules_paths]
+
+
+def check_contract_fingerprints(
+    repo_root: Path,
+    modules: Sequence[ModuleInterface],
+    coverage: dict[str, dict[str, bool]],
+) -> list[FingerprintProblem]:
+    """Check every in-scope script's live fingerprint against the recorded one.
+
+    Scope is exactly ``coverage``'s keys — the same scripts
+    :func:`check_doc_drift` already found at least one doc invocation for,
+    never a separately maintained list. A script with an unmatched leaf
+    handler aborts before any fingerprint comparison for it, reported
+    distinctly from an ordinary mismatch (the fix is the extractor's naming
+    assumption, not a doc).
+    """
+    modules_by_name = {Path(module.relpath).name: module for module in modules}
+    recorded = load_contract_fingerprints(repo_root)
+    problems: list[FingerprintProblem] = []
+    for script in sorted(coverage):
+        module = modules_by_name.get(script)
+        if module is None or module.cli is None:
+            continue
+        docs = sorted(coverage[script])
+        if module.unmatched_leaf_subcommands:
+            names = ", ".join(
+                " ".join(path) for path in module.unmatched_leaf_subcommands
+            )
+            problems.append(
+                FingerprintProblem(
+                    script=script,
+                    kind="unmatched-handler",
+                    message=(
+                        f"[gen_interfaces] contract-fingerprint extraction failed "
+                        f"for `{script}`: no cmd_<path> handler found for "
+                        f"subcommand(s) {names} — fix the extractor's naming "
+                        "assumption, this is not a doc to re-read"
+                    ),
+                )
+            )
+            continue
+        live = fingerprint_lines(
+            module.cli,
+            module.leaf_handler_docstrings,
+            module.purpose,
+            module.exit_codes,
+        )
+        stored = recorded.get(script)
+        if stored == live:
+            continue
+        docs_text = ", ".join(f"`{doc}`" for doc in docs) or "(no doc found)"
+        if stored is None:
+            detail = (
+                f"no prior fingerprint recorded for `{script}` — this is expected "
+                "the first time a doc references it"
+            )
+        else:
+            detail = "".join(
+                difflib.unified_diff(
+                    [line + "\n" for line in stored],
+                    [line + "\n" for line in live],
+                    fromfile=f"{script} (recorded)",
+                    tofile=f"{script} (current)",
+                )
+            )
+        problems.append(
+            FingerprintProblem(
+                script=script,
+                kind="mismatch",
+                message=(
+                    f"[gen_interfaces] contract drift — `{script}`'s CLI behavior "
+                    f"changed; re-read {docs_text}, then run `gen_interfaces.py "
+                    f"--update-fingerprints`:\n{detail}"
+                ),
+            )
+        )
+    return problems
+
+
+def write_contract_fingerprints(repo_root: Path) -> dict[str, list[str]]:
+    """Recompute and write ``contract_fingerprints.json`` for ``--update-fingerprints``.
+
+    Covers exactly the scripts :func:`check_doc_drift` finds a doc
+    invocation for (the same scope `--check` uses) — a script no longer
+    referenced by any doc drops out; one referenced for the first time is
+    added. A script with an unmatched leaf handler is skipped rather than
+    given an untrustworthy entry — `--check` keeps failing it with the
+    distinct unmatched-handler message until the extractor's assumption is
+    fixed.
+    """
+    links = load_link_table(repo_root)
+    modules = load_repo_modules(repo_root, links)
+    _, coverage = check_doc_drift(repo_root, modules)
+    modules_by_name = {Path(module.relpath).name: module for module in modules}
+    fingerprints: dict[str, list[str]] = {}
+    for script in sorted(coverage):
+        module = modules_by_name.get(script)
+        if module is None or module.cli is None or module.unmatched_leaf_subcommands:
+            continue
+        fingerprints[script] = fingerprint_lines(
+            module.cli,
+            module.leaf_handler_docstrings,
+            module.purpose,
+            module.exit_codes,
+        )
+    path = repo_root / CONTRACT_FINGERPRINTS_PATH
+    path.write_text(
+        json.dumps(fingerprints, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return fingerprints
 
 
 _SKILL_MENTION_RE_CACHE: dict[str, re.Pattern[str]] = {}
@@ -1532,20 +1812,15 @@ def build_document(repo_root: Path) -> str:
     return build_document_and_drift(repo_root)[0]
 
 
-def build_document_and_drift(repo_root: Path) -> tuple[str, list[DriftProblem]]:
-    """Build INTERFACES.md text alongside the doc-drift problems found.
+def build_document_and_drift(
+    repo_root: Path,
+) -> tuple[str, list[DriftProblem], list[FingerprintProblem]]:
+    """Build INTERFACES.md text alongside the doc-drift and fingerprint problems.
 
     A single pass so ``--check`` doesn't re-parse every script twice.
     """
     links = load_link_table(repo_root)
-    script_dir = repo_root / SCRIPTS_DIR
-    modules_paths = sorted(
-        path for path in script_dir.glob("*.py") if not path.name.startswith("test_")
-    )
-    siblings = {path.stem for path in script_dir.glob("*.py")}
-    modules = [
-        analyze_module(path, repo_root, siblings, links) for path in modules_paths
-    ]
+    modules = load_repo_modules(repo_root, links)
 
     lines = [f"# {OUTPUT_NAME}", "", PREAMBLE, "", "---", ""]
     lines += ["## 1. Shared scripts (`claude/scripts/`)", ""]
@@ -1582,11 +1857,12 @@ def build_document_and_drift(repo_root: Path) -> tuple[str, list[DriftProblem]]:
             lines += render_module(module)
 
     problems, coverage = check_doc_drift(repo_root, modules)
+    fingerprint_problems = check_contract_fingerprints(repo_root, modules, coverage)
     lines += ["---", "", "## 5. Skill/command doc contract coverage", ""]
     lines += render_doc_drift_section(coverage)
     lines += ["---", "", "## 6. Skill cross-reference graph", ""]
     lines += render_skill_graph_section(repo_root)
-    return "\n".join(lines).rstrip("\n") + "\n", problems
+    return "\n".join(lines).rstrip("\n") + "\n", problems, fingerprint_problems
 
 
 def anchor(relpath: str) -> str:
@@ -1621,6 +1897,16 @@ def main() -> None:
         "--stdout", action="store_true", help="print the document, write nothing"
     )
     parser.add_argument(
+        "--update-fingerprints",
+        action="store_true",
+        help=(
+            "recompute and record every in-scope script's contract fingerprint "
+            "in contract_fingerprints.json, accepting its current behavior as "
+            "the new baseline — run this only after re-reading the --check "
+            "diff, never blind"
+        ),
+    )
+    parser.add_argument(
         "--repo-root",
         type=Path,
         default=None,
@@ -1642,19 +1928,30 @@ def main() -> None:
         sys.exit(2)
     output = args.output or repo_root / OUTPUT_NAME
 
-    document, drift_problems = build_document_and_drift(repo_root)
+    if args.update_fingerprints:
+        written = write_contract_fingerprints(repo_root)
+        cli_common.qprint(
+            f"[gen_interfaces] recorded contract fingerprints for {len(written)} "
+            f"script(s) in {CONTRACT_FINGERPRINTS_PATH}",
+            quiet=args.quiet,
+        )
+        return
+
+    document, drift_problems, fingerprint_problems = build_document_and_drift(repo_root)
 
     if args.stdout:
         sys.stdout.write(document)
         return
     if args.check:
-        if drift_problems:
+        if drift_problems or fingerprint_problems:
             for problem in drift_problems:
                 print(
                     f"[gen_interfaces] doc drift — edit `{problem.doc}`: "
                     f"`{problem.invocation}` -> {problem.detail}",
                     file=sys.stderr,
                 )
+            for fp_problem in fingerprint_problems:
+                print(fp_problem.message, file=sys.stderr)
             print(
                 "[gen_interfaces] the script's real CLI contract is the source "
                 "of truth — update the doc(s) above, do not regenerate "
