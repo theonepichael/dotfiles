@@ -105,6 +105,25 @@ describe("buildArgv", () => {
       "gate-pass",
       "abc",
     ]);
+    expect(
+      buildArgv("gate_pass", { action: "gate_pass", slug: "abc", patch: { coverage: {} } }),
+    ).toEqual(["gate-pass", "abc", JSON.stringify({ coverage: {} })]);
+    expect(buildArgv("run", { action: "run", slug: "abc", command: ["pytest", "-q"] })).toEqual([
+      "run",
+      "abc",
+      "--",
+      "pytest",
+      "-q",
+    ]);
+    expect(
+      buildArgv("run", {
+        action: "run",
+        slug: "abc",
+        command: ["pytest", "-q"],
+        timeout: 60,
+      }),
+    ).toEqual(["run", "abc", "--timeout", "60", "--", "pytest", "-q"]);
+    expect(buildArgv("runs", { action: "runs", slug: "abc" })).toEqual(["runs", "abc"]);
   });
 
   test("start carries optional force/allowMain/claimedBy flags", () => {

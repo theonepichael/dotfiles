@@ -269,7 +269,7 @@ DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py reject <slug|N> "<feed
 ```
 
 When passing a numeric position (not a slug) to `start`/`done`/`update`/`block`/
-`unblock`/`pending update`/`review`/`approve`/`reject`, fetch the current rev first —
+`unblock`/`pending update`/`review`/`approve`/`reject`/`run`, fetch the current rev first —
 the `item-map:` line of `render` (or `# rev=N` of `list`/`show`) output — in the
 same tool-call step immediately before the mutating call, and pass it as
 `--if-rev <N>`. This pre-mutation `render` must run **without**
@@ -291,7 +291,10 @@ An item whose implementation plan had judgment-call steps may also carry a
 `gate` (set via `gate-set` when the plan was classified — see backlog-item.md
 step 5). Both `done` and `approve` refuse when `gate.required` is true and
 `gate.passed_at` isn't set — `show <id>` to see the unmet criteria, verify each
-against the actual work (never reflexively), then `gate-pass <id>` and retry.
+against the actual work (never reflexively), then `gate-pass <id>` with a
+coverage payload citing evidence per criterion (`run <id> -- <command>`
+records an executed command; `"manual:<note>"` covers genuinely-manual
+checks) and retry. A bare `gate-pass` without coverage is refused.
 `gate` can't be set via a raw `update` patch — always `gate-set`/`gate-pass`.
 
 `start`/`done`/`update`/`review`/`approve`/`reject` already render the full dashboard as part of their own

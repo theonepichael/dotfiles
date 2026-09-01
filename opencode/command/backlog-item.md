@@ -146,9 +146,12 @@ orphaned directory directly (`rm -rf <worktree-path>`) and retry
 `dev_status.py review $ARGUMENTS` then `approve $ARGUMENTS` — never a bare
 `done` on an in-review item. If `approve` refuses citing an unmet gate,
 actually check each criterion from `show $ARGUMENTS` against the diff —
-don't pass it reflexively — then `dev_status.py gate-pass $ARGUMENTS` and
-retry `approve`. Display the full dashboard stdout these print; don't just
-narrate a one-line confirmation.
+don't pass it reflexively — then cover every criterion with evidence:
+`dev_status.py run $ARGUMENTS -- <command>` executes and records a command,
+and `gate-pass $ARGUMENTS '{"coverage": {"<N>": "run:<run_id>" or
+"manual:<note>"}}'` refuses until each criterion cites a recorded run or a
+manual note. Then retry `approve`. Display the full dashboard stdout these
+print; don't just narrate a one-line confirmation.
 
 ---
 

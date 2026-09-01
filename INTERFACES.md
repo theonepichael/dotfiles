@@ -169,8 +169,14 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
   - `gate-set <slug|N> '{"required": true, "criteria": ["..."]}' [--if-rev <N>]` — classify an item's judgment-verification gate
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
-  - `gate-pass <slug|N> [--if-rev <N>]` — record that an item's gate criteria are satisfied
+  - `gate-pass <slug|N> ['{"coverage": {"1": "run:<run_id>" | "manual:<note>"}}'] [--if-rev <N>]` — record that an item's gate criteria are satisfied
+    - `json` — per-criterion coverage: run evidence or a manual note per criterion (nargs: ?)
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
+  - `run <slug|N> [--if-rev <N>] [--timeout SECONDS] -- <command...>` — execute a command and record it as run evidence for an item
+    - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
+    - `--timeout` — kill the command after this many seconds (default: 1800) (default: 1800.0)
+    - `command` — command to execute and record (everything after --; no shell) (nargs: *)
+  - `runs <slug|N>` — list recorded run evidence for an item
   - `backfill-gate [--apply]` — stamp an explicit inert gate on legacy items
     - `--apply` — write changes (default: dry run)
   - `rename <slug|N> <new_slug> [--if-rev <N>]` — rename slug (rewrites all references)
@@ -207,6 +213,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `META_FILE = DATA_DIR / '_meta.json'`
   - `LOCK_FILE = DATA_DIR / '.backlog.lock'`
   - `JOURNAL_FILE = DATA_DIR / 'journal.jsonl'`
+  - `RUNS_FILE = DATA_DIR / 'runs.jsonl'`
   - `MACHINE_ID_FILE = DATA_DIR / '_machine_id'`
   - `RECAP_CACHE_FILE = DATA_DIR / 'recap-cache.json'`
   - `RECAP_REGEN_LOCK_FILE = DATA_DIR / 'recap-regen.lock'`
@@ -217,6 +224,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
 - Depends on: `cli_common.py`, `llm_backends.py`
 - Public classes:
   - `class Gate(TypedDict)` — A judgment-step verification checkpoint on a backlog item.
+  - `class RunRecord(TypedDict)` — One recorded command execution — a row of the ``runs.jsonl`` sidecar.
   - `class BacklogItem(TypedDict)` — A single backlog item as stored in ``items.json`` (schema v2).
   - `class PendingItem(TypedDict)` — A single waiting-on-someone-else item as stored in ``pending_items.json``.
 - Public functions:
@@ -239,10 +247,13 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `enforce_rev_guard(cmd: str, id_arg: str, if_rev_arg: int | None, current_rev: int, items: list[BacklogItem], pending_items: list[PendingItem]) -> None` — Refuse a numeric-id mutation that lacks a fresh ``--if-rev``.
   - `render(items: list[BacklogItem] | None = None, pending_items: list[PendingItem] | None = None, *, out: TextIO | None = None, err: TextIO | None = None, rev: int | None = None, dispatch: bool = False) -> None` — Render the full dashboard: pending items, then the five backlog sections.
   - `append_journal_event(entry: dict[str, object], *, verbose: bool = False) -> None` — Append one event to the journal, best-effort.
+  - `load_runs(item: str | None = None) -> list[RunRecord]` — Load run-evidence rows from :data:`RUNS_FILE`, optionally for one item.
+  - `write_runs_file(runs: Sequence[RunRecord]) -> None` — Atomically rewrite :data:`RUNS_FILE` with ``runs`` (one JSON line each).
+  - `append_run_record(record: RunRecord) -> bool` — Append one run-evidence row to :data:`RUNS_FILE` (best-effort).
   - `read_journal_entries(within_hours: float | None = None, *, verbose: bool = False) -> list[dict[str, object]]` — Read journal entries, optionally filtered to the last ``within_hours``.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
-- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_render`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
+- Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_render`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
 - Tested by: `claude/scripts/test_dev_status.py`, `claude/scripts/test_dev_status_sync.py`, `claude/scripts/test_to_tickets_runner.py`
 
 ### `claude/scripts/dev_status_sync.py`
@@ -293,11 +304,12 @@ dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending st
   - `artifact_preview(merged: list[dict[str, object]], local_home: str, remote_home: str, host: str, *, quiet: bool) -> None` — Print the would-transfer artifact set (no network I/O).
   - `merge_item(item_id: str, base_item: dict[str, object] | None, local_item: dict[str, object] | None, remote_item: dict[str, object] | None, store: str) -> tuple[dict[str, object] | None, dict[str, object] | None]` — Run the per-item 3-way merge (cases 0-6 of the plan).
   - `merge_store(base_list: list[dict[str, object]] | None, local_list: list[dict[str, object]], remote_list: list[dict[str, object]], store: str) -> tuple[list[dict[str, object]], list[dict[str, object]]]` — Merge one store (items.json or pending_items.json) across all ids.
-  - `compute_sync(base_items: list[dict[str, object]] | None, base_pending: list[dict[str, object]] | None, local_items: list[dict[str, object]], local_pending: list[dict[str, object]], remote_items: list[dict[str, object]], remote_pending: list[dict[str, object]]) -> SyncComputation` — Run the full merge: per-store 3-way merge, then graph integrity, then write-need.
+  - `merge_runs(local_runs: list[dict[str, object]], remote_runs: list[dict[str, object]]) -> list[dict[str, object]]` — Union two run-evidence lists by ``run_id`` — the runs.jsonl merge rule.
+  - `compute_sync(base_items: list[dict[str, object]] | None, base_pending: list[dict[str, object]] | None, local_items: list[dict[str, object]], local_pending: list[dict[str, object]], remote_items: list[dict[str, object]], remote_pending: list[dict[str, object]], *, local_runs: list[dict[str, object]] | None = None, remote_runs: list[dict[str, object]] | None = None) -> SyncComputation` — Run the full merge: per-store 3-way merge, then graph integrity, then write-need.
   - `local_commit(local_schema: dict[str, object], result: SyncComputation, local_items_raw: list[dict[str, object]], local_pending_raw: list[dict[str, object]], base_items: list[dict[str, object]] | None, base_pending: list[dict[str, object]] | None, host: str | None = None) -> int | None` — Perform the three independently-conditioned writes, in crash-safe order.
   - `ssh_run(host: str, remote_script: str, remote_args: list[str], ssh_timeout: float, input_bytes: bytes | None = None) -> bytes` — Run ``remote_script`` on ``host`` over SSH, bounded against a hung network.
   - `ssh_export(host: str, remote_script: str, ssh_timeout: float) -> dict[str, object]`
-  - `ssh_import(host: str, remote_script: str, ssh_timeout: float, items: list[dict[str, object]], pending: list[dict[str, object]], schema: dict[str, object], if_rev: int) -> None`
+  - `ssh_import(host: str, remote_script: str, ssh_timeout: float, items: list[dict[str, object]], pending: list[dict[str, object]], runs: list[dict[str, object]], schema: dict[str, object], if_rev: int) -> None`
   - `print_diff(result: SyncComputation, local_items: list[dict[str, object]], local_pending: list[dict[str, object]], remote_items: list[dict[str, object]], remote_pending: list[dict[str, object]], local_rev: int, remote_rev: int, header: str, quiet: bool = False) -> None`
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_export`, `cmd_import`, `cmd_status`, `cmd_sync`

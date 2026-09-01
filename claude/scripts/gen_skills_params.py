@@ -473,9 +473,12 @@ separately for merge and for push — never bundle.""",
 `dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
 `done` on an in-review item. If `approve` refuses citing an unmet gate,
 actually check each criterion from `show <slug|N>` against the diff — don't
-pass it reflexively — then `dev_status.py gate-pass <slug|N>` and retry
-`approve`. Display the full dashboard stdout these print; don't just
-narrate a one-line confirmation.""",
+pass it reflexively — then cover every criterion with evidence:
+`dev_status.py run <slug|N> -- <command>` executes and records a command,
+and `gate-pass <slug|N> '{"coverage": {"<N>": "run:<run_id>" or
+"manual:<note>"}}'` refuses until each criterion cites a recorded run or a
+manual note. Then retry `approve`. Display the full dashboard stdout these
+print; don't just narrate a one-line confirmation.""",
         "AUTO_INVOCATION": """\
 **Invocation.** `--auto <slug|N>` runs just that item under this mode.
 `--auto` with no slug batch-processes every READY item, in dashboard order;
@@ -653,9 +656,12 @@ itself.""",
 `dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
 `done` on an in-review item. If `approve` refuses citing an unmet gate,
 actually check each criterion from `show <slug|N>` against the diff — don't
-pass it reflexively — then `dev_status.py gate-pass <slug|N>` and retry
-`approve`. Display the full dashboard stdout these print; don't just
-narrate a one-line confirmation.""",
+pass it reflexively — then cover every criterion with evidence:
+`dev_status.py run <slug|N> -- <command>` executes and records a command,
+and `gate-pass <slug|N> '{"coverage": {"<N>": "run:<run_id>" or
+"manual:<note>"}}'` refuses until each criterion cites a recorded run or a
+manual note. Then retry `approve`. Display the full dashboard stdout these
+print; don't just narrate a one-line confirmation.""",
         "AUTO_INVOCATION": """\
 **Invocation.** `--auto` with a slug/N runs just that item under this mode.
 `--auto` alone batch-processes every READY item, in dashboard order; any IN
@@ -774,9 +780,12 @@ ambiguous: ask separately for merge and for push — never bundle.""",
 `dev_status.py review $ARGUMENTS` then `approve $ARGUMENTS` — never a bare
 `done` on an in-review item. If `approve` refuses citing an unmet gate,
 actually check each criterion from `show $ARGUMENTS` against the diff —
-don't pass it reflexively — then `dev_status.py gate-pass $ARGUMENTS` and
-retry `approve`. Display the full dashboard stdout these print; don't just
-narrate a one-line confirmation.""",
+don't pass it reflexively — then cover every criterion with evidence:
+`dev_status.py run $ARGUMENTS -- <command>` executes and records a command,
+and `gate-pass $ARGUMENTS '{"coverage": {"<N>": "run:<run_id>" or
+"manual:<note>"}}'` refuses until each criterion cites a recorded run or a
+manual note. Then retry `approve`. Display the full dashboard stdout these
+print; don't just narrate a one-line confirmation.""",
         "AUTO_INVOCATION": """\
 **Invocation.** A slug/N present after stripping `--auto` runs just that
 item under this mode. No slug batch-processes every READY item, in
@@ -933,9 +942,12 @@ ambiguous: ask separately for merge and for push — never bundle.""",
 `dev_status.py review <slug|N>` then `approve <slug|N>` — never a bare
 `done` on an in-review item. If `approve` refuses citing an unmet gate,
 actually check each criterion from `show <slug|N>` against the diff — don't
-pass it reflexively — then `dev_status.py gate-pass <slug|N>` and retry
-`approve`. Display the full dashboard stdout these print; don't just
-narrate a one-line confirmation.""",
+pass it reflexively — then cover every criterion with evidence:
+`dev_status.py run <slug|N> -- <command>` executes and records a command,
+and `gate-pass <slug|N> '{"coverage": {"<N>": "run:<run_id>" or
+"manual:<note>"}}'` refuses until each criterion cites a recorded run or a
+manual note. Then retry `approve`. Display the full dashboard stdout these
+print; don't just narrate a one-line confirmation.""",
         "AUTO_INVOCATION": """\
 **Invocation.** `--auto` with a slug/N runs just that item under this mode.
 `--auto` alone batch-processes every READY item, in dashboard order; any IN
@@ -1083,8 +1095,11 @@ Call the tool with `action: "review", slug: "<resolved slug>"`, then
 `action: "approve", slug: "<resolved slug>"` — never a bare `done` on an
 in-review item. If `approve` refuses citing an unmet gate, actually check
 each criterion from `show`'s record against the diff — don't pass it
-reflexively — then call `action: "gate_pass", slug: "<resolved slug>"` and
-retry `approve`. Display the full dashboard text these return; don't just
+reflexively — then cover every criterion with evidence (`action: "run"`
+executes and records a command; `action: "gate_pass"` takes a `patch`
+`{"coverage": {"<N>": "run:<run_id>" or "manual:<note>"}}` and refuses
+until each criterion cites a recorded run or a manual note) and retry
+`approve`. Display the full dashboard text these return; don't just
 narrate a one-line confirmation. (Bash fallback, per step 1: the
 equivalent `dev_status.py` commands, same caveats.)""",
         "AUTO_INVOCATION": """\
