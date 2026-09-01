@@ -4505,6 +4505,22 @@ CHECK_BUCKETS = (
 )
 
 
+def _is_symlink(path: Path) -> bool:
+    """Return whether ``path`` is a symlink, catching OSError when unreadable."""
+    try:
+        return path.is_symlink()
+    except OSError:
+        return False
+
+
+def _path_exists(path: Path) -> bool:
+    """Return whether ``path`` exists, catching OSError when unreadable."""
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 def _link_target(dest: Path) -> Path:
     """Return what ``dest`` points at, as an absolute path.
 
@@ -4526,7 +4542,10 @@ def _same_path(left: Path, right: Path) -> bool:
     """
     if left == right:
         return True
-    return left.resolve() == right.resolve()
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return False
 
 
 def _implied_repo_root(target: Path, relative_src: str) -> Path | None:
@@ -4553,9 +4572,10 @@ def _is_dotfiles_checkout(root: Path) -> bool:
 def _check_applicable_links(
     ctx: Context,
     links: Sequence[tuple[Path, Path, str, bool]],
+    *,
     report_uninstalled: bool = False,
 ) -> tuple[dict[str, list[str]], dict[Path, int]]:
-    """Classify every applicable expanded entry that has something on disk.
+    """Report inconsistencies on destinations in scope for this machine.
 
     Entries whose destination does not exist at all are silently fine by
     default: that is simply a link this machine has not installed (yet), not
@@ -4586,15 +4606,15 @@ def _check_applicable_links(
     for src, dest, rel, applicable in links:
         if not applicable:
             continue
-        if not dest.is_symlink() and not dest.exists():
-            if report_uninstalled and src.exists() and dest not in installed_dests:
+        if not _is_symlink(dest) and not _path_exists(dest):
+            if report_uninstalled and _path_exists(src) and dest not in installed_dests:
                 findings[CHECK_BUCKET_NEVER_INSTALLED].append(
                     f"{ctx.display(dest)} — {src} exists in the repo but was "
                     "never linked here; run install.sh to link it"
                 )
             continue
 
-        if not dest.is_symlink():
+        if not _is_symlink(dest):
             # Reached through a symlinked *parent* (a directory-level entry
             # linking the ancestor) the file is still correctly wired, even
             # though this path is not itself a link.
@@ -4618,7 +4638,7 @@ def _check_applicable_links(
             if same_file_other_checkout:
                 # A dangling link is a real machine problem regardless of
                 # which checkout it points into, so that still gets reported.
-                if not target.exists():
+                if not _path_exists(target):
                     findings[CHECK_BUCKET_BROKEN_SOURCE].append(
                         f"{ctx.display(dest)} — links to {target}, which no "
                         "longer exists (dangling symlink)"
@@ -4632,7 +4652,7 @@ def _check_applicable_links(
             )
             continue
 
-        if not src.exists():
+        if not _path_exists(src):
             findings[CHECK_BUCKET_BROKEN_SOURCE].append(
                 f"{ctx.display(dest)} — links to {src}, which no longer "
                 "exists in the repo (dangling symlink)"
@@ -4664,7 +4684,7 @@ def _find_orphaned_links(
         seen.add(dest)
         # A dest that no longer exists needs no report: a past --rollback,
         # or the user, already cleaned it up.
-        if not dest.is_symlink() and not dest.exists():
+        if not _is_symlink(dest) and not _path_exists(dest):
             continue
         orphans.append(dest)
     return orphans
@@ -4677,7 +4697,7 @@ def _check_orphaned_links(
 ) -> None:
     """Add manifest-recorded symlinks that links.toml no longer produces."""
     for dest in _find_orphaned_links(ctx, links):
-        if dest.is_symlink():
+        if _is_symlink(dest):
             detail = f"still symlinked → {_link_target(dest)}"
         else:
             detail = "still present as a real file"
@@ -4705,7 +4725,7 @@ def _live_backup_paths(ctx: Context) -> set[Path]:
         backup = Path(str(entry.get("backup", "")))
         if not dest.parts or not backup.parts:
             continue
-        if backup.exists() and (dest.exists() or dest.is_symlink()):
+        if _path_exists(backup) and (_path_exists(dest) or _is_symlink(dest)):
             live.add(backup)
     return live
 
@@ -4786,7 +4806,7 @@ def _check_unmanaged_files(
             # the user merely opens in Finder.
             if name.startswith(".") or name.endswith(_JUNK_SUFFIXES):
                 continue
-            if path.is_dir() and not path.is_symlink():
+            if path.is_dir() and not _is_symlink(path):
                 continue
             findings[CHECK_BUCKET_UNMANAGED].append(
                 f"{ctx.display(path)} — {dir_spec.dest} is declared exclusive "
