@@ -54,7 +54,9 @@ def is_wsl() -> bool:
         return "microsoft" in version.lower() or "wsl" in version.lower()
 
 
-def get_harness_icon(harness: str | None, custom_icon: str | None = None) -> Path | None:
+def get_harness_icon(
+    harness: str | None, custom_icon: str | None = None
+) -> Path | None:
     """Resolve the icon file path for a given harness."""
     if custom_icon:
         custom_path = Path(custom_icon).expanduser()
@@ -86,7 +88,12 @@ def _get_windows_icons_cache() -> tuple[Path, str] | None:
         return None
 
     for user_entry in users_dir.iterdir():
-        if user_entry.is_dir() and user_entry.name not in ("Default", "Default User", "Public", "All Users"):
+        if user_entry.is_dir() and user_entry.name not in (
+            "Default",
+            "Default User",
+            "Public",
+            "All Users",
+        ):
             local_appdata = user_entry / "AppData" / "Local" / "dotfiles" / "icons"
             win_path = f"C:\\Users\\{user_entry.name}\\AppData\\Local\\dotfiles\\icons"
             try:
@@ -116,7 +123,13 @@ def sync_icons_to_windows() -> tuple[Path, str] | None:
 
 def _escape_xml(s: str) -> str:
     """Escape special XML characters."""
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&apos;")
+    return (
+        s.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
 
 
 def _escape_powershell_string(s: str) -> str:
@@ -132,14 +145,19 @@ def send_wsl_toast(
     verbose: bool = False,
 ) -> bool:
     """Send a native Windows Toast notification from WSL via powershell.exe with branding."""
-    powershell = shutil.which("powershell.exe") or "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe"
+    powershell = (
+        shutil.which("powershell.exe")
+        or "/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe"
+    )
     if not os.path.exists(powershell) and not shutil.which(powershell):
         if verbose:
             sys.stderr.write("notify: powershell.exe not found for WSL toast\n")
         return False
 
     h_key = (harness or "").lower().strip()
-    reg_info = APP_REGISTRATIONS.get(h_key, {"id": "Agent.Default", "name": "AI Agent", "icon": "claude.png"})
+    reg_info = APP_REGISTRATIONS.get(
+        h_key, {"id": "Agent.Default", "name": "AI Agent", "icon": "claude.png"}
+    )
     app_id = reg_info["id"]
     display_name = reg_info["name"]
 
@@ -156,7 +174,9 @@ def send_wsl_toast(
     image_tag = ""
     if win_icon_path:
         safe_icon = _escape_xml(win_icon_path)
-        image_tag = f'<image placement="appLogoOverride" hint-crop="circle" src="{safe_icon}"/>'
+        image_tag = (
+            f'<image placement="appLogoOverride" hint-crop="circle" src="{safe_icon}"/>'
+        )
 
     xml_content = (
         "<toast>"
