@@ -29,6 +29,7 @@ Requires Python 3.12+.
 
 import argparse
 import contextlib
+import fnmatch
 import json
 import os
 import platform
@@ -1548,9 +1549,10 @@ class ManagedDirSpec:
     """
 
     dest: str
+    ignore: tuple[str, ...] = ()
 
 
-_MANAGED_DIR_FIELDS = {"dest"}
+_MANAGED_DIR_FIELDS = {"dest", "ignore"}
 
 
 def load_links(path: Path) -> list[LinkSpec]:
@@ -1658,7 +1660,12 @@ def load_managed_dirs(path: Path) -> list[ManagedDirSpec]:
         dest = row.get("dest")
         if not isinstance(dest, str) or not dest:
             raise ValueError(f"{path}: managed_dir entry {index} is missing 'dest'")
-        specs.append(ManagedDirSpec(dest=dest))
+        raw_ignore = row.get("ignore", [])
+        if not isinstance(raw_ignore, list) or any(
+            not isinstance(item, str) or not item for item in raw_ignore
+        ):
+            raise ValueError(f"{path}: managed_dir entry {index} has invalid 'ignore'")
+        specs.append(ManagedDirSpec(dest=dest, ignore=tuple(raw_ignore)))
     return specs
 
 
@@ -4801,6 +4808,8 @@ def _check_unmanaged_files(
         for name in entries:
             path = directory / name
             if path in managed or path in live_backups:
+                continue
+            if any(fnmatch.fnmatch(name, pat) for pat in dir_spec.ignore):
                 continue
             # Hidden files are skipped: macOS drops .DS_Store into any directory
             # the user merely opens in Finder.

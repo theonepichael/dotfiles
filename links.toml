@@ -54,7 +54,10 @@
 # happen to land there.
 #
 # Fields:
-#   dest  (required) the directory, "~"-relative exactly as a link's is.
+#   dest    (required) the directory, "~"-relative exactly as a link's is.
+#   ignore  (optional) list of filename glob patterns to ignore during
+#           unmanaged audit (e.g. known third-party tools that drop files
+#           into the directory).
 #
 # Only directories dotfiles genuinely owns belong here. Do not add:
 #   * $HOME itself — seven rows land there among 68 unmanaged files.
@@ -850,3 +853,4 @@ dest = "~/.claude/scripts"
 
 [[managed_dir]]
 dest = "~/.pi/agent/extensions"
+ignore = ["herdr-agent-state.ts"]

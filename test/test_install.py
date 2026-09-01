@@ -4696,6 +4696,41 @@ def test_check_links_reports_foreign_file_in_declared_dir(home, managed_repo, ca
     assert "no links.toml entry produces it" in out
 
 
+def test_check_links_skips_ignored_files_in_declared_dir(home, tmp_path, capsys):
+    """Foreign files matching a declared directory's ignore list are skipped."""
+    repo = tmp_path / "repo"
+    (repo / "ext").mkdir(parents=True)
+    (repo / "ext/one.ts").write_text("ext/one.ts\n")
+    (repo / "links.toml").write_text(
+        "[[link]]\n"
+        'src = "ext/one.ts"\n'
+        'dest = "~/.pi/agent/extensions/one.ts"\n'
+        'harness = "pi"\n'
+        "\n"
+        "[[managed_dir]]\n"
+        'dest = "~/.pi/agent/extensions"\n'
+        'ignore = ["herdr-*.ts", "special.json"]\n'
+    )
+    ctx = check_links_ctx(home, repo, harnesses=("pi",))
+    wire_check_links(ctx, ("ext/one.ts", "~/.pi/agent/extensions/one.ts"))
+    (home / ".pi/agent/extensions/herdr-agent-state.ts").write_text("external\n")
+    (home / ".pi/agent/extensions/special.json").write_text("external\n")
+    capsys.readouterr()
+
+    assert install.do_check_links(ctx) == 0
+    assert "unmanaged (" not in capsys.readouterr().out
+
+    # Non-ignored foreign files are still caught
+    (home / ".pi/agent/extensions/stray.ts").write_text("stray\n")
+    capsys.readouterr()
+
+    assert install.do_check_links(ctx) == 1
+    out = capsys.readouterr().out
+    assert "unmanaged (1)" in out
+    assert "~/.pi/agent/extensions/stray.ts" in out
+    assert "herdr-agent-state.ts" not in out
+
+
 def test_check_links_skips_manifest_recorded_backup(home, managed_repo, capsys):
     """A backup whose destination is still present is live --rollback payload.
 
@@ -4814,10 +4849,21 @@ def test_check_links_reports_unreadable_declared_dir(home, managed_repo, capsys)
 def test_load_managed_dirs_parses_and_rejects(tmp_path):
     path = tmp_path / "links.toml"
 
-    path.write_text('[[managed_dir]]\ndest = "~/.claude/scripts"\n')
-    assert [spec.dest for spec in install.load_managed_dirs(path)] == [
-        "~/.claude/scripts"
+    path.write_text(
+        "[[managed_dir]]\n"
+        'dest = "~/.claude/scripts"\n'
+        "\n"
+        "[[managed_dir]]\n"
+        'dest = "~/.pi/agent/extensions"\n'
+        'ignore = ["herdr-agent-state.ts", "*.tmp"]\n'
+    )
+    specs = install.load_managed_dirs(path)
+    assert [spec.dest for spec in specs] == [
+        "~/.claude/scripts",
+        "~/.pi/agent/extensions",
     ]
+    assert specs[0].ignore == ()
+    assert specs[1].ignore == ("herdr-agent-state.ts", "*.tmp")
 
     path.write_text("")
     assert install.load_managed_dirs(path) == []
@@ -4830,6 +4876,9 @@ def test_load_managed_dirs_parses_and_rejects(tmp_path):
         "[[managed_dir]]\n",
         '[[managed_dir]]\ndest = ""\n',
         '[[managed_dir]] = "not a table"\n',
+        '[[managed_dir]]\ndest = "~/.x"\nignore = "not-a-list"\n',
+        '[[managed_dir]]\ndest = "~/.x"\nignore = [123]\n',
+        '[[managed_dir]]\ndest = "~/.x"\nignore = [""]\n',
     ],
 )
 def test_load_managed_dirs_rejects_invalid_rows(tmp_path, bad):
