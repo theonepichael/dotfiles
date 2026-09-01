@@ -168,6 +168,10 @@ harness = "claude"
 # so these stay linked regardless of which harness(es) are selected.
 
 [[link]]
+src = "claude/icons"
+dest = "~/.claude/icons"
+
+[[link]]
 src = "claude/scripts/dev_status.py"
 dest = "~/.claude/scripts/dev_status.py"
 
@@ -249,6 +253,10 @@ dest = "~/.claude/scripts/harness_discovery_check.py"
 src = "claude/scripts/vitals_promotion.py"
 dest = "~/.claude/scripts/vitals_promotion.py"
 
+[[link]]
+src = "claude/scripts/notify.py"
+dest = "~/.claude/scripts/notify.py"
+
 # ── GitHub Copilot CLI wiring ────────────────────────────────────────────
 # claude/global-instructions.md is deliberately the same file on both sides — the
 # backlog/pending-items workflow prose is tool-agnostic, so there is no
@@ -288,6 +296,18 @@ platform = "mac"
 [[link]]
 src = "copilot/hooks/post-tool-use.json"
 dest = "~/.copilot/hooks/post-tool-use.json"
+harness = "copilot"
+platform = "linux"
+
+[[link]]
+src = "copilot/hooks/agent-stop.json"
+dest = "~/.copilot/hooks/agent-stop.json"
+harness = "copilot"
+platform = "mac"
+
+[[link]]
+src = "copilot/hooks/agent-stop.json"
+dest = "~/.copilot/hooks/agent-stop.json"
 harness = "copilot"
 platform = "linux"
 
@@ -427,6 +447,11 @@ harness = "opencode"
 [[link]]
 src = "opencode/plugin/ruff-format-on-edit.ts"
 dest = "~/.config/opencode/plugin/ruff-format-on-edit.ts"
+harness = "opencode"
+
+[[link]]
+src = "opencode/plugin/notify.ts"
+dest = "~/.config/opencode/plugin/notify.ts"
 harness = "opencode"
 
 # ── agy (Google Antigravity CLI, Gemini-backed) ──────────────────────────
@@ -642,6 +667,11 @@ harness = "pi"
 [[link]]
 src = "pi/extensions/exit-alias.ts"
 dest = "~/.pi/agent/extensions/exit-alias.ts"
+harness = "pi"
+
+[[link]]
+src = "pi/extensions/notify.ts"
+dest = "~/.pi/agent/extensions/notify.ts"
 harness = "pi"
 
 [[link]]

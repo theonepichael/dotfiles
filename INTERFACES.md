@@ -45,6 +45,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`grill.py`](#claudescriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
 | [`harness_discovery_check.py`](#claudescriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md. |
 | [`llm_backends.py`](#claudescriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
+| [`notify.py`](#claudescriptsnotifypy) | Cross-platform agent notification dispatcher. |
 | [`opencode_skills_sync_activity.py`](#claudescriptsopencodeskillssyncactivitypy) | Print opencode-skills-sync's pause state and last known snapshot commit, so a session can tell whether the daemon is running and how current its mirror is -- mirrors watchcommit_activity.py's SessionStart banner role. |
 | [`second_opinion.py`](#claudescriptssecondopinionpy) | second_opinion.py — one-shot adversarial critique of a plan from a non-Claude backend. Single-round by design: the multi-round loop, plan revision, and convergence judgment all require LLM reasoning and live in prose instructions, not here. |
 | [`settings_seed_drift_check.py`](#claudescriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo. |
@@ -575,6 +576,38 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
   - `run_opencode(prompt: str, *, model: str | None, timeout: float) -> str` — Run opencode's default agent (no ``--agent`` override) and return its text output.
 - Tested by: `claude/scripts/test_dev_status.py`, `claude/scripts/test_gen_interfaces.py`, `claude/scripts/test_llm_backends.py`, `claude/scripts/test_second_opinion.py`, `test/test_backend_isolation.py`, `test/test_backend_isolation_live.py`
 
+### `claude/scripts/notify.py`
+
+Cross-platform agent notification dispatcher.
+
+- Installed at: `~/.claude/scripts/notify.py` (all harnesses)
+- Entrypoint: executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Cross-platform agent notification dispatcher for WSL, macOS, and Linux.
+  - `--quiet/-q`
+  - `--verbose/-v`
+  - `positional_message` — notification body text (nargs: ?)
+  - `--title/-t` — notification title (default: 'Agent Notification') (default: Agent Notification)
+  - `--message/-m` — notification body text (overrides positional message)
+  - `--harness/-H` — originating harness name (e.g. Claude, Pi, AGY, OpenCode, Copilot)
+  - `--icon/-i` — custom icon path or name
+  - `--urgency/-u` — urgency level (default: normal) (choices: low, normal, critical; default: normal)
+  - `--type` — notification event type (default: completed) (choices: completed, waiting_for_input, error; default: completed)
+- Environment: `TMUX`, `WSL_DISTRO_NAME`, `WSL_INTEROP`
+- Filesystem constants:
+  - `ICONS_DIR = Path(__file__).resolve().parent.parent / 'icons'`
+- Depends on: `cli_common.py`
+- Public functions:
+  - `is_wsl() -> bool` — Detect whether running inside Windows Subsystem for Linux.
+  - `get_harness_icon(harness: str | None, custom_icon: str | None = None) -> Path | None` — Resolve the icon file path for a given harness.
+  - `sync_icons_to_windows() -> tuple[Path, str] | None` — Ensure all harness icons are synced to Windows AppData for native WinRT access.
+  - `send_wsl_toast(title: str, message: str, harness: str | None = None, icon_path: Path | None = None, verbose: bool = False) -> bool` — Send a native Windows Toast notification from WSL via powershell.exe with branding.
+  - `send_macos_notification(title: str, message: str, verbose: bool = False) -> bool` — Send a macOS desktop notification via osascript.
+  - `send_linux_notification(title: str, message: str, icon_path: Path | None = None, urgency: str = 'normal', verbose: bool = False) -> bool` — Send a desktop notification on native Linux via notify-send.
+  - `send_terminal_osc(title: str, message: str, verbose: bool = False) -> bool` — Emit OSC 777 and OSC 9 escape sequences to the controlling TTY.
+  - `dispatch_notification(title: str, message: str, harness: str | None = None, icon: str | None = None, urgency: str = 'normal', event_type: str = 'completed', verbose: bool = False) -> None` — Route notification to terminal OSC and appropriate OS bridge with icon.
+  - `build_parser() -> argparse.ArgumentParser`
+- Tested by: `claude/scripts/test_notify.py`
+
 ### `claude/scripts/opencode_skills_sync_activity.py`
 
 Print opencode-skills-sync's pause state and last known snapshot commit, so a session can tell whether the daemon is running and how current its mirror is -- mirrors watchcommit_activity.py's SessionStart banner role.
@@ -868,6 +901,11 @@ are copy-once seeds for exactly that reason.
 | Source | Installed at |
 | --- | --- |
 | `claude/global-instructions.md` | `~/.claude/CLAUDE.md` (claude), `~/.copilot/copilot-instructions.md` (copilot), `~/.gemini/GEMINI.md` (agy), `~/.pi/agent/AGENTS.md` (pi) |
+| `claude/icons/agy.png` | not symlinked by `links.toml` |
+| `claude/icons/claude.png` | not symlinked by `links.toml` |
+| `claude/icons/copilot.png` | not symlinked by `links.toml` |
+| `claude/icons/opencode.png` | not symlinked by `links.toml` |
+| `claude/icons/pi.png` | not symlinked by `links.toml` |
 | `claude/output-styles/ConciseSTE.md` | `~/.claude/output-styles/ConciseSTE.md` (claude) |
 | `claude/scripts/AGENTS.md` | not symlinked by `links.toml` |
 | `claude/scripts/CLAUDE.md` | not symlinked by `links.toml` |
@@ -876,10 +914,12 @@ are copy-once seeds for exactly that reason.
 | `claude/settings.work.json` | not symlinked by `links.toml` |
 | `copilot/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
 | `copilot/aliases.zsh` | `~/.copilot_aliases` (copilot) |
+| `copilot/hooks/agent-stop.json` | `~/.copilot/hooks/agent-stop.json` (copilot, mac, linux) |
 | `copilot/hooks/post-tool-use.json` | `~/.copilot/hooks/post-tool-use.json` (copilot, mac, linux) |
 | `copilot/hooks/session-start.json` | `~/.copilot/hooks/session-start.json` (copilot, mac, linux) |
 | `opencode/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
 | `opencode/opencode.jsonc` | not symlinked by `links.toml` |
+| `opencode/plugin/notify.ts` | `~/.config/opencode/plugin/notify.ts` (opencode) |
 | `opencode/plugin/ruff-format-on-edit.ts` | `~/.config/opencode/plugin/ruff-format-on-edit.ts` (opencode) |
 | `opencode/tui.json` | `~/.config/opencode/tui.json` (opencode) |
 | `agy/CLAUDE_CODE_PARITY.md` | not symlinked by `links.toml` |
@@ -897,6 +937,7 @@ are copy-once seeds for exactly that reason.
 | `pi/extensions/exit-alias.ts` | `~/.pi/agent/extensions/exit-alias.ts` (pi) |
 | `pi/extensions/grill-tool.ts` | `~/.pi/agent/extensions/grill-tool.ts` (pi) |
 | `pi/extensions/guard-rails.ts` | `~/.pi/agent/extensions/guard-rails.ts` (pi) |
+| `pi/extensions/notify.ts` | `~/.pi/agent/extensions/notify.ts` (pi) |
 | `pi/extensions/pending-plan-surface.ts` | `~/.pi/agent/extensions/pending-plan-surface.ts` (pi) |
 | `pi/extensions/permission-gate.ts` | `~/.pi/agent/extensions/permission-gate.ts` (pi) |
 | `pi/extensions/philosophy-header.ts` | `~/.pi/agent/extensions/philosophy-header.ts` (pi) |
@@ -922,6 +963,7 @@ are copy-once seeds for exactly that reason.
 | `pi/test/dev-status-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/grill-tool.test.ts` | not symlinked by `links.toml` |
 | `pi/test/guard-rails.test.ts` | not symlinked by `links.toml` |
+| `pi/test/notify.test.ts` | not symlinked by `links.toml` |
 | `pi/test/pending-plan-surface.test.ts` | not symlinked by `links.toml` |
 | `pi/test/permission-gate.test.ts` | not symlinked by `links.toml` |
 | `pi/test/philosophy-header.test.ts` | not symlinked by `links.toml` |

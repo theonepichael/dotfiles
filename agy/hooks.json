@@ -12,5 +12,18 @@
         ]
       }
     ]
+  },
+  "notify-on-stop": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/notify.py --harness 'AGY' --title 'Antigravity' --message 'Run completed' --type completed >/dev/null 2>&1; echo '{}'",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }

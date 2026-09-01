@@ -13,6 +13,27 @@
     ]
   },
   "hooks": {
+    "Notification": [
+      {
+        "matcher": "idle_prompt|permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/notify.py --harness 'Claude' --title 'Claude Code' --message 'Waiting for input' --type waiting_for_input"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/notify.py --harness 'Claude' --title 'Claude Code' --message 'Task completed' --type completed"
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [
