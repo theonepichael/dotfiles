@@ -8,7 +8,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import analyze_sessions
@@ -27,7 +27,12 @@ class TestAnalyzeSessionsAdapters(unittest.TestCase):
         pi_dir.mkdir(parents=True)
         session_file = pi_dir / "2026-08-30T05-00-00-000Z_sess123.jsonl"
         lines = [
-            {"type": "session", "id": "sess123", "cwd": "/home/user/project", "timestamp": "2026-08-30T05:00:00.000Z"},
+            {
+                "type": "session",
+                "id": "sess123",
+                "cwd": "/home/user/project",
+                "timestamp": "2026-08-30T05:00:00.000Z",
+            },
             {"type": "model_change", "modelId": "claude-3-7-sonnet"},
             {
                 "type": "message",
@@ -57,7 +62,9 @@ class TestAnalyzeSessionsAdapters(unittest.TestCase):
             for item in lines:
                 f.write(json.dumps(item) + "\n")
 
-        records = analyze_sessions.load_pi_records(base_dir=self.root / ".pi" / "agent" / "sessions")
+        records = analyze_sessions.load_pi_records(
+            base_dir=self.root / ".pi" / "agent" / "sessions"
+        )
         self.assertEqual(len(records), 2)
         u_rec, a_rec = records[0], records[1]
         self.assertEqual(u_rec.role, "user")
@@ -120,7 +127,9 @@ class TestAnalyzeSessionsAdapters(unittest.TestCase):
             for item in lines:
                 f.write(json.dumps(item) + "\n")
 
-        records = analyze_sessions.load_claude_records(base_dir=self.root / ".claude" / "projects")
+        records = analyze_sessions.load_claude_records(
+            base_dir=self.root / ".claude" / "projects"
+        )
         self.assertEqual(len(records), 3)
         u_rec, a_rec, sub_rec = records[0], records[1], records[2]
 
@@ -169,16 +178,18 @@ class TestAnalyzeSessionsAdapters(unittest.TestCase):
         cursor.execute(
             "INSERT INTO message VALUES ('msg_2', 'ses_1', 1784831405000, ?)",
             (
-                json.dumps({
-                    "role": "assistant",
-                    "modelID": "zai-org/GLM-5.2",
-                    "cost": 0.0042,
-                    "tokens": {
-                        "input": 5000,
-                        "output": 100,
-                        "cache": {"read": 200, "write": 0},
-                    },
-                }),
+                json.dumps(
+                    {
+                        "role": "assistant",
+                        "modelID": "zai-org/GLM-5.2",
+                        "cost": 0.0042,
+                        "tokens": {
+                            "input": 5000,
+                            "output": 100,
+                            "cache": {"read": 200, "write": 0},
+                        },
+                    }
+                ),
             ),
         )
         cursor.execute(
@@ -248,18 +259,36 @@ class TestAnalyzeSessionsAdapters(unittest.TestCase):
         self.assertEqual(a_rec.cost_origin, "unavailable")
 
     def test_agy_adapter(self) -> None:
-        brain_dir = self.root / ".gemini" / "antigravity-cli" / "brain" / "uuid-1234" / ".system_generated" / "logs"
+        brain_dir = (
+            self.root
+            / ".gemini"
+            / "antigravity-cli"
+            / "brain"
+            / "uuid-1234"
+            / ".system_generated"
+            / "logs"
+        )
         brain_dir.mkdir(parents=True)
         transcript = brain_dir / "transcript_full.jsonl"
         lines = [
-            {"type": "USER_INPUT", "content": "Build UI component", "created_at": "2026-08-27T00:00:00Z"},
-            {"type": "PLANNER_RESPONSE", "content": "Component created successfully.", "created_at": "2026-08-27T00:01:00Z"},
+            {
+                "type": "USER_INPUT",
+                "content": "Build UI component",
+                "created_at": "2026-08-27T00:00:00Z",
+            },
+            {
+                "type": "PLANNER_RESPONSE",
+                "content": "Component created successfully.",
+                "created_at": "2026-08-27T00:01:00Z",
+            },
         ]
         with transcript.open("w", encoding="utf-8") as f:
             for item in lines:
                 f.write(json.dumps(item) + "\n")
 
-        records = analyze_sessions.load_agy_records(base_dir=self.root / ".gemini" / "antigravity-cli" / "brain")
+        records = analyze_sessions.load_agy_records(
+            base_dir=self.root / ".gemini" / "antigravity-cli" / "brain"
+        )
         self.assertEqual(len(records), 2)
         self.assertEqual(records[0].role, "user")
         self.assertEqual(records[0].text, "Build UI component")
@@ -285,6 +314,99 @@ class TestAnalyzeSessionsAdapters(unittest.TestCase):
             agy_dir=self.root / ".gemini" / "antigravity-cli" / "brain",
         )
         self.assertEqual(len(agy_records), 2)
+
+
+class TestCalculateClaudeCost(unittest.TestCase):
+    """Current rates verified against platform.claude.com/docs/en/about-claude/pricing
+    (fetched 2026-09-01). Each case pins a real, currently-observed model id string,
+    not a hypothetical -- these are the ids that actually show up in session data."""
+
+    def test_sonnet_5_uses_its_own_rate_not_the_stale_generic_sonnet_fallback(
+        self,
+    ) -> None:
+        # $2/$10 in/out is Sonnet 5's permanent rate (the scheduled Sept 1 2026
+        # hike to $3/$15 was cancelled) -- distinct from claude-sonnet-4's $3/$15.
+        cost, origin = analyze_sessions.calculate_claude_cost(
+            "claude-sonnet-5", 1_000_000, 0, 0, 0
+        )
+        self.assertEqual(origin, "derived")
+        self.assertAlmostEqual(cost, 2.0)
+
+    def test_opus_5_uses_its_own_rate_not_the_stale_retired_opus_fallback(self) -> None:
+        # Opus 5 is $5/$25 -- the old generic "claude-opus" key used to carry
+        # the retired Opus 4/4.1 rate ($15/$75), a 3x overcount.
+        cost, origin = analyze_sessions.calculate_claude_cost(
+            "claude-opus-5", 1_000_000, 0, 0, 0
+        )
+        self.assertEqual(origin, "derived")
+        self.assertAlmostEqual(cost, 5.0)
+
+    def test_retired_opus_4_1_keeps_its_own_higher_rate(self) -> None:
+        # A real historical model id: claude-opus-4-1-20250805. Must still
+        # resolve to the retired $15/$75 rate, not fall through to the
+        # current-generation Opus default now that the generic fallback below
+        # points at $5/$25.
+        cost, origin = analyze_sessions.calculate_claude_cost(
+            "claude-opus-4-1-20250805", 1_000_000, 0, 0, 0
+        )
+        self.assertEqual(origin, "derived")
+        self.assertAlmostEqual(cost, 15.0)
+
+    def test_haiku_4_5_uses_its_own_rate_not_the_stale_haiku_3_5_fallback(self) -> None:
+        # A real historical model id: claude-haiku-4-5-20251001. Haiku 4.5 is
+        # $1/$5 -- the old generic "claude-haiku" key carried Haiku 3.5's rate
+        # ($0.80/$4), which used to silently match this id too.
+        cost, origin = analyze_sessions.calculate_claude_cost(
+            "claude-haiku-4-5-20251001", 1_000_000, 0, 0, 0
+        )
+        self.assertEqual(origin, "derived")
+        self.assertAlmostEqual(cost, 1.0)
+
+    def test_haiku_3_5_keeps_its_own_lower_rate(self) -> None:
+        cost, origin = analyze_sessions.calculate_claude_cost(
+            "claude-3-5-haiku-20241022", 1_000_000, 0, 0, 0
+        )
+        self.assertEqual(origin, "derived")
+        self.assertAlmostEqual(cost, 0.80)
+
+    def test_fable_5_1_is_no_longer_unavailable(self) -> None:
+        # Previously matched no key at all -- every Fable session silently
+        # dropped out of cost rollups (cost_origin stayed "unavailable").
+        cost, origin = analyze_sessions.calculate_claude_cost(
+            "claude-fable-5-1", 1_000_000, 0, 0, 0
+        )
+        self.assertEqual(origin, "derived")
+        self.assertAlmostEqual(cost, 10.0)
+
+    def test_fable_5_1_cache_read_uses_its_special_0_025x_multiplier(self) -> None:
+        # Fable 5.1 and Mythos 5.1 are the only models with a non-standard
+        # cache-hit multiplier (0.025x base input, vs. 0.1x everywhere else).
+        cost, origin = analyze_sessions.calculate_claude_cost(
+            "claude-fable-5-1", 0, 0, 1_000_000, 0
+        )
+        self.assertEqual(origin, "derived")
+        self.assertAlmostEqual(cost, 0.25)
+
+    def test_fable_5_cache_read_uses_the_standard_0_1x_multiplier(self) -> None:
+        # Fable 5 (no ".1") predates the special cache multiplier -- distinct
+        # from Fable 5.1 despite sharing a "claude-fable-5" prefix.
+        cost, origin = analyze_sessions.calculate_claude_cost(
+            "claude-fable-5", 0, 0, 1_000_000, 0
+        )
+        self.assertEqual(origin, "derived")
+        self.assertAlmostEqual(cost, 1.0)
+
+    def test_unrecognized_model_stays_unavailable(self) -> None:
+        cost, origin = analyze_sessions.calculate_claude_cost(
+            "gpt-4o", 1_000_000, 0, 0, 0
+        )
+        self.assertIsNone(cost)
+        self.assertEqual(origin, "unavailable")
+
+    def test_none_model_stays_unavailable(self) -> None:
+        cost, origin = analyze_sessions.calculate_claude_cost(None, 1_000_000, 0, 0, 0)
+        self.assertIsNone(cost)
+        self.assertEqual(origin, "unavailable")
 
 
 class TestAnalyzeSessionsCommands(unittest.TestCase):
@@ -479,7 +601,7 @@ class TestAnalyzeSessionsCommands(unittest.TestCase):
         self.assertIn("(turn-level digest — no intra-turn context)", out)
 
     def test_date_boundary_parsing(self) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         dt_today = analyze_sessions.parse_date_boundary("today")
         self.assertIsNotNone(dt_today)
         self.assertEqual(dt_today.day, now.day)

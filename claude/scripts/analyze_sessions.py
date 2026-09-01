@@ -57,16 +57,51 @@ from typing import TextIO
 import cli_common
 
 CLAUDE_PRICING: dict[str, tuple[float, float, float, float]] = {
-    # per 1,000,000 tokens: (input, output, cache_read, cache_write)
+    # per 1,000,000 tokens: (input, output, cache_read, cache_write[5m]).
+    # Verified against platform.claude.com/docs/en/about-claude/pricing
+    # (fetched 2026-09-01) -- re-check that page before editing this table.
+    #
+    # calculate_claude_cost() below matches by LONGEST substring hit, not
+    # insertion order: a specific key always outranks a shorter generic one
+    # regardless of where either sits in this dict. This is deliberate --
+    # the previous first-match-in-order scheme let a brand new model id
+    # (e.g. claude-opus-5, claude-haiku-4-5) silently match an unrelated,
+    # long-stale generic fallback below just because no specific key existed
+    # yet. Longest-match means a missing specific key degrades to the
+    # generic fallback's rate rather than an arbitrary older one, and a
+    # newly added specific key can never be shadowed by an existing one.
+    #
+    # The bare "claude-sonnet" / "claude-haiku" / "claude-opus" fallbacks
+    # are kept pointed at each family's current-generation rate (not the
+    # oldest one) so an unrecognized future model id degrades to a
+    # reasonable estimate instead of a wildly wrong one.
     "claude-3-7-sonnet": (3.0, 15.0, 0.30, 3.75),
     "claude-3-5-sonnet": (3.0, 15.0, 0.30, 3.75),
-    "claude-sonnet-5": (3.0, 15.0, 0.30, 3.75),
-    "claude-sonnet": (3.0, 15.0, 0.30, 3.75),
+    "claude-sonnet-4": (3.0, 15.0, 0.30, 3.75),  # bare 4, and 4.5/4.6 (same rate)
+    "claude-sonnet-5": (2.0, 10.0, 0.20, 2.50),
+    "claude-sonnet": (3.0, 15.0, 0.30, 3.75),  # generic fallback
     "claude-3-5-haiku": (0.80, 4.0, 0.08, 1.00),
     "claude-3-haiku": (0.25, 1.25, 0.03, 0.30),
-    "claude-haiku": (0.80, 4.0, 0.08, 1.00),
+    "claude-haiku-4-5": (1.0, 5.0, 0.10, 1.25),
+    "claude-haiku": (1.0, 5.0, 0.10, 1.25),  # generic fallback
     "claude-3-opus": (15.0, 75.0, 1.50, 18.75),
-    "claude-opus": (15.0, 75.0, 1.50, 18.75),
+    "claude-opus-4-1": (15.0, 75.0, 1.50, 18.75),  # retired
+    "claude-opus-4": (15.0, 75.0, 1.50, 18.75),  # bare Opus 4, retired
+    "claude-opus-4-5": (5.0, 25.0, 0.50, 6.25),
+    "claude-opus-4-6": (5.0, 25.0, 0.50, 6.25),
+    "claude-opus-4-7": (5.0, 25.0, 0.50, 6.25),
+    "claude-opus-4-8": (5.0, 25.0, 0.50, 6.25),
+    "claude-opus-5": (5.0, 25.0, 0.50, 6.25),
+    "claude-opus": (5.0, 25.0, 0.50, 6.25),  # generic fallback
+    # Fable/Mythos 5.1 use a special 0.025x cache-hit multiplier (vs. the
+    # standard 0.1x every other model above uses) -- Fable/Mythos 5 (no
+    # ".1") predate it and still use the standard 0.1x. Mythos ids are a
+    # best guess (limited-availability model, id not directly observed);
+    # harmless if wrong since an unmatched key just never fires.
+    "claude-mythos-5-1": (10.0, 50.0, 0.25, 12.50),
+    "claude-fable-5-1": (10.0, 50.0, 0.25, 12.50),
+    "claude-mythos-5": (10.0, 50.0, 1.0, 12.50),
+    "claude-fable-5": (10.0, 50.0, 1.0, 12.50),
 }
 
 
@@ -167,16 +202,18 @@ def calculate_claude_cost(
     if not model:
         return None, "unavailable"
     m_lower = model.lower()
-    for key, (in_rate, out_rate, cr_rate, cw_rate) in CLAUDE_PRICING.items():
-        if key in m_lower:
-            cost = (
-                in_tok * in_rate
-                + out_tok * out_rate
-                + cr_tok * cr_rate
-                + cw_tok * cw_rate
-            ) / 1_000_000.0
-            return cost, "derived"
-    return None, "unavailable"
+    # Longest matching key wins, not first-in-insertion-order -- see
+    # CLAUDE_PRICING's comment for why order-independence matters here.
+    best_key = max(
+        (key for key in CLAUDE_PRICING if key in m_lower), key=len, default=None
+    )
+    if best_key is None:
+        return None, "unavailable"
+    in_rate, out_rate, cr_rate, cw_rate = CLAUDE_PRICING[best_key]
+    cost = (
+        in_tok * in_rate + out_tok * out_rate + cr_tok * cr_rate + cw_tok * cw_rate
+    ) / 1_000_000.0
+    return cost, "derived"
 
 
 # ── Adapters ──────────────────────────────────────────────────────────────
