@@ -185,8 +185,8 @@ def send_wsl_toast(
 
     ps_script = (
         f"{reg_script}"
-        "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; "
-        "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null; "
+        "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; "
+        "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null; "
         "$toastXml = [Windows.Data.Xml.Dom.XmlDocument]::new(); "
         f"$toastXml.LoadXml('{safe_xml}'); "
         "$toast = [Windows.UI.Notifications.ToastNotification]::new($toastXml); "

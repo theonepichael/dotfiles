@@ -80,6 +80,7 @@ class NotifyTestCase(unittest.TestCase):
         self.assertIn("-NoProfile", cmd)
         self.assertIn("-NonInteractive", cmd)
         self.assertIn("-InputFormat", cmd)
+        self.assertIn("| Out-Null", cmd[6])
         self.assertIn("Test Title", cmd[6])
         self.assertIn("Test Message", cmd[6])
 
