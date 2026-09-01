@@ -1,24 +1,33 @@
 {
-  "ruff-format-on-edit": {
-    "PostToolUse": [
+  "herdr": {
+    "PreInvocation": [
       {
-        "matcher": "write_to_file|replace_file_content",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "f=$(jq -r '.toolCall.args.TargetFile // empty'); case \"$f\" in *.py) d=$(dirname \"$f\"); while [ \"$d\" != \"/\" ] && [ ! -f \"$d/pyproject.toml\" ]; do d=$(dirname \"$d\"); done; if [ -f \"$d/pyproject.toml\" ]; then ( cd \"$d\" && uv run ruff format \"$f\" >/dev/null 2>&1 && uv run ruff check --fix \"$f\" >/dev/null 2>&1 ); fi ;; esac; echo '{}'",
-            "timeout": 15
-          }
-        ]
+        "command": "bash '/home/yanil/.gemini/config/hooks/herdr-agent-state.sh' session",
+        "timeout": 10,
+        "type": "command"
       }
     ]
   },
   "notify-on-stop": {
     "Stop": [
       {
-        "type": "command",
         "command": "python3 ~/.claude/scripts/notify.py --harness 'AGY' --title 'Antigravity' --message 'Run completed' --type completed >/dev/null 2>&1; echo '{}'",
-        "timeout": 10
+        "timeout": 10,
+        "type": "command"
+      }
+    ]
+  },
+  "ruff-format-on-edit": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "f=$(jq -r '.toolCall.args.TargetFile // empty'); case \"$f\" in *.py) d=$(dirname \"$f\"); while [ \"$d\" != \"/\" ] && [ ! -f \"$d/pyproject.toml\" ]; do d=$(dirname \"$d\"); done; if [ -f \"$d/pyproject.toml\" ]; then ( cd \"$d\" && uv run ruff format \"$f\" >/dev/null 2>&1 && uv run ruff check --fix \"$f\" >/dev/null 2>&1 ); fi ;; esac; echo '{}'",
+            "timeout": 15,
+            "type": "command"
+          }
+        ],
+        "matcher": "write_to_file|replace_file_content"
       }
     ]
   }
