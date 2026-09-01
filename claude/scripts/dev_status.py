@@ -152,7 +152,9 @@ _COLORS = {
     "warn": "\x1b[31m",
     "prio_high": "\x1b[1;31m",
     "prio_low": "\x1b[2m",
+    "dim": "\x1b[2m",
 }
+KNOWN_PROJECT_PREFIXES = ("iron-lb", "ajhp", "meta", "work")
 
 
 # ── data model ───────────────────────────────────────────────────────────────
@@ -1173,6 +1175,35 @@ def _ellipsize(text: str, limit: int) -> str:
     return text[: max(limit - 1, 1)] + "…"
 
 
+def _project_prefix(slug: str) -> str:
+    """Extract canonical project prefix from a backlog item slug.
+
+    Matches against :data:`KNOWN_PROJECT_PREFIXES` first (longest match),
+    falling back to the first hyphen-separated segment if a hyphen exists,
+    or the empty string for un-prefixed slugs.
+    """
+    for prefix in KNOWN_PROJECT_PREFIXES:
+        if slug == prefix or slug.startswith(f"{prefix}-"):
+            return prefix
+    if "-" in slug:
+        return slug.split("-", 1)[0]
+    return ""
+
+
+def _project_divider(
+    project: str,
+    count: int,
+    width: int = SECTION_WIDTH,
+    color: bool = False,
+) -> str:
+    """Render a horizontal divider row for a project group within a section."""
+    unit = "item" if count == 1 else "items"
+    label = f"─── {project} ({count} {unit}) "
+    fill = max(width - len(f"│  {label}"), 3)
+    line = f"│  {label}" + ("─" * fill)
+    return _colorize(line, _COLORS["dim"], color) if color else line
+
+
 def _render_order(items: list[BacklogItem]) -> RenderOrder:
     """Bucket and sort backlog items into dashboard render order.
 
@@ -1202,11 +1233,13 @@ def _render_order(items: list[BacklogItem]) -> RenderOrder:
         key=lambda i: i.get("created", ""),
     )
     ready = sorted(ready, key=_priority_rank)  # stable
+    ready = sorted(ready, key=lambda i: _project_prefix(i.get("id", "")))  # stable
     blocked = sorted(
         [i for i in open_items if effective_blockers(i, index)],
         key=lambda i: (len(effective_blockers(i, index)), i.get("updated", "")),
     )
     blocked = sorted(blocked, key=_priority_rank)  # stable
+    blocked = sorted(blocked, key=lambda i: _project_prefix(i.get("id", "")))  # stable
     in_review = sorted(
         [i for i in items if i.get("status") == "in-review"],
         key=lambda i: i.get("updated", ""),
@@ -1584,6 +1617,7 @@ def render(
         show_category: bool = True,
         line_suffix: Callable[[dict[str, object], bool], str] | None = None,
         show_priority: bool = False,
+        group_by_project: bool = False,
     ) -> None:
         """Append one rendered section (with its border) to ``sections``."""
         if not section_items:
@@ -1600,7 +1634,23 @@ def render(
             else _section_bottom()
         )
         lines = [top]
+        current_project: str | None = None
+        project_counts: dict[str, int] = {}
+        if group_by_project:
+            for item in section_items:
+                p = _project_prefix(item["id"])
+                project_counts[p] = project_counts.get(p, 0) + 1
+
         for item in section_items:
+            if group_by_project:
+                proj = _project_prefix(item["id"])
+                if proj != current_project:
+                    current_project = proj
+                    if proj:
+                        lines.append(
+                            _project_divider(proj, project_counts[proj], color=color)
+                        )
+
             item_d = cast(dict[str, object], item)
             n = slug_to_num[item["id"]]
             badge = (
@@ -1660,7 +1710,12 @@ def render(
         line_suffix=_in_progress_suffix,
     )
     add_section(
-        "READY", ready, show_priority=True, color_code="ready", line_suffix=_gate_suffix
+        "READY",
+        ready,
+        show_priority=True,
+        color_code="ready",
+        line_suffix=_gate_suffix,
+        group_by_project=True,
     )
     add_section(
         "BLOCKED",
@@ -1670,6 +1725,7 @@ def render(
         show_priority=True,
         color_code="blocked",
         line_suffix=_gate_suffix,
+        group_by_project=True,
     )
     add_section(
         "IN REVIEW",

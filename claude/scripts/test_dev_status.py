@@ -4750,6 +4750,98 @@ class ClaimMarkerAndWorktreeGuardTestCase(BacklogTestCase):
         rendered = out.getvalue()
         self.assertIn("[pi]", rendered)
 
+    def test_project_prefix_extraction(self) -> None:
+        self.assertEqual(dev_status._project_prefix("iron-lb-wearable-ui"), "iron-lb")
+        self.assertEqual(dev_status._project_prefix("ajhp-search-jobs"), "ajhp")
+        self.assertEqual(dev_status._project_prefix("meta-standup-sync"), "meta")
+        self.assertEqual(dev_status._project_prefix("work-report"), "work")
+        self.assertEqual(dev_status._project_prefix("custom-project-slug"), "custom")
+        self.assertEqual(dev_status._project_prefix("unprefixed"), "")
+
+    def test_project_divider_format(self) -> None:
+        div_single = dev_status._project_divider("iron-lb", 1, width=76, color=False)
+        self.assertTrue(div_single.startswith("│  ─── iron-lb (1 item) ───"))
+        self.assertEqual(len(div_single), 76)
+
+        div_plural = dev_status._project_divider("meta", 5, width=76, color=False)
+        self.assertTrue(div_plural.startswith("│  ─── meta (5 items) ───"))
+        self.assertEqual(len(div_plural), 76)
+
+    def test_ready_sort_by_project_priority_created(self) -> None:
+        # 4 items across 2 projects:
+        # meta-a (normal, created 2026-01-01)
+        # iron-lb-a (normal, created 2026-01-02)
+        # meta-b (high, created 2026-01-03)
+        # iron-lb-b (high, created 2026-01-04)
+        items = [
+            make_item("meta-a", created="2026-01-01"),
+            make_item("iron-lb-a", created="2026-01-02"),
+            make_item("meta-b", created="2026-01-03", priority="high"),
+            make_item("iron-lb-b", created="2026-01-04", priority="high"),
+        ]
+        _, ready, _, _, _ = dev_status._render_order(items)
+        # Expected:
+        # iron-lb cluster first (iron-lb-b [high] -> iron-lb-a [normal])
+        # meta cluster second (meta-b [high] -> meta-a [normal])
+        self.assertEqual(
+            [i["id"] for i in ready],
+            ["iron-lb-b", "iron-lb-a", "meta-b", "meta-a"],
+        )
+
+    def test_blocked_sort_by_project_blocker_count(self) -> None:
+        blocker1 = make_item("iron-lb-b1", status="open")
+        blocker2 = make_item("meta-b1", status="open")
+        items = [
+            blocker1,
+            blocker2,
+            make_item(
+                "meta-blocked-multi",
+                blocked_by=["iron-lb-b1", "meta-b1"],
+                status="open",
+            ),
+            make_item("meta-blocked-single", blocked_by=["meta-b1"], status="open"),
+            make_item(
+                "iron-lb-blocked-single", blocked_by=["iron-lb-b1"], status="open"
+            ),
+        ]
+        _, ready, blocked, _, _ = dev_status._render_order(items)
+        # iron-lb blocked first (1 blocker), meta blocked second (single before multi)
+        self.assertEqual(
+            [i["id"] for i in blocked],
+            ["iron-lb-blocked-single", "meta-blocked-single", "meta-blocked-multi"],
+        )
+
+    def test_render_and_resolve_id_with_project_sorting(self) -> None:
+        blocker = make_item("iron-lb-blocker", status="open", summary="Core schema")
+        ready_meta = make_item(
+            "meta-tooling", status="open", summary="Tooling improvement"
+        )
+        blocked_iron = make_item(
+            "iron-lb-ui",
+            status="open",
+            summary="UI Screen",
+            blocked_by=["iron-lb-blocker"],
+        )
+        self.write_items([ready_meta, blocker, blocked_iron])
+        out = io.StringIO()
+        err = io.StringIO()
+        dev_status.render(out=out, err=err, rev=1)
+        rendered = out.getvalue()
+
+        # In READY: iron-lb-blocker (#1) -> meta-tooling (#2)
+        # In BLOCKED: iron-lb-ui (#3) blocked by #1
+        self.assertIn("─── iron-lb (1 item) ───", rendered)
+        self.assertIn("─── meta (1 item) ───", rendered)
+        self.assertIn("blocked by: #1 (Core schema)", rendered)
+
+        # resolve_id check:
+        kind, slug1 = dev_status.resolve_id("1", self.read_items(), [])
+        kind, slug2 = dev_status.resolve_id("2", self.read_items(), [])
+        kind, slug3 = dev_status.resolve_id("3", self.read_items(), [])
+        self.assertEqual(slug1, "iron-lb-blocker")
+        self.assertEqual(slug2, "meta-tooling")
+        self.assertEqual(slug3, "iron-lb-ui")
+
 
 # ── arg helper ────────────────────────────────────────────────────────────────
 
