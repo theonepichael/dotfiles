@@ -894,6 +894,7 @@ are copy-once seeds for exactly that reason.
 | `pi/extensions/custom-footer.ts` | `~/.pi/agent/extensions/custom-footer.ts` (pi) |
 | `pi/extensions/delegate-tool.ts` | `~/.pi/agent/extensions/delegate-tool.ts` (pi) |
 | `pi/extensions/dev-status-tool.ts` | `~/.pi/agent/extensions/dev-status-tool.ts` (pi) |
+| `pi/extensions/exit-alias.ts` | `~/.pi/agent/extensions/exit-alias.ts` (pi) |
 | `pi/extensions/grill-tool.ts` | `~/.pi/agent/extensions/grill-tool.ts` (pi) |
 | `pi/extensions/guard-rails.ts` | `~/.pi/agent/extensions/guard-rails.ts` (pi) |
 | `pi/extensions/pending-plan-surface.ts` | `~/.pi/agent/extensions/pending-plan-surface.ts` (pi) |
