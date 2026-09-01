@@ -27,6 +27,8 @@ import sys
 import tempfile
 import textwrap
 import threading
+import time
+import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
@@ -43,6 +45,7 @@ PENDING_FILE = DATA_DIR / "pending_items.json"
 META_FILE = DATA_DIR / "_meta.json"
 LOCK_FILE = DATA_DIR / ".backlog.lock"
 JOURNAL_FILE = DATA_DIR / "journal.jsonl"
+RUNS_FILE = DATA_DIR / "runs.jsonl"
 MACHINE_ID_FILE = DATA_DIR / "_machine_id"
 RECAP_CACHE_FILE = DATA_DIR / "recap-cache.json"
 RECAP_REGEN_LOCK_FILE = DATA_DIR / "recap-regen.lock"
@@ -125,6 +128,8 @@ SUBCOMMANDS = (
     "reject",
     "gate-set",
     "gate-pass",
+    "run",
+    "runs",
     "backfill-gate",
     "rename",
     "remove",
@@ -170,6 +175,19 @@ class Gate(TypedDict):
     and every ``gate-set`` call resets ``passed_at`` to ``None``
     — re-classifying (e.g. after a plan revision) invalidates any prior
     pass, mirroring grill.py's ``revise`` resetting a decision's verdict.
+
+    ``gate-pass`` only records a pass when every criterion is covered by
+    recorded run evidence (a command executed via the ``run`` subcommand)
+    or an explicit per-criterion manual note — a bare claim is refused.
+    ``set_at`` (full aware-UTC ISO datetime) stamps the current gate
+    generation: run evidence with ``started_at`` older than ``set_at`` no
+    longer counts, so re-classifying automatically orphans older evidence
+    without deleting it. Gates classified before ``set_at`` existed carry
+    no key, which gate-pass treats as "no lower bound". ``passed_via`` is
+    ``run-evidence``/``manual``/``mixed``; ``coverage`` maps each criterion
+    number to ``{"kind": "run", "run_id": ...}`` or
+    ``{"kind": "manual", "note": ...}`` so ``show`` displays what
+    satisfied what.
     """
 
     # `passed: bool | None` was dropped — redundant with `passed_at`
@@ -177,6 +195,30 @@ class Gate(TypedDict):
     required: bool
     criteria: list[str]
     passed_at: str | None
+    set_at: NotRequired[str]
+    passed_via: NotRequired[str]
+    coverage: NotRequired[dict[str, dict[str, str]]]
+
+
+class RunRecord(TypedDict):
+    """One recorded command execution — a row of the ``runs.jsonl`` sidecar.
+
+    Written by the ``run`` subcommand, which executes the command itself
+    (never accepting a self-reported result) and appends one JSON line per
+    run: ``{run_id, item, command, exit_code, timed_out, started_at,
+    duration_s, cwd}``. ``exit_code`` is ``None`` exactly when
+    ``timed_out`` is true. ``gate-pass`` cites rows from this file as
+    per-criterion evidence; ``item`` holds the owning backlog slug.
+    """
+
+    run_id: str
+    item: str
+    command: str
+    exit_code: int | None
+    timed_out: bool
+    started_at: str
+    duration_s: float
+    cwd: str
 
 
 class BacklogItem(TypedDict):
@@ -538,7 +580,8 @@ def _gate_block_message(cmd: str, item: BacklogItem) -> str | None:
     n = len(gate.get("criteria", []))
     return (
         f"[{cmd}] {item.get('id', '?')} has an unmet gate ({n} criterion/criteria "
-        "unconfirmed) -- run 'gate-pass <id>' once verified, or 'show <id>' to "
+        "unconfirmed) -- record evidence with 'run <id> -- <command>' then pass "
+        "'gate-pass <id>' with a coverage payload; 'show <id>' to "
         "review the criteria."
     )
 
@@ -1836,6 +1879,87 @@ def _parse_journal_ts(raw: object) -> datetime | None:
     return ts
 
 
+# ── run evidence (runs.jsonl sidecar) ──────────────────────────────────────
+
+
+def load_runs(item: str | None = None) -> list[RunRecord]:
+    """Load run-evidence rows from :data:`RUNS_FILE`, optionally for one item.
+
+    Read without holding :func:`backlog_lock` — writers append single lines
+    under the lock, but a concurrent append can still expose a trailing
+    partial line on read. A ``JSONDecodeError`` on that last line is
+    silently skipped (the writer just hasn't finished); the same failure on
+    any earlier line is real corruption and surfaces as a stderr warning
+    rather than being silently dropped (same policy as the journal reader).
+
+    Args:
+        item: Restrict to rows whose ``item`` field equals this slug, or
+            ``None`` for every row.
+    """
+    if not RUNS_FILE.exists():
+        return []
+    try:
+        raw_lines = RUNS_FILE.read_text().splitlines()
+    except OSError:
+        return []
+    non_blank = [line for line in raw_lines if line.strip()]
+    runs: list[RunRecord] = []
+    for line_no, line in enumerate(non_blank, start=1):
+        try:
+            run = json.loads(line)
+        except json.JSONDecodeError:
+            if line_no == len(non_blank):
+                break  # trailing partial line from a concurrent append
+            print(
+                f"runs file corrupted at {RUNS_FILE}; ignoring malformed "
+                f"line {line_no}",
+                file=sys.stderr,
+            )
+            continue
+        if not isinstance(run, dict):
+            continue
+        if item is None or run.get("item") == item:
+            runs.append(cast(RunRecord, run))
+    return runs
+
+
+def write_runs_file(runs: Sequence[RunRecord]) -> None:
+    """Atomically rewrite :data:`RUNS_FILE` with ``runs`` (one JSON line each)."""
+    payload = "".join(json.dumps(run, sort_keys=True) + "\n" for run in runs)
+    _atomic_write_json(RUNS_FILE, payload, ".runs_tmp_")
+
+
+def append_run_record(record: RunRecord) -> bool:
+    """Append one run-evidence row to :data:`RUNS_FILE` (best-effort).
+
+    Callers must hold :func:`backlog_lock` (appends are single-line
+    O_APPEND writes, but the lock serializes concurrent harness sessions).
+    The subprocess whose evidence this is has already run by the time this
+    is called — a failed append (disk full, permissions) must never fail or
+    crash the ``run`` command itself, so failures print a one-line stderr
+    warning instead of raised. Unconditional (not verbose-gated): silently
+    losing evidence would defeat the whole point of recording it. Returns
+    whether the append actually landed, so ``cmd_run`` doesn't tell the
+    caller evidence was recorded when it wasn't.
+    """
+    line = json.dumps(record, sort_keys=True)
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with open(RUNS_FILE, "a") as f:
+            f.write(line + "\n")
+    except OSError as e:
+        print(f"[runs] append failed (non-fatal): {e}", file=sys.stderr)
+        return False
+    return True
+
+
+def _run_state(run: RunRecord) -> str:
+    """Render a run's outcome as one short token (``exit=N``/``timeout``)."""
+    if run.get("timed_out"):
+        return "timeout"
+    return f"exit={run.get('exit_code')}"
+
+
 def read_journal_entries(
     within_hours: float | None = None, *, verbose: bool = False
 ) -> list[dict[str, object]]:
@@ -2788,6 +2912,16 @@ def cmd_show(args: argparse.Namespace) -> None:
             print(f"[show] not found: {slug}", file=sys.stderr)
             sys.exit(1)
         print(f"# rev={load_rev()}", file=sys.stderr)
+        if kind == "backlog":
+            runs = load_runs(slug)
+            if runs:
+                last = runs[-1]
+                print(
+                    f"# runs: {len(runs)} recorded; most recent "
+                    f"{last.get('run_id', '?')} {_run_state(last)} "
+                    f"at {last.get('started_at', '?')}",
+                    file=sys.stderr,
+                )
         print(json.dumps(item, indent=2))
 
 
@@ -3231,12 +3365,98 @@ def cmd_gate_set(args: argparse.Namespace) -> None:
             "required": required,
             "criteria": criteria,
             "passed_at": None,
+            # Full aware-UTC timestamp, not a date: gate-pass compares run
+            # evidence's started_at against this, so a date-only stamp would
+            # let same-day runs recorded *before* this re-classification
+            # count as evidence. Starting a new generation shifts set_at,
+            # automatically orphaning older runs (the audit trail in
+            # runs.jsonl is never deleted).
+            "set_at": datetime.now(UTC).isoformat(),
         }
         m.item["updated"] = today()
 
 
+def _gate_pass_refusal(slug: str, problems: list[str], runs: list[RunRecord]) -> str:
+    """Build a copy-pasteable refusal listing every coverage problem.
+
+    Names each uncovered/invalid criterion with its reason and appends the
+    item's recent runs (newest last) so the caller can pick a valid
+    ``run:<run_id>`` citation without a second lookup.
+    """
+    lines = [f"[gate-pass] coverage invalid for {slug}:"]
+    lines.extend(f"  {problem}" for problem in problems)
+    if runs:
+        lines.append(f"recent runs for {slug} (cite as run:<run_id>):")
+        for run in runs[-5:]:
+            lines.append(
+                f"  {run.get('run_id', '?')}  {_run_state(run)}  "
+                f"{run.get('started_at', '?')}  {run.get('command', '?')}"
+            )
+    else:
+        lines.append(
+            f"no runs recorded for {slug} -- record one with: "
+            "dev_status run <id> -- <command...>"
+        )
+    return "\n".join(lines)
+
+
+def _validate_run_citation(
+    criterion: str, run_id: str, runs: list[RunRecord], gate: Mapping[str, object]
+) -> tuple[str | None, dict[str, str] | None]:
+    """Validate one ``run:<run_id>`` citation against the recorded evidence.
+
+    Returns ``(problem, coverage_entry)`` — exactly one is ``None``. A run
+    counts only when it exists for this item, exited 0, didn't time out,
+    and started at or after the gate's ``set_at`` (gates without ``set_at``
+    — classified before the stamp existed — impose no lower bound).
+    """
+    run = next((r for r in runs if r.get("run_id") == run_id), None)
+    if run is None:
+        message = (
+            f"criterion {criterion}: unknown run id '{run_id}' "
+            "(no such run recorded for this item)"
+        )
+        return (message, None)
+    if run.get("timed_out") or run.get("exit_code") != 0:
+        message = (
+            f"criterion {criterion}: cited run {run_id} is failed or "
+            f"timed out (exit={run.get('exit_code')}, "
+            f"timed_out={run.get('timed_out')})"
+        )
+        return (message, None)
+    started_at = _parse_journal_ts(run.get("started_at"))
+    set_at = _parse_journal_ts(gate.get("set_at"))
+    if started_at is None:
+        return (
+            f"criterion {criterion}: cited run {run_id} has no parseable started_at",
+            None,
+        )
+    if set_at is not None and started_at < set_at:
+        message = (
+            f"criterion {criterion}: cited run {run_id} is stale "
+            f"(started_at {run.get('started_at')} pre-dates gate set_at "
+            f"{gate.get('set_at')})"
+        )
+        return (message, None)
+    return None, {"kind": "run", "run_id": run_id}
+
+
 def cmd_gate_pass(args: argparse.Namespace) -> None:
-    """Handle ``gate-pass``: record that an item's gate criteria are satisfied."""
+    """Handle ``gate-pass``: record that an item's gate criteria are satisfied.
+
+    Requires an explicit per-criterion coverage payload — every numbered
+    criterion (as ``show`` displays them) must cite either a recorded run
+    (``run:<run_id>``: exit 0, not timed out, ``started_at`` at/after the
+    gate's ``set_at``; one run may cover several criteria) or a non-empty
+    manual note (``manual:<note>``) for genuinely-manual criteria such as
+    visual checks. On success stores ``passed_at``, ``passed_via``
+    (``run-evidence``/``manual``/``mixed``), and the normalized coverage
+    map on the gate, so ``show`` displays which run/note satisfied what.
+    """
+    patch = (
+        _parse_json_arg(args.json, "gate-pass") if getattr(args, "json", None) else {}
+    )
+
     with _backlog_mutation(
         "gate-pass",
         args.id,
@@ -3252,8 +3472,203 @@ def cmd_gate_pass(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        coverage_raw = patch.get("coverage")
+        if not isinstance(coverage_raw, dict):
+            print(
+                "[gate-pass] a coverage payload is required: "
+                '{"coverage": {"<criterion#>": "run:<run_id>" or '
+                '"manual:<note>"}} — every criterion needs recorded run '
+                "evidence ('dev_status run <id> -- <command...>') or a manual note",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        criteria = cast(list[str], gate.get("criteria", []))
+        n = len(criteria)
+        runs = load_runs(m.slug)
+        problems: list[str] = []
+        covered: dict[str, dict[str, str]] = {}
+        for key, value in coverage_raw.items():
+            if not isinstance(key, str) or not key.isdigit():
+                problems.append(
+                    f"coverage key {key!r}: not a criterion number "
+                    f"(criteria are 1..{n})"
+                )
+                continue
+            if not 1 <= int(key) <= n:
+                problems.append(
+                    f"coverage key '{key}': criterion number out of range "
+                    f"(criteria are 1..{n})"
+                )
+                continue
+            # Canonicalize before using the key as a dict key or in the
+            # "not covered" membership check below -- otherwise a
+            # non-canonical but validly-in-range key like "01" satisfies
+            # every check above yet never matches str(i)'s canonical form,
+            # so genuinely-covered criterion 1 still reports "not covered".
+            key = str(int(key))
+            if not isinstance(value, str):
+                problems.append(
+                    f"criterion {key}: value must be a string "
+                    "('run:<run_id>' or 'manual:<note>')"
+                )
+                continue
+            if value.startswith("run:"):
+                problem, entry = _validate_run_citation(
+                    key, value[len("run:") :].strip(), runs, gate
+                )
+                if problem:
+                    problems.append(problem)
+                else:
+                    covered[key] = cast(dict[str, str], entry)
+            elif value.startswith("manual:"):
+                note = value[len("manual:") :].strip()
+                if not note:
+                    problems.append(f"criterion {key}: empty manual note")
+                else:
+                    covered[key] = {"kind": "manual", "note": note}
+            else:
+                problems.append(
+                    f"criterion {key}: value must be 'run:<run_id>' or 'manual:<note>'"
+                )
+        for i in range(1, n + 1):
+            if str(i) not in covered and not any(
+                p.startswith(f"criterion {i}:") for p in problems
+            ):
+                problems.append(f"criterion {i}: not covered")
+        if problems:
+            print(_gate_pass_refusal(m.slug, problems, runs), file=sys.stderr)
+            sys.exit(1)
+        kinds = {entry["kind"] for entry in covered.values()}
         gate["passed_at"] = today()
+        gate["passed_via"] = (
+            "manual"
+            if kinds == {"manual"}
+            else "run-evidence"
+            if kinds == {"run"}
+            else "mixed"
+        )
+        gate["coverage"] = covered
         m.item["updated"] = today()
+
+
+def cmd_run(args: argparse.Namespace) -> None:
+    """Handle ``run``: execute a command and record it as run evidence.
+
+    Executes ``args.command`` via :func:`subprocess.run` — no shell, output
+    inherited (visible live; a 30-minute suite must not look like a hung
+    prompt) — then appends one truthful row (exit code, duration, timeout
+    flag) to the ``runs.jsonl`` sidecar for ``gate-pass`` to cite.
+
+    Lock scope: the item-existence check and the append each take
+    :func:`backlog_lock` briefly; the subprocess itself runs **outside** the
+    lock — holding it across a long test run would freeze every other
+    harness session sharing the store.
+
+    A numeric ``id`` is resolved against the full pending+backlog pool
+    (matching ``render``'s own numbering) and then checked with
+    :func:`require_kind` — resolving against the backlog pool alone would
+    silently misnumber every position once any pending item exists, since
+    pending items always come first in the dashboard's numbering. Like
+    every other numeric-id command, a stale position is caught by
+    :func:`enforce_rev_guard` rather than silently attributing this run's
+    evidence to the wrong item.
+    """
+    with backlog_lock():
+        items = load_items()
+        pending_items = load_pending()
+        current_rev = load_rev()
+        enforce_rev_guard(
+            "run", args.id, args.if_rev, current_rev, items, pending_items
+        )
+        kind, slug = resolve_id(args.id, items, pending_items)
+        require_kind("run", args.id, kind, "backlog")
+    # argparse's native "--" handling (see the parser's nargs="*" comment)
+    # already strips a leading "--" separator, so args.command is the
+    # command as typed -- no manual stripping here, which would otherwise
+    # eat a second, user-supplied "--" as the command's own first argument.
+    command = list(args.command or [])
+    if not command:
+        print(
+            "[run] no command given -- usage: dev_status run <id> -- <command...>",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # DEVSTATUS_AGENT scrubbed from the child's environment: CLAUDE.md's own
+    # convention has agents prefix it on dev_status.py mutating calls
+    # (suppresses a stderr echo), and `run` -- needing --if-rev like every
+    # other numeric-id mutation -- reasonably looks like one of those calls.
+    # But `run`'s "mutating call" is really the *recorded command*, which
+    # can itself invoke dev_status.py (e.g. this repo's own test suite);
+    # left unscrubbed, that inherited DEVSTATUS_AGENT=1 changes the command's
+    # own behavior and produces false evidence -- reproduced live: an
+    # unrelated `dev_status.py run ... -- uv run pytest -q` command run this
+    # way spuriously failed 45 dev_status.py tests that assert on the exact
+    # stderr echo DEVSTATUS_AGENT suppresses.
+    child_env = {k: v for k, v in os.environ.items() if k != "DEVSTATUS_AGENT"}
+    started_at = datetime.now(UTC).isoformat()
+    start_mono = time.monotonic()
+    try:
+        proc = subprocess.run(command, timeout=args.timeout, env=child_env)
+        exit_code: int | None = proc.returncode
+        timed_out = False
+    except subprocess.TimeoutExpired:
+        print(
+            f"[run] command timed out after {args.timeout}s",
+            file=sys.stderr,
+        )
+        exit_code, timed_out = None, True
+    duration_s = round(time.monotonic() - start_mono, 3)
+
+    record: RunRecord = {
+        "run_id": uuid.uuid4().hex,
+        "item": slug,
+        "command": " ".join(command),
+        "exit_code": exit_code,
+        "timed_out": timed_out,
+        "started_at": started_at,
+        "duration_s": duration_s,
+        "cwd": os.getcwd(),
+    }
+    with backlog_lock():
+        appended = append_run_record(record)
+    state = "timed out" if timed_out else f"exit {exit_code}"
+    if appended:
+        cli_common.qprint(
+            f"[run] recorded {record['run_id']} for {slug}: {state} after {duration_s}s",
+            quiet=args.quiet,
+        )
+    else:
+        # append_run_record already printed the failure reason -- this just
+        # makes sure stdout never claims evidence was saved when it wasn't,
+        # since a later gate-pass citing run_id would otherwise fail with a
+        # confusing "unknown run id" and no obvious link back to this line.
+        print(
+            f"[run] ran {slug}: {state} after {duration_s}s -- NOT recorded, "
+            "see the error above",
+            file=sys.stderr,
+        )
+
+
+def cmd_runs(args: argparse.Namespace) -> None:
+    """Handle ``runs``: list an item's recorded run evidence."""
+    with backlog_lock():
+        items = load_items()
+        pending_items = load_pending()
+        kind, slug = resolve_id(args.id, items, pending_items)
+        require_kind("runs", args.id, kind, "backlog")
+        runs = load_runs(slug)
+    if not runs:
+        cli_common.qprint(f"[runs] {slug}: no runs recorded", quiet=args.quiet)
+        return
+    cli_common.qprint(f"[runs] {slug}: {len(runs)} recorded run(s)", quiet=args.quiet)
+    for run in runs:
+        cli_common.qprint(
+            f"  {run.get('run_id', '?')}  {_run_state(run)}  "
+            f"{run.get('started_at', '?')}  {run.get('duration_s', '?')}s  "
+            f"{run.get('command', '?')}",
+            quiet=args.quiet,
+        )
 
 
 def cmd_backfill_gate(args: argparse.Namespace) -> None:
@@ -3406,6 +3821,17 @@ def cmd_rename(args: argparse.Namespace) -> None:
         new_rev = bump_rev()
         save_items(items)
         save_pending(pending_items)
+        # runs.jsonl rows reference the old slug as their `item` field —
+        # rewrite them in the same pass (same policy as blocked_by), so
+        # recorded evidence survives a rename instead of dangling.
+        runs = load_runs()
+        renamed_runs = 0
+        for run in runs:
+            if run.get("item") == old_slug:
+                run["item"] = new_slug
+                renamed_runs += 1
+        if renamed_runs:
+            write_runs_file(runs)
         # renamed_item is guaranteed set: resolve_id/require_kind above
         # already confirmed old_slug names a backlog item in `items`.
         renamed_summary = cast(BacklogItem, renamed_item)["summary"]
@@ -3992,6 +4418,8 @@ dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
     "reject": cmd_reject,
     "gate-set": cmd_gate_set,
     "gate-pass": cmd_gate_pass,
+    "run": cmd_run,
+    "runs": cmd_runs,
     "backfill-gate": cmd_backfill_gate,
     "rename": cmd_rename,
     "remove": cmd_remove,
@@ -4147,7 +4575,50 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[verbosity_parent],
     )
     _add_id_arg(p)
+    p.add_argument(
+        "json",
+        metavar='\'{"coverage": {"1": "run:<run_id>" | "manual:<note>"}}\'',
+        nargs="?",
+        default=None,
+        help="per-criterion coverage: run evidence or a manual note per criterion",
+    )
     _add_if_rev_arg(p)
+
+    p = sub.add_parser(
+        "run",
+        help="execute a command and record it as run evidence for an item",
+        parents=[verbosity_parent],
+    )
+    _add_id_arg(p)
+    _add_if_rev_arg(p)
+    p.add_argument(
+        "--timeout",
+        type=float,
+        default=1800.0,
+        metavar="SECONDS",
+        help="kill the command after this many seconds (default: 1800)",
+    )
+    p.add_argument(
+        "command",
+        # nargs="*", not REMAINDER: REMAINDER grabs every remaining token
+        # (including a later --timeout/--if-rev/-q) the instant it starts
+        # matching, ignoring argparse's own "--" end-of-options handling --
+        # so `run <id> --timeout N -- <command>` (the documented order,
+        # and what pi/extensions/dev-status-tool.ts generates) silently
+        # left --timeout unparsed and folded it into the command itself.
+        # "*" lets argparse's native "--" separator do the splitting, so
+        # --timeout/--if-rev/-q parse correctly on either side of the id.
+        nargs="*",
+        metavar="-- <command...>",
+        help="command to execute and record (everything after --; no shell)",
+    )
+
+    p = sub.add_parser(
+        "runs",
+        help="list recorded run evidence for an item",
+        parents=[verbosity_parent],
+    )
+    _add_id_arg(p)
 
     p = sub.add_parser(
         "backfill-gate",

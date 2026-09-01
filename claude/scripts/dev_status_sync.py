@@ -54,7 +54,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import cli_common
 import dev_status
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 # The one directory this feature ever touches: the grill/ tree under a home
 # prefix (e.g. /home/yanil/.claude/data/grill). Every artifact-collection and
@@ -853,11 +853,42 @@ def _check_cross_pool_uniqueness(
 class SyncComputation:
     merged_items: list[dict[str, object]]
     merged_pending: list[dict[str, object]]
+    merged_runs: list[dict[str, object]] = field(default_factory=list)
     conflicts: list[dict[str, object]] = field(default_factory=list)
     needs_local_items_write: bool = False
     needs_local_pending_write: bool = False
+    needs_local_runs_write: bool = False
     needs_remote_items_write: bool = False
     needs_remote_pending_write: bool = False
+    needs_remote_runs_write: bool = False
+
+
+def merge_runs(
+    local_runs: list[dict[str, object]], remote_runs: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    """Union two run-evidence lists by ``run_id`` — the runs.jsonl merge rule.
+
+    Unlike the JSON stores (per-id field merge with conflict detection), the
+    runs sidecar is append-only: a row's ``run_id`` is its identity, so
+    merging is just concatenation of lines whose ``run_id`` is absent from
+    the earlier list — local order first, then remote-only rows appended in
+    remote order. No deletions ever happen, so there is nothing to
+    conflict-resolve; size stays bounded in practice (~200 bytes/run).
+    Rows that aren't dicts, or lack a non-empty string ``run_id`` (a
+    truncated/partial line that somehow got synced), are dropped — they
+    carry no citable identity.
+    """
+    seen: set[str] = set()
+    merged: list[dict[str, object]] = []
+    for run in [*local_runs, *remote_runs]:
+        if not isinstance(run, dict):
+            continue
+        run_id = run.get("run_id")
+        if not isinstance(run_id, str) or not run_id or run_id in seen:
+            continue
+        seen.add(run_id)
+        merged.append(run)
+    return merged
 
 
 def compute_sync(
@@ -867,12 +898,19 @@ def compute_sync(
     local_pending: list[dict[str, object]],
     remote_items: list[dict[str, object]],
     remote_pending: list[dict[str, object]],
+    *,
+    local_runs: list[dict[str, object]] | None = None,
+    remote_runs: list[dict[str, object]] | None = None,
 ) -> SyncComputation:
     """Run the full merge: per-store 3-way merge, then graph integrity, then write-need.
 
     ``remote_items``/``remote_pending`` must already be in this machine's
     canonical ``related_files`` path form (see
     :func:`rewrite_paths_list`) — this function does no path mapping itself.
+
+    Run evidence merges by :func:`merge_runs` (union-by-``run_id``); pass
+    ``local_runs``/``remote_runs`` to include it, otherwise the returned
+    computation simply carries empty run fields.
     """
     merged_items, item_conflicts = merge_store(
         base_items, local_items, remote_items, "items"
@@ -880,6 +918,10 @@ def compute_sync(
     merged_pending, pending_conflicts = merge_store(
         base_pending, local_pending, remote_pending, "pending_items"
     )
+
+    local_runs = local_runs or []
+    remote_runs = remote_runs or []
+    merged_runs = merge_runs(local_runs, remote_runs)
 
     all_prior_ids = (
         {i["id"] for i in (base_items or [])}
@@ -907,11 +949,14 @@ def compute_sync(
     return SyncComputation(
         merged_items=merged_items,
         merged_pending=merged_pending,
+        merged_runs=merged_runs,
         conflicts=[*item_conflicts, *pending_conflicts, *cycle_conflicts],
         needs_local_items_write=by_id(local_items) != by_id(merged_items),
         needs_local_pending_write=by_id(local_pending) != by_id(merged_pending),
+        needs_local_runs_write=merged_runs != local_runs,
         needs_remote_items_write=by_id(remote_items) != by_id(merged_items),
         needs_remote_pending_write=by_id(remote_pending) != by_id(merged_pending),
+        needs_remote_runs_write=merged_runs != remote_runs,
     )
 
 
@@ -958,6 +1003,14 @@ def local_commit(
         dev_status.save_pending(
             cast(list[dev_status.PendingItem], result.merged_pending)
         )
+    # Runs union has no rev/backup semantics — an append-only sidecar whose
+    # merge can only add rows. Written under a brief backlog_lock (same
+    # guard the run/appends use) so a concurrent local run can't interleave.
+    if result.needs_local_runs_write:
+        with dev_status.backlog_lock():
+            dev_status.write_runs_file(
+                cast(list[dev_status.RunRecord], result.merged_runs)
+            )
 
     if result.conflicts:
         _append_conflict_log(result.conflicts)
@@ -1095,6 +1148,7 @@ def ssh_import(
     ssh_timeout: float,
     items: list[dict[str, object]],
     pending: list[dict[str, object]],
+    runs: list[dict[str, object]],
     schema: dict[str, object],
     if_rev: int,
 ) -> None:
@@ -1103,6 +1157,7 @@ def ssh_import(
         "schema_version": schema,
         "items": items,
         "pending_items": pending,
+        "runs": runs,
     }
     nonce = secrets.token_hex(8)
     framed = (
@@ -1230,6 +1285,7 @@ def cmd_export(args: argparse.Namespace) -> None:
         "schema_version": {"items": items_schema, "pending_items": pending_schema},
         "items": items,
         "pending_items": pending,
+        "runs": dev_status.load_runs(),
     }
     nonce = secrets.token_hex(8)
     print(f"==={_FRAME_MARK}_START:{nonce}===")
@@ -1264,6 +1320,18 @@ def cmd_import(args: argparse.Namespace) -> None:
         dev_status.save_pending(
             cast(list[dev_status.PendingItem], payload["pending_items"])
         )
+        # Run evidence: union-by-run_id against whatever was recorded locally
+        # since the other machine exported (defensive — the import payload is
+        # normally already the merged union). Runs carry no rev, so this
+        # write doesn't interact with the --if-rev guard.
+        payload_runs = payload.get("runs")
+        if isinstance(payload_runs, list):
+            existing_runs = dev_status.load_runs()
+            merged_runs = merge_runs(existing_runs, payload_runs)
+            if merged_runs != existing_runs:
+                dev_status.write_runs_file(
+                    cast(list[dev_status.RunRecord], merged_runs)
+                )
         new_rev = dev_status.bump_rev()
 
     cli_common.vprint(
@@ -1381,6 +1449,10 @@ def cmd_sync(args: argparse.Namespace) -> None:
                     local_pending_raw,
                     remote_items,
                     remote_pending,
+                    local_runs=dev_status.load_runs(),
+                    remote_runs=cast(
+                        list[dict[str, object]], remote_payload.get("runs", [])
+                    ),
                 )
 
                 if args.dry_run:
@@ -1436,7 +1508,11 @@ def cmd_sync(args: argparse.Namespace) -> None:
                     )
                     push_count = push_attempted
 
-                if result.needs_remote_items_write or result.needs_remote_pending_write:
+                if (
+                    result.needs_remote_items_write
+                    or result.needs_remote_pending_write
+                    or result.needs_remote_runs_write
+                ):
                     outbound_items = rewrite_paths_list(
                         result.merged_items, local_home, remote_home
                     )
@@ -1449,6 +1525,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
                         args.ssh_timeout,
                         outbound_items,
                         outbound_pending,
+                        result.merged_runs,
                         remote_schema,
                         cast(int, remote_payload["rev"]),
                     )

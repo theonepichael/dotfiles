@@ -2,6 +2,7 @@
 """Tests for dev_status_sync.py. Run with: python3 test_dev_status_sync.py"""
 
 import argparse
+import io
 import json
 import shutil
 import subprocess
@@ -74,6 +75,7 @@ class SyncTestCase(unittest.TestCase):
         self.sync_base_file = self.data_dir / "_sync-base.json"
         self.conflict_log_file = self.data_dir / "_sync-conflicts.jsonl"
         self.journal_file = self.data_dir / "journal.jsonl"
+        self.runs_file = self.data_dir / "runs.jsonl"
         self.machine_id_file = self.data_dir / "_machine_id"
         self._patches = [
             patch.object(dev_status, "DATA_DIR", self.data_dir),
@@ -82,6 +84,7 @@ class SyncTestCase(unittest.TestCase):
             patch.object(dev_status, "META_FILE", self.meta_file),
             patch.object(dev_status, "LOCK_FILE", self.lock_file),
             patch.object(dev_status, "JOURNAL_FILE", self.journal_file),
+            patch.object(dev_status, "RUNS_FILE", self.runs_file),
             patch.object(dev_status, "MACHINE_ID_FILE", self.machine_id_file),
             patch.object(sync, "SYNC_BASE_FILE", self.sync_base_file),
             patch.object(sync, "CONFLICT_LOG_FILE", self.conflict_log_file),
@@ -771,6 +774,152 @@ class ExportImportTests(SyncTestCase):
             self.assertRaises(sync.SyncRetryableError),
         ):
             sync.cmd_import(self._args(if_rev=99))
+
+
+class MergeRunsTests(unittest.TestCase):
+    def test_union_dedupes_and_preserves_local_order(self):
+        a = {"run_id": "a", "item": "x"}
+        b = {"run_id": "b", "item": "x"}
+        c = {"run_id": "c", "item": "y"}
+        self.assertEqual(sync.merge_runs([a, b], [c, a]), [a, b, c])
+
+    def test_both_empty(self):
+        self.assertEqual(sync.merge_runs([], []), [])
+
+    def test_malformed_rows_dropped(self):
+        good = {"run_id": "a", "item": "x"}
+        merged = sync.merge_runs([good, "garbage", {"item": "x"}, {"run_id": ""}], [])
+        self.assertEqual(merged, [good])
+
+
+class RunsSyncTests(SyncTestCase):
+    """runs.jsonl rides along the export/import payload (union-by-run_id)."""
+
+    def _args(self, **overrides):
+        ns = argparse.Namespace(lock_timeout=5.0, if_rev=None)
+        for k, v in overrides.items():
+            setattr(ns, k, v)
+        return ns
+
+    def _seed_run(self, run_id="aaaa", item="foo-bar"):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        dev_status.append_run_record(
+            {
+                "run_id": run_id,
+                "item": item,
+                "command": "pytest -q",
+                "exit_code": 0,
+                "timed_out": False,
+                "started_at": "2026-09-01T18:00:00+00:00",
+                "duration_s": 1.0,
+                "cwd": "/tmp",
+            }
+        )
+
+    def _read_runs(self):
+        return dev_status.load_runs()
+
+    def test_export_includes_runs(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._seed_run(run_id="local-one")
+
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            sync.cmd_export(self._args())
+        exported = sync._extract_framed_json(captured.getvalue())
+        self.assertEqual([r["run_id"] for r in exported["runs"]], ["local-one"])
+
+    def test_import_writes_merged_runs(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._seed_run(run_id="local-one")
+        payload = {
+            "protocol_version": sync.PROTOCOL_VERSION,
+            "schema_version": {"items": 2, "pending_items": 1},
+            "items": [],
+            "pending_items": [],
+            "runs": [
+                {
+                    "run_id": "remote-one",
+                    "item": "foo-bar",
+                    "command": "uv run pytest",
+                    "exit_code": 0,
+                    "timed_out": False,
+                    "started_at": "2026-09-01T19:00:00+00:00",
+                    "duration_s": 2.0,
+                    "cwd": "/home/other",
+                }
+            ],
+        }
+        nonce = "abcdef01"
+        framed = (
+            f"==={sync._FRAME_MARK}_START:{nonce}===\n"
+            f"{json.dumps(payload)}\n"
+            f"==={sync._FRAME_MARK}_END:{nonce}===\n"
+        )
+        with patch("sys.stdin", io.StringIO(framed)):
+            sync.cmd_import(self._args(if_rev=0))
+        run_ids = [r["run_id"] for r in self._read_runs()]
+        self.assertEqual(run_ids, ["local-one", "remote-one"])
+
+    def test_import_duplicate_run_id_not_duplicated(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._seed_run(run_id="local-one")
+        payload = {
+            "protocol_version": sync.PROTOCOL_VERSION,
+            "schema_version": {"items": 2, "pending_items": 1},
+            "items": [],
+            "pending_items": [],
+            "runs": [dict(self._read_runs()[0])],
+        }
+        nonce = "abcdef02"
+        framed = (
+            f"==={sync._FRAME_MARK}_START:{nonce}===\n"
+            f"{json.dumps(payload)}\n"
+            f"==={sync._FRAME_MARK}_END:{nonce}===\n"
+        )
+        with patch("sys.stdin", io.StringIO(framed)):
+            sync.cmd_import(self._args(if_rev=0))
+        self.assertEqual(len(self._read_runs()), 1)
+
+    def test_compute_sync_flags_runs_write_needs(self):
+        local_only = [{"run_id": "l", "item": "x"}]
+        remote_only = [{"run_id": "r", "item": "x"}]
+        result = sync.compute_sync(
+            None,
+            None,
+            [],
+            [],
+            [],
+            [],
+            local_runs=local_only,
+            remote_runs=remote_only,
+        )
+        self.assertEqual(result.merged_runs, local_only + remote_only)
+        self.assertTrue(result.needs_remote_runs_write)
+        self.assertTrue(result.needs_local_runs_write)
+
+        same = [{"run_id": "l", "item": "x"}]
+        result2 = sync.compute_sync(
+            None, None, [], [], [], [], local_runs=same, remote_runs=same
+        )
+        self.assertFalse(result2.needs_local_runs_write)
+        self.assertFalse(result2.needs_remote_runs_write)
+
+    def test_local_commit_writes_merged_runs(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._seed_run(run_id="local-one")
+        result = sync.SyncComputation(
+            merged_items=[],
+            merged_pending=[],
+            merged_runs=[
+                *self._read_runs(),
+                {"run_id": "remote-one", "item": "foo-bar"},
+            ],
+            needs_local_runs_write=True,
+        )
+        sync.local_commit({}, result, [], [], None, None)
+        run_ids = [r["run_id"] for r in self._read_runs()]
+        self.assertEqual(run_ids, ["local-one", "remote-one"])
 
 
 class ParserVerbosityTests(unittest.TestCase):

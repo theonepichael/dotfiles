@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -73,6 +74,7 @@ class BacklogTestCase(unittest.TestCase):
         self.meta_file = self.data_dir / "_meta.json"
         self.lock_file = self.data_dir / ".backlog.lock"
         self.journal_file = self.data_dir / "journal.jsonl"
+        self.runs_file = self.data_dir / "runs.jsonl"
         self.machine_id_file = self.data_dir / "_machine_id"
         self.recap_cache_file = self.data_dir / "recap-cache.json"
         self.recap_regen_lock_file = self.data_dir / "recap-regen.lock"
@@ -86,6 +88,7 @@ class BacklogTestCase(unittest.TestCase):
             patch.object(dev_status, "META_FILE", self.meta_file),
             patch.object(dev_status, "LOCK_FILE", self.lock_file),
             patch.object(dev_status, "JOURNAL_FILE", self.journal_file),
+            patch.object(dev_status, "RUNS_FILE", self.runs_file),
             patch.object(dev_status, "MACHINE_ID_FILE", self.machine_id_file),
             patch.object(dev_status, "RECAP_CACHE_FILE", self.recap_cache_file),
             patch.object(
@@ -2929,8 +2932,12 @@ class BacklogTestCase(unittest.TestCase):
             _args(id="gt-item", json='{"required": true, "criteria": ["check X"]}')
         )
         item = self._item_by_id("gt-item")
+        gate = item["gate"]
+        gate.pop(
+            "set_at", None
+        )  # stamped since evidence-gating; see RunEvidenceTestCase
         self.assertEqual(
-            item["gate"],
+            gate,
             {
                 "required": True,
                 "criteria": ["check X"],
@@ -3008,10 +3015,12 @@ class BacklogTestCase(unittest.TestCase):
                 )
             ]
         )
-        dev_status.cmd_gate_pass(_args(id="gt-item"))
+        dev_status.cmd_gate_pass(
+            _args(id="gt-item", json='{"coverage": {"1": "manual: verified by eye"}}')
+        )
         item = self._item_by_id("gt-item")
         self.assertIsNotNone(item["gate"]["passed_at"])
-        self.assertNotIn("passed", item["gate"])
+        self.assertEqual(item["gate"]["passed_via"], "manual")
 
     def test_41h_gate_pass_refuses_without_required_gate(self):
         for gate in (
@@ -3072,7 +3081,9 @@ class BacklogTestCase(unittest.TestCase):
                 )
             ]
         )
-        dev_status.cmd_gate_pass(_args(id="gt-item"))
+        dev_status.cmd_gate_pass(
+            _args(id="gt-item", json='{"coverage": {"1": "manual: verified by eye"}}')
+        )
         dev_status.cmd_done(_args(id="gt-item"))
         self.assertEqual(self._item_by_id("gt-item")["status"], "done")
 
@@ -3122,7 +3133,9 @@ class BacklogTestCase(unittest.TestCase):
             ]
         )
         dev_status.cmd_review(_args(id="gt-item"))
-        dev_status.cmd_gate_pass(_args(id="gt-item"))
+        dev_status.cmd_gate_pass(
+            _args(id="gt-item", json='{"coverage": {"1": "manual: verified by eye"}}')
+        )
         dev_status.cmd_approve(_args(id="gt-item"))
         self.assertEqual(self._item_by_id("gt-item")["status"], "done")
 
@@ -4904,6 +4917,551 @@ class ClaimMarkerAndWorktreeGuardTestCase(BacklogTestCase):
         self.assertEqual(slug1, "iron-lb-blocker")
         self.assertEqual(slug2, "meta-tooling")
         self.assertEqual(slug3, "iron-lb-ui")
+
+
+# ── gate-pass run evidence (runs.jsonl, run/runs subcommands) ─────────────────
+
+
+class RunEvidenceTestCase(BacklogTestCase):
+    """gate-pass must require recorded run evidence, not self-attestation.
+
+    Covers the ``runs.jsonl`` sidecar, the ``run``/``runs`` subcommands,
+    ``gate-set``'s ``set_at`` stamp, ``gate-pass``'s per-criterion coverage
+    payload, ``rename``'s run-row rewrite, and ``show``'s runs line.
+    """
+
+    RUN_ID_A = "aaaa1111aaaa1111aaaa1111aaaa1111"
+    RUN_ID_B = "bbbb2222bbbb2222bbbb2222bbbb2222"
+    RUN_ID_MISSING = "ffff9999ffff9999ffff9999ffff9999"
+
+    # ── fixtures ─────────────────────────────────────────────────────────
+
+    def _gate_item(self, criteria=("criterion one", "criterion two")):
+        self.write_items(
+            [
+                make_item(
+                    "gt-item",
+                    gate={
+                        "required": True,
+                        "criteria": list(criteria),
+                        "passed_at": None,
+                    },
+                )
+            ]
+        )
+
+    def _seed_run(
+        self,
+        run_id=RUN_ID_A,
+        item="gt-item",
+        exit_code=0,
+        timed_out=False,
+        started_at=None,
+        command="pytest -q",
+        duration_s=1.5,
+        cwd="/tmp",
+    ):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        row = {
+            "run_id": run_id,
+            "item": item,
+            "command": command,
+            "exit_code": exit_code,
+            "timed_out": timed_out,
+            "started_at": (started_at or datetime.now(UTC).isoformat()),
+            "duration_s": duration_s,
+            "cwd": cwd,
+        }
+        with open(self.runs_file, "a") as f:
+            f.write(json.dumps(row) + "\n")
+        return row
+
+    def _read_runs(self):
+        if not self.runs_file.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in self.runs_file.read_text().splitlines()
+            if line.strip()
+        ]
+
+    def _gate_pass_refused(self, json_arg=None):
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_gate_pass(_args(id="gt-item", json=json_arg))
+        self.assertEqual(cm.exception.code, 1)
+        return err.getvalue()
+
+    # ── gate-set: set_at stamping ───────────────────────────────────────
+
+    def test_gate_set_stamps_set_at(self):
+        self.write_items([make_item("gt-item")])
+        before = datetime.now(UTC)
+        dev_status.cmd_gate_set(
+            _args(id="gt-item", json='{"required": true, "criteria": ["c"]}')
+        )
+        gate = self._item_by_id("gt-item")["gate"]
+        self.assertIsNone(gate["passed_at"])
+        set_at = datetime.fromisoformat(gate["set_at"])
+        if set_at.tzinfo is None:
+            set_at = set_at.replace(tzinfo=UTC)
+        self.assertGreaterEqual(set_at, before.replace(microsecond=0))
+
+    # ── gate-pass: refusals ─────────────────────────────────────────────
+
+    def test_gate_pass_without_coverage_payload_refuses(self):
+        self._gate_item()
+        msg = self._gate_pass_refused(json_arg=None)
+        self.assertIn("coverage", msg)
+        self.assertIn("run:", msg)
+        self.assertIn("manual:", msg)
+        self.assertIsNone(self._item_by_id("gt-item")["gate"]["passed_at"])
+
+    def test_gate_pass_empty_coverage_refuses_naming_criteria(self):
+        self._gate_item()
+        msg = self._gate_pass_refused(json_arg='{"coverage": {}}')
+        self.assertIn("criterion 1", msg)
+        self.assertIn("criterion 2", msg)
+        self.assertIn("not covered", msg)
+        self.assertIn("no runs recorded", msg)
+
+    def test_gate_pass_unknown_run_id_refuses_and_lists_recent_runs(self):
+        self._gate_item()
+        self._seed_run(run_id=self.RUN_ID_A)
+        msg = self._gate_pass_refused(
+            json_arg='{"coverage": {"1": "run:%s"}}' % self.RUN_ID_MISSING
+        )
+        self.assertIn("unknown run id", msg)
+        self.assertIn(self.RUN_ID_MISSING, msg)
+        self.assertIn("recent runs", msg)
+        self.assertIn(self.RUN_ID_A, msg)
+
+    def test_gate_pass_failed_run_refuses(self):
+        self._gate_item()
+        self._seed_run(exit_code=2)
+        msg = self._gate_pass_refused(
+            json_arg='{"coverage": {"1": "run:%s"}}' % self.RUN_ID_A
+        )
+        self.assertIn("failed", msg)
+
+    def test_gate_pass_timed_out_run_refuses(self):
+        self._gate_item()
+        self._seed_run(exit_code=None, timed_out=True)
+        msg = self._gate_pass_refused(
+            json_arg='{"coverage": {"1": "run:%s"}}' % self.RUN_ID_A
+        )
+        self.assertIn("timed out", msg)
+
+    def test_gate_pass_stale_run_refuses(self):
+        self.write_items([make_item("gt-item")])
+        dev_status.cmd_gate_set(
+            _args(id="gt-item", json='{"required": true, "criteria": ["c"]}')
+        )
+        stale = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+        self._seed_run(started_at=stale)
+        msg = self._gate_pass_refused(
+            json_arg='{"coverage": {"1": "run:%s"}}' % self.RUN_ID_A
+        )
+        self.assertIn("stale", msg)
+
+    def test_gate_pass_out_of_range_criterion_index_refuses(self):
+        self._gate_item()
+        msg = self._gate_pass_refused(json_arg='{"coverage": {"3": "manual: ok"}}')
+        self.assertIn("3", msg)
+        self.assertIn("out of range", msg)
+
+    def test_gate_pass_empty_manual_note_refuses(self):
+        self._gate_item()
+        msg = self._gate_pass_refused(json_arg='{"coverage": {"1": "manual:   "}}')
+        self.assertIn("empty manual note", msg)
+
+    def test_gate_pass_bad_value_shape_refuses(self):
+        self._gate_item()
+        msg = self._gate_pass_refused(json_arg='{"coverage": {"1": "winged it"}}')
+        self.assertIn("run:", msg)
+        self.assertIn("manual:", msg)
+
+    def test_gate_pass_coverage_must_be_object_of_strings(self):
+        self._gate_item()
+        for bad in ('{"coverage": [1]}', '{"coverage": {"1": 3}}'):
+            msg = self._gate_pass_refused(json_arg=bad)
+            self.assertIn("coverage", msg)
+
+    # ── gate-pass: happy paths ──────────────────────────────────────────
+
+    def test_gate_pass_run_evidence_happy_path(self):
+        self._gate_item()
+        self._seed_run(run_id=self.RUN_ID_A)
+        dev_status.cmd_gate_pass(
+            _args(
+                id="gt-item",
+                json='{"coverage": {"1": "run:%s", "2": "run:%s"}}'
+                % (self.RUN_ID_A, self.RUN_ID_A),
+            )
+        )
+        gate = self._item_by_id("gt-item")["gate"]
+        self.assertIsNotNone(gate["passed_at"])
+        self.assertEqual(gate["passed_via"], "run-evidence")
+        self.assertEqual(gate["coverage"]["1"]["run_id"], self.RUN_ID_A)
+        self.assertEqual(gate["coverage"]["2"]["run_id"], self.RUN_ID_A)
+
+    def test_gate_pass_noncanonical_coverage_key_still_covers(self):
+        """Pre-fix, a validly-in-range but non-canonical key like "01"
+        passed every validation check and was stored in `covered` under
+        its raw form, but the final "not covered" pass matched on str(i)
+        ("1") -- so a genuinely-covered single criterion still refused
+        with "criterion 1: not covered" despite the cited run being valid."""
+        self._gate_item(criteria=("only criterion",))
+        self._seed_run(run_id=self.RUN_ID_A)
+        dev_status.cmd_gate_pass(
+            _args(id="gt-item", json='{"coverage": {"01": "run:%s"}}' % self.RUN_ID_A)
+        )
+        gate = self._item_by_id("gt-item")["gate"]
+        self.assertIsNotNone(gate["passed_at"])
+        self.assertIn("1", gate["coverage"])
+
+    def test_gate_pass_manual_only_records_manual(self):
+        self._gate_item()
+        dev_status.cmd_gate_pass(
+            _args(
+                id="gt-item",
+                json='{"coverage": {"1": "manual: saw it", "2": "manual: saw it too"}}',
+            )
+        )
+        gate = self._item_by_id("gt-item")["gate"]
+        self.assertEqual(gate["passed_via"], "manual")
+        self.assertEqual(gate["coverage"]["1"]["note"], "saw it")
+
+    def test_gate_pass_mixed_records_mixed(self):
+        self._gate_item()
+        self._seed_run(run_id=self.RUN_ID_A)
+        dev_status.cmd_gate_pass(
+            _args(
+                id="gt-item",
+                json='{"coverage": {"1": "run:%s", "2": "manual: eyeballed"}}'
+                % self.RUN_ID_A,
+            )
+        )
+        gate = self._item_by_id("gt-item")["gate"]
+        self.assertEqual(gate["passed_via"], "mixed")
+
+    def test_gate_pass_counts_run_for_other_item_as_unknown(self):
+        self._gate_item()
+        self._seed_run(run_id=self.RUN_ID_A, item="other-item")
+        msg = self._gate_pass_refused(
+            json_arg='{"coverage": {"1": "run:%s"}}' % self.RUN_ID_A
+        )
+        self.assertIn("unknown run id", msg)
+
+    # ── gate-set invalidation ───────────────────────────────────────────
+
+    def test_re_gate_set_orphans_older_run_evidence(self):
+        self.write_items([make_item("gt-item")])
+        dev_status.cmd_gate_set(
+            _args(id="gt-item", json='{"required": true, "criteria": ["c"]}')
+        )
+        self._seed_run(run_id=self.RUN_ID_A)
+        dev_status.cmd_gate_pass(
+            _args(id="gt-item", json='{"coverage": {"1": "run:%s"}}' % self.RUN_ID_A)
+        )
+        self.assertIsNotNone(self._item_by_id("gt-item")["gate"]["passed_at"])
+
+        # Re-classify: the audit trail stays, but the prior run no longer counts.
+        dev_status.cmd_gate_set(
+            _args(id="gt-item", json='{"required": true, "criteria": ["c2"]}')
+        )
+        self.assertIsNone(self._item_by_id("gt-item")["gate"]["passed_at"])
+        self.assertEqual(len(self._read_runs()), 1)
+        msg = self._gate_pass_refused(
+            json_arg='{"coverage": {"1": "run:%s"}}' % self.RUN_ID_A
+        )
+        self.assertIn("stale", msg)
+
+    def test_gate_pass_on_legacy_gate_without_set_at_counts_current_runs(self):
+        # Gates classified before set_at existed carry no lower bound — a
+        # fresh run still counts rather than demanding a gate-set re-run.
+        self._gate_item(("criterion one",))
+        self._seed_run(run_id=self.RUN_ID_A)
+        dev_status.cmd_gate_pass(
+            _args(id="gt-item", json='{"coverage": {"1": "run:%s"}}' % self.RUN_ID_A)
+        )
+        self.assertIsNotNone(self._item_by_id("gt-item")["gate"]["passed_at"])
+
+    # ── run subcommand ──────────────────────────────────────────────────
+
+    def test_run_records_successful_command(self):
+        self.write_items([make_item("gt-item")])
+        fake = MagicMock(return_value=MagicMock(returncode=0))
+        with patch("subprocess.run", fake) as m:
+            dev_status.cmd_run(
+                _args(id="gt-item", command=["pytest", "-q"], timeout=60)
+            )
+        m.assert_called_once()
+        self.assertEqual(m.call_args.args[0], ["pytest", "-q"])
+        self.assertEqual(m.call_args.kwargs["timeout"], 60)
+        runs = self._read_runs()
+        self.assertEqual(len(runs), 1)
+        row = runs[0]
+        self.assertEqual(row["item"], "gt-item")
+        self.assertEqual(row["command"], "pytest -q")
+        self.assertEqual(row["exit_code"], 0)
+        self.assertIs(row["timed_out"], False)
+        self.assertIsInstance(row["duration_s"], float)
+        self.assertEqual(row["cwd"], os.getcwd())
+        datetime.fromisoformat(row["started_at"])
+        self.assertRegex(row["run_id"], r"^[0-9a-f]{32}$")
+
+    def test_run_scrubs_devstatus_agent_from_the_child_environment(self):
+        """Found via live dogfooding, not a code-review guess: `DEVSTATUS_AGENT=1
+        dev_status.py run <item> -- uv run pytest -q` (a natural thing to type,
+        since CLAUDE.md has agents prefix DEVSTATUS_AGENT=1 on dev_status.py
+        mutating calls, and `run` needs --if-rev like every other one) leaked
+        the env var into the pytest subprocess and spuriously failed every
+        test asserting on the stderr echo DEVSTATUS_AGENT suppresses -- false
+        evidence for a command that was actually fine."""
+        self.write_items([make_item("gt-item")])
+        fake = MagicMock(return_value=MagicMock(returncode=0))
+        with (
+            patch("subprocess.run", fake),
+            patch.dict(os.environ, {"DEVSTATUS_AGENT": "1"}),
+        ):
+            dev_status.cmd_run(_args(id="gt-item", command=["true"], timeout=60))
+        child_env = fake.call_args.kwargs["env"]
+        self.assertNotIn("DEVSTATUS_AGENT", child_env)
+
+    def test_run_records_failing_command(self):
+        self.write_items([make_item("gt-item")])
+        with patch("subprocess.run", MagicMock(return_value=MagicMock(returncode=3))):
+            dev_status.cmd_run(_args(id="gt-item", command=["false"], timeout=60))
+        self.assertEqual(self._read_runs()[0]["exit_code"], 3)
+
+    def test_run_records_timeout_as_timed_out_evidence(self):
+        self.write_items([make_item("gt-item")])
+        err = io.StringIO()
+        with (
+            patch(
+                "subprocess.run",
+                MagicMock(
+                    side_effect=subprocess.TimeoutExpired(cmd=["x"], timeout=0.1)
+                ),
+            ),
+            patch("sys.stderr", err),
+        ):
+            dev_status.cmd_run(_args(id="gt-item", command=["hang"], timeout=0.1))
+        self.assertIn("timed out", err.getvalue())
+        row = self._read_runs()[0]
+        self.assertIs(row["timed_out"], True)
+        self.assertIsNone(row["exit_code"])
+
+    def test_run_refuses_unknown_item(self):
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_run(_args(id="no-such-item", command=["true"], timeout=60))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("not found", err.getvalue())
+
+    def test_run_refuses_empty_command(self):
+        self.write_items([make_item("gt-item")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as cm, patch("sys.stderr", err):
+            dev_status.cmd_run(_args(id="gt-item", command=[], timeout=60))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("no command", err.getvalue())
+
+    def test_run_append_failure_warns_but_does_not_crash(self):
+        self.write_items([make_item("gt-item")])
+        blocker = Path(self.tmpdir) / "blocker"
+        blocker.write_text("not a directory")
+        err = io.StringIO()
+        with (
+            patch.object(dev_status, "RUNS_FILE", blocker / "runs.jsonl"),
+            patch("subprocess.run", MagicMock(return_value=MagicMock(returncode=0))),
+            patch("sys.stderr", err),
+        ):
+            dev_status.cmd_run(_args(id="gt-item", command=["true"], timeout=60))
+        self.assertIn("append failed", err.getvalue())
+
+    def test_run_parser_remainder_keeps_embedded_flags(self):
+        args = dev_status.build_parser().parse_args(
+            ["run", "--timeout", "5", "gt-item", "--", "pytest", "--weird-flag"]
+        )
+        self.assertEqual(args.id, "gt-item")
+        self.assertEqual(args.timeout, 5)
+        # argparse's own "--" handling ends option parsing, so the
+        # separator itself never lands in args.command.
+        self.assertEqual(args.command, ["pytest", "--weird-flag"])
+
+    def test_run_parser_accepts_the_documented_timeout_after_id_order(self):
+        """`run <id> --timeout N -- <command>` is the order INTERFACES.md
+        documents and pi/extensions/dev-status-tool.ts's buildArgv actually
+        generates. Pre-fix, nargs=REMAINDER swallowed --timeout into the
+        command list the instant it started matching (a documented
+        REMAINDER quirk), silently leaving args.timeout at the 1800s
+        default and turning the executed argv into
+        ["--timeout","N","--",...] instead of the intended command."""
+        args = dev_status.build_parser().parse_args(
+            ["run", "gt-item", "--timeout", "60", "--", "pytest", "-q"]
+        )
+        self.assertEqual(args.timeout, 60)
+        self.assertEqual(args.command, ["pytest", "-q"])
+
+    def test_run_parser_accepts_quiet_flag_after_id(self):
+        """Same REMAINDER-ordering bug also swallowed -q/--quiet whenever
+        it followed the id positional."""
+        args = dev_status.build_parser().parse_args(
+            ["run", "gt-item", "-q", "--", "pytest", "-q"]
+        )
+        self.assertTrue(args.quiet)
+        self.assertEqual(args.command, ["pytest", "-q"])
+
+    def test_run_leaves_a_second_literal_leading_dashdash_in_the_command(self):
+        """cmd_run must not strip a second "--" the way it stripped the
+        first pre-fix -- argparse's native "--" handling already consumes
+        exactly one separator, so a manual re-strip would eat a command
+        that legitimately starts with its own literal "--"."""
+        args = dev_status.build_parser().parse_args(
+            ["run", "gt-item", "--", "--", "foo"]
+        )
+        self.assertEqual(args.command, ["--", "foo"])
+
+    def test_run_numeric_id_resolves_against_the_unified_pending_and_backlog_pool(
+        self,
+    ):
+        """Pre-fix, cmd_run resolved a numeric id against the backlog pool
+        alone (resolve_id(args.id, items, [])), so position 2 meant "the
+        2nd backlog item" instead of the 2nd dashboard row -- silently
+        wrong the moment any pending item exists, since render always
+        numbers pending items first."""
+        self.write_pending(
+            [
+                {
+                    "id": "pend-wait",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "waiting on someone",
+                    "kind": "email",
+                    "blocking": [],
+                    "related_files": [],
+                    "next_steps": [],
+                }
+            ]
+        )
+        self.write_items([make_item("item-a"), make_item("item-b")])
+        # Dashboard order: 1=pend-wait, 2=item-a, 3=item-b.
+        with patch("subprocess.run", MagicMock(return_value=MagicMock(returncode=0))):
+            dev_status.cmd_run(
+                _args(
+                    id="2", command=["true"], timeout=60, if_rev=dev_status.load_rev()
+                )
+            )
+        self.assertEqual(self._read_runs()[0]["item"], "item-a")
+
+    def test_run_refuses_a_pending_position(self):
+        self.write_pending(
+            [
+                {
+                    "id": "pend-wait",
+                    "created": "2026-01-01",
+                    "updated": "2026-01-01",
+                    "status": "waiting_for_reply",
+                    "description": "waiting on someone",
+                    "kind": "email",
+                    "blocking": [],
+                    "related_files": [],
+                    "next_steps": [],
+                }
+            ]
+        )
+        self.write_items([make_item("item-a")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_run(
+                _args(
+                    id="1", command=["true"], timeout=60, if_rev=dev_status.load_rev()
+                )
+            )
+        self.assertIn("pending", err.getvalue())
+
+    def test_run_stale_numeric_position_refuses_without_if_rev(self):
+        """Same staleness protection every other numeric-id mutating
+        command gets via enforce_rev_guard -- pre-fix, run had none, so a
+        numeric position computed from a stale dashboard could silently
+        record evidence against the wrong item."""
+        self.write_items([make_item("item-a"), make_item("item-b")])
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), patch("sys.stderr", err):
+            dev_status.cmd_run(_args(id="2", command=["true"], timeout=60, if_rev=None))
+        self.assertIn("if-rev", err.getvalue())
+
+    def test_run_append_failure_reports_not_recorded_not_success(self):
+        """Pre-fix, cmd_run printed "[run] recorded ..." unconditionally
+        even when append_run_record's own OSError path had already failed
+        -- misreporting a lost evidence row as saved."""
+        self.write_items([make_item("gt-item")])
+        blocker = Path(self.tmpdir) / "blocker2"
+        blocker.write_text("not a directory")
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            patch.object(dev_status, "RUNS_FILE", blocker / "runs.jsonl"),
+            patch("subprocess.run", MagicMock(return_value=MagicMock(returncode=0))),
+            patch("sys.stdout", out),
+            patch("sys.stderr", err),
+        ):
+            dev_status.cmd_run(_args(id="gt-item", command=["true"], timeout=60))
+        self.assertNotIn("recorded", out.getvalue())
+        self.assertIn("NOT recorded", err.getvalue())
+
+    # ── runs listing ────────────────────────────────────────────────────
+
+    def test_runs_lists_recorded_runs(self):
+        self.write_items([make_item("gt-item")])
+        self._seed_run(run_id=self.RUN_ID_A)
+        self._seed_run(run_id=self.RUN_ID_B, exit_code=2)
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.cmd_runs(_args(id="gt-item"))
+        text = out.getvalue()
+        self.assertIn("2 recorded run(s)", text)
+        self.assertIn(self.RUN_ID_A, text)
+        self.assertIn(self.RUN_ID_B, text)
+        self.assertIn("pytest -q", text)
+
+    def test_runs_no_runs_message(self):
+        self.write_items([make_item("gt-item")])
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.cmd_runs(_args(id="gt-item"))
+        self.assertIn("no runs recorded", out.getvalue())
+
+    # ── rename rewrites run rows ────────────────────────────────────────
+
+    def test_rename_rewrites_run_rows(self):
+        self.write_items([make_item("gt-item")])
+        self._seed_run(run_id=self.RUN_ID_A)
+        self._seed_run(run_id=self.RUN_ID_B, item="untouched-item")
+        dev_status.cmd_rename(_args(old_slug="gt-item", new_slug="gt-item-2"))
+        runs = {r["run_id"]: r for r in self._read_runs()}
+        self.assertEqual(runs[self.RUN_ID_A]["item"], "gt-item-2")
+        self.assertEqual(runs[self.RUN_ID_B]["item"], "untouched-item")
+
+    # ── show runs line ──────────────────────────────────────────────────
+
+    def test_show_prints_recent_runs_line(self):
+        self.write_items([make_item("gt-item")])
+        self._seed_run(run_id=self.RUN_ID_A)
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_show(_args(id="gt-item"))
+        self.assertIn("# runs:", err.getvalue())
+        self.assertIn(self.RUN_ID_A, err.getvalue())
+
+    def test_show_omits_runs_line_when_no_runs(self):
+        self.write_items([make_item("gt-item")])
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            dev_status.cmd_show(_args(id="gt-item"))
+        self.assertNotIn("# runs:", err.getvalue())
 
 
 # ── arg helper ────────────────────────────────────────────────────────────────

@@ -171,8 +171,11 @@ Call the tool with `action: "review", slug: "<resolved slug>"`, then
 `action: "approve", slug: "<resolved slug>"` — never a bare `done` on an
 in-review item. If `approve` refuses citing an unmet gate, actually check
 each criterion from `show`'s record against the diff — don't pass it
-reflexively — then call `action: "gate_pass", slug: "<resolved slug>"` and
-retry `approve`. Display the full dashboard text these return; don't just
+reflexively — then cover every criterion with evidence (`action: "run"`
+executes and records a command; `action: "gate_pass"` takes a `patch`
+`{"coverage": {"<N>": "run:<run_id>" or "manual:<note>"}}` and refuses
+until each criterion cites a recorded run or a manual note) and retry
+`approve`. Display the full dashboard text these return; don't just
 narrate a one-line confirmation. (Bash fallback, per step 1: the
 equivalent `dev_status.py` commands, same caveats.)
 

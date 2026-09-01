@@ -26,6 +26,8 @@ const ACTIONS = [
   "reject",
   "gate_set",
   "gate_pass",
+  "run",
+  "runs",
   "backfill_gate",
   "rename",
   "remove",
@@ -59,7 +61,9 @@ export type Field =
   | "claimedBy"
   | "refresh"
   | "backend"
-  | "reasonFile";
+  | "reasonFile"
+  | "command"
+  | "timeout";
 
 interface ActionFields {
   readonly allowed: readonly Field[];
@@ -82,7 +86,9 @@ const ACTION_FIELDS: Record<Action, ActionFields> = {
   approve: { allowed: ["slug"], required: ["slug"] },
   reject: { allowed: ["slug", "feedback"], required: ["slug", "feedback"] },
   gate_set: { allowed: ["slug", "patch"], required: ["slug", "patch"] },
-  gate_pass: { allowed: ["slug"], required: ["slug"] },
+  gate_pass: { allowed: ["slug", "patch"], required: ["slug"] },
+  run: { allowed: ["slug", "command", "timeout"], required: ["slug", "command"] },
+  runs: { allowed: ["slug"], required: ["slug"] },
   backfill_gate: { allowed: ["apply"], required: [] },
   rename: { allowed: ["slug", "secondarySlug"], required: ["slug", "secondarySlug"] },
   remove: { allowed: ["slug"], required: ["slug"] },
@@ -125,6 +131,7 @@ const MUTATING_ACTIONS: ReadonlySet<Action> = new Set([
   "reject",
   "gate_set",
   "gate_pass",
+  "run",
   "rename",
   "remove",
   "block",
@@ -152,6 +159,8 @@ export interface DevStatusParams {
   refresh?: boolean;
   backend?: string;
   reasonFile?: string;
+  command?: string[];
+  timeout?: number;
 }
 
 export function assertNotNumericIdentity(action: Action, params: DevStatusParams): void {
@@ -231,7 +240,17 @@ export function buildArgv(action: Action, params: DevStatusParams): string[] {
     case "gate_set":
       return ["gate-set", params.slug!, patchJson()];
     case "gate_pass":
-      return ["gate-pass", params.slug!];
+      return ["gate-pass", params.slug!, ...(params.patch ? [patchJson()] : [])];
+    case "run":
+      return [
+        "run",
+        params.slug!,
+        ...(params.timeout ? ["--timeout", String(params.timeout)] : []),
+        "--",
+        ...params.command!,
+      ];
+    case "runs":
+      return ["runs", params.slug!];
     case "backfill_gate":
       return ["backfill-gate", ...(params.apply ? ["--apply"] : [])];
     case "rename":
@@ -286,7 +305,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Read or mutate the personal backlog/pending store",
     promptGuidelines: [
       "Never invoke dev_status.py via bash, for any reason, including a plain read like listing pending items or checking status -- always use dev_status instead. This applies to every action, not just ones a slash command already told you to use dev_status for.",
-      "dev_status covers everything dev_status.py's CLI does: render, list, show, add, update, start, done, review, approve, reject, gate_set, gate_pass, backfill_gate, rename, remove, block, unblock, prune, recap, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.claude/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
+      "dev_status covers everything dev_status.py's CLI does: render, list, show, add, update, start, done, review, approve, reject, gate_set, gate_pass, run, runs, backfill_gate, rename, remove, block, unblock, prune, recap, pending_add, pending_update, pending_list, and the out_of_scope_* actions. If you're about to compose a `python3 ~/.claude/scripts/dev_status.py ...` bash command for any of these, use dev_status with the matching action instead.",
       "dev_status's patch field is a plain object, not a JSON string -- never hand-encode it.",
       'dev_status refuses a numeric slug on any mutating action -- call action: "show" first to resolve a numeric position to its real slug.',
       "start refuses to run from a main/master checkout (worktree guard) or when the item is actively claimed by another live session (claim collision) -- pass allowMain or force respectively to override, or claimedBy to correct a wrong auto-detected harness name.",
@@ -311,7 +330,8 @@ export default function (pi: ExtensionAPI) {
             "JSON patch body for update/gate_set/pending_update, or the new-item body for add/pending_add " +
             "(id goes inside patch, e.g. patch.id -- never also pass slug for those two actions). Common keys: " +
             "summary, context, next_steps, priority, category, status, related_files (array of {path, note}), " +
-            "blocked_by (array of slugs); gate_set wants {required: boolean, criteria: string[]}; pending_add " +
+            "blocked_by (array of slugs); gate_set wants {required: boolean, criteria: string[]}; gate_pass " +
+            'wants {coverage: {"<criterion#>": "run:<run_id>" or "manual:<note>"}}; pending_add ' +
             "wants {id, description, kind, source_ref?, context?, next_steps?}.",
         }),
       ),
@@ -343,6 +363,18 @@ export default function (pi: ExtensionAPI) {
       backend: Type.Optional(Type.String({ description: "recap: force this backend." })),
       reasonFile: Type.Optional(
         Type.String({ description: "out_of_scope_add: path to a file with the rejection reason." }),
+      ),
+      command: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            "run: argv to execute and record as evidence -- pre-tokenized, executed " +
+            'without a shell (e.g. ["pytest", "-q"]).',
+        }),
+      ),
+      timeout: Type.Optional(
+        Type.Number({
+          description: "run: kill the command after this many seconds (default 1800).",
+        }),
       ),
     }),
     async execute(_toolCallId, params, signal) {
