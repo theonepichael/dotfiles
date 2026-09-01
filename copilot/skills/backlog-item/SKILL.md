@@ -37,7 +37,7 @@ resolves correctly; a fresh Copilot session's ambient cwd is not guaranteed
 to be the repo root.
 
 ## 2. Start
-If not already in-progress: `dev_status.py start <slug|N>` (`--if-rev <N>` for numeric ids).
+If not already in-progress: `dev_status.py start <slug|N>` (`--if-rev <N>` for numeric ids). On a main/master checkout, `start` now refuses (worktree guard) — do step 3 first, then run `start` from inside the fresh worktree.
 
 ## 3. Branch
 related_files names exactly one project repo → worktree it per the shared instructions file's Git section: `git -C <repo> worktree add ../<repo-name>-<slug> -b <slug>`. Reuse a worktree this session already made for this item instead of a second one. Multiple repos, or none: ask which repo — never guess.

@@ -5,6 +5,26 @@ harness CLIs, flags, or behavior get an entry going forward.
 
 ## 2026-08-31
 
+### Added
+
+- **`dev_status.py start` gains claim markers and a worktree guard.** A
+  `claimed_by` field (harness, machine id, PID, `claimed_at`/`last_active`
+  timestamps) is stamped on an item when it goes `in-progress`, and cleared
+  when it leaves that status. `start` now refuses to hand out an already-
+  actively-claimed item to a second live session (exit 1, unless `--force`/
+  `-f`); a dead PID or a claim idle past `DEVSTATUS_CLAIM_TTL_SECONDS`
+  (default 2h) is taken over automatically. `start` also refuses to run from
+  a main/master checkout of a git repository — the worktree-first policy in
+  `claude/global-instructions.md` was previously convention-only — unless
+  `--allow-main`/`--no-worktree-check` is passed. New `--claimed-by` flag
+  overrides harness auto-detection (`DEVSTATUS_HARNESS` env var, or
+  per-harness env var sniffing: `CLAUDE_CODE`/`ANTHROPIC_CLI`, `PI_SESSION`/
+  `PI_CODING_AGENT`, `AGY_SESSION`/`ANTIGRAVITY`, `OPENCODE`/
+  `OPENCODE_GATEWAY`, `COPILOT`/`GITHUB_COPILOT`). The dashboard's IN
+  PROGRESS section now shows the claiming harness in brackets next to each
+  item. `INTERFACES.md` and `claude/global-instructions.md` updated to
+  match; see `claude/scripts/test_dev_status.py` for the new coverage.
+
 ### Fixed
 
 - **Reverted yesterday's opencode "correction", which was itself wrong.**

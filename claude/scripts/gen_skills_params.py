@@ -403,7 +403,9 @@ implemented, uncommitted changes (e.g. handed back from an external
 executor)? Skip straight to step 9.""",
         "STEP2_BODY": (
             "If not already in-progress: `dev_status.py start <slug|N>` "
-            "(`--if-rev <N>` for numeric ids)."
+            "(`--if-rev <N>` for numeric ids). On a main/master checkout, "
+            "`start` now refuses (worktree guard) — do step 3 first, then run "
+            "`start` from inside the fresh worktree."
         ),
         "STEP5_BODY": """\
 Delegate to the `spec` skill (Skill tool) with the item's context/next_steps
@@ -532,7 +534,9 @@ resolves correctly; a fresh Copilot session's ambient cwd is not guaranteed
 to be the repo root.""",
         "STEP2_BODY": (
             "If not already in-progress: `dev_status.py start <slug|N>` "
-            "(`--if-rev <N>` for numeric ids)."
+            "(`--if-rev <N>` for numeric ids). On a main/master checkout, "
+            "`start` now refuses (worktree guard) — do step 3 first, then run "
+            "`start` from inside the fresh worktree."
         ),
         "STEP5_BODY": """\
 Now use the `spec` skill with the item's context/next_steps as the task.
@@ -702,7 +706,9 @@ implemented, uncommitted changes (e.g. handed back from an external
 executor)? Skip straight to step 9.""",
         "STEP2_BODY": (
             "If not already in-progress: `dev_status.py start $ARGUMENTS` "
-            "(`--if-rev <N>` for numeric ids)."
+            "(`--if-rev <N>` for numeric ids). On a main/master checkout, "
+            "`start` now refuses (worktree guard) — do step 3 first, then run "
+            "`start` from inside the fresh worktree."
         ),
         "STEP5_BODY": """\
 Load the `spec` skill via opencode's native skill tool
@@ -822,7 +828,9 @@ backlog-item at step N" (a return pointer left by an earlier suspend, see
 step 5–6)? That step N is where to resume, not step 1's normal dispatch.""",
         "STEP2_BODY": (
             "If not already in-progress: `dev_status.py start <slug|N>` "
-            "(`--if-rev <N>` for numeric ids)."
+            "(`--if-rev <N>` for numeric ids). On a main/master checkout, "
+            "`start` now refuses (worktree guard) — do step 3 first, then run "
+            "`start` from inside the fresh worktree."
         ),
         "STEP5_BODY": """\
 Delegate to the spec skill with the item's context/next_steps as the task.
@@ -992,7 +1000,10 @@ current rev for `--if-rev` (CLAUDE.md's Backlog section).""",
         "STEP2_BODY": (
             "If not already in-progress: call the `dev_status` tool with "
             '`action: "start", slug: "<resolved slug>"` (or the bash fallback '
-            "named in step 1)."
+            "named in step 1). On a main/master checkout, `start` now refuses "
+            "(worktree guard), and the typed tool has no `--allow-main` "
+            "escape hatch — do step 3 first, then run `start` from inside the "
+            "fresh worktree."
         ),
         "STEP5_BODY": """\
 Load the `spec` skill via `/skill:spec` with the item's context/next_steps
