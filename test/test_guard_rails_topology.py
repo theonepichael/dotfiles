@@ -129,8 +129,14 @@ def test_submodule_resolves_to_its_own_repository(
     identity, not folded into the superproject's."""
     inner = _init_repo(tmp_path / "inner")
     _git(
-        "-c", "protocol.file.allow=always", "submodule", "add", "-q",
-        str(inner), "sub", cwd=main_checkout,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        str(inner),
+        "sub",
+        cwd=main_checkout,
     )
     sub = main_checkout / "sub"
     assert guard_rails.common_dir_of(str(sub)) != guard_rails.common_dir_of(
@@ -161,9 +167,7 @@ def test_busy_main_checkout_denies_end_to_end(
     ]
     monkeypatch.setattr(guard_rails, "load_in_progress", lambda: items)
     verdict = guard_rails.evaluate(
-        guard_rails.Request(
-            "write", str(main_checkout), str(main_checkout / "f.txt")
-        )
+        guard_rails.Request("write", str(main_checkout), str(main_checkout / "f.txt"))
     )
     assert verdict.decision == "deny"
     assert "demo-slug" in verdict.reason
@@ -178,7 +182,7 @@ def test_busy_main_checkout_denies_end_to_end(
 def test_no_matching_item_allows_the_main_checkout_edit(
     main_checkout: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(guard_rails, "load_in_progress", lambda: [])
+    monkeypatch.setattr(guard_rails, "load_in_progress", list)
     verdict = guard_rails.evaluate(
         guard_rails.Request("write", str(main_checkout), str(main_checkout / "f.txt"))
     )
@@ -193,7 +197,8 @@ def test_stale_worktree_base_warns_and_never_denies(
     clone = tmp_path / "clone"
     subprocess.run(
         ["git", "clone", "-q", str(main_checkout), str(clone)],
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
     _git("config", "user.email", "t@example.invalid", cwd=clone)
     _git("config", "user.name", "t", cwd=clone)
@@ -213,13 +218,12 @@ def test_stale_worktree_base_warns_and_never_denies(
     assert "origin/main" in verdict.reason
 
 
-def test_up_to_date_worktree_does_not_warn(
-    main_checkout: Path, tmp_path: Path
-) -> None:
+def test_up_to_date_worktree_does_not_warn(main_checkout: Path, tmp_path: Path) -> None:
     clone = tmp_path / "clone2"
     subprocess.run(
         ["git", "clone", "-q", str(main_checkout), str(clone)],
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
     wt = tmp_path / "clone2-feature"
     _git("worktree", "add", "-q", str(wt), "-b", "feature", cwd=clone)
@@ -252,3 +256,137 @@ def test_escape_hatch_allows_a_busy_main_checkout(
         guard_rails.Request("write", str(main_checkout), str(main_checkout / "f.txt"))
     )
     assert verdict.decision == "allow"
+
+
+# ── bash-family override check, against real repos ────────────────────────
+
+
+def test_bash_override_denies_no_verify_on_main(main_checkout: Path) -> None:
+    verdict = guard_rails.evaluate_bash_override(
+        "git commit --no-verify -m x", str(main_checkout)
+    )
+    assert verdict.decision == "deny"
+
+
+def test_bash_override_allows_no_verify_on_a_feature_branch(worktree: Path) -> None:
+    verdict = guard_rails.evaluate_bash_override(
+        "git commit --no-verify -m x", str(worktree)
+    )
+    assert verdict.decision == "allow"
+
+
+def test_bash_override_allows_short_n_alias_on_main(main_checkout: Path) -> None:
+    verdict = guard_rails.evaluate_bash_override(
+        "git commit -n -m x", str(main_checkout)
+    )
+    assert verdict.decision == "allow"
+
+
+def test_bash_override_denies_hookspath_unset_on_main(main_checkout: Path) -> None:
+    verdict = guard_rails.evaluate_bash_override(
+        "git config --unset core.hooksPath", str(main_checkout)
+    )
+    assert verdict.decision == "deny"
+
+
+def test_bash_override_allows_hookspath_read_on_main(main_checkout: Path) -> None:
+    verdict = guard_rails.evaluate_bash_override(
+        "git config --get core.hooksPath", str(main_checkout)
+    )
+    assert verdict.decision == "allow"
+
+
+def test_bash_override_allows_chained_hookspath_read_on_main(
+    main_checkout: Path,
+) -> None:
+    verdict = guard_rails.evaluate_bash_override(
+        "git config core.hooksPath || echo unset", str(main_checkout)
+    )
+    assert verdict.decision == "allow"
+
+
+def test_bash_override_allows_on_detached_head(main_checkout: Path) -> None:
+    _git("checkout", "-q", "--detach", cwd=main_checkout)
+    verdict = guard_rails.evaluate_bash_override(
+        "git config --unset core.hooksPath", str(main_checkout)
+    )
+    assert verdict.decision == "allow"
+
+
+# ── the shipped git hook itself, against real commits ──────────────────────
+
+
+def _install_global_hook(repo: Path) -> None:
+    hooks_global = REPO_ROOT / "githooks-global"
+    _git("config", "--local", "core.hooksPath", str(hooks_global), cwd=repo)
+
+
+def test_hook_allows_the_very_first_commit_on_unborn_main(tmp_path: Path) -> None:
+    repo = tmp_path / "fresh"
+    repo.mkdir()
+    _git("init", "-q", "-b", "main", ".", cwd=repo)
+    _git("config", "user.email", "t@example.invalid", cwd=repo)
+    _git("config", "user.name", "t", cwd=repo)
+    _install_global_hook(repo)
+    (repo / "f.txt").write_text("a\n")
+    _git("add", "f.txt", cwd=repo)
+    _git("commit", "-q", "-m", "init", cwd=repo)  # must not raise (check=True)
+
+
+def test_hook_blocks_a_second_direct_commit_on_main(main_checkout: Path) -> None:
+    _install_global_hook(main_checkout)
+    (main_checkout / "f.txt").write_text("b\n")
+    _git("add", "f.txt", cwd=main_checkout)
+    result = subprocess.run(
+        ["git", "commit", "-q", "-m", "second"],
+        cwd=main_checkout,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "blocked" in result.stderr
+
+
+def test_hook_allows_a_commit_on_a_feature_branch(worktree: Path) -> None:
+    _install_global_hook(worktree)
+    (worktree / "f.txt").write_text("c\n")
+    _git("add", "f.txt", cwd=worktree)
+    _git("commit", "-q", "-m", "feature commit", cwd=worktree)  # must not raise
+
+
+def test_hook_allows_a_commit_from_detached_head(main_checkout: Path) -> None:
+    _install_global_hook(main_checkout)
+    _git("checkout", "-q", "--detach", cwd=main_checkout)
+    (main_checkout / "f.txt").write_text("d\n")
+    _git("add", "f.txt", cwd=main_checkout)
+    _git("commit", "-q", "-m", "detached commit", cwd=main_checkout)  # must not raise
+
+
+def test_repo_local_override_hook_still_runs_its_own_checks(
+    main_checkout: Path,
+) -> None:
+    """A repo with its own local core.hooksPath override (like this dotfiles
+    checkout's githooks/) picks up the branch check by direct addition, not
+    by chaining to the global hook -- so a repo that has never pointed at
+    githooks-global must still be protected once its own local hook sources
+    the shared lib directly."""
+    lib = REPO_ROOT / "githooks-global" / "lib" / "no-commit-on-main.sh"
+    local_hooks = main_checkout / "myhooks"
+    local_hooks.mkdir()
+    (local_hooks / "pre-commit").write_text(
+        f'#!/usr/bin/env bash\nset -uo pipefail\nsource "{lib}"\n'
+        "refuse_if_protected_branch || exit $?\n"
+    )
+    (local_hooks / "pre-commit").chmod(0o755)
+    _git("config", "--local", "core.hooksPath", str(local_hooks), cwd=main_checkout)
+
+    (main_checkout / "f.txt").write_text("e\n")
+    _git("add", "f.txt", cwd=main_checkout)
+    result = subprocess.run(
+        ["git", "commit", "-q", "-m", "should be blocked"],
+        cwd=main_checkout,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "blocked" in result.stderr

@@ -127,6 +127,8 @@ def offline_install(monkeypatch):
         "install_node",
         "capture_service_baseline",
         "enable_managed_services",
+        "capture_git_hooks_path_baseline",
+        "install_global_git_hooks_path",
         "load_watchcommit_agent",
         "import_rectangle_prefs",
         "set_caps_lock_to_escape",
@@ -3989,6 +3991,8 @@ def test_depart_disables_both_managed_services_and_restores_linger(
         "set_caps_lock_to_escape",
         "install_vim_plug",
         "bootstrap_neovim",
+        "capture_git_hooks_path_baseline",
+        "install_global_git_hooks_path",
     ):
         monkeypatch.setattr(install, name, lambda *a, **k: None)
     monkeypatch.setattr(install, "install_npm_harness", lambda *a, **k: None)
@@ -4038,6 +4042,8 @@ def test_depart_preserves_linger_when_other_units_depend_on_it(
         "set_caps_lock_to_escape",
         "install_vim_plug",
         "bootstrap_neovim",
+        "capture_git_hooks_path_baseline",
+        "install_global_git_hooks_path",
     ):
         monkeypatch.setattr(install, name, lambda *a, **k: None)
     monkeypatch.setattr(install, "install_npm_harness", lambda *a, **k: None)
@@ -4100,6 +4106,8 @@ def test_reconcile_linger_self_heals_on_a_later_depart_after_a_transient_failure
         "set_caps_lock_to_escape",
         "install_vim_plug",
         "bootstrap_neovim",
+        "capture_git_hooks_path_baseline",
+        "install_global_git_hooks_path",
     ):
         monkeypatch.setattr(install, name, lambda *a, **k: None)
     monkeypatch.setattr(install, "install_npm_harness", lambda *a, **k: None)

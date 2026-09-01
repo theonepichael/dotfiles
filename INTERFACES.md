@@ -44,7 +44,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`gen_skills.py`](#claudescriptsgenskillspy) | gen_skills.py — regenerate the dashboard/grill-me/backlog-item/make-skill/ spec/standup/to-tickets skill copies from one template per skill, plus a shared per-harness capability table. dashboard/grill-me/backlog-item/ make-skill cover all 5 harnesses (claude, copilot, opencode, agy, pi); spec/standup/to-tickets cover only claude/opencode/pi — see `SKILL_HARNESSES` below and AGENTS.md's "Harness maintenance tiers" section for why copilot/agy stop getting new generated skills. |
 | [`gen_skills_params.py`](#claudescriptsgenskillsparamspy) | gen_skills_params.py — per-(skill, harness) content tables for gen_skills.py. |
 | [`grill.py`](#claudescriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
-| [`guard_rails.py`](#claudescriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, and warn when the current worktree's base has fallen behind ``origin/main``. |
+| [`guard_rails.py`](#claudescriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main``, and (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``). |
 | [`harness_discovery_check.py`](#claudescriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md. |
 | [`llm_backends.py`](#claudescriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
 | [`notify.py`](#claudescriptsnotifypy) | Cross-platform agent notification dispatcher. |
@@ -592,7 +592,7 @@ grill.py — grill-me session state CLI. All session mutations go through here.
 
 ### `claude/scripts/guard_rails.py`
 
-Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, and warn when the current worktree's base has fallen behind ``origin/main``.
+Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main``, and (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``).
 
 - Installed at: `~/.claude/scripts/guard_rails.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
@@ -600,7 +600,8 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `--harness` — read this harness's payload on stdin and answer in its shape (choices: claude, agy, copilot)
   - `--tool` — tool name, for the neutral form
   - `--cwd` — session working directory, for the neutral form
-  - `--path` — target file path, for the neutral form
+  - `--path` — target file path, for the neutral write-family form
+  - `--command` — shell command, for the neutral bash-family form
   - `--quiet/-q`
   - `--verbose/-v`
 - Environment: `GUARD_RAILS_OFF`, `GUARD_RAILS_STORE`
@@ -608,7 +609,7 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `DEFAULT_BACKLOG_ITEMS = Path.home() / '.claude' / 'data' / 'backlog' / 'items.json'`
 - Depends on: `cli_common.py`
 - Public classes:
-  - `class Request` — A normalized tool call: what family, from where, against which path.
+  - `class Request` — A normalized tool call: what family, from where, against which path (write-family) or command (bash-family).
   - `class Verdict`
   - `class RepoInfo`
 - Public functions:
@@ -618,7 +619,8 @@ Pre-tool guard shared by every harness: refuse a write into a repository's main 
   - `repo_info(directory: str) -> RepoInfo | None` — Classify a directory: which repo, worktree or main checkout, bare or not, and on which branch.
   - `backlog_items_path() -> Path` — Where the backlog store lives.
   - `load_in_progress() -> list[dict] | None` — In-progress backlog items, or None when the store cannot be read.
-  - `evaluate(req: Request) -> Verdict` — Apply R2 then R3.
+  - `evaluate_bash_override(command: str, cwd: str) -> Verdict` — Deny the git-native ways to defeat the no-commit-on-main git hook, on a protected branch only -- see the module docstring.
+  - `evaluate(req: Request) -> Verdict` — Apply R2 then R3 to write-family calls, and the bash-family override check to Bash calls.
   - `parse_payload(harness: str, payload: object) -> Request | None` — Normalize a harness's native hook payload.
   - `render(harness: str | None, verdict: Verdict) -> tuple[str, int]` — Shape a verdict into the harness's own reply.
   - `build_parser() -> argparse.ArgumentParser`
@@ -1117,6 +1119,8 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `--report-uninstalled`
   - `-h/--help`
 - Environment: `LOGNAME`, `NO_COLOR`, `PATH`, `TERM`, `USER`, `WSL_DISTRO_NAME`
+- Filesystem constants:
+  - `GLOBAL_GIT_HOOKS_PATH_KEY = 'core.hooksPath'`
 - Explicit exit codes: `0`, `2`
 - Public classes:
   - `class Palette` — ANSI colorizer that no-ops when color isn't appropriate.
@@ -1159,6 +1163,8 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `seed_opencode_config(ctx: Context) -> tuple[str, str]` — Seed ~/.config/opencode/opencode.jsonc, if opencode was selected.
   - `capture_service_baseline(ctx: Context) -> None` — Capture every managed service's service/linger state, immediately before :func:`enable_managed_services` runs — capturing any later would record the post-install enabled state as baseline and departure would never disable anything.
   - `enable_managed_services(ctx: Context) -> None` — Enable and start every managed systemd --user unit (Linux, non-work).
+  - `capture_git_hooks_path_baseline(ctx: Context) -> None` — Capture the pre-existing global ``core.hooksPath``, immediately before :func:`install_global_git_hooks_path` runs -- capturing any later would record dotfiles' own already-set value as if it were the original, which would make departure "restore" dotfiles' own path instead of the true pre-dotfiles value.
+  - `install_global_git_hooks_path(ctx: Context) -> None` — Point global ``core.hooksPath`` at ``githooks-global/``, so every repo without its own local override picks up the no-commit-on-main hook.
   - `load_watchcommit_agent(ctx: Context) -> None` — (Re)load watchcommit's launchd agent (macOS, non-work).
   - `import_rectangle_prefs(ctx: Context) -> None` — Import the repo's Rectangle window-manager preferences.
   - `set_caps_lock_to_escape(ctx: Context) -> None` — Remap Caps Lock to Escape by rewriting the ByHost GlobalPreferences plist.
@@ -1174,6 +1180,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `build_preflight_report(ctx: Context) -> dict[str, depart.Classification] | None` — Classify every tracked ownership key, or None if there's no baseline.
   - `build_package_preflight(ctx: Context) -> list[depart.PackageClassification] | None` — Classify every requested/introduced package, or None if there's no baseline.
   - `execute_service_phase(ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> None` — Disable+stop every owned managed service, then reconcile linger once.
+  - `execute_gitconfig_phase(ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger) -> None` — Restore the pre-dotfiles global core.hooksPath value, if this installer owns the current value.
   - `execute_file_symlink_phase(ctx: Context, baseline: depart.Baseline, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Execute every owned ``file:``/``symlink:`` action, in pinned order.
   - `execute_directory_phase(ctx: Context, baseline: depart.Baseline, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Execute every owned ``directory:`` action, deepest-path-first.
   - `execute_runtime_phase(ctx: Context, report: dict[str, depart.Classification], ledger: depart.DepartureLedger) -> None` — Remove the NVM root wholesale, if owned and not already done.
@@ -1207,6 +1214,7 @@ Pristine-state departure mode: baseline capture and ownership tracking.
   - `package_key(manager: str, name: str) -> str`
   - `service_key(manager: str, name: str) -> str`
   - `runtime_key(root: Path) -> str`
+  - `gitconfig_key(name: str) -> str`
   - `key_type(key: str) -> str` — Return the ``type`` half of an ownership key string.
   - `capture_file(path: Path, *, blob_dir: Path | None = None) -> dict[str, object]` — Capture a ``file:`` record: present (with size+sha256), absent, or unknown.
   - `capture_symlink(path: Path) -> dict[str, object]` — Capture a ``symlink:`` record: present (with target text), absent, unknown.
@@ -1263,6 +1271,8 @@ Pristine-state departure mode: baseline capture and ownership tracking.
   - `classify_package_transactions(baseline: Baseline, live_snapshots: dict[str, dict[str, str] | None]) -> list[PackageClassification]` — Classify every requested/introduced package, in departure removal order.
   - `build_service_record(*, enabled: bool | None, active: bool | None, linger: bool | None) -> dict[str, object]` — Build a ``service:`` record from already-probed values.
   - `classify_service(recorded: dict[str, object] | None, live: dict[str, object]) -> Classification` — Classify the watchcommit service/linger key.
+  - `build_gitconfig_record(value: str | None) -> dict[str, object]` — Build a ``gitconfig:`` record from an already-read global config value.
+  - `classify_gitconfig(recorded: dict[str, object] | None, live: dict[str, object], managed_value: str) -> Classification` — Classify a single global git config key this installer manages.
 - Tested by: `test/test_depart.py`, `test/test_depart_transactions.py`, `test/test_install.py`
 
 ---

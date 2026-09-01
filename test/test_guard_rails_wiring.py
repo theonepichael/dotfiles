@@ -25,11 +25,7 @@ def _links() -> list[dict]:
 def test_claude_seeds_declare_a_pretooluse_guard(seed: str) -> None:
     hooks = json.loads((REPO_ROOT / seed).read_text())["hooks"]
     assert "PreToolUse" in hooks, f"{seed} has no PreToolUse block"
-    commands = [
-        h["command"]
-        for group in hooks["PreToolUse"]
-        for h in group["hooks"]
-    ]
+    commands = [h["command"] for group in hooks["PreToolUse"] for h in group["hooks"]]
     assert any(SCRIPT in c for c in commands), commands
     matchers = [group.get("matcher", "") for group in hooks["PreToolUse"]]
     assert any("Write" in m and "Edit" in m for m in matchers), matchers
@@ -37,11 +33,7 @@ def test_claude_seeds_declare_a_pretooluse_guard(seed: str) -> None:
 
 def test_agy_declares_a_pretooluse_guard() -> None:
     d = json.loads((REPO_ROOT / "agy/hooks.json").read_text())
-    groups = [
-        g
-        for hookset in d.values()
-        for g in hookset.get("PreToolUse", [])
-    ]
+    groups = [g for hookset in d.values() for g in hookset.get("PreToolUse", [])]
     assert groups, "agy/hooks.json has no PreToolUse group"
     commands = [h["command"] for g in groups for h in g["hooks"]]
     assert any(SCRIPT in c for c in commands), commands
@@ -102,7 +94,15 @@ def test_the_guard_script_is_stdlib_only() -> None:
         if line.startswith("import ") or line.startswith("from ")
     ]
     allowed = {
-        "argparse", "json", "os", "subprocess", "sys",
-        "dataclasses", "pathlib", "cli_common",
+        "argparse",
+        "json",
+        "os",
+        "re",
+        "shlex",
+        "subprocess",
+        "sys",
+        "dataclasses",
+        "pathlib",
+        "cli_common",
     }
     assert set(imports) <= allowed, set(imports) - allowed

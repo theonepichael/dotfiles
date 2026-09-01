@@ -2731,6 +2731,73 @@ def enable_managed_services(ctx: Context) -> None:
         _enable_service(ctx, service)
 
 
+GLOBAL_GIT_HOOKS_PATH_KEY = "core.hooksPath"
+
+
+def _global_git_hooks_path() -> str | None:
+    """Read the current global ``core.hooksPath``, or None if unset."""
+    result = run_command(
+        ["git", "config", "--global", "--get", GLOBAL_GIT_HOOKS_PATH_KEY], capture=True
+    )
+    value = result.stdout.strip() if result.ok else ""
+    return value or None
+
+
+def _managed_git_hooks_path(ctx: Context) -> str:
+    """The value :func:`install_global_git_hooks_path` sets/expects."""
+    return str(ctx.dotfiles / "githooks-global")
+
+
+def capture_git_hooks_path_baseline(ctx: Context) -> None:
+    """Capture the pre-existing global ``core.hooksPath``, immediately
+    before :func:`install_global_git_hooks_path` runs -- capturing any later
+    would record dotfiles' own already-set value as if it were the original,
+    which would make departure "restore" dotfiles' own path instead of the
+    true pre-dotfiles value. ``Baseline.add_layer``'s own is-unrecorded rule
+    already makes this capture-once by construction: a second install run
+    finds the key already recorded in layer 1 and skips it, the same way
+    :func:`capture_service_baseline` relies on for services -- a scalar
+    config value needs no extra guard beyond that.
+    """
+    if ctx.opts.dry_run or ctx.opts.profile == "work" or ctx.departure_baseline is None:
+        return
+    stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    layer = {
+        depart.gitconfig_key(GLOBAL_GIT_HOOKS_PATH_KEY): depart.build_gitconfig_record(
+            _global_git_hooks_path()
+        )
+    }
+    ctx.departure_baseline.add_layer(stamp, layer)
+
+
+def install_global_git_hooks_path(ctx: Context) -> None:
+    """Point global ``core.hooksPath`` at ``githooks-global/``, so every repo
+    without its own local override picks up the no-commit-on-main hook.
+
+    Skipped entirely on a work-profile machine (spec constraint: this must
+    not apply to every repo on a work machine). This dotfiles checkout's own
+    local ``githooks/pre-commit`` hook is unaffected either way -- git's
+    config precedence lets a repo-local ``core.hooksPath`` override the
+    global value, so the local hook (which gets the same branch check added
+    directly) keeps running regardless of whether this global install ran.
+    """
+    if ctx.opts.profile == "work":
+        return
+    target = _managed_git_hooks_path(ctx)
+    if ctx.opts.dry_run:
+        _preview(
+            f"would set global git core.hooksPath to {target}", quiet=ctx.opts.quiet
+        )
+        return
+    if _global_git_hooks_path() == target:
+        return  # already set -- idempotent
+    _header("==> Setting global git core.hooksPath...", quiet=ctx.opts.quiet)
+    if not run_command(
+        ["git", "config", "--global", GLOBAL_GIT_HOOKS_PATH_KEY, target]
+    ).ok:
+        ctx.reporter.skip("global git core.hooksPath", "git config --global failed")
+
+
 def _current_user() -> str:
     """Return the invoking user's name, for loginctl."""
     return os.environ.get("USER") or os.environ.get("LOGNAME") or ""
@@ -3609,7 +3676,7 @@ def _recapture_departure_live_state(
     return {
         key: _recapture_live_value(ctx, key)
         for key in baseline.all_keys()
-        if depart.key_type(key) != "service"
+        if depart.key_type(key) not in ("service", "gitconfig")
     }
 
 
@@ -3676,10 +3743,12 @@ def build_preflight_report(ctx: Context) -> dict[str, depart.Classification] | N
     live = _recapture_departure_live_state(ctx, baseline)
     report: dict[str, depart.Classification] = {}
     for key in sorted(baseline.all_keys()):
-        # service: keys use their own dedicated classifier (their record
-        # shape — enabled/active/linger — doesn't fit the tri-state
-        # present/absent model the generic classifier expects).
-        if depart.key_type(key) == "service":
+        # service:/gitconfig: keys use their own dedicated classifier (their
+        # record shapes don't fit the tri-state present/absent model the
+        # generic classifier expects — gitconfig's "owned" case in
+        # particular needs to compare live against a *managed value*, which
+        # classify_ownership_key has no parameter for).
+        if depart.key_type(key) in ("service", "gitconfig"):
             continue
         recorded = baseline.value_for(key)
         live_value = live.get(key, {"state": depart.STATE_UNKNOWN})
@@ -3694,6 +3763,14 @@ def build_preflight_report(ctx: Context) -> dict[str, depart.Classification] | N
             report[service_key] = depart.classify_service(
                 baseline.value_for(service_key), _capture_live_service(ctx, service)
             )
+
+    hooks_key = depart.gitconfig_key(GLOBAL_GIT_HOOKS_PATH_KEY)
+    if hooks_key in baseline.all_keys():
+        report[hooks_key] = depart.classify_gitconfig(
+            baseline.value_for(hooks_key),
+            depart.build_gitconfig_record(_global_git_hooks_path()),
+            _managed_git_hooks_path(ctx),
+        )
     return report
 
 
@@ -3981,6 +4058,44 @@ def execute_service_phase(
         )
 
     _reconcile_linger(ctx, baseline)
+
+
+def _execute_gitconfig_restore(recorded: dict[str, object]) -> str:
+    """Restore the global core.hooksPath value baseline recorded: unset if
+    it was absent before dotfiles set it, otherwise set it back."""
+    if recorded.get("state") == depart.STATE_ABSENT:
+        ok = run_command(
+            ["git", "config", "--global", "--unset", GLOBAL_GIT_HOOKS_PATH_KEY]
+        ).ok
+    else:
+        value = recorded.get("value")
+        ok = (
+            isinstance(value, str)
+            and run_command(
+                ["git", "config", "--global", GLOBAL_GIT_HOOKS_PATH_KEY, value]
+            ).ok
+        )
+    return "ok" if ok else "unresolved: git config --global restore failed"
+
+
+def execute_gitconfig_phase(
+    ctx: Context, baseline: depart.Baseline, ledger: depart.DepartureLedger
+) -> None:
+    """Restore the pre-dotfiles global core.hooksPath value, if this
+    installer owns the current value."""
+    key = depart.gitconfig_key(GLOBAL_GIT_HOOKS_PATH_KEY)
+    if key in ledger.completed_keys():
+        return
+    recorded = baseline.value_for(key)
+    if recorded is None:
+        return  # never captured (e.g. a work-profile install) — nothing to check
+    live = depart.build_gitconfig_record(_global_git_hooks_path())
+    c = depart.classify_gitconfig(recorded, live, _managed_git_hooks_path(ctx))
+    if c.bucket != depart.BUCKET_OWNED:
+        return
+    ledger.record(
+        key, c.action or depart.ACTION_RESTORE, _execute_gitconfig_restore(recorded)
+    )
 
 
 _VSCODE_GUARD_UNRESOLVED_PREFIX = "unresolved [vscode-guard-blocked]:"
@@ -4304,13 +4419,15 @@ def execute_departure(
 ) -> depart.DepartureLedger:
     """Perform every safe ``owned`` action, retry-safe via the departure ledger.
 
-    Order: services stop/disable first, then file/symlink restore-or-remove,
-    then directories deepest-first, then packages in reverse transaction
-    order, then the NVM runtime last. A changed-state-then-failed downgrade
-    halts the package phase and skips the runtime phase too.
+    Order: services stop/disable first, then the global git hooksPath
+    restore, then file/symlink restore-or-remove, then directories
+    deepest-first, then packages in reverse transaction order, then the NVM
+    runtime last. A changed-state-then-failed downgrade halts the package
+    phase and skips the runtime phase too.
     """
     ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
     execute_service_phase(ctx, baseline, ledger)
+    execute_gitconfig_phase(ctx, baseline, ledger)
     execute_file_symlink_phase(ctx, baseline, report, ledger)
     execute_directory_phase(ctx, baseline, report, ledger)
     if execute_package_phase(ctx, baseline, ledger):
@@ -5023,6 +5140,8 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
         load_watchcommit_agent(ctx)
     capture_service_baseline(ctx)
     enable_managed_services(ctx)
+    capture_git_hooks_path_baseline(ctx)
+    install_global_git_hooks_path(ctx)
 
     install_vim_plug(ctx)
     bootstrap_neovim(ctx)
