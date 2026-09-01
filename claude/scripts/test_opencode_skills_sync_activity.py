@@ -70,10 +70,22 @@ class ReportTestCase(unittest.TestCase):
         report = opencode_skills_sync_activity.report(self.dest)
         self.assertIn("opencode-skills-sync: paused", report)
 
-    def test_missing_dest_worktree_is_a_no_op_not_a_crash(self) -> None:
+    def test_missing_dest_worktree_reports_warning(self) -> None:
         missing = self.tmp / "does-not-exist"
         report = opencode_skills_sync_activity.report(missing)
-        self.assertNotIn("last snapshot", report)
+        self.assertIn(
+            f"opencode-skills-sync: mirror worktree missing at {missing}", report
+        )
+        self.assertIn("run git worktree add", report)
+
+    def test_non_git_dest_worktree_reports_warning(self) -> None:
+        non_git = self.tmp / "non-git-dir"
+        non_git.mkdir(parents=True)
+        report = opencode_skills_sync_activity.report(non_git)
+        self.assertIn(
+            f"opencode-skills-sync: mirror worktree missing at {non_git}", report
+        )
+        self.assertIn("run git worktree add", report)
 
 
 if __name__ == "__main__":

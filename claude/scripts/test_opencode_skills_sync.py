@@ -184,6 +184,14 @@ class CommitStepTestCase(unittest.TestCase):
         self.assertFalse(committed_again)
         self.assertEqual(after_first, self.head())
 
+    def test_commit_on_non_git_dest_logs_error_and_returns_false(self) -> None:
+        non_git = self.tmp / "non-git"
+        non_git.mkdir()
+        with unittest.mock.patch("sys.stderr") as mock_stderr:
+            committed = opencode_skills_sync.commit_if_changed(non_git)
+        self.assertFalse(committed)
+        mock_stderr.write.assert_called()
+
 
 class PauseTestCase(unittest.TestCase):
     def setUp(self) -> None:

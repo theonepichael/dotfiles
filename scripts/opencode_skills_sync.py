@@ -108,11 +108,36 @@ def commit_if_changed(dest_worktree: Path) -> bool:
     call needed for an automated raw-dump snapshot nobody reads as narrated
     history. Never calls git push/fetch/pull. Returns True if a commit was
     made."""
-    if not git(dest_worktree, "status", "--porcelain").stdout.strip():
+    if not (dest_worktree / ".git").exists():
+        print(
+            f"[opencode-skills-sync] error: mirror worktree missing or broken at {dest_worktree}",
+            file=sys.stderr,
+        )
         return False
-    git(dest_worktree, "add", "-A")
+    status = git(dest_worktree, "status", "--porcelain")
+    if status.returncode != 0:
+        print(
+            f"[opencode-skills-sync] git status failed ({status.returncode}): {status.stderr.strip()}",
+            file=sys.stderr,
+        )
+        return False
+    if not status.stdout.strip():
+        return False
+    add_res = git(dest_worktree, "add", "-A")
+    if add_res.returncode != 0:
+        print(
+            f"[opencode-skills-sync] git add failed ({add_res.returncode}): {add_res.stderr.strip()}",
+            file=sys.stderr,
+        )
+        return False
     result = git(dest_worktree, "commit", "-m", COMMIT_MESSAGE)
-    return result.returncode == 0
+    if result.returncode != 0:
+        print(
+            f"[opencode-skills-sync] git commit failed ({result.returncode}): {result.stderr.strip()}",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def run_tick(source: Path, dest_worktree: Path) -> bool:

@@ -65,6 +65,11 @@ def report(dest_worktree: Path) -> str:
         snapshot = _last_snapshot(dest_worktree)
         if snapshot:
             lines.append(snapshot)
+    else:
+        lines.append(
+            f"opencode-skills-sync: mirror worktree missing at {dest_worktree} -- "
+            f"run git worktree add {dest_worktree} -b opencode-skills-live from the dotfiles repo"
+        )
 
     return "\n".join(lines)
 
