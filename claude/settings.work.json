@@ -13,6 +13,17 @@
     ]
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/scripts/guard_rails.py --harness claude"
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "matcher": "idle_prompt|permission_prompt",

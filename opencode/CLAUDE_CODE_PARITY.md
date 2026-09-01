@@ -447,3 +447,28 @@ conflicting keys), same pattern as Claude Code's `~/.claude/settings.json` +
 - https://opencode.ai/docs/plugins/ — plugin file shape, global location; does **not** document `tool.execute.after`'s field-level schema or built-in tool arg shapes (`args` is untyped in its own examples)
 - `@opencode-ai/plugin` npm package, `dist/index.d.ts` (version pinned to the installed `opencode` CLI's own version, pulled straight from the registry tarball rather than trusted from docs prose) — ground truth for `tool.execute.after`'s exact signature (`input.tool`/`sessionID`/`callID`/`args`, `output.title`/`output`/`metadata`)
 - Live probe (2026-08-13): a diagnostic `tool.execute.after` plugin dumping raw `input`/`output` to a file, wired at `~/.config/opencode/plugin/zz-probe.ts`, run against a real `opencode run --auto` edit and a real create → confirmed built-in tool names (`edit`, `write`) and their shared file-path arg key (`args.filePath`), none of which the SDK types or docs page publish
+
+## Pre-tool guard (`tool.execute.before`)
+
+`opencode/plugin/guard-rails.ts` delegates to
+`claude/scripts/guard_rails.py`, the same script all five harnesses call.
+
+**Verified live 2026-09-01**, in a throwaway repo with a throwaway backlog
+store (`GUARD_RAILS_STORE`): the write was denied and the reason reached the
+model verbatim, which quoted it back in full.
+
+Payload shape, confirmed by a diagnostic hook rather than from docs:
+
+    input  = {tool, sessionID, callID}
+    output = {args: {filePath, content}}
+
+so the arguments are on the **second** parameter for `.before`, unlike
+`.after` (see the ruff plugin's own note). A plugin blocks by **throwing an
+Error**; the thrown message is what the model sees.
+
+**opencode has no warn channel.** `tool.execute.before` can throw or return,
+with nothing in between. The stale-worktree-base warning is therefore *not*
+surfaced on this harness — a `warn` verdict degrades to a silent allow. This
+is a real gap, not an oversight: Claude Code has `additionalContext`, Pi has
+`ctx.ui.notify`, agy can return `decision: allow` with a `reason`, and
+opencode has no equivalent.

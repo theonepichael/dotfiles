@@ -208,3 +208,19 @@ claimed as a diagnostic command, does **not** exist in this build's
 without confirming against the actual installed binary's
 `--help`/`--version`. Re-verify all of the above if/when this machine's
 `agy` migrates to the `~/.antigravity/` layout.
+
+## Pre-tool guard (`PreToolUse`)
+
+`agy/hooks.json` gains a `worktree-guard` hook set calling
+`claude/scripts/guard_rails.py --harness agy`, matching
+`write_to_file|replace_file_content`.
+
+**Verified live 2026-09-01**: the write was denied and agy surfaced the
+reason to the model verbatim — it quoted the full text back, including the
+suggested `git worktree add` command.
+
+Contract as bundled in agy's own `hooks.md` and confirmed in the probe:
+stdin carries `{"toolCall": {"name", "args"}, "stepIdx"}`, and the hook
+answers on stdout with `{"decision": "allow"|"deny"|"ask"|"force_ask",
+"reason": "..."}`. Unlike Copilot, agy passes `reason` straight through to
+the model, so the guard's remediation advice actually lands.

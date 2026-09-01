@@ -104,6 +104,39 @@ async function currentGitBranch(pi: ExtensionAPI, cwd: string): Promise<string |
   return null;
 }
 
+// R2/R3 (main-checkout writes, stale worktree base) live in
+// claude/scripts/guard_rails.py so all five harnesses share one source of
+// truth. The rm -rf / sudo / protected-path / git-commit rules above stay
+// here: they need ctx.ui.confirm(), which a subprocess cannot do.
+type SharedVerdict = { decision: "allow" | "deny" | "warn"; reason?: string };
+
+async function sharedGuard(
+  pi: ExtensionAPI,
+  tool: string,
+  filePath: string,
+): Promise<SharedVerdict | null> {
+  try {
+    const result = await pi.exec(
+      "python3",
+      [
+        `${process.env.HOME}/.claude/scripts/guard_rails.py`,
+        "--tool",
+        tool,
+        "--cwd",
+        path.dirname(filePath),
+        "--path",
+        filePath,
+      ],
+      { timeout: 5000 },
+    );
+    if (result.code !== 0) return null;
+    return JSON.parse(result.stdout) as SharedVerdict;
+  } catch {
+    // Fail open: a guard that cannot answer must not block the loop.
+    return null;
+  }
+}
+
 export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     if (!enabled) return undefined;
@@ -163,6 +196,14 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.notify(`Blocked write to protected path: ${filePath}`, "warning");
         }
         return { block: true, reason: `Path "${filePath}" is protected by guard-rails` };
+      }
+
+      const verdict = await sharedGuard(pi, "write", filePath);
+      if (verdict?.decision === "deny") {
+        return { block: true, reason: verdict.reason ?? "Blocked by guard-rails" };
+      }
+      if (verdict?.decision === "warn" && ctx.hasUI && verdict.reason) {
+        ctx.ui.notify(verdict.reason, "warning");
       }
     }
 
