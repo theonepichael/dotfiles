@@ -86,8 +86,11 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `add '{"id": "my-slug", "summary": "...", "priority": "high"}'` — append a new item (id required in JSON)
   - `update <slug|N> '{"field": "value", "priority": "high"}' [--if-rev <N>]` — merge JSON patch into an item
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
-  - `start <slug|N> [--if-rev <N>]` — mark item in-progress
+  - `start <slug|N> [--if-rev <N>] [--force] [--no-worktree-check] [--claimed-by HARNESS]` — mark item in-progress
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
+    - `--force/-f` — force start even if item is actively claimed by another session
+    - `--allow-main/--no-worktree-check` — allow starting item from the main/master repository checkout
+    - `--claimed-by` — override claimed harness/session identifier
   - `done <slug|N> [--if-rev <N>]` — mark item done
     - `--if-rev` — required when <id> is numeric; get the current value from render/list/show immediately before this call
   - `review <slug|N> [--if-rev <N>]` — submit (or re-submit) an item for review
@@ -128,7 +131,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `out-of-scope remove <concept-slug>` — delete a rejected concept's record
   - `out-of-scope list` — list rejected concepts, newest-first
   - `out-of-scope show <concept-slug>` — print a rejected concept's full record
-- Environment: `DEVSTATUS_AGENT`, `DEVSTATUS_RECAP_AGY_MODEL`, `DEVSTATUS_RECAP_DISABLE`, `DEVSTATUS_RECAP_TIMEOUT_SECONDS`
+- Environment: `AGY_SESSION`, `ANTHROPIC_CLI`, `ANTIGRAVITY`, `CLAUDE_CODE`, `COPILOT`, `DEVSTATUS_AGENT`, `DEVSTATUS_CLAIM_TTL_SECONDS`, `DEVSTATUS_HARNESS`, `DEVSTATUS_RECAP_AGY_MODEL`, `DEVSTATUS_RECAP_DISABLE`, `DEVSTATUS_RECAP_TIMEOUT_SECONDS`, `GITHUB_COPILOT`, `OPENCODE`, `OPENCODE_GATEWAY`, `PI_CODING_AGENT`, `PI_SESSION`
 - Filesystem constants:
   - `DATA_DIR = Path.home() / '.claude' / 'data' / 'backlog'`
   - `ITEMS_FILE = DATA_DIR / 'items.json'`
@@ -150,6 +153,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `class PendingItem(TypedDict)` — A single waiting-on-someone-else item as stored in ``pending_items.json``.
 - Public functions:
   - `today() -> str` — Return today's date as an ISO-8601 string (``YYYY-MM-DD``).
+  - `machine_id() -> str` — Return this machine's stable short id, creating it on first use.
   - `validate_slug(slug: str, context: str = '') -> str | None` — Validate a candidate item slug.
   - `load_items() -> list[BacklogItem]` — Load all backlog items from :data:`ITEMS_FILE`.
   - `save_items(items: list[BacklogItem]) -> None` — Atomically persist ``items`` to :data:`ITEMS_FILE`.
@@ -166,7 +170,6 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `require_kind(cmd: str, arg: str, kind: str, expected: str) -> None` — Exit with a helpful message if ``kind`` doesn't match ``expected``.
   - `enforce_rev_guard(cmd: str, id_arg: str, if_rev_arg: int | None, current_rev: int, items: list[BacklogItem], pending_items: list[PendingItem]) -> None` — Refuse a numeric-id mutation that lacks a fresh ``--if-rev``.
   - `render(items: list[BacklogItem] | None = None, pending_items: list[PendingItem] | None = None, *, out: TextIO | None = None, err: TextIO | None = None, rev: int | None = None, dispatch: bool = False) -> None` — Render the full dashboard: pending items, then the five backlog sections.
-  - `machine_id() -> str` — Return this machine's stable short id, creating it on first use.
   - `append_journal_event(entry: dict[str, object], *, verbose: bool = False) -> None` — Append one event to the journal, best-effort.
   - `read_journal_entries(within_hours: float | None = None, *, verbose: bool = False) -> list[dict[str, object]]` — Read journal entries, optionally filtered to the last ``within_hours``.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
