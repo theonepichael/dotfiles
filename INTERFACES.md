@@ -33,6 +33,7 @@ House style for these interfaces is in `STYLE.md`.
 
 | Module | Purpose |
 | --- | --- |
+| [`analyze_sessions.py`](#claudescriptsanalyzesessionspy) | analyze_sessions.py — multi-harness session analysis tool. |
 | [`cli_common.py`](#claudescriptsclicommonpy) | Shared CLI helpers used across dotfiles scripts. |
 | [`dev_status.py`](#claudescriptsdevstatuspy) | dev_status.py v2 — slug IDs, structured dependency graph, pure render. |
 | [`dev_status_sync.py`](#claudescriptsdevstatussyncpy) | dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending store. |
@@ -55,6 +56,71 @@ House style for these interfaces is in `STYLE.md`.
 | [`to_tickets_runner.py`](#claudescriptstoticketsrunnerpy) | to_tickets_runner.py — create a linked batch of dev_status.py backlog items from a confirmed vertical-slice/tracer-bullet ticket breakdown. |
 | [`vitals_promotion.py`](#claudescriptsvitalspromotionpy) | vitals-promotion.py — mechanical vitals-promotion pass over grill session data. |
 | [`watchcommit_activity.py`](#claudescriptswatchcommitactivitypy) | Print watchcommit's last known background pull/commit/push, so a session (or wc-status) can tell daemon-driven git state changes from manual ones instead of only seeing a clean/up-to-date working tree. |
+
+### `claude/scripts/analyze_sessions.py`
+
+analyze_sessions.py — multi-harness session analysis tool.
+
+- Installed at: `~/.claude/scripts/analyze_sessions.py` (all harnesses)
+- Entrypoint: executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Multi-harness session analysis tool across pi, Claude Code, opencode, Copilot CLI, and agy.
+  - `--quiet/-q`
+  - `--verbose/-v`
+- Subcommands:
+  - `cost [--harness {all,pi,claude,opencode,copilot,agy}] [--since <SINCE>] [--until <UNTIL>] [--cwd <CWD>] [--model <MODEL>] [--session <SESSION>] [--limit <LIMIT>] [--grep <GREP>] [--json] [--quiet] [--verbose] [--by {total,day,project,harness,model,session}] [--no-subagents]` — token and USD cost analysis and rollups
+    - `--harness` — harness to analyze: all, pi, claude, opencode, copilot, agy (default: all; note: agy is opt-in and excluded from 'all') (choices: all, pi, claude, opencode, copilot, agy; default: all)
+    - `--since` — filter sessions on/after date/time (ISO 8601 YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS, or relative e.g. 7d, today)
+    - `--until` — filter sessions on/before date/time (ISO 8601 YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
+    - `--cwd` — filter by working directory substring
+    - `--model` — filter by model name substring
+    - `--session` — filter by session ID substring
+    - `--limit` — limit number of results
+    - `--grep/-g` — filter message text by substring or regex
+    - `--json` — emit output as JSON
+    - `--by` — rollup grouping: total, day, project, harness, model, session (default: total) (choices: total, day, project, harness, model, session; default: total)
+    - `--no-subagents` — exclude subagent / child sessions (included by default)
+  - `prompts [--harness {all,pi,claude,opencode,copilot,agy}] [--since <SINCE>] [--until <UNTIL>] [--cwd <CWD>] [--model <MODEL>] [--session <SESSION>] [--limit <LIMIT>] [--grep <GREP>] [--json] [--quiet] [--verbose] [--format {markdown,jsonl}] [--include-subagents]` — list user prompts
+    - `--harness` — harness to analyze: all, pi, claude, opencode, copilot, agy (default: all; note: agy is opt-in and excluded from 'all') (choices: all, pi, claude, opencode, copilot, agy; default: all)
+    - `--since` — filter sessions on/after date/time (ISO 8601 YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS, or relative e.g. 7d, today)
+    - `--until` — filter sessions on/before date/time (ISO 8601 YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
+    - `--cwd` — filter by working directory substring
+    - `--model` — filter by model name substring
+    - `--session` — filter by session ID substring
+    - `--limit` — limit number of results
+    - `--grep/-g` — filter message text by substring or regex
+    - `--json` — emit output as JSON
+    - `--format` — output format (default: markdown) (choices: markdown, jsonl; default: markdown)
+    - `--include-subagents` — include subagent / child sessions (excluded by default)
+  - `search [<query>] [--harness {all,pi,claude,opencode,copilot,agy}] [--since <SINCE>] [--until <UNTIL>] [--cwd <CWD>] [--model <MODEL>] [--session <SESSION>] [--limit <LIMIT>] [--grep <GREP>] [--json] [--quiet] [--verbose] [--regex] [--context <CONTEXT>] [--include-subagents]` — search message transcripts
+    - `query` — search query text (nargs: ?)
+    - `--harness` — harness to analyze: all, pi, claude, opencode, copilot, agy (default: all; note: agy is opt-in and excluded from 'all') (choices: all, pi, claude, opencode, copilot, agy; default: all)
+    - `--since` — filter sessions on/after date/time (ISO 8601 YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS, or relative e.g. 7d, today)
+    - `--until` — filter sessions on/before date/time (ISO 8601 YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
+    - `--cwd` — filter by working directory substring
+    - `--model` — filter by model name substring
+    - `--session` — filter by session ID substring
+    - `--limit` — limit number of results
+    - `--grep/-g` — filter message text by substring or regex
+    - `--json` — emit output as JSON
+    - `--regex/-r` — treat query as regular expression
+    - `--context/-C` — context lines around match (default: 0) (default: 0)
+    - `--include-subagents` — include subagent / child sessions (excluded by default)
+- Depends on: `cli_common.py`
+- Public classes:
+  - `class SessionRecord`
+- Public functions:
+  - `normalize_timestamp(ts: object) -> tuple[str, datetime | None]` — Convert string ISO timestamp or int/float epoch ms/s into ISO 8601 string and datetime.
+  - `parse_date_boundary(val: str | None, *, is_until: bool = False) -> datetime | None`
+  - `calculate_claude_cost(model: str | None, in_tok: int, out_tok: int, cr_tok: int, cw_tok: int) -> tuple[float | None, str]`
+  - `load_pi_records(base_dir: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None) -> list[SessionRecord]`
+  - `load_claude_records(base_dir: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None) -> list[SessionRecord]`
+  - `load_opencode_records(db_path: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, session_filter: str | None = None) -> list[SessionRecord]`
+  - `load_copilot_records(db_path: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, session_filter: str | None = None) -> list[SessionRecord]`
+  - `load_agy_records(base_dir: Path | None = None, since_dt: datetime | None = None, until_dt: datetime | None = None, session_filter: str | None = None) -> list[SessionRecord]`
+  - `load_all_records(harness: str = 'all', since_dt: datetime | None = None, until_dt: datetime | None = None, cwd_filter: str | None = None, model_filter: str | None = None, session_filter: str | None = None, *, include_subagents: bool = True, pi_dir: Path | None = None, claude_dir: Path | None = None, opencode_db: Path | None = None, copilot_db: Path | None = None, agy_dir: Path | None = None) -> list[SessionRecord]`
+  - `build_parser() -> argparse.ArgumentParser`
+- Subcommand handlers: `cmd_cost`, `cmd_prompts`, `cmd_search`
+- Tested by: `claude/scripts/test_analyze_sessions.py`
 
 ### `claude/scripts/cli_common.py`
 
@@ -846,6 +912,7 @@ the file existing in the repo; the description is the canonical
 
 | Skill | claude | copilot | opencode | agy | pi |
 | --- | --- | --- | --- | --- | --- |
+| `/analyze-sessions` | yes | yes | yes | yes | yes |
 | `/backlog-item` | yes | yes | yes | yes | yes |
 | `/dashboard` | yes | yes | yes | yes | yes |
 | `/draft-voice` | yes | — | — | — | — |
@@ -857,6 +924,9 @@ the file existing in the repo; the description is the canonical
 | `/standup` | yes | yes | yes | yes | yes |
 | `/to-tickets` | yes | yes | yes | yes | yes |
 
+- **`/analyze-sessions`** — Analyze coding-agent sessions across pi, Claude Code, opencode, Copilot CLI, and agy: calculate token/USD cost rollups, list user prompts, or search message transcripts. Use when the user asks about session costs, token usage, previous prompts, or wants to search past coding session transcripts across harnesses.
+  - Source: `claude/commands/analyze-sessions.md`
+  - Installed at: `~/.claude/commands/analyze-sessions.md` (claude)
 - **`/backlog-item`** — Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item.
   - Source: `claude/commands/backlog-item.md`
   - Installed at: `~/.claude/commands/backlog-item.md` (claude)
@@ -949,6 +1019,7 @@ are copy-once seeds for exactly that reason.
 | `pi/extensions/trust-session.ts` | `~/.pi/agent/extensions/trust-session.ts` (pi) |
 | `pi/extensions/vitals-promotion-tool.ts` | `~/.pi/agent/extensions/vitals-promotion-tool.ts` (pi) |
 | `pi/package.json` | not symlinked by `links.toml` |
+| `pi/prompts/analyze-sessions.md` | `~/.pi/agent/prompts/analyze-sessions.md` (pi) |
 | `pi/prompts/backlog-item.md` | `~/.pi/agent/prompts/backlog-item.md` (pi) |
 | `pi/prompts/dashboard.md` | `~/.pi/agent/prompts/dashboard.md` (pi) |
 | `pi/prompts/grill-me.md` | `~/.pi/agent/prompts/grill-me.md` (pi) |
@@ -1168,6 +1239,15 @@ invocation of a given script is not listed. `--check` exits `3` (not
 `1`) when this section would change, since the fix is editing the
 named doc, not regenerating this file.
 
+### `analyze_sessions.py`
+
+| Doc | Status |
+| --- | --- |
+| `agy/skills/analyze-sessions/SKILL.md` | OK |
+| `claude/commands/analyze-sessions.md` | OK |
+| `copilot/skills/analyze-sessions/SKILL.md` | OK |
+| `opencode/skills/analyze-sessions/SKILL.md` | OK |
+
 ### `dev_status.py`
 
 | Doc | Status |
@@ -1295,6 +1375,7 @@ new one, `--check` catches it the same as any other stale content.
 
 | Skill | Mentions |
 | --- | --- |
+| `/analyze-sessions` | — |
 | `/backlog-item` | `dashboard`, `grill-me`, `second-opinion`, `spec` |
 | `/dashboard` | — |
 | `/draft-voice` | — |

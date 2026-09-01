@@ -158,6 +158,11 @@ dest = "~/.claude/commands/backlog-item.md"
 harness = "claude"
 
 [[link]]
+src = "claude/commands/analyze-sessions.md"
+dest = "~/.claude/commands/analyze-sessions.md"
+harness = "claude"
+
+[[link]]
 src = "claude/output-styles/ConciseSTE.md"
 dest = "~/.claude/output-styles/ConciseSTE.md"
 harness = "claude"
@@ -257,6 +262,10 @@ dest = "~/.claude/scripts/vitals_promotion.py"
 src = "claude/scripts/notify.py"
 dest = "~/.claude/scripts/notify.py"
 
+[[link]]
+src = "claude/scripts/analyze_sessions.py"
+dest = "~/.claude/scripts/analyze_sessions.py"
+
 # ── GitHub Copilot CLI wiring ────────────────────────────────────────────
 # claude/global-instructions.md is deliberately the same file on both sides — the
 # backlog/pending-items workflow prose is tool-agnostic, so there is no
@@ -352,6 +361,11 @@ dest = "~/.copilot/skills/to-tickets/SKILL.md"
 harness = "copilot"
 
 [[link]]
+src = "copilot/skills/analyze-sessions/SKILL.md"
+dest = "~/.copilot/skills/analyze-sessions/SKILL.md"
+harness = "copilot"
+
+[[link]]
 src = "copilot/aliases.zsh"
 dest = "~/.copilot_aliases"
 harness = "copilot"
@@ -439,6 +453,11 @@ src = "opencode/skills/spec/SKILL.md"
 dest = "~/.config/opencode/skills/spec/SKILL.md"
 harness = "opencode"
 
+[[link]]
+src = "opencode/skills/analyze-sessions/SKILL.md"
+dest = "~/.config/opencode/skills/analyze-sessions/SKILL.md"
+harness = "opencode"
+
 # tool.execute.after plugin -- runs ruff format + ruff check --fix on any
 # .py file the edit/write tools touch, inside a uv/ruff project. Same
 # mechanism as the Claude Code/Copilot/agy PostToolUse hooks; opencode's
@@ -503,6 +522,11 @@ harness = "agy"
 [[link]]
 src = "agy/skills/backlog-item/SKILL.md"
 dest = "~/.gemini/antigravity-cli/skills/backlog-item/SKILL.md"
+harness = "agy"
+
+[[link]]
+src = "agy/skills/analyze-sessions/SKILL.md"
+dest = "~/.gemini/antigravity-cli/skills/analyze-sessions/SKILL.md"
 harness = "agy"
 
 # Standalone hooks.json is discovered from ~/.gemini/config/hooks.json --
@@ -582,6 +606,11 @@ harness = "pi"
 [[link]]
 src = "pi/prompts/to-tickets.md"
 dest = "~/.pi/agent/prompts/to-tickets.md"
+harness = "pi"
+
+[[link]]
+src = "pi/prompts/analyze-sessions.md"
+dest = "~/.pi/agent/prompts/analyze-sessions.md"
 harness = "pi"
 
 [[link]]
