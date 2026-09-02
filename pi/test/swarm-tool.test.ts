@@ -23,6 +23,7 @@ import {
   nextAgentId,
   openPaneCount,
   openPaneSoftCap,
+  paneIdentityMismatch,
   parsePicker,
   reconcileState,
   saveState,
@@ -285,6 +286,32 @@ describe("classifyWaitResult", () => {
     expect(classifyWaitResult(0, "not json", "")).toBe("error");
     expect(classifyWaitResult(0, waitStdout("unknown"), "")).toBe("error");
     expect(classifyWaitResult(0, "", "")).toBe("error");
+  });
+});
+
+describe("paneIdentityMismatch", () => {
+  // Same real `agent get` envelope shape as classifyWaitResult's fixtures
+  // (result.agent.*, not flat) -- `agent get`/`agent wait` share the
+  // nesting, `agent list` does not (see the HerdrEnvelope comment).
+  function getStdout(pane_id: string): string {
+    return JSON.stringify({ result: { agent: { agent_status: "blocked", pane_id } } });
+  }
+
+  test("matching pane_id is not a mismatch", () => {
+    expect(paneIdentityMismatch(0, getStdout("w1:pA"), "w1:pA")).toBe(false);
+  });
+
+  test("a different pane_id IS a mismatch -- the exact failure mode this guards against", () => {
+    expect(paneIdentityMismatch(0, getStdout("w1:pB"), "w1:pA")).toBe(true);
+  });
+
+  test("a nonzero exit code (agent_not_found, a crash) is a mismatch -- fail closed, not open", () => {
+    expect(paneIdentityMismatch(1, "", "w1:pA")).toBe(true);
+  });
+
+  test("unparseable or missing pane_id on a zero exit is a mismatch", () => {
+    expect(paneIdentityMismatch(0, "not json", "w1:pA")).toBe(true);
+    expect(paneIdentityMismatch(0, JSON.stringify({ result: { agent: {} } }), "w1:pA")).toBe(true);
   });
 });
 

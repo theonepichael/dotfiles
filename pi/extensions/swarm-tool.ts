@@ -242,7 +242,7 @@ interface HerdrEnvelope {
   // are two different response shapes for two different commands, not one
   // shared shape; do not conflate them into a single flat interface again.
   result?: {
-    agent?: { agent_status?: string };
+    agent?: { agent_status?: string; pane_id?: string };
     agents?: { agent_status?: string; agent_session?: unknown; pane_id?: string }[];
   };
   error?: { code?: string; message?: string };
@@ -279,6 +279,27 @@ export function classifyWaitResult(
   }
   const code = parseHerdrJson(stderr)?.error?.code;
   return code === "timeout" ? "timed_out" : "error";
+}
+
+/**
+ * Cross-check that `agent get`'s reported pane_id still matches the pane
+ * this worker was spawned into, right before `swarm_resolve_blocked` sends
+ * any keystrokes. herdr's `agent <name>` commands (read/get/send-keys) all
+ * resolve the same name -> pane mapping internally; if that mapping ever
+ * goes stale or collides under concurrency, every one of those calls would
+ * consistently hit the same wrong pane, so re-reading by agent name before
+ * sending keys can't catch it -- only a cross-check against the pane_id
+ * swarm-tool tracked independently at spawn time can. A missing/unparseable
+ * pane_id is treated as a mismatch (fail closed, not open).
+ */
+export function paneIdentityMismatch(
+  getExitCode: number,
+  getStdout: string,
+  expectedPaneId: string,
+): boolean {
+  if (getExitCode !== 0) return true;
+  const reportedPaneId = parseHerdrJson(getStdout)?.result?.agent?.pane_id;
+  return reportedPaneId !== expectedPaneId;
 }
 
 /** The raw herdr error detail for a timed_out/error event -- for an honest digest, not just a bare label. */
@@ -732,6 +753,7 @@ export default function (pi: ExtensionAPI) {
       "herdr agent prompt refuses a blocked agent outright -- this tool drives the picker via arrow-key navigation instead, the only way to answer it.",
       "If answer matches no listed option (or matches more than one ambiguously), this returns needsManual: true instead of guessing -- relay that back to the user verbatim (which pane, and the exact listed option labels) rather than retrying blindly.",
       "Verifies the worker actually left `blocked` within a short window after submitting; if it didn't (pane closed, still stuck), the item is marked relay_failed rather than silently treated as resolved.",
+      "Re-checks the target's pane_id against what it was spawned into immediately before sending any keys -- if herdr's agent-name-to-pane mapping ever drifted, this is what catches it (a stale mapping would make read/match agree with the wrong pane too, so this is a second, independent identity check, not a repeat of the read). A mismatch returns needsManual: true and sends nothing.",
     ],
     parameters: Type.Object({
       runId: Type.String(),
@@ -775,6 +797,27 @@ export default function (pi: ExtensionAPI) {
                 `(${worker.slug}). Listed options: ${optionList || "(none parsed)"}. ` +
                 `Attach directly (herdr agent attach ${typed.agent}) or retry with text matching one ` +
                 `option's label exactly.`,
+            },
+          ],
+          details: {
+            relayFailed: false,
+            needsManual: true,
+            slug: worker.slug,
+            paneId: worker.paneId,
+          },
+        };
+      }
+
+      const getResult = await herdr(pi, buildAgentGetArgv(typed.agent), signal);
+      if (paneIdentityMismatch(getResult.code, getResult.stdout, worker.paneId)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `needs_manual: ${typed.agent} (${worker.slug})'s pane identity no longer matches ` +
+                `what it was spawned into -- refusing to send keys rather than risk hitting the wrong ` +
+                `pane. Attach directly (herdr agent attach ${typed.agent}) to answer it by hand.`,
             },
           ],
           details: {
