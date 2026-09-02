@@ -233,6 +233,39 @@ const PICKER_BELOW_A_NUMBERED_PLAN = `
 ─────────────────────────────────────────────────────────────────────────────────────
 ~/dotfiles (main)`;
 
+// Verbatim from a real 42-column worker pane during the 2026-09-02 concurrent
+// swarm run. Three workers split a 168-column tab into four equal panes, and
+// at that width question-tool's footer wraps -- which the full-width fixtures
+// above never showed.
+const NARROW_PANE_PICKER = `
+ herdr-agent-state.ts exception)?
+
+
+ \u2387 Working...
+
+───────────────────────────────────────
+ Commit
+ Commit these changes (docs +
+ regression test pinning the
+ herdr-agent-state.ts exception)?
+
+> 1. Commit (Recommended)
+     Commit the doc + regression test
+     in the worktree as docs(pi):
+     document herdr-agent-state.ts as
+     the managed_dir standing exception
+  2. Don't commit yet
+     Leave the changes uncommitted in
+     the worktree; the item stays in
+     progress
+  3. Something else (type it)
+     Answer in your own words instead.
+
+ \u2191\u2193 navigate \u2022 Enter to select \u2022 Esc to
+ cancel
+───────────────────────────────────────
+~/dotfiles (main)`;
+
 describe("parsePicker anchoring", () => {
   // THE DEFECT. OPTION_LINE matched any numbered line in the 500 lines of
   // scrollback `agent read` returns, with no anchor to the live picker, so a
@@ -253,6 +286,23 @@ describe("parsePicker anchoring", () => {
     expect(parsed.options.map((o) => o.label)).toEqual([
       "OK",
       "Cancel",
+      "Something else (type it)",
+    ]);
+    expect(parsed.selectedIndex).toBe(1);
+  });
+
+  // THE REGRESSION. The footer anchor required "navigate ... Esc to cancel" on
+  // one line, which only holds in a wide pane. A worker pane in a real 3-way
+  // split is 42 columns, the footer wraps after "Esc to", the anchor missed,
+  // and parsePicker returned nothing at all -- so every relay to a worker came
+  // back needs_manual with "(none parsed)". Caught live on 2026-09-02 the
+  // first time the fix from ec5fd5a met a genuinely narrow pane.
+  test("finds the picker when a narrow pane wraps the footer line", () => {
+    const parsed = parsePicker(NARROW_PANE_PICKER);
+
+    expect(parsed.options.map((o) => o.label)).toEqual([
+      "Commit (Recommended)",
+      "Don't commit yet",
       "Something else (type it)",
     ]);
     expect(parsed.selectedIndex).toBe(1);

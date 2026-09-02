@@ -648,8 +648,17 @@ const OTHER_OPTION_LABEL = "Something else (type it)";
  * block in full-width accent rules. Those are the only marks in the pane that
  * belong to the live picker and nothing else, so they are what the parse
  * anchors on.
+ *
+ * Matched on the OPENING of the hint line only, never the whole of it. pi
+ * wraps the footer to the pane width before it is ever captured, and a worker
+ * pane in a real three-way split is 42 columns, where
+ * "↑↓ navigate • Enter to select • Esc to cancel" breaks after "Esc to". An
+ * anchor spanning the full sentence matched nothing there, so parsePicker
+ * returned no options and every relay came back needs_manual with "(none
+ * parsed)" -- observed live on 2026-09-02. Both openings are short enough to
+ * survive any width the pane guard permits.
  */
-const PICKER_FOOTER = /(?:↑↓ navigate|Enter to submit).*Esc to (?:cancel|go back)/;
+const PICKER_FOOTER = /↑↓ navigate|Enter to submit/;
 const PICKER_RULE = /^─{3,}\s*$/;
 
 /**
