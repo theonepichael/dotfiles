@@ -1012,6 +1012,75 @@ describe("swarm_spawn worker bootstrap", () => {
   const spawnOne = (spawn: { execute: (...a: never[]) => Promise<unknown> }) =>
     spawnItems(spawn, ["some-item"]);
 
+  // THE RACE. getOrInitState hands both calls the same cached SwarmState, and
+  // state.workers.push only happens after the whole Promise.allSettled block,
+  // so two overlapping spawns for one runId each compute spawnBudget against
+  // the same empty pool and each spawn up to the full cap. The pane splits
+  // interleave for the same reason, which the tool's own promptGuidelines say
+  // must never happen ("splits are sequential -- concurrent splits race").
+  const spawnRun = (
+    spawn: { execute: (...a: never[]) => Promise<unknown> },
+    runId: string,
+    items: string[],
+    concurrency: number,
+  ) =>
+    spawn.execute(...(["call-1", { runId, items, concurrency }] as unknown as never[])) as Promise<{
+      content: { type: string; text: string }[];
+      details: { spawned: unknown[]; skipped: string[] };
+    }>;
+
+  test("two concurrent spawns for one runId cannot exceed the cap between them", async () => {
+    const { spawn } = stubFor(respondingWorker());
+
+    const [first, second] = await Promise.all([
+      spawnRun(spawn, "racerun", ["a1", "a2"], 2),
+      spawnRun(spawn, "racerun", ["b1", "b2"], 2),
+    ]);
+
+    const spawned = first.details.spawned.length + second.details.spawned.length;
+    expect(spawned).toBeLessThanOrEqual(2);
+    expect(loadState("racerun", dir)?.workers.length).toBeLessThanOrEqual(2);
+  });
+
+  // Serialising must not silently drop the second caller's work: whatever the
+  // cap has no room for comes back as skipped, so the orchestrator can see its
+  // items were not lost.
+  test("the second concurrent spawn reports its items rather than losing them", async () => {
+    const { spawn } = stubFor(respondingWorker());
+
+    const [first, second] = await Promise.all([
+      spawnRun(spawn, "accounted", ["a1", "a2"], 2),
+      spawnRun(spawn, "accounted", ["b1", "b2"], 2),
+    ]);
+
+    // The lock is FIFO, but assert on the pair rather than on which call won:
+    // one spawns the cap, the other reports its items as skipped, and nothing
+    // silently disappears.
+    const shapes = [first, second]
+      .map((r) => `${r.details.spawned.length}/${r.details.skipped.length}`)
+      .sort();
+    expect(shapes).toEqual(["0/2", "2/0"]);
+  });
+
+  // The whole run funnels through one chain, so a spawn that throws must
+  // still release it -- otherwise one bad call wedges every later spawn for
+  // that runId forever.
+  test("a spawn that throws does not wedge the run's queue", async () => {
+    let explode = true;
+    const { spawn } = stubFor((argv) => {
+      if (explode && argv[0] === "pane" && argv[1] === "split") {
+        throw new Error("herdr fell over mid-split");
+      }
+      return respondingWorker()(argv);
+    });
+
+    await spawnRun(spawn, "wedged", ["a1"], 2).catch(() => undefined);
+    explode = false;
+    const after = await spawnRun(spawn, "wedged", ["b1"], 2);
+
+    expect(after.details.spawned).toHaveLength(1);
+  });
+
   test("turns the bash permission gate off before handing the worker its item", async () => {
     const { spawn, stub } = stubFor(respondingWorker());
     await spawnOne(spawn);

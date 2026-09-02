@@ -1027,6 +1027,7 @@ export default function (pi: ExtensionAPI) {
     inFlight: Set<string>; // agent ids with a wait currently running
     pendingEvents: PollEvent[];
     waiters: (() => void)[]; // resolvers for swarm_poll calls currently waiting on the next event
+    spawnChain: Promise<void>; // tail of this run's serialised spawn queue -- see withSpawnLock
   }
 
   const runtimes = new Map<string, RunRuntime>();
@@ -1034,10 +1035,48 @@ export default function (pi: ExtensionAPI) {
   function getRuntime(runId: string): RunRuntime {
     let rt = runtimes.get(runId);
     if (!rt) {
-      rt = { inFlight: new Set(), pendingEvents: [], waiters: [] };
+      rt = {
+        inFlight: new Set(),
+        pendingEvents: [],
+        waiters: [],
+        spawnChain: Promise.resolve(),
+      };
       runtimes.set(runId, rt);
     }
     return rt;
+  }
+
+  /**
+   * Runs `fn` with exclusive access to a run's spawn path, queued per runId.
+   *
+   * swarm_spawn reads the pool, decides a budget from it, splits panes, and
+   * only pushes its new workers at the very end. getOrInitState hands every
+   * caller the same cached SwarmState, so two overlapping spawns for one
+   * runId each measured the same empty pool and each spawned up to the full
+   * cap -- double the concurrency limit and double the open panes, silently.
+   * The splits interleaved for the same reason, against a splitTarget walk
+   * that assumes it owns the layout for the length of the call, which is
+   * what this tool's own promptGuidelines already promised.
+   *
+   * Queued rather than rejected: the caller asked for those items to be
+   * spawned, and the second call still gets a truthful answer once the pool
+   * is settled -- whatever the cap has no room for comes back as skipped.
+   * The chain never carries a rejection, because the release resolves in a
+   * finally, so one failing spawn cannot wedge the run.
+   */
+  async function withSpawnLock<T>(runId: string, fn: () => Promise<T>): Promise<T> {
+    const rt = getRuntime(runId);
+    const previous = rt.spawnChain;
+    let release!: () => void;
+    rt.spawnChain = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
   }
 
   /** Arms a worker's wait call if one isn't already running for it. Idempotent -- safe to call every time swarm_poll checks in on the active pool. */
@@ -1089,116 +1128,124 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params) {
       const typed = params as { runId: string; items: string[]; concurrency?: number };
-      const state = await getOrInitState(typed.runId, typed.concurrency ?? DEFAULT_CONCURRENCY);
+      // Everything from reading the pool to pushing the new workers runs
+      // under the run's lock -- measuring the budget and acting on it have to
+      // be one step, or a second caller measures a pool this one is about to
+      // fill. See withSpawnLock.
+      return withSpawnLock(typed.runId, async () => {
+        const state = await getOrInitState(typed.runId, typed.concurrency ?? DEFAULT_CONCURRENCY);
 
-      const budget = spawnBudget(state, typed.items.length);
-      const toSpawn = typed.items.slice(0, budget);
+        const budget = spawnBudget(state, typed.items.length);
+        const toSpawn = typed.items.slice(0, budget);
 
-      const splitPanes: {
-        slug: string;
-        paneId?: string;
-        failed?: { slug: string; reason: string };
-      }[] = [];
-      // Measure before carving. Splitting `--current` once per worker halves
-      // the same pane every time, which is how a 168-column tab produced
-      // 21-column workers; the plan splits each new pane instead, with a ratio
-      // that lands every pane on an equal share.
-      const layoutResult = await herdr(pi, buildPaneLayoutArgv());
-      const startRect =
-        layoutResult.code === 0
-          ? parseCurrentPaneRect(layoutResult.stdout, process.env.HERDR_PANE_ID)
-          : undefined;
-      const plan = planSplits(startRect, toSpawn);
-      for (const rejection of plan.rejected) {
-        splitPanes.push({ slug: rejection.slug, failed: rejection });
-      }
+        const splitPanes: {
+          slug: string;
+          paneId?: string;
+          failed?: { slug: string; reason: string };
+        }[] = [];
+        // Measure before carving. Splitting `--current` once per worker halves
+        // the same pane every time, which is how a 168-column tab produced
+        // 21-column workers; the plan splits each new pane instead, with a ratio
+        // that lands every pane on an equal share.
+        const layoutResult = await herdr(pi, buildPaneLayoutArgv());
+        const startRect =
+          layoutResult.code === 0
+            ? parseCurrentPaneRect(layoutResult.stdout, process.env.HERDR_PANE_ID)
+            : undefined;
+        const plan = planSplits(startRect, toSpawn);
+        for (const rejection of plan.rejected) {
+          splitPanes.push({ slug: rejection.slug, failed: rejection });
+        }
 
-      // Each step splits the pane the previous step created, so the target
-      // walks outward; the first one splits the orchestrator's own pane.
-      let splitTarget: string | undefined;
-      for (const step of plan.steps) {
-        const result = await herdr(
-          pi,
-          buildPaneSplitArgv(step.direction, process.cwd(), {
-            ...(splitTarget ? { paneId: splitTarget } : {}),
-            ratio: step.ratio,
+        // Each step splits the pane the previous step created, so the target
+        // walks outward; the first one splits the orchestrator's own pane.
+        let splitTarget: string | undefined;
+        for (const step of plan.steps) {
+          const result = await herdr(
+            pi,
+            buildPaneSplitArgv(step.direction, process.cwd(), {
+              ...(splitTarget ? { paneId: splitTarget } : {}),
+              ratio: step.ratio,
+            }),
+          );
+          if (result.code !== 0) {
+            splitPanes.push({
+              slug: step.slug,
+              failed: {
+                slug: step.slug,
+                reason: `pane split failed: ${result.stderr || result.stdout}`,
+              },
+            });
+            continue;
+          }
+          try {
+            const parsed = JSON.parse(result.stdout) as {
+              result?: { pane?: { pane_id?: string } };
+            };
+            const paneId = parsed.result?.pane?.pane_id;
+            if (!paneId) throw new Error("no pane_id in response");
+            await herdr(pi, buildPaneRenameArgv(paneId, step.slug));
+            splitPanes.push({ slug: step.slug, paneId });
+            splitTarget = paneId;
+          } catch (e) {
+            splitPanes.push({
+              slug: step.slug,
+              failed: {
+                slug: step.slug,
+                reason: `could not parse pane split response: ${String(e)}`,
+              },
+            });
+          }
+        }
+
+        const startResults = await Promise.allSettled(
+          splitPanes.map(async (p): Promise<SpawnOutcome> => {
+            if (p.failed || !p.paneId) return { slug: p.slug, failed: p.failed };
+            const paneId = p.paneId;
+            state.nextCounter += 1;
+            const agentId = nextAgentId(typed.runId, state.nextCounter, p.slug);
+            try {
+              return await spawnInto(paneId, agentId, p.slug);
+            } catch (e) {
+              // A throw out of spawnInto's herdr calls is a post-split failure
+              // like any other. Without this it lands in allSettled's rejected
+              // branch, which files the failure against slug "unknown" and
+              // leaves the pane open -- losing both the item's identity and the
+              // pane text that would say what happened.
+              return failWithPane(p.slug, paneId, `spawn_error: ${String(e)}`);
+            }
           }),
         );
-        if (result.code !== 0) {
-          splitPanes.push({
-            slug: step.slug,
-            failed: {
-              slug: step.slug,
-              reason: `pane split failed: ${result.stderr || result.stdout}`,
-            },
-          });
-          continue;
-        }
-        try {
-          const parsed = JSON.parse(result.stdout) as { result?: { pane?: { pane_id?: string } } };
-          const paneId = parsed.result?.pane?.pane_id;
-          if (!paneId) throw new Error("no pane_id in response");
-          await herdr(pi, buildPaneRenameArgv(paneId, step.slug));
-          splitPanes.push({ slug: step.slug, paneId });
-          splitTarget = paneId;
-        } catch (e) {
-          splitPanes.push({
-            slug: step.slug,
-            failed: {
-              slug: step.slug,
-              reason: `could not parse pane split response: ${String(e)}`,
-            },
-          });
-        }
-      }
 
-      const startResults = await Promise.allSettled(
-        splitPanes.map(async (p): Promise<SpawnOutcome> => {
-          if (p.failed || !p.paneId) return { slug: p.slug, failed: p.failed };
-          const paneId = p.paneId;
-          state.nextCounter += 1;
-          const agentId = nextAgentId(typed.runId, state.nextCounter, p.slug);
-          try {
-            return await spawnInto(paneId, agentId, p.slug);
-          } catch (e) {
-            // A throw out of spawnInto's herdr calls is a post-split failure
-            // like any other. Without this it lands in allSettled's rejected
-            // branch, which files the failure against slug "unknown" and
-            // leaves the pane open -- losing both the item's identity and the
-            // pane text that would say what happened.
-            return failWithPane(p.slug, paneId, `spawn_error: ${String(e)}`);
+        const spawned: WorkerRecord[] = [];
+        const failed: { slug: string; reason: string }[] = [];
+        for (const r of startResults) {
+          if (r.status === "fulfilled") {
+            if ("worker" in r.value) spawned.push(r.value.worker);
+            else if (r.value.failed) failed.push(r.value.failed);
+          } else {
+            failed.push({ slug: "unknown", reason: String(r.reason) });
           }
-        }),
-      );
-
-      const spawned: WorkerRecord[] = [];
-      const failed: { slug: string; reason: string }[] = [];
-      for (const r of startResults) {
-        if (r.status === "fulfilled") {
-          if ("worker" in r.value) spawned.push(r.value.worker);
-          else if (r.value.failed) failed.push(r.value.failed);
-        } else {
-          failed.push({ slug: "unknown", reason: String(r.reason) });
         }
-      }
 
-      state.workers.push(...spawned);
-      persist(state);
+        state.workers.push(...spawned);
+        persist(state);
 
-      const skipped = typed.items.slice(budget);
+        const skipped = typed.items.slice(budget);
 
-      const summary = `Spawned ${spawned.length} worker(s), ${failed.length} failed to spawn, ${skipped.length} skipped (cap).`;
-      const reasons = failed.map((f) => `- ${f.slug}: ${reasonHeadline(f.reason)}`).join("\n");
+        const summary = `Spawned ${spawned.length} worker(s), ${failed.length} failed to spawn, ${skipped.length} skipped (cap).`;
+        const reasons = failed.map((f) => `- ${f.slug}: ${reasonHeadline(f.reason)}`).join("\n");
 
-      return {
-        content: [
-          {
-            type: "text",
-            text: failed.length ? `${summary}\n${reasons}` : summary,
-          },
-        ],
-        details: { spawned, failed, skipped },
-      };
+        return {
+          content: [
+            {
+              type: "text",
+              text: failed.length ? `${summary}\n${reasons}` : summary,
+            },
+          ],
+          details: { spawned, failed, skipped },
+        };
+      });
     },
   });
 
