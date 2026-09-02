@@ -4194,6 +4194,10 @@ def fake_repo(tmp_path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"{relative}\n")
     (repo / "links.toml").write_text(CHECK_LINKS_TOML)
+    # The audit now asks whether a checkout is the primary one or a worktree,
+    # so the fixtures have to carry the git signature that answers it: a
+    # directory here, a `gitdir:` file in other_checkout below.
+    (repo / ".git").mkdir()
     return repo
 
 
@@ -4305,6 +4309,69 @@ def test_check_links_detects_wrong_target(home, fake_repo, capsys):
     assert code == 1
     assert "wrong-target (1)" in out
     assert f"but links.toml says {fake_repo / 'zsh' / '.zshrc'}" in out
+
+
+def make_checkout(root, *, main):
+    """Build a second dotfiles checkout that _is_dotfiles_checkout() accepts.
+
+    `main` picks the git signature that tells the two apart on disk: a primary
+    checkout carries `.git` as a directory, a `git worktree add` checkout
+    carries it as a file holding a `gitdir:` pointer. That is the whole
+    discriminator, and it needs no subprocess -- which matters here, since the
+    suite blocks real subprocess calls.
+    """
+    for relative in ("zsh/.zshrc", "claude/CLAUDE.md"):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{relative}\n")
+    (root / "links.toml").write_text(CHECK_LINKS_TOML)
+    (root / "install.py").write_text("# stand-in\n")
+    if main:
+        (root / ".git").mkdir()
+    else:
+        (root / ".git").write_text("gitdir: /somewhere/.git/worktrees/wt\n")
+    return root
+
+
+# THE HAZARD, pinned. Three times now a live link has been hand-pointed into a
+# worktree for a live verification and left there; when the worktree was
+# removed the link dangled and the extension silently stopped loading
+# (custom-footer.ts, then permission-gate.ts and swarm-tool.ts on 2026-09-02).
+# The audit excused every one of them: it only asked "a different checkout?",
+# never "which one is canonical?", so it filed them as a benign note and
+# exited 0 while quietly dropping them from the audited count.
+def test_check_links_reports_a_link_pointing_into_a_worktree(home, tmp_path, capsys):
+    main = make_checkout(tmp_path / "repo", main=True)
+    worktree = make_checkout(tmp_path / "repo-wt", main=False)
+    ctx = check_links_ctx(home, main)
+    dest = home / ".zshrc"
+    dest.symlink_to(worktree / "zsh" / ".zshrc")
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "wrong-target (1)" in out
+    assert str(worktree / "zsh" / ".zshrc") in out
+
+
+# The inverse direction is normal and must stay silent: this repo mandates
+# worktree-first development, so auditing from a worktree while the machine's
+# links point at the main checkout is the expected state, not drift.
+def test_check_links_stays_quiet_auditing_from_a_worktree(home, tmp_path, capsys):
+    main = make_checkout(tmp_path / "repo", main=True)
+    worktree = make_checkout(tmp_path / "repo-wt", main=False)
+    ctx = check_links_ctx(home, worktree)
+    dest = home / ".zshrc"
+    dest.symlink_to(main / "zsh" / ".zshrc")
+    capsys.readouterr()
+
+    code = install.do_check_links(ctx)
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "wrong-target" not in out
 
 
 def test_check_links_detects_real_file_where_a_link_belongs(home, fake_repo, capsys):
@@ -4938,6 +5005,10 @@ def other_checkout(tmp_path, fake_repo):
         target = other / path.relative_to(fake_repo)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(path.read_text())
+    # `git worktree add` leaves `.git` as a pointer file, not a directory --
+    # what tells this checkout apart from the primary one.
+    (other / ".git").unlink(missing_ok=True)
+    (other / ".git").write_text("gitdir: /somewhere/.git/worktrees/wt\n")
     (other / "install.py").write_text("# stub\n")
     (fake_repo / "install.py").write_text("# stub\n")
     return other
@@ -5111,6 +5182,8 @@ def dir_repo(tmp_path):
         '[[link]]\nsrc = "local/claude/commands"\ndir = true\n'
         'dest = "~/.claude/commands"\nprofile_exclude = ["personal"]\n'
     )
+    # Primary checkout: `.git` is a directory (see fake_repo).
+    (repo / ".git").mkdir()
     return repo
 
 
@@ -5426,6 +5499,7 @@ def test_check_links_dir_true_cross_checkout_uses_relative_path(
         target = other / path.relative_to(dir_repo)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(path.read_text())
+    (other / ".git").write_text("gitdir: /somewhere/.git/worktrees/wt\n")
     capsys.readouterr()
 
     other_ctx = dir_repo_ctx(home, other)
