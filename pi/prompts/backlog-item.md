@@ -289,10 +289,33 @@ concurrency/pane-cap accounting.
    `permission-gate.ts`'s bash confirmation can't strand it: a worker runs
    in a TUI pane, so the gate's `ctx.ui.confirm` would wait on a human
    nobody has told to look, while `agent_status` stays `working` and
-   `swarm_poll` reads it as progress. A worker that can't be opted out is
-   reported in `failed` (`permission_gate_not_disabled`) rather than left to
-   stall. `guard-rails.ts` deliberately stays armed — workers still cannot
-   write into a repo's main checkout.
+   `swarm_poll` reads it as progress. `guard-rails.ts` deliberately stays
+   armed — workers still cannot write into a repo's main checkout.
+
+   The gate is confirmed by the worker's own acknowledgement file, not by
+   reading its terminal: `swarm_spawn` mints a per-worker token, passes it
+   to the command, and polls for the file the worker writes under
+   `permission-gate.ts`'s own ack directory. A terminal read cannot answer
+   this — herdr's `recent` source is a bounded window of rendered rows, so a
+   redraw or a stale notice from an earlier command produces a false
+   confirmation or a false failure. Two spawn failures follow from it, and
+   they mean different things:
+
+   - **`permission_gate_not_disabled`** — the prompt was delivered but no
+     acknowledgement arrived within the deadline. Report the item in the
+     digest, leave it READY, and do not re-spawn it within the same call.
+   - **`agent_prompt_failed`** — the prompt could not be delivered at all.
+     For one worker, report it and carry on with the rest of the batch. If
+     **every** worker in the batch fails this way, that is a herdr-level
+     fault: stop the run and report, rather than spawning into the same
+     fault repeatedly.
+
+   Each failure names its reason in the tool's own result text, which is what
+   the two rules above key off. The worker pane's captured output is recorded
+   alongside it but is not in that text — read it back from the run's record
+   when diagnosing, rather than expecting it inline. Every failure after a
+   pane exists closes that pane, so a failed round leaves no orphan panes to
+   subdivide the layout for the next one.
 
    Worker panes are carved from the orchestrator's own pane in equal shares,
    so N workers each get roughly a (N+1)th of it rather than the half-of-a-half

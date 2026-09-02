@@ -1,8 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { permissionGateAckPath } from "./permission-gate";
 
 // Registers swarm_spawn / swarm_poll / swarm_resolve_blocked -- lets a pi
 // session process several READY dev_status.py backlog items concurrently by
@@ -69,6 +71,19 @@ const DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes, matching --auto's
 const RESOLVE_VERIFY_TIMEOUT_MS = 5_000;
 const BLOCKED_READ_LINES = 500;
 const BLOCKED_READ_LINES_RETRY = 2000;
+/** `herdr agent start` already gates on interactive_ready, so the worker's extensions are loaded before the trust prompt is sent -- generous for the write, well under AGENT_START_TIMEOUT_MS. */
+const TRUST_ACK_TIMEOUT_MS = 15_000;
+/** A local stat, not a socket call, so a tight interval costs nothing. */
+const TRUST_ACK_POLL_MS = 100;
+/** Enough for a pi crash trace, small enough that one failure cannot flood the orchestrator's digest. */
+export const PANE_CAPTURE_CHARS = 4000;
+const PANE_CAPTURE_LINES = 200;
+
+/** Resolved per call, same seam as herdrStateDir() -- lets a test wait out a deadline in milliseconds instead of 15 seconds. */
+function trustAckTimeoutMs(): number {
+  const override = Number(process.env.PI_SWARM_TRUST_ACK_TIMEOUT_MS);
+  return Number.isFinite(override) && override > 0 ? override : TRUST_ACK_TIMEOUT_MS;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -89,6 +104,10 @@ export interface SwarmState {
   nextCounter: number;
   workers: WorkerRecord[];
 }
+
+/** One item's outcome from the spawn loop: a live worker, or a reason it never became one. */
+type SpawnOutcome =
+  { worker: WorkerRecord } | { slug: string; failed?: { slug: string; reason: string } };
 
 export type PollEventKind = "blocked" | "finished" | "timed_out" | "error";
 
@@ -403,7 +422,18 @@ export function buildAgentStartArgv(agentId: string, paneId: string): string[] {
  */
 export const WORKER_TRUST_COMMAND = "/permission-gate-disable";
 
-/** `--wait` blocks until the agent settles, so a follow-up prompt can't land while it is still processing this one. */
+/**
+ * `--wait` blocks until the agent settles, so a follow-up prompt can't land
+ * while it is still processing this one.
+ *
+ * NOT usable for WORKER_TRUST_COMMAND, and the reason is the bug this file's
+ * ack handshake exists to fix. herdr 0.8.2 documents `--wait` from a
+ * non-working state as requiring an observed lifecycle change within 5000 ms,
+ * with no flag to relax it. A client-side pi slash command applies instantly
+ * and never enters the working state, so there is nothing to observe and the
+ * call always returns agent_prompt_stalled -- on a worker whose gate had in
+ * fact just come down. Confirmed live on 2026-09-02 against a real pi.
+ */
 export function buildAgentPromptArgv(
   agentId: string,
   prompt: string,
@@ -411,6 +441,56 @@ export function buildAgentPromptArgv(
 ): string[] {
   const argv = ["agent", "prompt", agentId, prompt];
   return opts.wait ? [...argv, "--wait"] : argv;
+}
+
+/**
+ * Token this spawn will wait on, passed to WORKER_TRUST_COMMAND and used to
+ * name the ack file the worker writes (permission-gate.ts owns the path).
+ *
+ * The random suffix is load-bearing, not decoration: it is what makes a stale
+ * ack harmless. A zombie worker from a crashed run cannot write the file this
+ * spawn polls, so no pre-send deletion is needed and no worker can be
+ * confirmed by another worker's acknowledgement.
+ */
+export function trustAckToken(agentId: string): string {
+  const normalized = agentId.replace(/[^A-Za-z0-9_-]/g, "-");
+  return `${normalized}-${randomBytes(4).toString("hex")}`;
+}
+
+/**
+ * True when the file's contents parse and carry the exact token this spawn is
+ * waiting on.
+ *
+ * Asserts on the token rather than the path: the token is what makes a stale
+ * ack harmless, so the token is what has to be checked. A parse failure is not
+ * an error -- permission-gate.ts writes to a temp file and renames, but a
+ * caller that reads mid-rename, or a truncated file from an older run, simply
+ * is not confirmation yet.
+ */
+export function ackMatches(fileContents: string, expectedToken: string): boolean {
+  try {
+    const parsed = JSON.parse(fileContents) as { token?: unknown };
+    return parsed.token === expectedToken;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The classification line of a failure reason, without the pane capture
+ * appended after it.
+ *
+ * Exists because an orchestrator reads a tool's `content` and nothing else --
+ * confirmed live on 2026-09-02, where a real swarm_spawn failure carried its
+ * full reason in `details` and the model's next turn reported seeing "no
+ * per-item failure details". backlog-item.md instructs the orchestrator to
+ * act differently on permission_gate_not_disabled than on
+ * agent_prompt_failed, so which one fired has to reach the text. The pane
+ * capture stays behind in `details`: it is up to PANE_CAPTURE_CHARS per
+ * failure and is for a human reading back, not for the routing decision.
+ */
+export function reasonHeadline(reason: string): string {
+  return reason.split("\n", 1)[0] ?? reason;
 }
 
 /** `agent prompt` refuses a blocked agent outright (agent_blocked, confirmed live) -- send-keys is the only way to answer its picker. */
@@ -444,6 +524,11 @@ export function buildAgentReadArgv(agentId: string, lines: number): string[] {
 
 export function buildPaneCloseArgv(paneId: string): string[] {
   return ["pane", "close", paneId];
+}
+
+/** By pane id, not agent id -- a spawn can fail before `agent start` succeeds, and the pane's text is exactly what diagnoses that. */
+export function buildPaneReadArgv(paneId: string, lines: number): string[] {
+  return ["pane", "read", paneId, "--source", "recent-unwrapped", "--lines", String(lines)];
 }
 
 export function buildAgentListArgv(): string[] {
@@ -649,6 +734,144 @@ export default function (pi: ExtensionAPI) {
     return pi_.exec("herdr", argv, { signal });
   }
 
+  /**
+   * Waits for the worker to state, in its own ack file, that its bash
+   * permission gate came down.
+   *
+   * Deliberately not a read of the worker's terminal: herdr documents
+   * `agent read --source recent` as the last 80 rendered rows, so every read
+   * is a bounded sliding window -- a TUI redraw rewrites it rather than
+   * appending, an older notice can scroll out between two reads, and a stale
+   * notice from an earlier command can already be sitting in it. Each of
+   * those yields a false confirmation or a false failure. The poll is a local
+   * stat, so it adds no herdr socket traffic.
+   *
+   * Deletes the file on confirmation -- the ack answers one question once.
+   */
+  async function awaitTrustAck(token: string): Promise<boolean> {
+    const path = permissionGateAckPath(token);
+    const deadline = Date.now() + trustAckTimeoutMs();
+    for (;;) {
+      try {
+        if (ackMatches(readFileSync(path, "utf8"), token)) {
+          rmSync(path, { force: true });
+          return true;
+        }
+      } catch {
+        // Not written yet, or caught mid-rename -- both mean "not confirmed".
+      }
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, TRUST_ACK_POLL_MS));
+    }
+  }
+
+  /**
+   * Records a pane's terminal text into a failure reason, then closes the
+   * pane.
+   *
+   * Both halves are fixes for observed damage. The capture: a pane's text is
+   * the only record of an early worker crash, and the sibling pane-width bug
+   * was diagnosed entirely from a leaked pane. The close: two failed runs on
+   * 2026-09-02 left six orphan panes open, and each retry subdivides the
+   * layout further, so a later round produces panes too small for pi even
+   * when the first round was fine.
+   *
+   * A capture that itself fails (hard-crashed pane, unresponsive herdr) is
+   * noted and the original reason is preserved unchanged -- a capture problem
+   * must never replace the root cause.
+   */
+  async function failWithPane(
+    slug: string,
+    paneId: string,
+    reason: string,
+  ): Promise<{ slug: string; failed: { slug: string; reason: string } }> {
+    let capture: string;
+    try {
+      const read = await herdr(pi, buildPaneReadArgv(paneId, PANE_CAPTURE_LINES));
+      capture =
+        read.code === 0
+          ? // The tail, not the head: a crash trace lands at the end.
+            read.stdout.slice(-PANE_CAPTURE_CHARS)
+          : `<pane capture failed: ${(read.stderr || read.stdout).slice(0, 200)}>`;
+    } catch (e) {
+      capture = `<pane capture threw: ${String(e)}>`;
+    }
+    try {
+      await herdr(pi, buildPaneCloseArgv(paneId));
+    } catch {
+      // Same rule as the capture: a cleanup problem is not the root cause,
+      // and a rejected close must not throw this function's reason away.
+    }
+    return { slug, failed: { slug, reason: `${reason}\n--- pane ${paneId} ---\n${capture}` } };
+  }
+
+  /**
+   * Everything that happens inside a pane that already exists: start the
+   * agent, take its bash permission gate down, then hand it its item.
+   *
+   * Split out of the spawn loop so the caller can wrap the whole thing in one
+   * catch -- every failure in here has a pane to capture and close, including
+   * one that arrives as a thrown exec rejection rather than a non-zero exit.
+   */
+  async function spawnInto(paneId: string, agentId: string, slug: string): Promise<SpawnOutcome> {
+    const startResult = await herdr(pi, buildAgentStartArgv(agentId, paneId));
+    if (startResult.code !== 0) {
+      return failWithPane(
+        slug,
+        paneId,
+        `agent_not_ready: ${startResult.stderr || startResult.stdout}`,
+      );
+    }
+    // Drop the bash permission gate before any work is sent -- see
+    // WORKER_TRUST_COMMAND. A worker that misses this stalls on its
+    // first non-allowlisted bash call, invisibly, so a failure here
+    // is a spawn failure rather than something to press on past.
+    //
+    // Sent WITHOUT --wait (see buildAgentPromptArgv): with it every
+    // submit failed regardless of outcome, so a non-zero exit said
+    // nothing about the gate. Without it, a non-zero exit means the
+    // prompt genuinely could not be delivered -- a herdr-level fault,
+    // not a gate that would not come down, so it gets its own reason.
+    const ackToken = trustAckToken(agentId);
+    const trustResult = await herdr(
+      pi,
+      buildAgentPromptArgv(agentId, `${WORKER_TRUST_COMMAND} ${ackToken}`),
+    );
+    if (trustResult.code !== 0) {
+      return failWithPane(
+        slug,
+        paneId,
+        `agent_prompt_failed: ${trustResult.stderr || trustResult.stdout}`,
+      );
+    }
+    if (!(await awaitTrustAck(ackToken))) {
+      return failWithPane(
+        slug,
+        paneId,
+        `permission_gate_not_disabled: no acknowledgement for token ${ackToken} within ${trustAckTimeoutMs()} ms`,
+      );
+    }
+    const promptResult = await herdr(
+      pi,
+      buildAgentPromptArgv(agentId, `/backlog-item --auto ${slug}`),
+    );
+    if (promptResult.code !== 0) {
+      return failWithPane(
+        slug,
+        paneId,
+        `agent_prompt_stalled: ${promptResult.stderr || promptResult.stdout}`,
+      );
+    }
+    return {
+      worker: {
+        agent: agentId,
+        slug,
+        paneId,
+        lifecycle: "active" as const,
+      },
+    };
+  }
+
   function parseAgentListIds(stdout: string): string[] {
     try {
       const parsed = JSON.parse(stdout) as {
@@ -757,7 +980,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Spawn concurrent pi workers for a batch of backlog items via herdr",
     promptGuidelines: [
       "Panes are split sequentially (herdr pane split mutates shared layout state -- concurrent splits race), then agent start+prompt run concurrently across the resulting panes.",
-      "A per-item spawn failure (agent_not_ready, agent_prompt_stalled, or an unparseable pane-split response) is reported in `failed`, not thrown -- other items in the batch are unaffected.",
+      "A per-item spawn failure (agent_not_ready, agent_prompt_failed, permission_gate_not_disabled, agent_prompt_stalled, spawn_error, or an unparseable pane-split response) is reported in `failed`, not thrown -- other items in the batch are unaffected. Any failure after the pane exists carries that pane's captured output in its reason, and the pane is closed.",
       "Call swarm_poll next to begin the completion loop.",
     ],
     parameters: Type.Object({
@@ -838,58 +1061,21 @@ export default function (pi: ExtensionAPI) {
       }
 
       const startResults = await Promise.allSettled(
-        splitPanes.map(async (p) => {
+        splitPanes.map(async (p): Promise<SpawnOutcome> => {
           if (p.failed || !p.paneId) return { slug: p.slug, failed: p.failed };
+          const paneId = p.paneId;
           state.nextCounter += 1;
           const agentId = nextAgentId(typed.runId, state.nextCounter, p.slug);
-          const startResult = await herdr(pi, buildAgentStartArgv(agentId, p.paneId));
-          if (startResult.code !== 0) {
-            return {
-              slug: p.slug,
-              failed: {
-                slug: p.slug,
-                reason: `agent_not_ready: ${startResult.stderr || startResult.stdout}`,
-              },
-            };
+          try {
+            return await spawnInto(paneId, agentId, p.slug);
+          } catch (e) {
+            // A throw out of spawnInto's herdr calls is a post-split failure
+            // like any other. Without this it lands in allSettled's rejected
+            // branch, which files the failure against slug "unknown" and
+            // leaves the pane open -- losing both the item's identity and the
+            // pane text that would say what happened.
+            return failWithPane(p.slug, paneId, `spawn_error: ${String(e)}`);
           }
-          // Drop the bash permission gate before any work is sent -- see
-          // WORKER_TRUST_COMMAND. A worker that misses this stalls on its
-          // first non-allowlisted bash call, invisibly, so a failure here
-          // is a spawn failure rather than something to press on past.
-          const trustResult = await herdr(
-            pi,
-            buildAgentPromptArgv(agentId, WORKER_TRUST_COMMAND, { wait: true }),
-          );
-          if (trustResult.code !== 0) {
-            return {
-              slug: p.slug,
-              failed: {
-                slug: p.slug,
-                reason: `permission_gate_not_disabled: ${trustResult.stderr || trustResult.stdout}`,
-              },
-            };
-          }
-          const promptResult = await herdr(
-            pi,
-            buildAgentPromptArgv(agentId, `/backlog-item --auto ${p.slug}`),
-          );
-          if (promptResult.code !== 0) {
-            return {
-              slug: p.slug,
-              failed: {
-                slug: p.slug,
-                reason: `agent_prompt_stalled: ${promptResult.stderr || promptResult.stdout}`,
-              },
-            };
-          }
-          return {
-            worker: {
-              agent: agentId,
-              slug: p.slug,
-              paneId: p.paneId,
-              lifecycle: "active" as const,
-            },
-          };
         }),
       );
 
@@ -897,7 +1083,7 @@ export default function (pi: ExtensionAPI) {
       const failed: { slug: string; reason: string }[] = [];
       for (const r of startResults) {
         if (r.status === "fulfilled") {
-          if (r.value.worker) spawned.push(r.value.worker);
+          if ("worker" in r.value) spawned.push(r.value.worker);
           else if (r.value.failed) failed.push(r.value.failed);
         } else {
           failed.push({ slug: "unknown", reason: String(r.reason) });
@@ -909,11 +1095,14 @@ export default function (pi: ExtensionAPI) {
 
       const skipped = typed.items.slice(budget);
 
+      const summary = `Spawned ${spawned.length} worker(s), ${failed.length} failed to spawn, ${skipped.length} skipped (cap).`;
+      const reasons = failed.map((f) => `- ${f.slug}: ${reasonHeadline(f.reason)}`).join("\n");
+
       return {
         content: [
           {
             type: "text",
-            text: `Spawned ${spawned.length} worker(s), ${failed.length} failed to spawn, ${skipped.length} skipped (cap).`,
+            text: failed.length ? `${summary}\n${reasons}` : summary,
           },
         ],
         details: { spawned, failed, skipped },
