@@ -108,19 +108,54 @@ class WcGuardTestCase(unittest.TestCase):
         )
 
     def test_concurrent_overlap_stays_active_until_both_exit(self) -> None:
-        p1 = subprocess.Popen([str(WC_GUARD), "bash", "-c", "sleep 0.1"], env=self.env)
-        self.addCleanup(lambda: p1.poll() is None and p1.kill())
-        time.sleep(0.03)
-        p2 = subprocess.Popen([str(WC_GUARD), "bash", "-c", "sleep 0.25"], env=self.env)
-        self.addCleanup(lambda: p2.poll() is None and p2.kill())
+        # `cat` blocks on stdin, so the test controls each wrapped command's
+        # lifetime by closing the pipe — no wall-clock sleeps, no timing
+        # race: every state transition below is either polled for (both
+        # wrappers registered, both exited) or already an established fact
+        # (p2 registered when we assert it keeps the guard active). The
+        # previous revision asserted on a fixed sleep margin, which flaked
+        # on CI when p2's registration lost the race against p1's exit.
+        def spawn() -> subprocess.Popen:
+            return subprocess.Popen(
+                [str(WC_GUARD), "cat"], env=self.env, stdin=subprocess.PIPE
+            )
 
-        self.assertTrue(self._wait_until(watchcommit.guard_active))
-        p1.wait(timeout=3)
+        def terminate(proc: subprocess.Popen) -> None:
+            if proc.poll() is not None:
+                return
+            assert proc.stdin is not None
+            proc.stdin.close()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=3)
+
+        def registered(pid: int) -> bool:
+            # Same validity test guard_active() applies: an entry counts
+            # only when its recorded start-time matches the live process.
+            entry = self.guard_pid_dir / str(pid)
+            if not entry.exists():
+                return False
+            recorded = entry.read_text().strip()
+            actual = watchcommit._proc_start_time(pid)
+            return actual is not None and actual == recorded
+
+        p1 = spawn()
+        self.addCleanup(terminate, p1)
+        p2 = spawn()
+        self.addCleanup(terminate, p2)
+
+        self.assertTrue(
+            self._wait_until(lambda: registered(p1.pid) and registered(p2.pid)),
+            "guards never registered",
+        )
+        terminate(p1)
         # p1 exited but p2 is still registered — must still be paused.
         self.assertTrue(
             watchcommit.guard_active(), "un-paused too early while p2 still running"
         )
-        p2.wait(timeout=3)
+        terminate(p2)
         self.assertTrue(
             self._wait_until(lambda: not watchcommit.guard_active()),
             "guard_active stayed True after both exited",
