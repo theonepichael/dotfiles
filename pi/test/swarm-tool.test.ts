@@ -207,6 +207,81 @@ describe("parsePicker", () => {
   });
 });
 
+// Scrollback above a live picker, holding a numbered list that is not an
+// option list. Captured shape from the 2026-09-02 ultrareview: the plan line
+// "1. Merge to main and push" parsed as option 1 and navigationKeys computed
+// arrow presses from that fabricated index.
+const PICKER_BELOW_A_NUMBERED_PLAN = `
+ Here is the plan I intend to follow:
+
+ 1. Merge to main and push
+ 2. Remove the worktree
+ 3. Close the item
+
+─────────────────────────────────────────────────────────────────────────────────────
+ Commit
+ Commit these changes?
+
+> 1. Commit now (Recommended)
+     Commit the current changes right away.
+  2. Stop here
+     Leave the changes uncommitted and stop.
+  3. Something else (type it)
+     Answer in your own words instead.
+
+ ↑↓ navigate • Enter to select • Esc to cancel
+─────────────────────────────────────────────────────────────────────────────────────
+~/dotfiles (main)`;
+
+describe("parsePicker anchoring", () => {
+  // THE DEFECT. OPTION_LINE matched any numbered line in the 500 lines of
+  // scrollback `agent read` returns, with no anchor to the live picker, so a
+  // plan list above the picker became the option list.
+  test("reads the live picker, not a numbered list in the scrollback above it", () => {
+    const parsed = parsePicker(PICKER_BELOW_A_NUMBERED_PLAN);
+
+    expect(parsed.options.map((o) => o.label)).toEqual([
+      "Commit now (Recommended)",
+      "Stop here",
+      "Something else (type it)",
+    ]);
+    expect(parsed.selectedIndex).toBe(1);
+  });
+
+  test("the real single-picker capture still parses unchanged", () => {
+    const parsed = parsePicker(REAL_PICKER_OUTPUT);
+    expect(parsed.options.map((o) => o.label)).toEqual([
+      "OK",
+      "Cancel",
+      "Something else (type it)",
+    ]);
+    expect(parsed.selectedIndex).toBe(1);
+  });
+
+  test("content with no picker at all yields no options", () => {
+    const parsed = parsePicker("1. not a picker\n2. still not a picker\n");
+    expect(parsed.options).toEqual([]);
+    expect(parsed.selectedIndex).toBeNull();
+  });
+
+  // question-tool renders `${i + 1}.`, so a real picker's indices are always
+  // contiguous from 1. Anything else means the window caught something that
+  // is not an option list, and guessing from it is how the wrong option got
+  // submitted -- report nothing and let the caller fall back to needs_manual.
+  test("non-contiguous indices inside the window are rejected outright", () => {
+    const broken = PICKER_BELOW_A_NUMBERED_PLAN.replace("  2. Stop here", "  7. Stop here");
+    expect(parsePicker(broken).options).toEqual([]);
+  });
+
+  test("a multi-select picker's footer anchors just as well", () => {
+    const multi = PICKER_BELOW_A_NUMBERED_PLAN.replace(
+      "↑↓ navigate • Enter to select • Esc to cancel",
+      "↑↓ navigate • Space to toggle • Enter to confirm • Esc to cancel",
+    );
+    expect(parsePicker(multi).options).toHaveLength(3);
+  });
+});
+
 describe("matchOption", () => {
   const options = parsePicker(REAL_PICKER_OUTPUT).options;
 
@@ -236,6 +311,54 @@ describe("matchOption", () => {
 
   test("blank answer never matches", () => {
     expect(matchOption("   ", options)).toBeNull();
+  });
+});
+
+describe("matchOption safety", () => {
+  const commitGate = [
+    { index: 1, label: "Commit now (Recommended)" },
+    { index: 2, label: "Stop here" },
+    { index: 3, label: "Something else (type it)" },
+  ];
+
+  // THE DEFECT, and the worst one in the relay path. The bare substring
+  // fallback made "no" a single unambiguous match for "Commit now
+  // (Recommended)" -- the label contains those two letters inside "now", the
+  // other label does not -- so the user said no and the worker committed.
+  // Reproduced live on 2026-09-02 against a real picker.
+  test("a short answer never matches inside a longer word", () => {
+    expect(matchOption("no", commitGate)).toBeNull();
+    expect(matchOption("No", commitGate)).toBeNull();
+  });
+
+  test("an answer that is a whole word in exactly one label still matches", () => {
+    expect(matchOption("Stop here", commitGate)?.label).toBe("Stop here");
+    expect(matchOption("stop", commitGate)?.label).toBe("Stop here");
+    expect(matchOption("commit now", commitGate)?.label).toBe("Commit now (Recommended)");
+  });
+
+  // Exact match is checked before any fuzzy rule, so a genuinely short
+  // option label stays answerable.
+  test("a short answer still matches a label that IS that word", () => {
+    const yesNo = [
+      { index: 1, label: "Yes" },
+      { index: 2, label: "No" },
+    ];
+    expect(matchOption("no", yesNo)?.label).toBe("No");
+    expect(matchOption("YES", yesNo)?.label).toBe("Yes");
+  });
+
+  test("an answer matching several labels stays ambiguous", () => {
+    const both = [
+      { index: 1, label: "Commit and push" },
+      { index: 2, label: "Commit only" },
+    ];
+    expect(matchOption("commit", both)).toBeNull();
+  });
+
+  test("the free-text escape is never auto-selected", () => {
+    expect(matchOption("Something else (type it)", commitGate)).toBeNull();
+    expect(matchOption("type it", commitGate)).toBeNull();
   });
 });
 
