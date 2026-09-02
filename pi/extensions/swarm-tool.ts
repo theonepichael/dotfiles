@@ -735,6 +735,23 @@ export default function (pi: ExtensionAPI) {
   }
 
   /**
+   * Closes a worker's pane on a path that is dropping it from state anyway.
+   *
+   * Dropping the state entry without this leaves a live pi in a pane nothing
+   * will ever poll, answer, or clean up, and every later split subdivides the
+   * layout around it. A close that fails must not throw: the relay failure
+   * being reported is the root cause, and a cleanup problem never replaces it
+   * -- the same rule failWithPane follows on the spawn side.
+   */
+  async function closeWorkerPane(paneId: string, signal?: AbortSignal): Promise<void> {
+    try {
+      await herdr(pi, buildPaneCloseArgv(paneId), signal);
+    } catch {
+      // Pane already gone, or herdr unresponsive -- nothing left to clean up.
+    }
+  }
+
+  /**
    * Waits for the worker to state, in its own ack file, that its bash
    * permission gate came down.
    *
@@ -1140,9 +1157,22 @@ export default function (pi: ExtensionAPI) {
       for (const w of active) armWait(rt, w, timeoutMs);
 
       if (active.length === 0 && rt.pendingEvents.length === 0) {
+        // A worker parked at awaiting_relay is not an empty pool: it is a live
+        // pi holding an open pane, waiting on an answer only the orchestrator
+        // can give. Reporting it as nothing left to do ended the run with that
+        // worker and its pane still there. It deliberately gets no armWait --
+        // it is blocked on the orchestrator, not on herdr, so a wait would
+        // never fire and the poll below would hang on a promise nothing
+        // resolves. Naming it instead is what lets the run continue.
+        const awaitingRelay = state.workers.filter((w) => w.lifecycle === "awaiting_relay");
+        const text = awaitingRelay.length
+          ? `No active workers to poll. ${awaitingRelay.length} worker(s) awaiting a relay -- answer each with swarm_resolve_blocked before polling again: ${awaitingRelay
+              .map((w) => `${w.agent} (${w.slug}, pane ${w.paneId})`)
+              .join(", ")}.`
+          : "No active workers to poll.";
         return {
-          content: [{ type: "text", text: "No active workers to poll." }],
-          details: { events: [] },
+          content: [{ type: "text", text }],
+          details: { events: [] as PollEvent[] },
         };
       }
 
@@ -1292,6 +1322,7 @@ export default function (pi: ExtensionAPI) {
         signal,
       );
       if (keysResult.code !== 0) {
+        await closeWorkerPane(worker.paneId, signal);
         state.workers = state.workers.filter((w) => w.agent !== typed.agent);
         persist(state);
         return {
@@ -1310,22 +1341,44 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
+      // Wait for the states a worker that ANSWERED reaches, and let a worker
+      // that did not answer fall out as a timeout. Both halves are measured
+      // against real herdr 0.8.2, not assumed:
+      //
+      //   `working` -- a correct answer resumes the worker's turn, so it goes
+      //   blocked -> working and stays there for as long as the turn runs
+      //   (3.7s in one measured run, indefinitely for real work). The old set
+      //   asked only for idle/done/blocked, so herdr waited out the whole
+      //   window and returned a timeout, reported here as relay_failed on
+      //   what is the normal success path. Only an answer that happened to
+      //   finish its turn inside 5s was ever called resolved.
+      //
+      //   no `blocked` -- herdr does not observe the answer instantly. The
+      //   status stays `blocked` for the first ~90-156ms after send-keys
+      //   (measured), which is longer than the single herdr call between
+      //   send-keys and this wait. With `blocked` in the set, that race made
+      //   herdr match it in ~2ms and report relay_failed on a successful
+      //   answer. Leaving it out costs a genuinely stuck worker the full 5s
+      //   before it fails, and buys correctness on every answer that worked.
+      //
+      // A worker that answers one picker straight into another is reported
+      // resolved off its transient `working`; swarm_poll's own wait picks the
+      // new block up, which is where a blocked worker is meant to surface.
       const verify = await herdr(
         pi,
-        buildAgentWaitArgv(typed.agent, ["idle", "done", "blocked"], RESOLVE_VERIFY_TIMEOUT_MS),
+        buildAgentWaitArgv(typed.agent, ["idle", "done", "working"], RESOLVE_VERIFY_TIMEOUT_MS),
         signal,
       );
-      const stillBlocked =
-        classifyWaitResult(verify.code, verify.stdout, verify.stderr) === "blocked";
 
-      if (verify.code !== 0 || stillBlocked) {
+      if (verify.code !== 0) {
+        await closeWorkerPane(worker.paneId, signal);
         state.workers = state.workers.filter((w) => w.agent !== typed.agent);
         persist(state);
         return {
           content: [
             {
               type: "text",
-              text: `relay_failed: ${typed.agent} did not leave blocked after "${target.label}" was submitted.`,
+              text: `relay_failed: ${typed.agent} did not resume within ${RESOLVE_VERIFY_TIMEOUT_MS} ms after "${target.label}" was submitted.`,
             },
           ],
           details: {
