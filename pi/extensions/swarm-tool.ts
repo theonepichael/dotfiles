@@ -29,6 +29,27 @@ import { Type } from "typebox";
 //   4. There is no `agent send-text`; answering a blocked picker means
 //      driving it via `agent send-keys` arrow-key navigation (confirmed:
 //      "down"/"up" move the rendered `>` marker, "enter" submits).
+//
+// A fifth gap surfaced later, live, on a real multi-item swarm run: an
+// earlier version of swarm_poll raced every active worker's `herdr agent
+// wait` call and ABORTED every non-winner the instant any one settled --
+// including workers that were still genuinely active or had just reached a
+// real blocked state. `pi.exec`'s underlying execCommand (dist/core/exec.js)
+// always RESOLVES, even on abort, coercing a signal-killed process's null
+// exit code to 0 -- so a killed wait call could resolve with exitCode 0 and
+// empty stdout, which fell into classifyWaitResult's old fallback bucket
+// and got reported as a false timed_out. Confirmed live: a worker that had
+// actually finished successfully (dev_status.py showed status: done) and
+// another that had reached a genuine blocked question were both misreported
+// this way. Fix: no aborting at all. Each active worker gets exactly one
+// long-running `agent wait` call, armed once and never killed -- losers of
+// a race just keep running toward their own --timeout, feeding a shared
+// per-run event queue as they naturally resolve. classifyWaitResult also no
+// longer folds every non-timeout nonzero exit into "timed_out" -- only
+// herdr's own `{"error":{"code":"timeout"}}` (on stderr) counts as a real
+// timeout; anything else (agent_not_found, a crash, an unparseable
+// response) is reported as "error" instead, with the raw detail attached,
+// rather than silently mislabeled as a timeout that never happened.
 
 const HERDR_STATE_DIR = join(homedir(), ".pi", "agent", "state");
 
@@ -60,7 +81,7 @@ export interface SwarmState {
   workers: WorkerRecord[];
 }
 
-export type PollEventKind = "blocked" | "finished" | "timed_out";
+export type PollEventKind = "blocked" | "finished" | "timed_out" | "error";
 
 export interface PollEvent {
   kind: PollEventKind;
@@ -69,6 +90,7 @@ export interface PollEvent {
   paneId: string;
   rawPrompt?: string; // blocked only
   truncated?: boolean; // blocked only
+  detail?: string; // timed_out/error only -- the raw herdr error detail, for an honest digest
 }
 
 // ---------------------------------------------------------------------------
@@ -213,28 +235,47 @@ export function buildAgentListArgv(): string[] {
 
 interface HerdrEnvelope {
   result?: { agent_status?: string; agents?: { agent_session?: unknown; pane_id?: string }[] };
+  error?: { code?: string; message?: string };
 }
 
-function parseHerdrJson(stdout: string): HerdrEnvelope | null {
+function parseHerdrJson(text: string): HerdrEnvelope | null {
   try {
-    return JSON.parse(stdout) as HerdrEnvelope;
+    return JSON.parse(text) as HerdrEnvelope;
   } catch {
     return null;
   }
 }
 
 /**
- * Classify a settled `herdr agent wait` result into blocked/finished/timed_out.
- * A nonzero exit that isn't a recognized settle is treated as timed_out --
- * concurrency-limits decision: never silently retried, always flagged.
+ * Classify a settled `herdr agent wait` result into blocked/finished/
+ * timed_out/error. herdr reports server errors as JSON on stderr with exit
+ * status 1 (confirmed live) -- only `{"error":{"code":"timeout"}}` counts as
+ * a genuine timeout. Any other nonzero exit (agent_not_found, a crash) or an
+ * exit-0 response with no recognized agent_status is "error", not silently
+ * folded into "timed_out" -- see this file's header comment for why that
+ * distinction matters (a killed-but-resolved exec call looks exactly like
+ * the exit-0/unrecognized-status case).
  */
-export function classifyWaitResult(exitCode: number, stdout: string): PollEventKind {
-  if (exitCode !== 0) return "timed_out";
-  const parsed = parseHerdrJson(stdout);
-  const status = parsed?.result?.agent_status;
-  if (status === "blocked") return "blocked";
-  if (status === "idle" || status === "done") return "finished";
-  return "timed_out";
+export function classifyWaitResult(
+  exitCode: number,
+  stdout: string,
+  stderr: string,
+): PollEventKind {
+  if (exitCode === 0) {
+    const status = parseHerdrJson(stdout)?.result?.agent_status;
+    if (status === "blocked") return "blocked";
+    if (status === "idle" || status === "done") return "finished";
+    return "error";
+  }
+  const code = parseHerdrJson(stderr)?.error?.code;
+  return code === "timeout" ? "timed_out" : "error";
+}
+
+/** The raw herdr error detail for a timed_out/error event -- for an honest digest, not just a bare label. */
+export function waitResultDetail(stdout: string, stderr: string): string {
+  const err = parseHerdrJson(stderr)?.error;
+  if (err) return `${err.code ?? "unknown"}: ${err.message ?? stderr.trim()}`;
+  return stdout.trim() || stderr.trim() || "(no output)";
 }
 
 /** Content that fills the requested line budget exactly is a truncation signal, not necessarily proof -- see plan section 4. */
@@ -339,31 +380,6 @@ export function canOpenNewPane(state: SwarmState): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-event collection -- the selection logic is pure and testable
-// independent of real async timing. swarm_poll's execute() attaches this to
-// a live Promise.allSettled snapshot; tests exercise it directly against a
-// fabricated snapshot.
-// ---------------------------------------------------------------------------
-
-export interface SettledWait {
-  agent: string;
-  slug: string;
-  paneId: string;
-  exitCode: number;
-  stdout: string;
-}
-
-/** Every already-settled result at the moment the race's winner resolved -- never just the winner alone (a same-tick second settlement must not be discarded). */
-export function collectSettledEvents(settled: readonly SettledWait[]): PollEvent[] {
-  return settled.map((s) => ({
-    kind: classifyWaitResult(s.exitCode, s.stdout),
-    agent: s.agent,
-    slug: s.slug,
-    paneId: s.paneId,
-  }));
-}
-
-// ---------------------------------------------------------------------------
 // Queue selection
 // ---------------------------------------------------------------------------
 
@@ -425,6 +441,57 @@ export default function (pi: ExtensionAPI) {
   function persist(state: SwarmState): void {
     activeRuns.set(state.runId, state);
     saveState(state);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Per-run wait tracking: exactly one long-running `herdr agent wait` call
+  // per active worker, armed once, never killed (the round-2 fix -- see this
+  // file's header comment). Each arm's own settlement pushes a classified
+  // event onto `pendingEvents`; `swarm_poll` drains whatever's queued, or
+  // waits for the next arrival. Purely in-process, not persisted -- a
+  // restart just re-arms fresh waits for whatever the reconciled state
+  // (which IS persisted) says is still active.
+  // ---------------------------------------------------------------------------
+
+  interface RunRuntime {
+    inFlight: Set<string>; // agent ids with a wait currently running
+    pendingEvents: PollEvent[];
+    waiters: (() => void)[]; // resolvers for swarm_poll calls currently waiting on the next event
+  }
+
+  const runtimes = new Map<string, RunRuntime>();
+
+  function getRuntime(runId: string): RunRuntime {
+    let rt = runtimes.get(runId);
+    if (!rt) {
+      rt = { inFlight: new Set(), pendingEvents: [], waiters: [] };
+      runtimes.set(runId, rt);
+    }
+    return rt;
+  }
+
+  /** Arms a worker's wait call if one isn't already running for it. Idempotent -- safe to call every time swarm_poll checks in on the active pool. */
+  function armWait(rt: RunRuntime, worker: WorkerRecord, timeoutMs: number): void {
+    if (rt.inFlight.has(worker.agent)) return;
+    rt.inFlight.add(worker.agent);
+    void herdr(pi, buildAgentWaitArgv(worker.agent, ["idle", "done", "blocked"], timeoutMs)).then(
+      (result) => {
+        rt.inFlight.delete(worker.agent);
+        const kind = classifyWaitResult(result.code, result.stdout, result.stderr);
+        const event: PollEvent = {
+          kind,
+          agent: worker.agent,
+          slug: worker.slug,
+          paneId: worker.paneId,
+        };
+        if (kind === "timed_out" || kind === "error") {
+          event.detail = waitResultDetail(result.stdout, result.stderr);
+        }
+        rt.pendingEvents.push(event);
+        const waiting = rt.waiters.splice(0);
+        for (const wake of waiting) wake();
+      },
+    );
   }
 
   pi.registerTool({
@@ -556,18 +623,19 @@ export default function (pi: ExtensionAPI) {
     name: "swarm_poll",
     label: "Swarm poll",
     description:
-      "Wait for at least one active swarm worker to settle (blocked/finished/timed_out), returning every event that settled in the same window.",
+      "Wait for at least one active swarm worker to settle (blocked/finished/timed_out/error), returning every event currently queued.",
     promptSnippet: "Wait for swarm workers to settle and report events",
     promptGuidelines: [
       "Blocks until >=1 active worker settles. Returns an array -- process every event in it, relaying each blocked event to the user one at a time, before calling swarm_poll again.",
       "A blocked event's raw_prompt is verbatim herdr output -- never assume it's a diff or a yes/no. Never send a blocked worker another agent prompt except the actual answer via swarm_resolve_blocked -- any prompt is interpreted as the gate's answer.",
-      "finished/timed_out events already closed their pane and freed their slot; if the READY queue still has items and the cap has headroom, call swarm_spawn again for the next batch.",
+      "timed_out means herdr's own wait deadline genuinely elapsed. error means something else went wrong (the agent disappeared, a crash, an unrecognized response) -- both close the pane, free the slot, and get flagged in the digest, never silently retried, but they are not the same failure and event.detail carries the raw reason.",
+      "finished/timed_out/error events already closed their pane and freed their slot; if the READY queue still has items and the cap has headroom, call swarm_spawn again for the next batch.",
     ],
     parameters: Type.Object({
       runId: Type.String(),
       timeoutMs: Type.Optional(
         Type.Number({
-          description: `Per-worker wait timeout. Default ${DEFAULT_WAIT_TIMEOUT_MS}.`,
+          description: `Per-worker wait timeout, applied the first time a given worker's wait is armed (a worker already being waited on keeps its original timeout). Default ${DEFAULT_WAIT_TIMEOUT_MS}.`,
         }),
       ),
     }),
@@ -575,51 +643,23 @@ export default function (pi: ExtensionAPI) {
       const typed = params as { runId: string; timeoutMs?: number };
       const state = await getOrInitState(typed.runId, DEFAULT_CONCURRENCY);
       const timeoutMs = typed.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
+      const rt = getRuntime(typed.runId);
 
       const active = state.workers.filter((w) => w.lifecycle === "active");
-      if (active.length === 0) {
+      for (const w of active) armWait(rt, w, timeoutMs);
+
+      if (active.length === 0 && rt.pendingEvents.length === 0) {
         return {
           content: [{ type: "text", text: "No active workers to poll." }],
           details: { events: [] },
         };
       }
 
-      const controllers = active.map(() => new AbortController());
-      const settled: SettledWait[] = [];
-      let winnerIndex = -1;
-
-      const waits = active.map((w, i) =>
-        herdr(
-          pi,
-          buildAgentWaitArgv(w.agent, ["idle", "done", "blocked"], timeoutMs),
-          controllers[i]!.signal,
-        ).then((result) => {
-          settled.push({
-            agent: w.agent,
-            slug: w.slug,
-            paneId: w.paneId,
-            exitCode: result.code,
-            stdout: result.stdout,
-          });
-          if (winnerIndex === -1) winnerIndex = i;
-          return result;
-        }),
-      );
-
-      await Promise.race(waits);
-      // Give same-tick settlements a chance to land before snapshotting --
-      // Promise.race resolves as soon as the first `.then` above runs, but
-      // other already-fulfilled promises' `.then` callbacks may not have
-      // flushed yet within the same microtask turn.
-      await Promise.resolve();
-
-      const winners = settled.slice(); // snapshot of everything settled so far
-      const settledAgents = new Set(winners.map((s) => s.agent));
-      for (const [i, w] of active.entries()) {
-        if (!settledAgents.has(w.agent)) controllers[i]!.abort();
+      if (rt.pendingEvents.length === 0) {
+        await new Promise<void>((resolve) => rt.waiters.push(resolve));
       }
 
-      const events = collectSettledEvents(winners);
+      const events = rt.pendingEvents.splice(0);
 
       for (const event of events) {
         const worker = state.workers.find((w) => w.agent === event.agent);
@@ -658,7 +698,7 @@ export default function (pi: ExtensionAPI) {
               .map((e) =>
                 e.kind === "blocked"
                   ? `${e.slug} (${e.agent}) is blocked${e.truncated ? " -- content may be truncated, inspect pane " + e.paneId + " directly" : ""}:\n${e.rawPrompt}`
-                  : `${e.slug} (${e.agent}) ${e.kind}`,
+                  : `${e.slug} (${e.agent}) ${e.kind}${e.detail ? `: ${e.detail}` : ""}`,
               )
               .join("\n\n"),
           },
@@ -763,9 +803,7 @@ export default function (pi: ExtensionAPI) {
         signal,
       );
       const stillBlocked =
-        verify.code === 0 &&
-        classifyWaitResult(verify.code, verify.stdout) === "blocked" &&
-        parseHerdrJson(verify.stdout)?.result?.agent_status === "blocked";
+        classifyWaitResult(verify.code, verify.stdout, verify.stderr) === "blocked";
 
       if (verify.code !== 0 || stillBlocked) {
         state.workers = state.workers.filter((w) => w.agent !== typed.agent);

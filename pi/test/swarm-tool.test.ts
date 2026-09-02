@@ -16,7 +16,6 @@ import {
   canOpenNewPane,
   canSpawnNew,
   classifyWaitResult,
-  collectSettledEvents,
   loadState,
   looksTruncated,
   matchOption,
@@ -29,6 +28,7 @@ import {
   saveState,
   spawnBudget,
   statePath,
+  waitResultDetail,
   type SwarmState,
   type WorkerRecord,
 } from "../extensions/swarm-tool";
@@ -233,30 +233,63 @@ describe("navigationKeys", () => {
 describe("classifyWaitResult", () => {
   test("blocked status maps to blocked", () => {
     const stdout = JSON.stringify({ result: { agent_status: "blocked" } });
-    expect(classifyWaitResult(0, stdout)).toBe("blocked");
+    expect(classifyWaitResult(0, stdout, "")).toBe("blocked");
   });
 
   test("idle or done status maps to finished", () => {
-    expect(classifyWaitResult(0, JSON.stringify({ result: { agent_status: "idle" } }))).toBe(
+    expect(classifyWaitResult(0, JSON.stringify({ result: { agent_status: "idle" } }), "")).toBe(
       "finished",
     );
-    expect(classifyWaitResult(0, JSON.stringify({ result: { agent_status: "done" } }))).toBe(
+    expect(classifyWaitResult(0, JSON.stringify({ result: { agent_status: "done" } }), "")).toBe(
       "finished",
     );
   });
 
-  test("nonzero exit is always timed_out, regardless of stdout", () => {
-    expect(classifyWaitResult(1, "")).toBe("timed_out");
-    expect(classifyWaitResult(1, JSON.stringify({ result: { agent_status: "blocked" } }))).toBe(
-      "timed_out",
-    );
+  test("a genuine herdr timeout error on stderr maps to timed_out", () => {
+    // real captured shape: exit 1, {"error":{"code":"timeout",...}} on stderr
+    const stderr = JSON.stringify({
+      error: { code: "timeout", message: "timed out waiting for agent status" },
+      id: "cli:agent:wait",
+    });
+    expect(classifyWaitResult(1, "", stderr)).toBe("timed_out");
   });
 
-  test("unparseable or unrecognized status on a zero exit falls back to timed_out, not a crash", () => {
-    expect(classifyWaitResult(0, "not json")).toBe("timed_out");
-    expect(classifyWaitResult(0, JSON.stringify({ result: { agent_status: "unknown" } }))).toBe(
-      "timed_out",
+  test("any other nonzero exit is 'error', not silently folded into timed_out", () => {
+    // this is the live-discovered bug under direct test: agent_not_found,
+    // a killed process, or any error other than a genuine timeout must be
+    // distinguishable from a real 30-minute deadline elapsing.
+    const agentNotFound = JSON.stringify({
+      error: { code: "agent_not_found", message: "agent target w1 not found" },
+    });
+    expect(classifyWaitResult(1, "", agentNotFound)).toBe("error");
+    expect(classifyWaitResult(1, "", "")).toBe("error"); // unparseable/empty stderr, still not a timeout
+    expect(classifyWaitResult(2, "", "some CLI usage error")).toBe("error");
+  });
+
+  test("unparseable or unrecognized status on a zero exit is 'error', not a crash and not timed_out", () => {
+    // this is exactly the shape a killed-but-resolved exec call produces
+    // (code coerced to 0, empty/partial stdout) -- must not look like a
+    // real settle or a real timeout.
+    expect(classifyWaitResult(0, "not json", "")).toBe("error");
+    expect(classifyWaitResult(0, JSON.stringify({ result: { agent_status: "unknown" } }), "")).toBe(
+      "error",
     );
+    expect(classifyWaitResult(0, "", "")).toBe("error");
+  });
+});
+
+describe("waitResultDetail", () => {
+  test("prefers the structured herdr error message when present", () => {
+    const stderr = JSON.stringify({
+      error: { code: "agent_not_found", message: "agent target w1 not found" },
+    });
+    expect(waitResultDetail("", stderr)).toBe("agent_not_found: agent target w1 not found");
+  });
+
+  test("falls back to raw stdout, then stderr, then a placeholder", () => {
+    expect(waitResultDetail("some raw output", "")).toBe("some raw output");
+    expect(waitResultDetail("", "raw stderr text")).toBe("raw stderr text");
+    expect(waitResultDetail("", "")).toBe("(no output)");
   });
 });
 
@@ -366,61 +399,6 @@ describe("spawnBudget", () => {
       ),
     });
     expect(spawnBudget(over, 10)).toBe(0);
-  });
-});
-
-describe("collectSettledEvents", () => {
-  test("returns one event per settled wait, in the order given", () => {
-    const events = collectSettledEvents([
-      {
-        agent: "w1",
-        slug: "a",
-        paneId: "p1",
-        exitCode: 0,
-        stdout: JSON.stringify({ result: { agent_status: "blocked" } }),
-      },
-      {
-        agent: "w2",
-        slug: "b",
-        paneId: "p2",
-        exitCode: 0,
-        stdout: JSON.stringify({ result: { agent_status: "idle" } }),
-      },
-    ]);
-    expect(events).toEqual([
-      { kind: "blocked", agent: "w1", slug: "a", paneId: "p1" },
-      { kind: "finished", agent: "w2", slug: "b", paneId: "p2" },
-    ]);
-  });
-
-  test("a same-tick second settlement is returned as a second event, not dropped", () => {
-    // this is the round-1/round-2 fix under direct test: the selection logic
-    // must never silently keep only the first of several already-settled
-    // results.
-    const settled = [
-      {
-        agent: "w1",
-        slug: "a",
-        paneId: "p1",
-        exitCode: 0,
-        stdout: JSON.stringify({ result: { agent_status: "blocked" } }),
-      },
-      {
-        agent: "w2",
-        slug: "b",
-        paneId: "p2",
-        exitCode: 0,
-        stdout: JSON.stringify({ result: { agent_status: "blocked" } }),
-      },
-      {
-        agent: "w3",
-        slug: "c",
-        paneId: "p3",
-        exitCode: 0,
-        stdout: JSON.stringify({ result: { agent_status: "idle" } }),
-      },
-    ];
-    expect(collectSettledEvents(settled)).toHaveLength(3);
   });
 });
 
