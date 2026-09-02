@@ -1288,3 +1288,258 @@ describe("buildPaneLayoutArgv / parseCurrentPaneRect", () => {
     ).toBeUndefined();
   });
 });
+
+describe("swarm_resolve_blocked execute() wiring", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-resolve-exec-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const RUN = "resolverun";
+  const AGENT = "resolverun-w1";
+  const PANE = "w1:pZ";
+
+  /**
+   * Stands in for herdr's own `agent wait`: returns the agent once it reaches
+   * a state the caller actually asked for, and a real timeout envelope when
+   * the requested set never matches. Modelling the deadline this way is the
+   * whole point -- the bug is that the requested set omitted the state the
+   * worker actually reaches.
+   */
+  const waitLike =
+    (reachedStatus: string) =>
+    (argv: string[]): { code: number; stdout: string; stderr: string } => {
+      const until = argv.filter((a, i) => argv[i - 1] === "--until");
+      if (until.includes(reachedStatus)) {
+        return { code: 0, stdout: realWaitEnvelope(reachedStatus, AGENT, PANE), stderr: "" };
+      }
+      return {
+        code: 1,
+        stdout: "",
+        stderr: JSON.stringify({ error: { code: "timeout", message: "deadline elapsed" } }),
+      };
+    };
+
+  /** Seeds one worker parked at awaiting_relay -- the state swarm_poll leaves a blocked worker in. */
+  function setup(
+    respond: (argv: string[]) => { code: number; stdout: string; stderr: string } | undefined,
+  ) {
+    const worker: WorkerRecord = {
+      agent: AGENT,
+      slug: "some-item",
+      paneId: PANE,
+      lifecycle: "awaiting_relay",
+    };
+    saveState({ runId: RUN, concurrency: 2, nextCounter: 1, workers: [worker] }, dir);
+
+    const stub = makeStubPi((argv) => {
+      const override = respond(argv);
+      if (override) return override;
+      const [a, b] = argv;
+      if (a === "agent" && b === "list") {
+        // getOrInitState reconciles against this; an empty list would drop the
+        // seeded worker before the code under test ever runs.
+        return {
+          code: 0,
+          stdout: JSON.stringify({ result: { agents: [{ name: AGENT }] } }),
+          stderr: "",
+        };
+      }
+      if (a === "agent" && b === "read") {
+        // Numbered lines: parsePicker reads "> 1. OK" shapes, so an
+        // unnumbered list parses to zero options and short-circuits to
+        // needsManual before any of this reaches the verify.
+        return { code: 0, stdout: REAL_PICKER_OUTPUT, stderr: "" };
+      }
+      if (a === "agent" && b === "get") {
+        return { code: 0, stdout: realWaitEnvelope("blocked", AGENT, PANE), stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const resolve = stub.tools.get("swarm_resolve_blocked");
+    if (!resolve) throw new Error("swarm_resolve_blocked was never registered");
+    return { resolve, stub };
+  }
+
+  const run = (resolve: { execute: (...a: never[]) => Promise<unknown> }, answer = "OK") =>
+    resolve.execute(
+      ...(["call-1", { runId: RUN, agent: AGENT, answer }, undefined] as unknown as never[]),
+    ) as Promise<{
+      content: { type: string; text: string }[];
+      details: { relayFailed: boolean; needsManual: boolean };
+    }>;
+
+  const paneCloses = (stub: { calls: ExecCall[] }) =>
+    stub.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "close");
+
+  // THE REGRESSION. A worker that answers correctly resumes its turn and
+  // enters `working`. Pre-fix the verify asked only for idle/done/blocked, so
+  // herdr waited out the full window and returned a timeout, and the tool
+  // reported relay_failed on what is in fact the normal success path.
+  test("a worker that answers and resumes into working is resolved, not relay_failed", async () => {
+    const { resolve, stub } = setup((argv) =>
+      argv[0] === "agent" && argv[1] === "wait" ? waitLike("working")(argv) : undefined,
+    );
+
+    const res = await run(resolve);
+
+    expect(res.details.relayFailed).toBe(false);
+    expect(res.content[0]?.text).toContain("back in the active pool");
+    expect(paneCloses(stub)).toHaveLength(0);
+    const persisted = loadState(RUN, dir);
+    expect(persisted?.workers[0]?.lifecycle).toBe("active");
+  });
+
+  // An answer that ends the worker's turn outright must still pass -- the
+  // point is to widen the accepted set, not to swap one narrow set for another.
+  test("a worker that goes straight to idle is still resolved", async () => {
+    const { resolve } = setup((argv) =>
+      argv[0] === "agent" && argv[1] === "wait" ? waitLike("idle")(argv) : undefined,
+    );
+
+    const res = await run(resolve);
+
+    expect(res.details.relayFailed).toBe(false);
+    expect(loadState(RUN, dir)?.workers[0]?.lifecycle).toBe("active");
+  });
+
+  // A worker that never answers reaches none of the requested states, so the
+  // wait times out -- that timeout IS the failure signal now.
+  test("a worker still blocked after the answer is a genuine relay_failed", async () => {
+    const { resolve, stub } = setup((argv) =>
+      argv[0] === "agent" && argv[1] === "wait" ? waitLike("blocked")(argv) : undefined,
+    );
+
+    const res = await run(resolve);
+
+    expect(res.details.relayFailed).toBe(true);
+    // Dropping the worker from state without closing its pane leaves a live
+    // pi in an orphan pane that nothing will ever poll or clean up.
+    expect(paneCloses(stub)).toHaveLength(1);
+    expect(loadState(RUN, dir)?.workers).toHaveLength(0);
+  });
+
+  // THE RACE, pinned. Measured against real herdr 0.8.2: after send-keys the
+  // status still reads `blocked` for ~90-156ms, which is longer than the one
+  // herdr call between send-keys and the verify. Asking for `blocked` made
+  // herdr match it in ~2ms and fail a worker that had in fact answered, so
+  // the requested set must not contain it at all.
+  test("never asks herdr for blocked, so the post-answer race cannot fail a good relay", async () => {
+    const { resolve, stub } = setup((argv) =>
+      argv[0] === "agent" && argv[1] === "wait" ? waitLike("working")(argv) : undefined,
+    );
+
+    await run(resolve);
+
+    const waitCall = stub.calls.find((c) => c.argv[0] === "agent" && c.argv[1] === "wait");
+    const until = waitCall?.argv.filter((a, i) => waitCall.argv[i - 1] === "--until") ?? [];
+    expect(until).not.toContain("blocked");
+    expect(until).toContain("working");
+    expect(until).toContain("idle");
+    expect(until).toContain("done");
+  });
+
+  test("a send-keys failure closes the pane instead of leaking it", async () => {
+    const { resolve, stub } = setup((argv) =>
+      argv[0] === "agent" && argv[1] === "send-keys"
+        ? { code: 1, stdout: "", stderr: "send-keys refused" }
+        : undefined,
+    );
+
+    const res = await run(resolve);
+
+    expect(res.details.relayFailed).toBe(true);
+    expect(paneCloses(stub)).toHaveLength(1);
+    expect(loadState(RUN, dir)?.workers).toHaveLength(0);
+  });
+
+  test("a pane close that fails does not mask the relay failure", async () => {
+    const { resolve } = setup((argv) => {
+      if (argv[0] === "agent" && argv[1] === "wait") return waitLike("blocked")(argv);
+      if (argv[0] === "pane" && argv[1] === "close") throw new Error("pane already gone");
+      return undefined;
+    });
+
+    const res = await run(resolve);
+
+    expect(res.details.relayFailed).toBe(true);
+    expect(res.content[0]?.text).toContain("did not resume");
+  });
+});
+
+describe("swarm_poll and workers parked at awaiting_relay", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-poll-relay-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // swarm_poll counted only `active`, so a worker parked at awaiting_relay --
+  // a live pi holding an open pane, waiting on the orchestrator -- read as an
+  // empty pool. The run ended reporting nothing left to do while that worker
+  // and its pane were still there.
+  test("says the worker is awaiting a relay rather than reporting an empty pool", async () => {
+    const runId = "relayrun";
+    saveState(
+      {
+        runId,
+        concurrency: 2,
+        nextCounter: 1,
+        workers: [
+          {
+            agent: "relayrun-w1",
+            slug: "stuck-item",
+            paneId: "w1:pQ",
+            lifecycle: "awaiting_relay",
+          },
+        ],
+      },
+      dir,
+    );
+
+    const stub = makeStubPi((argv) =>
+      argv[0] === "agent" && argv[1] === "list"
+        ? {
+            code: 0,
+            // reconcileState prunes against this; an empty list would drop the
+            // parked worker before the emptiness check ever sees it.
+            stdout: JSON.stringify({ result: { agents: [{ name: "relayrun-w1" }] } }),
+            stderr: "",
+          }
+        : { code: 0, stdout: "", stderr: "" },
+    );
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+
+    const res = (await poll.execute(
+      ...(["call-1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { content: { type: string; text: string }[] };
+
+    const text = res.content.map((c) => c.text).join("\n");
+    expect(text).not.toBe("No active workers to poll.");
+    expect(text).toContain("relayrun-w1");
+    expect(text).toContain("swarm_resolve_blocked");
+  });
+});

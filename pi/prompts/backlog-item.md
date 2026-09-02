@@ -366,7 +366,11 @@ concurrency/pane-cap accounting.
      left and the cap has headroom — no separate `swarm_spawn` call needed
      mid-run.
 3. Repeat step 2 until `swarm_poll` reports no active workers and the
-   digest accounts for the whole queue.
+   digest accounts for the whole queue. "No active workers" on its own is
+   not the end of the run: when workers are still parked awaiting a relay,
+   `swarm_poll` names them and the answer each is waiting on is still owed —
+   resolve those with `swarm_resolve_blocked` before treating the queue as
+   drained, or the run ends with a live worker holding an open pane.
 4. **End of run** — same shape as `--auto`'s: a dashboard-style summary of
    every item (done, flagged, timed out), then walk any accumulated
    proactive-capture digest entries exactly as `--auto`'s own end-of-run
