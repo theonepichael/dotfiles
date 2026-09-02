@@ -100,6 +100,11 @@ dest = "~/.tmux.conf"
 src = "alacritty/alacritty.toml"
 dest = "~/.config/alacritty/alacritty.toml"
 
+[[link]]
+src = "herdr/config.toml"
+dest = "~/.config/herdr/config.toml"
+
+
 # ── Claude Code wiring ───────────────────────────────────────────────────
 
 [[link]]

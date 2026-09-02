@@ -1,0 +1,64 @@
+# ~/.config/herdr/config.toml
+onboarding = false
+
+[keys]
+prefix = "ctrl+a"
+
+# --- Splits & Navigation (matching Neovim <Leader>v, <Leader>u, <Leader>h/j/k/l) ---
+split_vertical = "prefix+v"
+split_horizontal = "prefix+u"
+focus_pane_left = "prefix+h"
+focus_pane_down = "prefix+j"
+focus_pane_up = "prefix+k"
+focus_pane_right = "prefix+l"
+cycle_pane_next = "prefix+space"
+
+# --- Pane Resizing (matching Neovim & tmux Ctrl+Arrow keys) ---
+resize_pane_left = "ctrl+left"
+resize_pane_down = "ctrl+down"
+resize_pane_up = "ctrl+up"
+resize_pane_right = "ctrl+right"
+
+# --- Agent Cycling & Focus (Vim-bracket style) ---
+next_agent = "prefix+]"
+previous_agent = "prefix+["
+focus_agent = "prefix+alt+1..9"
+open_notification_target = "prefix+o"
+
+# --- Tabs & Panes ---
+new_tab = "prefix+t"
+close_tab = "prefix+shift+x"
+next_tab = "prefix+n"
+previous_tab = "prefix+p"
+switch_tab = "prefix+1..9"
+close_pane = "prefix+x"
+zoom = "prefix+z"
+
+# --- Sidebar & Workspace Management ---
+toggle_sidebar = "prefix+b"
+workspace_picker = "prefix+w"
+new_workspace = "prefix+shift+n"
+new_worktree = "prefix+shift+g"
+rename_workspace = "prefix+shift+w"
+close_workspace = "prefix+shift+d"
+
+# --- General ---
+reload_config = "prefix+r"
+detach = "prefix+q"
+help = "prefix+?"
+
+# --- Everforest Dark Palette (matches Neovim 'sainnhe/everforest') ---
+[theme.custom]
+sidebar_bg = "#232a2e"
+active_row_bg = "#343f44"
+selection_bg = "#3d484d"
+panel_bg = "reset"
+accent = "#a7c080"
+red = "#e67e80"
+green = "#a7c080"
+
+[ui]
+pane_borders = true
+pane_gaps = true
+agent_panel_sort = "spaces"
+tab_bar_right = [{ type = "hostname" }, { type = "datetime" }]
