@@ -486,34 +486,47 @@ export default function (pi: ExtensionAPI) {
 
       const answers: Answer[] = [];
 
-      for (let i = 0; i < typed.questions.length; i++) {
-        const spec = typed.questions[i];
-        const position = typed.questions.length > 1 ? ` (${i + 1}/${typed.questions.length})` : "";
+      // herdr's pi integration (herdr-agent-state.ts) reports "blocked" only
+      // when told to via this event -- it does no screen-scraping once its
+      // lifecycle hook is active (confirmed live: without this emit, a pane
+      // showing this tool's interactive picker still reported agent_status
+      // "working", indistinguishable from real progress). label surfaces in
+      // `herdr agent get`/`agent read` for anything watching over the socket
+      // API, e.g. a swarm-tool.ts orchestrator relaying a blocked worker.
+      pi.events.emit("herdr:blocked", { active: true, label: typed.questions[0]?.question });
+      try {
+        for (let i = 0; i < typed.questions.length; i++) {
+          const spec = typed.questions[i];
+          const position =
+            typed.questions.length > 1 ? ` (${i + 1}/${typed.questions.length})` : "";
 
-        const result =
-          ctx.mode === "tui"
-            ? await askViaCustomUI(ctx, spec, position)
-            : await askViaSelect(ctx, spec);
+          const result =
+            ctx.mode === "tui"
+              ? await askViaCustomUI(ctx, spec, position)
+              : await askViaSelect(ctx, spec);
 
-        if (!result) {
-          return {
-            content: [{ type: "text", text: formatCancellation(answers) }],
-            details: { cancelled: true, answers } as QuestionDetails,
-          };
+          if (!result) {
+            return {
+              content: [{ type: "text", text: formatCancellation(answers) }],
+              details: { cancelled: true, answers } as QuestionDetails,
+            };
+          }
+
+          answers.push({
+            header: spec.header.trim(),
+            question: spec.question,
+            selected: result.selected,
+            wasCustom: result.wasCustom,
+          });
         }
 
-        answers.push({
-          header: spec.header.trim(),
-          question: spec.question,
-          selected: result.selected,
-          wasCustom: result.wasCustom,
-        });
+        return {
+          content: [{ type: "text", text: formatAnswers(answers) }],
+          details: { cancelled: false, answers } as QuestionDetails,
+        };
+      } finally {
+        pi.events.emit("herdr:blocked", { active: false });
       }
-
-      return {
-        content: [{ type: "text", text: formatAnswers(answers) }],
-        details: { cancelled: false, answers } as QuestionDetails,
-      };
     },
 
     renderCall(args, theme) {

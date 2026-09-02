@@ -1,14 +1,18 @@
 ---
-description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item."
-argument-hint: [--auto] [slug|N]
+description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item. Add --swarm[=N] to fan the full-READY-batch run out across N (default 3) concurrent recursive pi workers via herdr, instead of running the queue one item at a time -- requires HERDR_ENV=1."
+argument-hint: [--auto] [--swarm[=N]] [slug|N]
 ---
 
 Work the named item to done, one step at a time. `$ARGUMENTS` holds the
-invocation: strip a leading `--auto` token if present (note that it was
-given) — what remains is the target item, a slug or an integer N. If
-`--auto` was given, skip straight to the `--auto mode` section at the end
-of this file instead of running the numbered steps live. Otherwise, if the
-remaining target is empty, ask the user which item — never guess. Every
+invocation: strip a leading `--auto` or `--swarm`/`--swarm=N` token if
+present (note which one was given) — what remains is the target item, a
+slug or an integer N. If `--auto` was given, skip straight to the `--auto
+mode` section at the end of this file instead of running the numbered steps
+live. If `--swarm`/`--swarm=N` was given, skip straight to the `--swarm[=N]
+mode` section instead — it does not take a single-item target; `--swarm
+<slug>` is a usage error, ask the user whether they meant `--auto <slug>`.
+Otherwise, if the remaining target is empty, ask the user which item — never
+guess. Every
 user-approval gate below (`## 10`, `## 11`) stops and waits for the user —
 never collapse two gates into one approval. Distinct from those: the item's
 own `gate` field in `dev_status.py` (step 5, step 12) is a judgment-step
@@ -144,18 +148,27 @@ Run the full suite (and lint, if present) in the worktree and show the
 output — "should work" is not verification (CLAUDE.md).
 
 ## 10. Gate: commit
-Show the full diff. Stop — ask in plain text for explicit commit approval,
-stating your recommendation first. No exceptions for being mid-pipeline,
-and no exception for code an external executor wrote (CLAUDE.md).
+Show the full diff. Stop — use the `question` tool for explicit commit
+approval, recommended option first (e.g. "Yes, commit (Recommended)" / "No,
+don't commit"), per CLAUDE.md's judgment-call convention. No exceptions for
+being mid-pipeline, and no exception for code an external executor wrote
+(CLAUDE.md). Use `question`, not plain text: its interactive prompt is what
+herdr's pi integration reports as agent state `blocked`
+(`question-tool.ts` emits `herdr:blocked` around it) — asking in plain text
+instead ends the turn like normal completion does, leaving this gate
+indistinguishable from the agent simply finishing, to anything watching
+over herdr's socket API (`--swarm` mode's relay, in particular).
 
 ## 11. Gate: commit-then-land
 On approval, commit (conventional format) — this gate is never bundled with
 what follows. Personal project (this repo, a personal side project — never
 a `work-`-prefixed item or a work repo): offer the follow-on sequence as one
-bundled question (CLAUDE.md's Git section) — "merge to main, push, and
-clean up the worktree?" — then merge locally, push, `git worktree remove`,
-`git branch -d` on that single approval. Work-related or ambiguous: ask
-separately for merge and for push — never bundle.
+bundled question via the `question` tool (CLAUDE.md's Git section) — "merge
+to main, push, and clean up the worktree?" — then merge locally, push,
+`git worktree remove`, `git branch -d` on that single approval. Work-related
+or ambiguous: ask separately for merge and for push via the `question`
+tool — never bundle. Same reason as step 10: `question`, not plain text, so
+this gate registers as `blocked`, not indistinguishable from done.
 
 **`git worktree remove` fails with "Directory not empty"?** A dev server
 (or other long-running process) launched against this worktree during step
@@ -247,3 +260,67 @@ in one pass, asking in plain text for each queued item exactly as its
 originating CLAUDE.md protocol specifies (a backlog `add`, a
 `pending add`, an `out-of-scope add`), stating a recommendation first and
 confirming or declining each in turn.
+
+---
+
+## `--swarm[=N]` mode
+
+Runs the READY queue concurrently instead of one item at a time — `N`
+recursive pi workers (default 3, from `--swarm=N`), each in its own herdr
+pane, each running its own `/backlog-item --auto <slug>`. Requires
+`HERDR_ENV=1` (this session must itself be running inside a herdr-managed
+pane); if it isn't, say so and stop rather than falling back to `--auto`
+silently. Full design: `~/.claude/data/grill/2026-09-01-pi-side-agent-swarm-orchestratio-plan.md`.
+
+Queue selection is identical to `--auto`'s no-slug batch mode: every READY
+item, in dashboard order, fixed at the start of the run. `--swarm` never
+takes a single-item target (see the invocation note above).
+
+Uses the `swarm_spawn`, `swarm_poll`, and `swarm_resolve_blocked` tools
+(`pi/extensions/swarm-tool.ts`) — never hand-compose `herdr` bash commands
+for this; the tools own argv safety (a human's relay answer is never
+shell-interpolated), state persistence across a crash/restart, and the
+concurrency/pane-cap accounting.
+
+1. Pick a `runId` for this invocation (e.g. a short timestamp-based slug)
+   and call `swarm_spawn` with the full READY queue and the concurrency —
+   it spawns up to the cap, reporting any items skipped (cap) or failed to
+   spawn.
+2. Loop: call `swarm_poll`. It blocks until at least one worker settles and
+   returns every event that settled in that window (usually one,
+   occasionally more — process all of them before polling again):
+   - **`blocked`** — a worker hit an approval gate (almost always step 10
+     commit or step 11 merge/push, but treat `raw_prompt` as whatever it
+     actually says, never assumed to be a diff or a yes/no). Show
+     `raw_prompt` to the user verbatim, alongside the item's slug, and ask
+     for their answer in plain text, stating your own recommendation first
+     per CLAUDE.md's judgment-call convention when one is warranted (e.g.
+     recommending approval when the diff looks clean) — but this is still a
+     live commit/merge approval, not a mechanical judgment call: never
+     answer on the user's behalf, no exceptions, exactly as step 10/11 above
+     require outside swarm mode. Once they answer, call
+     `swarm_resolve_blocked` with that exact text — never a summary or
+     paraphrase; it matches the text against the worker's currently listed
+     option labels and navigates to the match. If it reports `needsManual`
+     (the answer matched no listed option, or matched more than one), relay
+     that back to the user verbatim — the exact option labels it listed and
+     the suggestion to attach directly (`herdr agent attach <id>`) — rather
+     than guessing or retrying with a rephrased answer yourself. Handle one
+     blocked event fully (through to calling `swarm_resolve_blocked`, or
+     surfacing `needsManual`) before moving to the next event in the same
+     batch; never stack multiple relay questions into one message.
+   - **`finished`** / **`timed_out`** — record the outcome for the
+     end-of-run digest (approved / flagged / timed out); the tool has
+     already closed that worker's pane and freed its slot. `swarm_poll`
+     itself spawns the next READY item into a new pane when there's queue
+     left and the cap has headroom — no separate `swarm_spawn` call needed
+     mid-run.
+3. Repeat step 2 until `swarm_poll` reports no active workers and the
+   digest accounts for the whole queue.
+4. **End of run** — same shape as `--auto`'s: a dashboard-style summary of
+   every item (done, flagged, timed out), then walk any accumulated
+   proactive-capture digest entries exactly as `--auto`'s own end-of-run
+   step does.
+
+Steps 10 and 11's live-approval requirement is never bypassed in this mode
+— it is *how* the blocked-event relay above works, not an exception to it.
