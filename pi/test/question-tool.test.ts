@@ -196,6 +196,59 @@ describe("formatAnswers", () => {
     expect(text).toContain("Push");
   });
 
+  // Answer latency is the only signal available that separates a human
+  // selection from a programmatically-driven one: a keypress from a hand and
+  // a keypress from `herdr agent send-keys` arrive as identical terminal
+  // input, and pi exposes nothing to tell them apart. Timing does separate
+  // them, decisively. Measured 2026-09-02 against a real pi agent in a herdr
+  // pane: send-keys answered a picker 182ms after the tool raised it (109ms
+  // blocked->answered at the herdr layer, the send-keys call itself 2ms),
+  // versus 17s and 36s for the two answers a human made the same evening.
+  // Roughly two orders of magnitude apart, so a 1s threshold sits in empty
+  // space -- nobody reads a commit diff and decides inside a second.
+  test("an implausibly fast answer is called out as not human", () => {
+    const text = formatAnswers([
+      {
+        header: "Commit",
+        question: "Commit these changes?",
+        selected: ["Yes, commit (Recommended)"],
+        wasCustom: false,
+        latencyMs: 182,
+      },
+    ]);
+    expect(text).toContain("182ms");
+    expect(text).toMatch(/implausibly fast/i);
+    // The warning has to say what to DO, since the reader is usually a model
+    // deciding whether it just received an approval.
+    expect(text).toMatch(/not.*approval|do not treat/i);
+  });
+
+  test("a human-paced answer records its latency without crying wolf", () => {
+    const text = formatAnswers([
+      {
+        header: "Commit",
+        question: "Commit these changes?",
+        selected: ["Yes, commit (Recommended)"],
+        wasCustom: false,
+        latencyMs: 17_000,
+      },
+    ]);
+    expect(text).toContain("17.0s");
+    expect(text).not.toMatch(/implausibly fast/i);
+  });
+
+  test("an answer with no recorded latency renders exactly as before", () => {
+    const text = formatAnswers([
+      {
+        header: "Merge",
+        question: "Merge to main?",
+        selected: ["Yes"],
+        wasCustom: false,
+      },
+    ]);
+    expect(text).toBe('[Merge] Merge to main?\n  User selected: "Yes"');
+  });
+
   test("free-text answers are marked as typed, not picked", () => {
     const text = formatAnswers([
       {
