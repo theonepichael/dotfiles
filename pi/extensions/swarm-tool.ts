@@ -204,8 +204,187 @@ export function buildPaneRenameArgv(paneId: string, label: string): string[] {
   return ["pane", "rename", paneId, label];
 }
 
-export function buildPaneSplitArgv(direction: "right" | "down", cwd: string): string[] {
-  return ["pane", "split", "--current", "--direction", direction, "--cwd", cwd, "--no-focus"];
+export function buildPaneSplitArgv(
+  direction: "right" | "down",
+  cwd: string,
+  opts: { paneId?: string; ratio?: number } = {},
+): string[] {
+  // Without an explicit pane, herdr splits whatever `--current` resolves to.
+  // A plan splits the pane it created last, so it has to name one.
+  const target = opts.paneId ?? "--current";
+  const argv = ["pane", "split", target, "--direction", direction];
+  if (opts.ratio !== undefined) {
+    argv.push("--ratio", String(opts.ratio));
+  }
+  argv.push("--cwd", cwd, "--no-focus");
+  return argv;
+}
+
+/** Asks herdr for the layout of the tab holding the orchestrator's pane. */
+export function buildPaneLayoutArgv(): string[] {
+  return ["pane", "layout", "--current"];
+}
+
+/** A pane's size in terminal cells, as `herdr pane layout` reports it. */
+export interface PaneRect {
+  width: number;
+  height: number;
+}
+
+/**
+ * Read the orchestrator's own pane rect out of `herdr pane layout --current`.
+ *
+ * `paneId` should be `HERDR_PANE_ID`, which is the pane the split will target.
+ * That is not always the focused pane -- the person driving the swarm may be
+ * looking somewhere else -- so the focused pane is only a fallback.
+ */
+export function parseCurrentPaneRect(
+  stdout: string,
+  paneId: string | undefined,
+): PaneRect | undefined {
+  try {
+    const parsed = JSON.parse(stdout) as {
+      result?: {
+        layout?: {
+          focused_pane_id?: string;
+          panes?: { pane_id?: string; rect?: { width?: number; height?: number } }[];
+        };
+      };
+    };
+    const layout = parsed.result?.layout;
+    const panes = layout?.panes ?? [];
+    const mine =
+      panes.find((pane) => pane.pane_id === paneId) ??
+      panes.find((pane) => pane.pane_id === layout?.focused_pane_id);
+    const rect = mine?.rect;
+    if (typeof rect?.width !== "number" || typeof rect.height !== "number") return undefined;
+    return { width: rect.width, height: rect.height };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Smallest worker pane worth spawning into. These are *usability* floors, not
+ * crash floors.
+ *
+ * Measured 2026-09-02 against pi 0.84.4 with every extension in this repo
+ * loaded: pi starts cleanly at 10 columns and 3 rows. It used to abort at
+ * startup in anything narrower than its widest header line, which is what
+ * made a small pane look fatal -- that was this repo's own header ignoring
+ * the width it was handed, fixed in philosophy-header.ts. What is left is
+ * simply that nobody can read a diff or a test failure in a 21-column pane,
+ * so the swarm says so instead of spawning workers no one can use.
+ */
+export const MIN_WORKER_PANE_COLS = 40;
+export const MIN_WORKER_PANE_ROWS = 10;
+
+/** One planned `herdr pane split`, to be run in order. */
+export interface SplitStep {
+  slug: string;
+  direction: "right" | "down";
+  /**
+   * Fraction the pane being split keeps; herdr gives the new pane the rest.
+   * Measured against herdr 0.8.2: `--ratio 0.3333` on a 168-column pane
+   * leaves it at 56 and creates one of 112.
+   */
+  ratio: number;
+  /**
+   * Size the pane this step creates ends at, once the whole plan has run.
+   * Absent when herdr could not report the layout, in which case no floor was
+   * applied either.
+   */
+  rect?: PaneRect;
+}
+
+export interface SplitPlan {
+  steps: SplitStep[];
+  rejected: { slug: string; reason: string }[];
+}
+
+function paneTooNarrowReason(start: PaneRect, requested: number): string {
+  return (
+    `pane_too_narrow: splitting a ${start.width}x${start.height} pane ` +
+    `${requested} way(s) leaves under ${MIN_WORKER_PANE_COLS}x${MIN_WORKER_PANE_ROWS} per worker`
+  );
+}
+
+/**
+ * Plan the pane splits for a batch of workers.
+ *
+ * The shipped version alternated `right`/`down` and split `--current` every
+ * time, which halves the same pane repeatedly: three workers out of a 168
+ * column tab left panes of 21 columns, and the reported failure said nothing
+ * about width. Splitting the *previous* new pane with a ratio of one over the
+ * shares still to carve gives every pane an equal share instead.
+ *
+ * Orientation comes from the geometry rather than the loop index. Side by side
+ * is preferred because reading code wants columns; splitting down preserves
+ * the full width and is the fallback when the pane is already narrow. When
+ * even that does not clear the floor, the batch is trimmed -- a swarm of two
+ * beats a swarm of none -- and whatever is left over is rejected by name.
+ */
+export function planSplits(start: PaneRect | undefined, slugs: readonly string[]): SplitPlan {
+  const rejected: { slug: string; reason: string }[] = [];
+  if (slugs.length === 0) return { steps: [], rejected };
+
+  // Geometry only drives the usability floor. If herdr cannot report it, even
+  // splits are still strictly better than halving one pane per worker, so the
+  // run proceeds unguarded rather than refusing to spawn on a missing field.
+  if (start === undefined) {
+    return {
+      steps: slugs.map((slug, i) => ({
+        slug,
+        direction: "right" as const,
+        ratio: 1 / (slugs.length + 1 - i),
+      })),
+      rejected,
+    };
+  }
+
+  // `shares` counts the orchestrator's own pane, which keeps one share.
+  const orientationFor = (
+    workers: number,
+  ): { direction: "right" | "down"; rect: PaneRect } | undefined => {
+    const shares = workers + 1;
+    const across = Math.floor(start.width / shares);
+    if (across >= MIN_WORKER_PANE_COLS && start.height >= MIN_WORKER_PANE_ROWS) {
+      return { direction: "right", rect: { width: across, height: start.height } };
+    }
+    const downward = Math.floor(start.height / shares);
+    if (start.width >= MIN_WORKER_PANE_COLS && downward >= MIN_WORKER_PANE_ROWS) {
+      return { direction: "down", rect: { width: start.width, height: downward } };
+    }
+    return undefined;
+  };
+
+  let workers = slugs.length;
+  let choice = orientationFor(workers);
+  while (choice === undefined && workers > 1) {
+    workers -= 1;
+    choice = orientationFor(workers);
+  }
+
+  if (choice === undefined) {
+    for (const slug of slugs) {
+      rejected.push({ slug, reason: paneTooNarrowReason(start, slugs.length) });
+    }
+    return { steps: [], rejected };
+  }
+
+  const steps: SplitStep[] = [];
+  for (let i = 0; i < workers; i++) {
+    steps.push({
+      slug: slugs[i]!,
+      direction: choice.direction,
+      ratio: 1 / (workers + 1 - i),
+      rect: choice.rect,
+    });
+  }
+  for (const slug of slugs.slice(workers)) {
+    rejected.push({ slug, reason: paneTooNarrowReason(start, slugs.length) });
+  }
+  return { steps, rejected };
 }
 
 export function buildAgentStartArgv(agentId: string, paneId: string): string[] {
@@ -828,13 +1007,38 @@ export default function (pi: ExtensionAPI) {
         paneId?: string;
         failed?: { slug: string; reason: string };
       }[] = [];
-      for (const [i, slug] of toSpawn.entries()) {
-        const direction = i % 2 === 0 ? "right" : "down";
-        const result = await herdr(pi, buildPaneSplitArgv(direction, process.cwd()));
+      // Measure before carving. Splitting `--current` once per worker halves
+      // the same pane every time, which is how a 168-column tab produced
+      // 21-column workers; the plan splits each new pane instead, with a ratio
+      // that lands every pane on an equal share.
+      const layoutResult = await herdr(pi, buildPaneLayoutArgv());
+      const startRect =
+        layoutResult.code === 0
+          ? parseCurrentPaneRect(layoutResult.stdout, process.env.HERDR_PANE_ID)
+          : undefined;
+      const plan = planSplits(startRect, toSpawn);
+      for (const rejection of plan.rejected) {
+        splitPanes.push({ slug: rejection.slug, failed: rejection });
+      }
+
+      // Each step splits the pane the previous step created, so the target
+      // walks outward; the first one splits the orchestrator's own pane.
+      let splitTarget: string | undefined;
+      for (const step of plan.steps) {
+        const result = await herdr(
+          pi,
+          buildPaneSplitArgv(step.direction, process.cwd(), {
+            ...(splitTarget ? { paneId: splitTarget } : {}),
+            ratio: step.ratio,
+          }),
+        );
         if (result.code !== 0) {
           splitPanes.push({
-            slug,
-            failed: { slug, reason: `pane split failed: ${result.stderr || result.stdout}` },
+            slug: step.slug,
+            failed: {
+              slug: step.slug,
+              reason: `pane split failed: ${result.stderr || result.stdout}`,
+            },
           });
           continue;
         }
@@ -842,12 +1046,16 @@ export default function (pi: ExtensionAPI) {
           const parsed = JSON.parse(result.stdout) as { result?: { pane?: { pane_id?: string } } };
           const paneId = parsed.result?.pane?.pane_id;
           if (!paneId) throw new Error("no pane_id in response");
-          await herdr(pi, buildPaneRenameArgv(paneId, slug));
-          splitPanes.push({ slug, paneId });
+          await herdr(pi, buildPaneRenameArgv(paneId, step.slug));
+          splitPanes.push({ slug: step.slug, paneId });
+          splitTarget = paneId;
         } catch (e) {
           splitPanes.push({
-            slug,
-            failed: { slug, reason: `could not parse pane split response: ${String(e)}` },
+            slug: step.slug,
+            failed: {
+              slug: step.slug,
+              reason: `could not parse pane split response: ${String(e)}`,
+            },
           });
         }
       }
