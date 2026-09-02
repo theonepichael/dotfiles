@@ -51,7 +51,16 @@ import { Type } from "typebox";
 // response) is reported as "error" instead, with the raw detail attached,
 // rather than silently mislabeled as a timeout that never happened.
 
-const HERDR_STATE_DIR = join(homedir(), ".pi", "agent", "state");
+/**
+ * Where a run's state file lives. Resolved per call, not captured at module
+ * load, so a test can point it somewhere disposable after importing this
+ * module -- swarm_poll/swarm_spawn persist through the closure's `persist`,
+ * which has no stateDir parameter to thread one through, so an env override
+ * is the only seam that keeps an execute()-level test off the real ~/.pi.
+ */
+function herdrStateDir(): string {
+  return process.env.PI_SWARM_STATE_DIR ?? join(homedir(), ".pi", "agent", "state");
+}
 
 const DEFAULT_CONCURRENCY = 3;
 const OPEN_PANE_SOFT_CAP_MULTIPLIER = 2;
@@ -97,11 +106,11 @@ export interface PollEvent {
 // State file persistence and crash recovery
 // ---------------------------------------------------------------------------
 
-export function statePath(runId: string, stateDir: string = HERDR_STATE_DIR): string {
+export function statePath(runId: string, stateDir: string = herdrStateDir()): string {
   return join(stateDir, `swarm-${runId}.json`);
 }
 
-export function loadState(runId: string, stateDir: string = HERDR_STATE_DIR): SwarmState | null {
+export function loadState(runId: string, stateDir: string = herdrStateDir()): SwarmState | null {
   const path = statePath(runId, stateDir);
   if (!existsSync(path)) return null;
   try {
@@ -115,7 +124,7 @@ export function loadState(runId: string, stateDir: string = HERDR_STATE_DIR): Sw
   }
 }
 
-export function saveState(state: SwarmState, stateDir: string = HERDR_STATE_DIR): void {
+export function saveState(state: SwarmState, stateDir: string = herdrStateDir()): void {
   mkdirSync(stateDir, { recursive: true });
   writeFileSync(statePath(state.runId, stateDir), JSON.stringify(state, null, 2));
 }
