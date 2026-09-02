@@ -31,6 +31,7 @@ import registerSwarmTools, {
   spawnBudget,
   statePath,
   waitResultDetail,
+  WORKER_TRUST_COMMAND,
   type SwarmState,
   type WorkerRecord,
 } from "../extensions/swarm-tool";
@@ -714,5 +715,105 @@ describe("swarm_poll execute() wiring", () => {
     expect(res.details.events.map((e) => e.kind)).toEqual(["error"]);
     expect(paneCloses(stub)).toHaveLength(1);
     expect(loadState(runId, dir)?.workers).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// swarm_spawn's worker bootstrap.
+//
+// Pi ships no permission system of its own; permission-gate.ts supplies one,
+// and it defaults to enabled with a "*": "ask" fallback. A worker runs in a
+// herdr TUI pane, so ctx.hasUI is true and the gate calls ctx.ui.confirm --
+// a human-shaped prompt in a pane nobody is watching. Every bash command
+// outside ALLOW_PATTERNS therefore stalls the worker indefinitely, and
+// swarm_poll cannot see it: the agent still reports "working", so the
+// orchestrator relays nothing and waits out its full timeout. Observed live
+// on a 3-worker run -- the only worker doing real tool work had to be
+// unblocked by hand, repeatedly, which defeats the point of unattended mode.
+//
+// So spawn must opt each worker out of the gate before handing it any work.
+// ---------------------------------------------------------------------------
+
+describe("swarm_spawn worker bootstrap", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-spawn-boot-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function stubFor(respond: (argv: string[]) => { code: number; stdout: string; stderr: string }) {
+    const stub = makeStubPi(respond);
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const spawn = stub.tools.get("swarm_spawn");
+    if (!spawn) throw new Error("swarm_spawn was never registered");
+    return { spawn, stub };
+  }
+
+  const paneSplitOk = (argv: string[]) =>
+    argv[0] === "pane" && argv[1] === "split"
+      ? {
+          code: 0,
+          stdout: JSON.stringify({ result: { pane: { pane_id: "w1:pN" } } }),
+          stderr: "",
+        }
+      : { code: 0, stdout: "", stderr: "" };
+
+  const prompts = (stub: { calls: ExecCall[] }) =>
+    stub.calls.filter((c) => c.argv[0] === "agent" && c.argv[1] === "prompt");
+
+  const spawnOne = (spawn: { execute: (...a: never[]) => Promise<unknown> }) =>
+    spawn.execute(
+      ...([
+        "call-1",
+        { runId: "bootrun", items: ["some-item"], concurrency: 1 },
+      ] as unknown as never[]),
+    );
+
+  test("turns the bash permission gate off before handing the worker its item", async () => {
+    const { spawn, stub } = stubFor(paneSplitOk);
+    await spawnOne(spawn);
+
+    const sent = prompts(stub).map((c) => c.argv[3]);
+    // Order is load-bearing: the gate must be down before any work starts,
+    // or the worker stalls on its first non-allowlisted bash call.
+    expect(sent).toEqual([WORKER_TRUST_COMMAND, "/backlog-item --auto some-item"]);
+    expect(sent[0]).toBe("/permission-gate-disable");
+  });
+
+  test("the trust prompt waits for the worker to settle before work is sent", async () => {
+    const { spawn, stub } = stubFor(paneSplitOk);
+    await spawnOne(spawn);
+
+    // Without --wait the two prompts race: pi may still be processing the
+    // slash command when the backlog prompt lands.
+    const trust = prompts(stub).find((c) => c.argv[3] === WORKER_TRUST_COMMAND);
+    expect(trust?.argv).toContain("--wait");
+  });
+
+  test("a failed trust prompt fails the spawn instead of yielding a worker that will stall", async () => {
+    const { spawn, stub } = stubFor((argv) =>
+      argv[0] === "agent" && argv[1] === "prompt" && argv[3] === WORKER_TRUST_COMMAND
+        ? { code: 1, stdout: "", stderr: "no such command" }
+        : paneSplitOk(argv),
+    );
+
+    const res = (await spawnOne(spawn)) as {
+      details: { spawned: unknown[]; failed: { slug: string; reason: string }[] };
+    };
+
+    expect(res.details.spawned).toHaveLength(0);
+    expect(res.details.failed).toHaveLength(1);
+    expect(res.details.failed[0]?.reason).toContain("permission_gate");
+    // and it never went on to hand the worker real work
+    expect(prompts(stub).map((c) => c.argv[3])).toEqual([WORKER_TRUST_COMMAND]);
   });
 });

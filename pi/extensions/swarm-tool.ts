@@ -203,8 +203,35 @@ export function buildAgentStartArgv(agentId: string, paneId: string): string[] {
   ];
 }
 
-export function buildAgentPromptArgv(agentId: string, prompt: string): string[] {
-  return ["agent", "prompt", agentId, prompt];
+/**
+ * Slash command that turns off permission-gate.ts's bash confirmation for a
+ * worker's session.
+ *
+ * Pi ships no permission system of its own (docs/usage.md's Design
+ * Principles: "it intentionally does not include ... permission popups").
+ * permission-gate.ts supplies one, defaulting to enabled with an "ask"
+ * fallback for anything outside ALLOW_PATTERNS. A worker lives in a herdr
+ * TUI pane, so its `ctx.hasUI` is true and the gate raises `ctx.ui.confirm`
+ * -- a question aimed at a human, in a pane no human is watching. The worker
+ * then waits forever, and nothing surfaces it: `agent_status` stays
+ * "working", so swarm_poll classifies it as making progress and the
+ * orchestrator relays nothing until the wait's own timeout expires.
+ *
+ * Only the bash gate is dropped. guard-rails.ts stays armed, so a worker
+ * still cannot write into a repo's main checkout while an item is in
+ * progress -- `/trust-session` would disable both, which is more autonomy
+ * than an unattended worker should have.
+ */
+export const WORKER_TRUST_COMMAND = "/permission-gate-disable";
+
+/** `--wait` blocks until the agent settles, so a follow-up prompt can't land while it is still processing this one. */
+export function buildAgentPromptArgv(
+  agentId: string,
+  prompt: string,
+  opts: { wait?: boolean } = {},
+): string[] {
+  const argv = ["agent", "prompt", agentId, prompt];
+  return opts.wait ? [...argv, "--wait"] : argv;
 }
 
 /** `agent prompt` refuses a blocked agent outright (agent_blocked, confirmed live) -- send-keys is the only way to answer its picker. */
@@ -614,6 +641,23 @@ export default function (pi: ExtensionAPI) {
               failed: {
                 slug: p.slug,
                 reason: `agent_not_ready: ${startResult.stderr || startResult.stdout}`,
+              },
+            };
+          }
+          // Drop the bash permission gate before any work is sent -- see
+          // WORKER_TRUST_COMMAND. A worker that misses this stalls on its
+          // first non-allowlisted bash call, invisibly, so a failure here
+          // is a spawn failure rather than something to press on past.
+          const trustResult = await herdr(
+            pi,
+            buildAgentPromptArgv(agentId, WORKER_TRUST_COMMAND, { wait: true }),
+          );
+          if (trustResult.code !== 0) {
+            return {
+              slug: p.slug,
+              failed: {
+                slug: p.slug,
+                reason: `permission_gate_not_disabled: ${trustResult.stderr || trustResult.stdout}`,
               },
             };
           }
