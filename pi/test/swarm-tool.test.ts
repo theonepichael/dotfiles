@@ -1381,6 +1381,70 @@ describe("swarm_resolve_blocked execute() wiring", () => {
       details: { relayFailed: boolean; needsManual: boolean };
     }>;
 
+  // Every outcome the promptGuidelines tell an orchestrator to branch on has
+  // to be legible in `content`. Verified against pi 0.84's own plumbing: no
+  // provider adapter in @earendil-works/pi-ai reads a tool result's `details`
+  // at all -- openai-completions builds its wire message from `content` text
+  // and image blocks only, and no other adapter references the field. So
+  // `details` is a session/UI record, and naming its fields in guidance tells
+  // the model to read something it never receives.
+  describe("outcome markers reach content, not just details", () => {
+    const textOf = (res: { content: { text: string }[] }) =>
+      res.content.map((c) => c.text).join("\n");
+
+    test("an unmatched answer is marked needs_manual and names the pane", async () => {
+      const { resolve } = setup(() => undefined);
+
+      const res = await run(resolve, "definitely not a listed option");
+
+      expect(res.details.needsManual).toBe(true);
+      expect(textOf(res)).toContain("needs_manual:");
+      // The guideline says to relay which pane; paneId was only in details.
+      expect(textOf(res)).toContain(PANE);
+    });
+
+    test("a pane identity mismatch is marked needs_manual and names the pane", async () => {
+      const { resolve } = setup((argv) =>
+        argv[0] === "agent" && argv[1] === "get"
+          ? { code: 0, stdout: realWaitEnvelope("blocked", AGENT, "w1:pWRONG"), stderr: "" }
+          : undefined,
+      );
+
+      const res = await run(resolve);
+
+      expect(res.details.needsManual).toBe(true);
+      expect(textOf(res)).toContain("needs_manual:");
+      expect(textOf(res)).toContain(PANE);
+    });
+
+    test("an untracked agent is marked relay_failed", async () => {
+      const { resolve } = setup(() => undefined);
+
+      const res = (await resolve.execute(
+        ...([
+          "call-1",
+          { runId: RUN, agent: "no-such-agent", answer: "OK" },
+          undefined,
+        ] as unknown as never[]),
+      )) as { content: { text: string }[]; details: { relayFailed: boolean } };
+
+      expect(res.details.relayFailed).toBe(true);
+      expect(textOf(res)).toContain("relay_failed:");
+    });
+
+    test("a successful relay is marked resolved and names the pane", async () => {
+      const { resolve } = setup((argv) =>
+        argv[0] === "agent" && argv[1] === "wait" ? waitLike("working")(argv) : undefined,
+      );
+
+      const res = await run(resolve);
+
+      expect(res.details.relayFailed).toBe(false);
+      expect(textOf(res)).toContain("resolved:");
+      expect(textOf(res)).toContain(PANE);
+    });
+  });
+
   const paneCloses = (stub: { calls: ExecCall[] }) =>
     stub.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "close");
 

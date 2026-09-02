@@ -1135,8 +1135,8 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Wait for swarm workers to settle and report events",
     promptGuidelines: [
       "Blocks until >=1 active worker settles. Returns an array -- process every event in it, relaying each blocked event to the user one at a time, before calling swarm_poll again.",
-      "A blocked event's raw_prompt is verbatim herdr output -- never assume it's a diff or a yes/no. Never send a blocked worker another agent prompt except the actual answer via swarm_resolve_blocked -- any prompt is interpreted as the gate's answer.",
-      "timed_out means herdr's own wait deadline genuinely elapsed. error means something else went wrong (the agent disappeared, a crash, an unrecognized response) -- both close the pane, free the slot, and get flagged in the digest, never silently retried, but they are not the same failure and event.detail carries the raw reason.",
+      "A blocked event is reported with the worker's prompt quoted verbatim from herdr -- never assume it's a diff or a yes/no. Never send a blocked worker another agent prompt except the actual answer via swarm_resolve_blocked -- any prompt is interpreted as the gate's answer.",
+      "timed_out means herdr's own wait deadline genuinely elapsed. error means something else went wrong (the agent disappeared, a crash, an unrecognized response) -- both close the pane, free the slot, and get flagged in the digest, never silently retried. They are not the same failure: each event names its kind and, where there is one, the raw reason after it, in the reported text.",
       "finished/timed_out/error events already closed their pane and freed their slot; if the READY queue still has items and the cap has headroom, call swarm_spawn again for the next batch.",
     ],
     parameters: Type.Object({
@@ -1238,9 +1238,9 @@ export default function (pi: ExtensionAPI) {
     promptGuidelines: [
       "answer is matched against the blocked worker's currently rendered option labels (re-read fresh, not from a stale raw_prompt) -- pass the user's own words, not a paraphrase, so the match is against what they actually said.",
       "herdr agent prompt refuses a blocked agent outright -- this tool drives the picker via arrow-key navigation instead, the only way to answer it.",
-      "If answer matches no listed option (or matches more than one ambiguously), this returns needsManual: true instead of guessing -- relay that back to the user verbatim (which pane, and the exact listed option labels) rather than retrying blindly.",
+      "Every outcome leads with its own marker word -- resolved:, needs_manual:, or relay_failed: -- and names the agent, its item slug and its pane, so branch on that word. If answer matches no listed option (or matches more than one ambiguously), the result is needs_manual: instead of a guess; relay it back to the user verbatim, pane and listed option labels included, rather than retrying blindly.",
       "Verifies the worker actually left `blocked` within a short window after submitting; if it didn't (pane closed, still stuck), the item is marked relay_failed rather than silently treated as resolved.",
-      "Re-checks the target's pane_id against what it was spawned into immediately before sending any keys -- if herdr's agent-name-to-pane mapping ever drifted, this is what catches it (a stale mapping would make read/match agree with the wrong pane too, so this is a second, independent identity check, not a repeat of the read). A mismatch returns needsManual: true and sends nothing.",
+      "Re-checks the target's pane_id against what it was spawned into immediately before sending any keys -- if herdr's agent-name-to-pane mapping ever drifted, this is what catches it (a stale mapping would make read/match agree with the wrong pane too, so this is a second, independent identity check, not a repeat of the read). A mismatch is reported as needs_manual: and sends nothing.",
     ],
     parameters: Type.Object({
       runId: Type.String(),
@@ -1259,7 +1259,10 @@ export default function (pi: ExtensionAPI) {
       if (!worker) {
         return {
           content: [
-            { type: "text", text: `No tracked worker "${typed.agent}" in run ${typed.runId}.` },
+            {
+              type: "text",
+              text: `relay_failed: no tracked worker "${typed.agent}" in run ${typed.runId}.`,
+            },
           ],
           details: { relayFailed: true, needsManual: false, slug: "", paneId: "" },
         };
@@ -1280,10 +1283,11 @@ export default function (pi: ExtensionAPI) {
             {
               type: "text",
               text:
-                `Could not match "${typed.answer}" to exactly one listed option for ${typed.agent} ` +
-                `(${worker.slug}). Listed options: ${optionList || "(none parsed)"}. ` +
-                `Attach directly (herdr agent attach ${typed.agent}) or retry with text matching one ` +
-                `option's label exactly.`,
+                `needs_manual: could not match "${typed.answer}" to exactly one listed option for ` +
+                `${typed.agent} (${worker.slug}, pane ${worker.paneId}). Listed options: ` +
+                `${optionList || "(none parsed)"}. Attach directly ` +
+                `(herdr agent attach ${typed.agent}) or retry with text matching one option's ` +
+                `label exactly.`,
             },
           ],
           details: {
@@ -1303,8 +1307,9 @@ export default function (pi: ExtensionAPI) {
               type: "text",
               text:
                 `needs_manual: ${typed.agent} (${worker.slug})'s pane identity no longer matches ` +
-                `what it was spawned into -- refusing to send keys rather than risk hitting the wrong ` +
-                `pane. Attach directly (herdr agent attach ${typed.agent}) to answer it by hand.`,
+                `pane ${worker.paneId}, what it was spawned into -- refusing to send keys rather ` +
+                `than risk hitting the wrong pane. Attach directly ` +
+                `(herdr agent attach ${typed.agent}) to answer it by hand.`,
             },
           ],
           details: {
@@ -1396,7 +1401,7 @@ export default function (pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: `${typed.agent} (${worker.slug}) answered "${target.label}", back in the active pool.`,
+            text: `resolved: ${typed.agent} (${worker.slug}, pane ${worker.paneId}) answered "${target.label}", back in the active pool.`,
           },
         ],
         details: {
