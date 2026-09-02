@@ -293,6 +293,16 @@ concurrency/pane-cap accounting.
    reported in `failed` (`permission_gate_not_disabled`) rather than left to
    stall. `guard-rails.ts` deliberately stays armed — workers still cannot
    write into a repo's main checkout.
+
+   Worker panes are carved from the orchestrator's own pane in equal shares,
+   so N workers each get roughly a (N+1)th of it rather than the half-of-a-half
+   that repeated splitting used to produce. When even shares would leave panes
+   too cramped to read a diff in, the batch is trimmed to what fits and the
+   remainder is reported as `pane_too_narrow`, naming the pane size and the
+   split count. That is a property of the geometry, not of the item: re-spawning
+   it into the same pane will fail identically, so report it, leave the item
+   READY, and either widen the pane or run the swarm from a full-width tab
+   before trying again.
 2. Loop: call `swarm_poll`. It blocks until at least one worker settles and
    returns every event that settled in that window (usually one,
    occasionally more — process all of them before polling again):

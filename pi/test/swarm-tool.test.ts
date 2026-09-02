@@ -13,10 +13,15 @@ import registerSwarmTools, {
   buildAgentWaitArgv,
   buildPaneCloseArgv,
   buildPaneRenameArgv,
+  buildPaneLayoutArgv,
   buildPaneSplitArgv,
   canOpenNewPane,
   canSpawnNew,
   classifyWaitResult,
+  MIN_WORKER_PANE_COLS,
+  MIN_WORKER_PANE_ROWS,
+  parseCurrentPaneRect,
+  planSplits,
   loadState,
   looksTruncated,
   matchOption,
@@ -815,5 +820,162 @@ describe("swarm_spawn worker bootstrap", () => {
     expect(res.details.failed[0]?.reason).toContain("permission_gate");
     // and it never went on to hand the worker real work
     expect(prompts(stub).map((c) => c.argv[3])).toEqual([WORKER_TRUST_COMMAND]);
+  });
+});
+
+describe("planSplits", () => {
+  // herdr's measured split arithmetic (2026-09-02, herdr 0.8.2): `--ratio R`
+  // leaves the pane being split at R of its size and gives the new pane the
+  // rest. 168 columns split at 1/3 yields 56 and 112.
+  const applyPlan = (
+    start: { width: number; height: number },
+    steps: ReturnType<typeof planSplits>["steps"],
+  ) => {
+    let remainder = { ...start };
+    const created: { width: number; height: number }[] = [];
+    for (const step of steps) {
+      if (step.direction === "right") {
+        const kept = Math.floor(remainder.width * step.ratio);
+        created.push({ width: remainder.width - kept, height: remainder.height });
+        remainder = { width: remainder.width - kept, height: remainder.height };
+      } else {
+        const kept = Math.floor(remainder.height * step.ratio);
+        created.push({ width: remainder.width, height: remainder.height - kept });
+        remainder = { width: remainder.width, height: remainder.height - kept };
+      }
+    }
+    return created;
+  };
+
+  test("three workers on a 168x38 layout get even panes, not 21 columns", () => {
+    // The shipped `i % 2` code split `--current` every time, so a 168-column
+    // tab produced 21-column workers. Observed live 2026-09-02.
+    const plan = planSplits({ width: 168, height: 38 }, ["a", "b", "c"]);
+    expect(plan.rejected).toEqual([]);
+    expect(plan.steps).toHaveLength(3);
+    expect(plan.steps.every((s) => s.direction === "right")).toBe(true);
+    expect(plan.steps.map((s) => s.rect!.width)).toEqual([42, 42, 42]);
+  });
+
+  test("the planned ratios really do produce the predicted panes", () => {
+    const start = { width: 168, height: 38 };
+    const plan = planSplits(start, ["a", "b", "c"]);
+    const widths = applyPlan(start, plan.steps).map((r) => r.width);
+    // Every worker pane ends at one equal share, and the orchestrator keeps one.
+    expect(widths).toEqual([126, 84, 42]);
+    expect(widths[widths.length - 1]).toBe(42);
+  });
+
+  test("falls back to splitting down when side-by-side would go under the floor", () => {
+    // A narrow orchestrator pane: 84 / 4 = 21 columns, under the floor, but
+    // splitting down keeps the full width.
+    const plan = planSplits({ width: 84, height: 40 }, ["a", "b", "c"]);
+    expect(plan.rejected).toEqual([]);
+    expect(plan.steps.every((s) => s.direction === "down")).toBe(true);
+    expect(plan.steps.every((s) => s.rect!.width === 84)).toBe(true);
+  });
+
+  test("spawns fewer workers rather than none when only some fit", () => {
+    // 130 columns fits two workers at 43 each (130/3) but not three at 32
+    // (130/4), and 38 rows will not take a four-way downward split either.
+    const plan = planSplits({ width: 130, height: 38 }, ["a", "b", "c"]);
+    expect(plan.steps.map((s) => s.slug)).toEqual(["a", "b"]);
+    expect(plan.steps.every((s) => s.direction === "right")).toBe(true);
+    expect(plan.steps.map((s) => s.rect!.width)).toEqual([43, 43]);
+    expect(plan.rejected.map((r) => r.slug)).toEqual(["c"]);
+    expect(plan.rejected[0]!.reason).toContain("pane_too_narrow");
+  });
+
+  test("rejects every slug, with the numbers, when nothing fits", () => {
+    const plan = planSplits({ width: 30, height: 6 }, ["a", "b"]);
+    expect(plan.steps).toEqual([]);
+    expect(plan.rejected.map((r) => r.slug)).toEqual(["a", "b"]);
+    for (const r of plan.rejected) {
+      expect(r.reason).toContain("pane_too_narrow");
+      expect(r.reason).toContain("30x6");
+    }
+  });
+
+  test("no planned pane is ever under the floor it was planned against", () => {
+    for (const width of [40, 60, 84, 100, 168, 240]) {
+      for (const height of [10, 24, 38, 60]) {
+        for (const n of [1, 2, 3, 4, 5]) {
+          const slugs = Array.from({ length: n }, (_, i) => `s${i}`);
+          const plan = planSplits({ width, height }, slugs);
+          for (const step of plan.steps) {
+            expect(step.rect!.width).toBeGreaterThanOrEqual(MIN_WORKER_PANE_COLS);
+            expect(step.rect!.height).toBeGreaterThanOrEqual(MIN_WORKER_PANE_ROWS);
+          }
+          expect(plan.steps.length + plan.rejected.length).toBe(n);
+        }
+      }
+    }
+  });
+
+  test("plans even splits unguarded when herdr cannot report the layout", () => {
+    // A missing rect must not stop the swarm: even splits are still better
+    // than halving one pane per worker, so the floor is simply not applied.
+    const plan = planSplits(undefined, ["a", "b", "c"]);
+    expect(plan.rejected).toEqual([]);
+    expect(plan.steps.map((s) => s.slug)).toEqual(["a", "b", "c"]);
+    expect(plan.steps.every((s) => s.direction === "right")).toBe(true);
+    expect(plan.steps.every((s) => s.rect === undefined)).toBe(true);
+    expect(plan.steps.map((s) => s.ratio)).toEqual([1 / 4, 1 / 3, 1 / 2]);
+  });
+
+  test("an empty queue plans nothing", () => {
+    expect(planSplits({ width: 168, height: 38 }, [])).toEqual({ steps: [], rejected: [] });
+  });
+});
+
+describe("buildPaneLayoutArgv / parseCurrentPaneRect", () => {
+  test("asks herdr for the current pane's layout", () => {
+    expect(buildPaneLayoutArgv()).toEqual(["pane", "layout", "--current"]);
+  });
+
+  test("picks the rect of the pane the orchestrator is actually in", () => {
+    // Verbatim shape from `herdr pane layout --current` (herdr 0.8.2).
+    const stdout = JSON.stringify({
+      id: "cli:pane:layout",
+      result: {
+        layout: {
+          area: { height: 38, width: 168, x: 32, y: 1 },
+          focused_pane_id: "w1:pOther",
+          panes: [
+            { focused: false, pane_id: "w1:pMine", rect: { height: 38, width: 84, x: 32, y: 1 } },
+            { focused: true, pane_id: "w1:pOther", rect: { height: 38, width: 84, x: 116, y: 1 } },
+          ],
+          splits: [],
+          tab_id: "w1:t1",
+          workspace_id: "w1",
+        },
+        type: "pane_layout",
+      },
+    });
+    // HERDR_PANE_ID names the orchestrator's pane, which need not be focused.
+    expect(parseCurrentPaneRect(stdout, "w1:pMine")).toEqual({ width: 84, height: 38 });
+  });
+
+  test("falls back to the focused pane when the id is unknown", () => {
+    const stdout = JSON.stringify({
+      result: {
+        layout: {
+          focused_pane_id: "w1:pB",
+          panes: [
+            { pane_id: "w1:pA", rect: { height: 10, width: 20, x: 0, y: 0 } },
+            { pane_id: "w1:pB", rect: { height: 38, width: 168, x: 0, y: 0 } },
+          ],
+        },
+      },
+    });
+    expect(parseCurrentPaneRect(stdout, undefined)).toEqual({ width: 168, height: 38 });
+  });
+
+  test("returns undefined rather than guessing when the shape is unrecognized", () => {
+    expect(parseCurrentPaneRect("not json", "w1:pA")).toBeUndefined();
+    expect(parseCurrentPaneRect("{}", "w1:pA")).toBeUndefined();
+    expect(
+      parseCurrentPaneRect(JSON.stringify({ result: { layout: { panes: [] } } }), "w1:pA"),
+    ).toBeUndefined();
   });
 });
