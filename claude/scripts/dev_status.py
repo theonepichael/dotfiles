@@ -4437,6 +4437,47 @@ if __name__ == "__main__" and set(dispatch) != set(SUBCOMMANDS):
     sys.exit(1)
 
 
+class _CommandSeparatorParser(argparse.ArgumentParser):
+    """Subparser class that treats the first bare ``--`` as a hard split.
+
+    Tokens after the first ``--`` belong to the subparser's ``command``
+    positional verbatim -- a second literal ``--`` included -- while tokens
+    before it parse normally, so flags like ``--timeout``/``-q``/``--if-rev``
+    work on either side of the id. Neither stock behavior fits ``run``:
+    ``nargs=REMAINDER`` swallows every token the instant it starts matching
+    (so ``run <id> --timeout N -- <cmd>`` -- the documented order, and what
+    ``pi/extensions/dev-status-tool.ts`` generates -- folded ``--timeout``
+    into the command and left it at its default), and ``nargs="*"`` cannot
+    re-attach positionals once an optional has matched (the tokens after
+    ``--`` came back as extras) while argparse's native ``--`` handling
+    strips *every* separator, not just the first. Splitting argv here gives
+    both behaviors at once.
+
+    Installed as the subparsers' ``parser_class`` so every leaf parser gets
+    it, but it only deviates from stock parsing when the leaf actually
+    defines a ``command`` positional -- every other subcommand parses
+    exactly as before.
+    """
+
+    def parse_known_args(
+        self,
+        args: list[str] | str | None = None,
+        namespace: argparse.Namespace | None = None,
+    ) -> tuple[argparse.Namespace, list[str]]:
+        if args is None:
+            args = sys.argv[1:]
+        args = list(args)  # type: ignore[arg-type]
+        command = None
+        if any(a.dest == "command" for a in self._actions) and "--" in args:
+            sep = args.index("--")
+            command = args[sep + 1 :]
+            args = args[:sep]
+        namespace, extras = super().parse_known_args(args, namespace)
+        if command is not None:
+            namespace.command = command
+        return namespace, extras
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the full argument parser for every subcommand.
 
@@ -4460,6 +4501,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(
         dest="cmd",
         metavar="{" + ",".join(SUBCOMMANDS) + "}",
+        parser_class=_CommandSeparatorParser,
     )
 
     sub.add_parser(
@@ -4600,14 +4642,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "command",
-        # nargs="*", not REMAINDER: REMAINDER grabs every remaining token
-        # (including a later --timeout/--if-rev/-q) the instant it starts
-        # matching, ignoring argparse's own "--" end-of-options handling --
-        # so `run <id> --timeout N -- <command>` (the documented order,
-        # and what pi/extensions/dev-status-tool.ts generates) silently
-        # left --timeout unparsed and folded it into the command itself.
-        # "*" lets argparse's native "--" separator do the splitting, so
-        # --timeout/--if-rev/-q parse correctly on either side of the id.
+        # nargs="*" plus the _CommandSeparatorParser dispatch (see its
+        # docstring): REMAINDER grabs every remaining token the instant it
+        # starts matching -- folding a documented-order `run <id>
+        # --timeout N -- <cmd>` into the command itself -- while "*" alone
+        # cannot re-attach tokens after an optional and strips every "--"
+        # in the stream, not just the first. The parser class owns the
+        # split: everything after the first bare "--" lands here verbatim.
         nargs="*",
         metavar="-- <command...>",
         help="command to execute and record (everything after --; no shell)",
