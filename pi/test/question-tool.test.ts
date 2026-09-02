@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   assertQuestions,
   formatAnswers,
@@ -10,6 +11,7 @@ import {
   OTHER_LABEL,
   type QuestionSpec,
 } from "../extensions/question-tool";
+import registerQuestionTool from "../extensions/question-tool";
 
 function options(n: number): { label: string; description: string }[] {
   return Array.from({ length: n }, (_, i) => ({
@@ -287,5 +289,102 @@ describe("formatCancellation", () => {
     expect(text).toMatch(/cancel/i);
     expect(text).toContain("Merge");
     expect(text).toMatch(/before cancelling|incomplete|partial/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Picker render caching.
+//
+// pi kills the session with an uncaughtException when a rendered line is wider
+// than the terminal, so every component gets its width per render call and has
+// to honour it. The picker is the one component in this tree that caches its
+// rendered lines, and pi-tui never tells it a resize happened: TUI.start wires
+// the terminal's resize handler to requestRender() (dist/tui.js), while
+// TUI.invalidate() -- the only thing that reaches a component's invalidate() --
+// is called from exactly one place, consumeCellSizeResponse, which fires on a
+// cell-pixel-size report and not on a resize. So a cache that is cleared only
+// by invalidate() and by local state changes survives a width change, and the
+// picker keeps drawing at the width it first saw.
+//
+// The orchestrator reads this rendering back over `herdr agent read` to answer
+// a blocked worker, so stale lines are not only a display fault.
+// ---------------------------------------------------------------------------
+
+interface PickerComponent {
+  render(width: number): string[];
+  invalidate?(): void;
+  handleInput?(data: string): void;
+}
+
+/** Drives the real `question` tool far enough to get its live picker component back. */
+async function capturePicker(spec: QuestionSpec): Promise<PickerComponent> {
+  const tools = new Map<string, { execute: (...a: never[]) => Promise<unknown> }>();
+  registerQuestionTool({
+    registerTool: (def: { name: string }) => tools.set(def.name, def as never),
+  } as never);
+  const tool = tools.get("question");
+  if (!tool) throw new Error("question tool was never registered");
+
+  let captured: PickerComponent | undefined;
+  const ctx = {
+    hasUI: true,
+    mode: "tui",
+    ui: {
+      custom<T>(
+        factory: (
+          tui: unknown,
+          theme: unknown,
+          keybindings: unknown,
+          done: (value: T) => void,
+        ) => PickerComponent,
+      ): Promise<T> {
+        return new Promise<T>((resolve) => {
+          // Plain passthrough colouring, so visibleWidth measures exactly the
+          // characters the assertions care about.
+          const theme = { fg: (_role: string, text: string) => text };
+          captured = factory({ requestRender() {} }, theme, {}, resolve);
+          resolve({ selected: [spec.options[0]!.label], wasCustom: false } as T);
+        });
+      },
+    },
+  };
+
+  await tool.execute(
+    ...(["call-1", { questions: [spec] }, undefined, undefined, ctx] as unknown as never[]),
+  );
+  if (!captured) throw new Error("ui.custom was never called");
+  return captured;
+}
+
+describe("picker render caching", () => {
+  test("renders every line within the width it was given", async () => {
+    const picker = await capturePicker(question());
+    for (const line of picker.render(80)) {
+      expect(visibleWidth(line)).toBeLessThanOrEqual(80);
+    }
+  });
+
+  test("a narrowing width re-renders instead of replaying the wider lines", async () => {
+    const picker = await capturePicker(question());
+    picker.render(80);
+    // No invalidate() in between: pi-tui does not call one on a resize, so the
+    // component has to notice the width itself.
+    for (const line of picker.render(40)) {
+      expect(visibleWidth(line)).toBeLessThanOrEqual(40);
+    }
+  });
+
+  test("a widening width re-renders too, not just a narrowing one", async () => {
+    const picker = await capturePicker(question());
+    const narrow = picker.render(40);
+    const wide = picker.render(100);
+    expect(wide).not.toEqual(narrow);
+    expect(visibleWidth(wide[0]!)).toBe(100);
+  });
+
+  test("an unchanged width still serves the cache", async () => {
+    const picker = await capturePicker(question());
+    const first = picker.render(80);
+    expect(picker.render(80)).toBe(first);
   });
 });

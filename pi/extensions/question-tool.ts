@@ -310,7 +310,12 @@ async function askViaCustomUI(
     let optionIndex = 0;
     let editMode = false;
     const toggled = new Set<number>();
-    let cachedLines: string[] | undefined;
+    // Keyed by the width it was built at. pi-tui calls requestRender() on a
+    // terminal resize but never invalidate() (TUI.invalidate() is reached only
+    // from consumeCellSizeResponse), so a width change arrives as a plain
+    // re-render and the component has to spot it here. Lines built for a wider
+    // pane would otherwise be replayed into a narrower one.
+    let cached: { width: number; lines: string[] } | undefined;
 
     const editorTheme: EditorTheme = {
       borderColor: (s) => theme.fg("accent", s),
@@ -325,7 +330,7 @@ async function askViaCustomUI(
     const editor = new Editor(tui, editorTheme);
 
     function refresh() {
-      cachedLines = undefined;
+      cached = undefined;
       tui.requestRender();
     }
 
@@ -405,10 +410,10 @@ async function askViaCustomUI(
     }
 
     function render(width: number): string[] {
-      if (cachedLines) return cachedLines;
+      const renderWidth = Math.max(1, width);
+      if (cached && cached.width === renderWidth) return cached.lines;
 
       const lines: string[] = [];
-      const renderWidth = Math.max(1, width);
 
       function addWrapped(text: string) {
         lines.push(...wrapTextWithAnsi(text, renderWidth));
@@ -468,14 +473,14 @@ async function askViaCustomUI(
       }
       lines.push(theme.fg("accent", "─".repeat(renderWidth)));
 
-      cachedLines = lines;
+      cached = { width: renderWidth, lines };
       return lines;
     }
 
     return {
       render,
       invalidate: () => {
-        cachedLines = undefined;
+        cached = undefined;
       },
       handleInput,
     };
