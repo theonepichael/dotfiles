@@ -693,4 +693,26 @@ describe("swarm_poll execute() wiring", () => {
     expect(paneCloses(stub)).toHaveLength(1);
     expect(loadState(runId, dir)?.workers).toHaveLength(0);
   });
+
+  // The second original bug shape, at the wiring level. pi.exec's underlying
+  // execCommand always RESOLVES -- even for a process killed by signal --
+  // and coerces the null exit code to 0, so an aborted `agent wait` arrives
+  // as exit 0 with empty or partial stdout. That must stay distinguishable
+  // from a real settle: it closes the pane and drops the worker, and it is
+  // reported as "error" rather than a timeout that never elapsed.
+  test.each([
+    ["empty stdout, as a signal-killed exec resolves", ""],
+    ["partial/unparseable stdout", '{"result":{"agent":{"agent_st'],
+    ["valid JSON with no recognized status", JSON.stringify({ result: { agent: {} } })],
+  ])("exit-0 with %s closes the pane and drops the worker", async (_label, stdout) => {
+    const { runId, poll, stub } = setup(stdout);
+
+    const res = (await poll.execute(
+      ...(["call-1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { details: { events: { kind: string; detail?: string }[] } };
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["error"]);
+    expect(paneCloses(stub)).toHaveLength(1);
+    expect(loadState(runId, dir)?.workers).toHaveLength(0);
+  });
 });
