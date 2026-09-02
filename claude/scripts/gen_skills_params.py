@@ -978,7 +978,7 @@ each next entry.""",
         "FRONTMATTER": """\
 ---
 name: backlog-item
-description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item."
+description: "Runs a dev_status.py backlog item end-to-end: resolve, worktree, spec (escalating to grill-me only for a genuinely open design branch), second-opinion critique, execution handoff, TDD implement, verify, commit/merge/push gates, review+approve. Use when the user says 'work on backlog item 4', 'pick up <slug>', 'let's do the next backlog item', or otherwise names a specific item to work end-to-end. Add --auto (optionally with a slug) for an unattended single-item or full-READY-batch run — commit and merge/push gates still stop live, per item. Also supports a --swarm[=N] mode (concurrent recursive pi workers via herdr) -- see pi/prompts/backlog-item.md, the file /backlog-item actually runs, for that procedure; this generated copy only points at it."
 ---""",
         "OPENING_PARAGRAPH": """\
 Work the named item to done, one step at a time. If the invocation names
@@ -989,7 +989,14 @@ one — never guess. Every user-approval gate below (`## 10`, `## 11`) stops
 and waits for the user — never collapse two gates into one approval.
 Distinct from those: the item's own `gate` field in `dev_status.py` (step
 5, step 12) is a judgment-step verification checkpoint, not a
-user-approval stop — same word, different mechanism, don't conflate them.""",
+user-approval stop — same word, different mechanism, don't conflate them.
+
+There is also a `--swarm[=N]` mode -- `N` concurrent recursive pi workers
+via herdr fanning out over the full READY queue, instead of one item at a
+time. This generated copy doesn't carry that procedure (avoids a second copy
+drifting out of sync); type `/backlog-item --swarm[=N]` directly, which runs
+`pi/prompts/backlog-item.md` -- read that file for the full `--swarm[=N]
+mode` section.""",
         "STEP1_BODY": """\
 Call the `dev_status` tool with `action: "show", slug: "<slug|N>"` (works
 whether the identifier is a real slug or a numeric position — `show` is
