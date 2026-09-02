@@ -285,7 +285,14 @@ concurrency/pane-cap accounting.
 1. Pick a `runId` for this invocation (e.g. a short timestamp-based slug)
    and call `swarm_spawn` with the full READY queue and the concurrency —
    it spawns up to the cap, reporting any items skipped (cap) or failed to
-   spawn.
+   spawn. Each worker is sent `/permission-gate-disable` before its item, so
+   `permission-gate.ts`'s bash confirmation can't strand it: a worker runs
+   in a TUI pane, so the gate's `ctx.ui.confirm` would wait on a human
+   nobody has told to look, while `agent_status` stays `working` and
+   `swarm_poll` reads it as progress. A worker that can't be opted out is
+   reported in `failed` (`permission_gate_not_disabled`) rather than left to
+   stall. `guard-rails.ts` deliberately stays armed — workers still cannot
+   write into a repo's main checkout.
 2. Loop: call `swarm_poll`. It blocks until at least one worker settles and
    returns every event that settled in that window (usually one,
    occasionally more — process all of them before polling again):
@@ -293,9 +300,19 @@ concurrency/pane-cap accounting.
      commit or step 11 merge/push, but treat `raw_prompt` as whatever it
      actually says, never assumed to be a diff or a yes/no). Show
      `raw_prompt` to the user verbatim, alongside the item's slug, and ask
-     for their answer in plain text, stating your own recommendation first
-     per CLAUDE.md's judgment-call convention when one is warranted (e.g.
-     recommending approval when the diff looks clean) — but this is still a
+     for their answer **via the `question` tool, not plain text**, stating
+     your own recommendation first per CLAUDE.md's judgment-call convention
+     when one is warranted (e.g. recommending approval when the diff looks
+     clean). Mirror the worker's own listed options where it has them, and
+     keep a free-text escape so an answer that matches nothing is still
+     possible. Same reason as steps 10 and 11: `question` emits
+     `herdr:blocked`, so this orchestrator's own pane registers as `blocked`
+     while it waits on the human. Asking in plain text ends the turn, which
+     leaves the orchestrator reporting `idle` — indistinguishable from a
+     finished run to anything watching over herdr's socket, including the
+     user, who then has to hunt through panes to discover a relay is even
+     pending (confirmed live, 2026-09-02: a relayed commit gate sat unseen
+     behind an `idle` orchestrator). But this is still a
      live commit/merge approval, not a mechanical judgment call: never
      answer on the user's behalf, no exceptions, exactly as step 10/11 above
      require outside swarm mode. Once they answer, call
