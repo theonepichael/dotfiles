@@ -231,18 +231,30 @@ describe("navigationKeys", () => {
 });
 
 describe("classifyWaitResult", () => {
+  // `agent get`/`agent wait` nest the payload one level under "agent" --
+  // confirmed live, repeatedly (e.g. `herdr agent get <id>` ->
+  // {"result":{"agent":{"agent_status":"blocked",...}}}). An earlier version
+  // of both the code and these fixtures used a flat {result:{agent_status}}
+  // shape that matched the code's wrong assumption instead of the real
+  // captured format, so the tests never caught the bug -- these fixtures
+  // are deliberately shaped to match the real wire format, not the
+  // implementation, to guard against that happening again.
+  function waitStdout(agent_status: string): string {
+    return JSON.stringify({ result: { agent: { agent_status } } });
+  }
+
   test("blocked status maps to blocked", () => {
-    const stdout = JSON.stringify({ result: { agent_status: "blocked" } });
-    expect(classifyWaitResult(0, stdout, "")).toBe("blocked");
+    expect(classifyWaitResult(0, waitStdout("blocked"), "")).toBe("blocked");
   });
 
   test("idle or done status maps to finished", () => {
-    expect(classifyWaitResult(0, JSON.stringify({ result: { agent_status: "idle" } }), "")).toBe(
-      "finished",
-    );
-    expect(classifyWaitResult(0, JSON.stringify({ result: { agent_status: "done" } }), "")).toBe(
-      "finished",
-    );
+    expect(classifyWaitResult(0, waitStdout("idle"), "")).toBe("finished");
+    expect(classifyWaitResult(0, waitStdout("done"), "")).toBe("finished");
+  });
+
+  test("the old flat (unnested) shape is NOT recognized -- regression guard for the live-discovered field-path bug", () => {
+    const flatShape = JSON.stringify({ result: { agent_status: "blocked" } });
+    expect(classifyWaitResult(0, flatShape, "")).toBe("error");
   });
 
   test("a genuine herdr timeout error on stderr maps to timed_out", () => {
@@ -271,9 +283,7 @@ describe("classifyWaitResult", () => {
     // (code coerced to 0, empty/partial stdout) -- must not look like a
     // real settle or a real timeout.
     expect(classifyWaitResult(0, "not json", "")).toBe("error");
-    expect(classifyWaitResult(0, JSON.stringify({ result: { agent_status: "unknown" } }), "")).toBe(
-      "error",
-    );
+    expect(classifyWaitResult(0, waitStdout("unknown"), "")).toBe("error");
     expect(classifyWaitResult(0, "", "")).toBe("error");
   });
 });

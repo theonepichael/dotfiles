@@ -234,7 +234,17 @@ export function buildAgentListArgv(): string[] {
 // ---------------------------------------------------------------------------
 
 interface HerdrEnvelope {
-  result?: { agent_status?: string; agents?: { agent_session?: unknown; pane_id?: string }[] };
+  // `agent get`/`agent wait` nest the single-agent payload one level under
+  // "agent" -- confirmed live, repeatedly (e.g. `herdr agent get <id>` ->
+  // {"result":{"agent":{"agent_status":"blocked",...}}}). `agent list`'s
+  // `result.agents[]` array elements do NOT have this extra nesting (each
+  // element already has agent_status/agent_session directly on it) -- these
+  // are two different response shapes for two different commands, not one
+  // shared shape; do not conflate them into a single flat interface again.
+  result?: {
+    agent?: { agent_status?: string };
+    agents?: { agent_status?: string; agent_session?: unknown; pane_id?: string }[];
+  };
   error?: { code?: string; message?: string };
 }
 
@@ -262,7 +272,7 @@ export function classifyWaitResult(
   stderr: string,
 ): PollEventKind {
   if (exitCode === 0) {
-    const status = parseHerdrJson(stdout)?.result?.agent_status;
+    const status = parseHerdrJson(stdout)?.result?.agent?.agent_status;
     if (status === "blocked") return "blocked";
     if (status === "idle" || status === "done") return "finished";
     return "error";
@@ -400,14 +410,17 @@ export default function (pi: ExtensionAPI) {
   function parseAgentListIds(stdout: string): string[] {
     try {
       const parsed = JSON.parse(stdout) as {
-        result?: { agents?: { agent_session?: { source?: string; value?: string } }[] };
+        result?: { agents?: { name?: string }[] };
       };
-      // `herdr agent list` doesn't expose the caller-chosen name directly in
-      // the shape captured during design -- reconciliation below matches on
-      // whatever identifying value is present; adjust if the live schema
-      // (verified once, not for every agent kind) differs.
+      // Each `agent list` entry carries the caller-chosen herdr name
+      // directly as `.name` (confirmed live) -- this is what `reconcileState`
+      // must match against `worker.agent` (the synthetic id assigned at
+      // spawn time). An earlier version of this read `agent_session.value`
+      // (a pi session file path) instead, which could never match a
+      // synthetic id like "run1-w1" -- every reconciliation would have
+      // wrongly dropped every genuinely-live worker as dead.
       return (parsed.result?.agents ?? [])
-        .map((a) => a.agent_session?.value)
+        .map((a) => a.name)
         .filter((v): v is string => typeof v === "string");
     } catch {
       return [];
