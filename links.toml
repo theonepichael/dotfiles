@@ -89,6 +89,10 @@ src = "zsh/.common_shell_aliases"
 dest = "~/.common_shell_aliases"
 
 [[link]]
+src = "shell/agent-tools.zsh"
+dest = "~/.agent-tools.zsh"
+
+[[link]]
 src = "shell/.poshtheme.omp.json"
 dest = "~/.poshtheme.omp.json"
 

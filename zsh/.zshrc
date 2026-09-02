@@ -27,7 +27,8 @@ select-word-style bash
 # COMPLETION
 # ============================================================================
 
-fpath=(~/.zsh/completions $fpath)
+# Agent harness tools (completions, paths, harness aliases)
+[[ -f "$HOME/.agent-tools.zsh" ]] && source "$HOME/.agent-tools.zsh"
 
 autoload -Uz compinit
 compinit
@@ -75,11 +76,6 @@ if [[ -f "$HOME/.common_shell_aliases" ]]; then
     source "$HOME/.common_shell_aliases"
 fi
 
-# Copilot-specific aliases — only present when the copilot harness was
-# selected during install.sh (symlinked to ~/.copilot_aliases); absent
-# (and silently skipped) otherwise.
-[[ -f "$HOME/.copilot_aliases" ]] && source "$HOME/.copilot_aliases"
-
 # ============================================================================
 # OH-MY-POSH
 # ============================================================================
@@ -115,13 +111,7 @@ export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
 
 
-# Added by Antigravity CLI installer
-export PATH="$HOME/.local/bin:$PATH"
-
-export PATH="$HOME/.opencode/bin:$PATH"
-
 # Enable richer colors
 export COLORTERM=truecolor
 
 . "$HOME/.local/bin/env"
-export PATH="$HOME/.bun/bin:$PATH"
