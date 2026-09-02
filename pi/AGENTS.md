@@ -16,6 +16,31 @@ already caught this class once: `custom-footer.ts` was hand-symlinked from
 the worktree it was written in, so when that worktree was removed the
 installed link dangled and the extension silently stopped loading.
 
+## Never repoint `~/.pi/agent/extensions` at a worktree — use `pi -e`
+
+To load an in-progress extension in a real pi, pass it explicitly:
+
+```bash
+pi -e /path/to/dotfiles-<slug>/pi/extensions/your-extension.ts
+```
+
+`-e` can be repeated, and `-ne` disables the normal discovery scan if you
+want *only* your copies loaded. Either way it lasts one session and leaves
+nothing behind.
+
+Repointing the installed symlink instead is the trap. It works, the live
+test passes, and then the worktree is removed at cleanup and the link
+dangles — pi stops registering whatever that file provided, silently, long
+after the change that caused it. This has now happened three times:
+`custom-footer.ts` (above), then `permission-gate.ts` and `swarm-tool.ts`
+on 2026-09-02, the latter pair taking the permission gate and the entire
+swarm toolset down with them.
+
+`install.py --check-links` reports a link pointing into a worktree as
+`wrong-target`, and `link_drift_check.py` surfaces that at the start of
+every session — but a check you have to notice is a worse fix than not
+creating the state at all.
+
 ## This is the only TypeScript tree in the repo
 
 `pi/package.json` drives four stages, all run by

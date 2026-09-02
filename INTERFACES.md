@@ -46,6 +46,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`grill.py`](#claudescriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
 | [`guard_rails.py`](#claudescriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main``, and (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``). |
 | [`harness_discovery_check.py`](#claudescriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md. |
+| [`link_drift_check.py`](#claudescriptslinkdriftcheckpy) | SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should. |
 | [`llm_backends.py`](#claudescriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
 | [`notify.py`](#claudescriptsnotifypy) | Cross-platform agent notification dispatcher. |
 | [`opencode_skills_sync_activity.py`](#claudescriptsopencodeskillssyncactivitypy) | Print opencode-skills-sync's pause state and last known snapshot commit, so a session can tell whether the daemon is running and how current its mirror is -- mirrors watchcommit_activity.py's SessionStart banner role. |
@@ -663,6 +664,25 @@ SessionStart hook + CLI: detect when a harness's instruction-file discovery beha
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_check`, `cmd_probe`
 - Tested by: `claude/scripts/test_harness_discovery_check.py`
+
+### `claude/scripts/link_drift_check.py`
+
+SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should.
+
+- Installed at: `~/.claude/scripts/link_drift_check.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Flag managed symlinks that no longer point where links.toml says they should.
+  - `--quiet/-q`
+  - `--verbose/-v`
+- Subcommands:
+  - `check` — print a line per drifted bucket (default)
+- Filesystem constants:
+  - `REPO = Path(__file__).resolve().parents[2]`
+- Depends on: `cli_common.py`
+- Public functions:
+  - `build_parser() -> argparse.ArgumentParser`
+- Subcommand handlers: `cmd_check`
+- Tested by: `claude/scripts/test_link_drift_check.py`
 
 ### `claude/scripts/llm_backends.py`
 

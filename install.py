@@ -4693,6 +4693,21 @@ def _is_dotfiles_checkout(root: Path) -> bool:
     return (root / "links.toml").is_file() and (root / "install.py").is_file()
 
 
+def _is_main_checkout(root: Path) -> bool:
+    """Return whether ``root`` is the repo's primary checkout, not a worktree.
+
+    `git worktree add` gives a worktree a `.git` *file* holding a `gitdir:`
+    pointer, while the primary checkout keeps `.git` as a directory. That
+    difference is the whole test, and reading it costs one stat -- no git
+    subprocess, which keeps this usable from the audit and from a test suite
+    that blocks real subprocess calls.
+    """
+    try:
+        return (root / ".git").is_dir()
+    except OSError:
+        return False
+
+
 def _check_applicable_links(
     ctx: Context,
     links: Sequence[tuple[Path, Path, str, bool]],
@@ -4754,10 +4769,22 @@ def _check_applicable_links(
         target = _link_target(dest)
         if not _same_path(target, src):
             other_root = _implied_repo_root(target, rel)
+            # Only a link into the PRIMARY checkout is excusable. The
+            # direction matters and used to be ignored: auditing from a
+            # worktree while the machine points at main is the normal state
+            # under worktree-first development, but a link pointing INTO a
+            # worktree is drift -- someone hand-pointed it for a live test and
+            # left it there, and it dangles the moment that worktree is
+            # removed, silently unloading whatever it provided. Both cases
+            # answered "a different checkout?" the same way, so the second was
+            # filed as a benign note and dropped from the audited count. It
+            # has bitten three times: custom-footer.ts, then permission-gate.ts
+            # and swarm-tool.ts on 2026-09-02.
             same_file_other_checkout = (
                 other_root is not None
                 and not _same_path(other_root, ctx.dotfiles)
                 and _is_dotfiles_checkout(other_root)
+                and _is_main_checkout(other_root)
             )
             if same_file_other_checkout:
                 # A dangling link is a real machine problem regardless of
