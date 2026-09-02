@@ -12,6 +12,7 @@ import {
   buildAgentStartArgv,
   buildAgentWaitArgv,
   buildPaneCloseArgv,
+  buildPaneRenameArgv,
   buildPaneSplitArgv,
   canOpenNewPane,
   canSpawnNew,
@@ -75,13 +76,24 @@ function makeState(overrides: Partial<SwarmState> = {}): SwarmState {
 }
 
 describe("nextAgentId", () => {
-  test("is short, namespaced by run, never the raw slug", () => {
+  test("is short, namespaced by run, never exceeds 32 chars", () => {
     expect(nextAgentId("run1", 1)).toBe("run1-w1");
     expect(nextAgentId("run1", 12)).toBe("run1-w12");
+    expect(nextAgentId("run1", 1, "fix-bug")).toBe("run1-w1-fix-bug");
+    expect(nextAgentId("run1", 1, "a-very-long-backlog-item-slug-name-that-exceeds-limits")).toBe(
+      "run1-w1-a-very-long-backlog-item",
+    );
+    expect(
+      nextAgentId("run1", 1, "a-very-long-backlog-item-slug-name-that-exceeds-limits").length,
+    ).toBeLessThanOrEqual(32);
   });
 });
 
 describe("herdr argv builders", () => {
+  test("pane rename: pane id and label", () => {
+    expect(buildPaneRenameArgv("w1:pA", "my-slug")).toEqual(["pane", "rename", "w1:pA", "my-slug"]);
+  });
+
   test("pane split: current pane, direction, cwd, no-focus", () => {
     expect(buildPaneSplitArgv("right", "/repo")).toEqual([
       "pane",

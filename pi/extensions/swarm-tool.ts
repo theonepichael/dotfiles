@@ -158,9 +158,11 @@ export function reconcileState(
 // Naming
 // ---------------------------------------------------------------------------
 
-/** Short synthetic herdr agent name -- never the raw slug (herdr caps names at 32 chars; real backlog slugs exceed that). */
-export function nextAgentId(runId: string, counter: number): string {
-  return `${runId}-w${counter}`;
+/** Synthetic herdr agent name incorporating the slug, capped at herdr's 32-char limit. */
+export function nextAgentId(runId: string, counter: number, slug?: string): string {
+  const cleanSlug = slug ? slug.replace(/[^a-zA-Z0-9_-]/g, "") : "";
+  const base = cleanSlug ? `${runId}-w${counter}-${cleanSlug}` : `${runId}-w${counter}`;
+  return base.slice(0, 32);
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +171,10 @@ export function nextAgentId(runId: string, counter: number): string {
 // load-bearing: swarm_resolve_blocked passes the human's free-text answer
 // straight through as one of these elements.
 // ---------------------------------------------------------------------------
+
+export function buildPaneRenameArgv(paneId: string, label: string): string[] {
+  return ["pane", "rename", paneId, label];
+}
 
 export function buildPaneSplitArgv(direction: "right" | "down", cwd: string): string[] {
   return ["pane", "split", "--current", "--direction", direction, "--cwd", cwd, "--no-focus"];
@@ -577,6 +583,7 @@ export default function (pi: ExtensionAPI) {
           const parsed = JSON.parse(result.stdout) as { result?: { pane?: { pane_id?: string } } };
           const paneId = parsed.result?.pane?.pane_id;
           if (!paneId) throw new Error("no pane_id in response");
+          await herdr(pi, buildPaneRenameArgv(paneId, slug));
           splitPanes.push({ slug, paneId });
         } catch (e) {
           splitPanes.push({
@@ -590,7 +597,7 @@ export default function (pi: ExtensionAPI) {
         splitPanes.map(async (p) => {
           if (p.failed || !p.paneId) return { slug: p.slug, failed: p.failed };
           state.nextCounter += 1;
-          const agentId = nextAgentId(typed.runId, state.nextCounter);
+          const agentId = nextAgentId(typed.runId, state.nextCounter, p.slug);
           const startResult = await herdr(pi, buildAgentStartArgv(agentId, p.paneId));
           if (startResult.code !== 0) {
             return {
