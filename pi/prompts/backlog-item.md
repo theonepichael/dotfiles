@@ -330,9 +330,10 @@ concurrency/pane-cap accounting.
    returns every event that settled in that window (usually one,
    occasionally more — process all of them before polling again):
    - **`blocked`** — a worker hit an approval gate (almost always step 10
-     commit or step 11 merge/push, but treat `raw_prompt` as whatever it
-     actually says, never assumed to be a diff or a yes/no). Show
-     `raw_prompt` to the user verbatim, alongside the item's slug, and ask
+     commit or step 11 merge/push, but treat the quoted prompt as whatever
+     it actually says, never assumed to be a diff or a yes/no). `swarm_poll`
+     reports that prompt verbatim in its own result text; show it to the
+     user unchanged, alongside the item's slug, and ask
      for their answer **via the `question` tool, not plain text**, stating
      your own recommendation first per CLAUDE.md's judgment-call convention
      when one is warranted (e.g. recommending approval when the diff looks
@@ -351,14 +352,18 @@ concurrency/pane-cap accounting.
      require outside swarm mode. Once they answer, call
      `swarm_resolve_blocked` with that exact text — never a summary or
      paraphrase; it matches the text against the worker's currently listed
-     option labels and navigates to the match. If it reports `needsManual`
-     (the answer matched no listed option, or matched more than one), relay
-     that back to the user verbatim — the exact option labels it listed and
-     the suggestion to attach directly (`herdr agent attach <id>`) — rather
-     than guessing or retrying with a rephrased answer yourself. Handle one
-     blocked event fully (through to calling `swarm_resolve_blocked`, or
-     surfacing `needsManual`) before moving to the next event in the same
-     batch; never stack multiple relay questions into one message.
+     option labels and navigates to the match. Every outcome it reports
+     leads with its own marker word — `resolved:`, `needs_manual:` or
+     `relay_failed:` — and names the agent, slug and pane, so branch on that
+     word rather than on any field you expect to find in a result object. On
+     `needs_manual:` (the answer matched no listed option, or matched more
+     than one), relay it back to the user verbatim — the exact option labels
+     it listed and the suggestion to attach directly
+     (`herdr agent attach <id>`) — rather than guessing or retrying with a
+     rephrased answer yourself. Handle one blocked event fully (through to
+     calling `swarm_resolve_blocked`, or surfacing `needs_manual:`) before
+     moving to the next event in the same batch; never stack multiple relay
+     questions into one message.
    - **`finished`** / **`timed_out`** — record the outcome for the
      end-of-run digest (approved / flagged / timed out); the tool has
      already closed that worker's pane and freed its slot. `swarm_poll`
