@@ -51,7 +51,16 @@ import { Type } from "typebox";
 // response) is reported as "error" instead, with the raw detail attached,
 // rather than silently mislabeled as a timeout that never happened.
 
-const HERDR_STATE_DIR = join(homedir(), ".pi", "agent", "state");
+/**
+ * Where a run's state file lives. Resolved per call, not captured at module
+ * load, so a test can point it somewhere disposable after importing this
+ * module -- swarm_poll/swarm_spawn persist through the closure's `persist`,
+ * which has no stateDir parameter to thread one through, so an env override
+ * is the only seam that keeps an execute()-level test off the real ~/.pi.
+ */
+function herdrStateDir(): string {
+  return process.env.PI_SWARM_STATE_DIR ?? join(homedir(), ".pi", "agent", "state");
+}
 
 const DEFAULT_CONCURRENCY = 3;
 const OPEN_PANE_SOFT_CAP_MULTIPLIER = 2;
@@ -97,11 +106,11 @@ export interface PollEvent {
 // State file persistence and crash recovery
 // ---------------------------------------------------------------------------
 
-export function statePath(runId: string, stateDir: string = HERDR_STATE_DIR): string {
+export function statePath(runId: string, stateDir: string = herdrStateDir()): string {
   return join(stateDir, `swarm-${runId}.json`);
 }
 
-export function loadState(runId: string, stateDir: string = HERDR_STATE_DIR): SwarmState | null {
+export function loadState(runId: string, stateDir: string = herdrStateDir()): SwarmState | null {
   const path = statePath(runId, stateDir);
   if (!existsSync(path)) return null;
   try {
@@ -115,7 +124,7 @@ export function loadState(runId: string, stateDir: string = HERDR_STATE_DIR): Sw
   }
 }
 
-export function saveState(state: SwarmState, stateDir: string = HERDR_STATE_DIR): void {
+export function saveState(state: SwarmState, stateDir: string = herdrStateDir()): void {
   mkdirSync(stateDir, { recursive: true });
   writeFileSync(statePath(state.runId, stateDir), JSON.stringify(state, null, 2));
 }
@@ -158,9 +167,11 @@ export function reconcileState(
 // Naming
 // ---------------------------------------------------------------------------
 
-/** Short synthetic herdr agent name -- never the raw slug (herdr caps names at 32 chars; real backlog slugs exceed that). */
-export function nextAgentId(runId: string, counter: number): string {
-  return `${runId}-w${counter}`;
+/** Synthetic herdr agent name incorporating the slug, capped at herdr's 32-char limit. */
+export function nextAgentId(runId: string, counter: number, slug?: string): string {
+  const cleanSlug = slug ? slug.replace(/[^a-zA-Z0-9_-]/g, "") : "";
+  const base = cleanSlug ? `${runId}-w${counter}-${cleanSlug}` : `${runId}-w${counter}`;
+  return base.slice(0, 32);
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +180,10 @@ export function nextAgentId(runId: string, counter: number): string {
 // load-bearing: swarm_resolve_blocked passes the human's free-text answer
 // straight through as one of these elements.
 // ---------------------------------------------------------------------------
+
+export function buildPaneRenameArgv(paneId: string, label: string): string[] {
+  return ["pane", "rename", paneId, label];
+}
 
 export function buildPaneSplitArgv(direction: "right" | "down", cwd: string): string[] {
   return ["pane", "split", "--current", "--direction", direction, "--cwd", cwd, "--no-focus"];
@@ -577,6 +592,7 @@ export default function (pi: ExtensionAPI) {
           const parsed = JSON.parse(result.stdout) as { result?: { pane?: { pane_id?: string } } };
           const paneId = parsed.result?.pane?.pane_id;
           if (!paneId) throw new Error("no pane_id in response");
+          await herdr(pi, buildPaneRenameArgv(paneId, slug));
           splitPanes.push({ slug, paneId });
         } catch (e) {
           splitPanes.push({
@@ -590,7 +606,7 @@ export default function (pi: ExtensionAPI) {
         splitPanes.map(async (p) => {
           if (p.failed || !p.paneId) return { slug: p.slug, failed: p.failed };
           state.nextCounter += 1;
-          const agentId = nextAgentId(typed.runId, state.nextCounter);
+          const agentId = nextAgentId(typed.runId, state.nextCounter, p.slug);
           const startResult = await herdr(pi, buildAgentStartArgv(agentId, p.paneId));
           if (startResult.code !== 0) {
             return {

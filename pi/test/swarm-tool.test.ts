@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import {
+import registerSwarmTools, {
   activeWorkerCount,
   buildAgentGetArgv,
   buildAgentListArgv,
@@ -12,6 +12,7 @@ import {
   buildAgentStartArgv,
   buildAgentWaitArgv,
   buildPaneCloseArgv,
+  buildPaneRenameArgv,
   buildPaneSplitArgv,
   canOpenNewPane,
   canSpawnNew,
@@ -75,13 +76,24 @@ function makeState(overrides: Partial<SwarmState> = {}): SwarmState {
 }
 
 describe("nextAgentId", () => {
-  test("is short, namespaced by run, never the raw slug", () => {
+  test("is short, namespaced by run, never exceeds 32 chars", () => {
     expect(nextAgentId("run1", 1)).toBe("run1-w1");
     expect(nextAgentId("run1", 12)).toBe("run1-w12");
+    expect(nextAgentId("run1", 1, "fix-bug")).toBe("run1-w1-fix-bug");
+    expect(nextAgentId("run1", 1, "a-very-long-backlog-item-slug-name-that-exceeds-limits")).toBe(
+      "run1-w1-a-very-long-backlog-item",
+    );
+    expect(
+      nextAgentId("run1", 1, "a-very-long-backlog-item-slug-name-that-exceeds-limits").length,
+    ).toBeLessThanOrEqual(32);
   });
 });
 
 describe("herdr argv builders", () => {
+  test("pane rename: pane id and label", () => {
+    expect(buildPaneRenameArgv("w1:pA", "my-slug")).toEqual(["pane", "rename", "w1:pA", "my-slug"]);
+  });
+
   test("pane split: current pane, direction, cwd, no-focus", () => {
     expect(buildPaneSplitArgv("right", "/repo")).toEqual([
       "pane",
@@ -496,5 +508,189 @@ describe("state persistence", () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(path, "{not json");
     expect(loadState("bad", dir)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// swarm_poll's execute() wiring.
+//
+// classifyWaitResult is unit-tested above, but the live failure that
+// motivated these tests was never a classification bug in isolation -- it
+// was what execute() *does* with the classification. A settle payload that
+// classifies as anything other than "blocked" takes the else branch: pane
+// closed, worker dropped from state, `herdr agent get` thereafter returning
+// agent_not_found. So a worker sitting at a real approval gate got its pane
+// destroyed and became unrecoverable, with no relay target left.
+//
+// These drive the registered tool's real execute() against a stubbed
+// ExtensionAPI, asserting the pane/lifecycle consequences rather than the
+// returned label -- the part that had no coverage.
+// ---------------------------------------------------------------------------
+
+/**
+ * A real `herdr agent wait` settle envelope, captured from herdr 0.8.2 on
+ * 2026-09-02 (`herdr agent wait swarmctl2 --until idle`): exit 0, payload on
+ * stdout, agent fields nested one level under `result.agent`, with
+ * `result.type` = "agent_info". Only agent_status/name/pane_id vary here.
+ * Shaped to the real wire format on purpose -- an earlier fixture set copied
+ * the code's wrong flat assumption instead, so the tests agreed with the bug.
+ */
+function realWaitEnvelope(agentStatus: string, name: string, paneId: string): string {
+  return JSON.stringify({
+    id: "cli:agent:wait",
+    result: {
+      agent: {
+        agent: "pi",
+        agent_status: agentStatus,
+        cwd: "/home/yanil/dotfiles",
+        focused: false,
+        interactive_ready: true,
+        name,
+        pane_id: paneId,
+        revision: 1,
+        tab_id: "w1:t1",
+        workspace_id: "w1",
+      },
+      type: "agent_info",
+    },
+  });
+}
+
+interface ExecCall {
+  argv: string[];
+}
+
+/** Minimal ExtensionAPI stub -- swarm-tool only ever touches exec + registerTool. */
+function makeStubPi(respond: (argv: string[]) => { code: number; stdout: string; stderr: string }) {
+  const calls: ExecCall[] = [];
+  const tools = new Map<string, { execute: (...a: never[]) => Promise<unknown> }>();
+  const pi = {
+    exec(_cmd: string, argv: string[]) {
+      calls.push({ argv });
+      return Promise.resolve(respond(argv));
+    },
+    registerTool(def: { name: string; execute: (...a: never[]) => Promise<unknown> }) {
+      tools.set(def.name, def);
+    },
+  };
+  return { pi, calls, tools };
+}
+
+describe("swarm_poll execute() wiring", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-poll-exec-"));
+    // Keeps the tool's own `persist` off the real ~/.pi/agent/state.
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Seeds one active worker on disk and returns the wired-up swarm_poll. */
+  function setup(waitStdout: string, waitCode = 0, waitStderr = "") {
+    const runId = "execrun";
+    const worker: WorkerRecord = {
+      agent: "execrun-w1",
+      slug: "some-item",
+      paneId: "w1:pZ",
+      lifecycle: "active",
+    };
+    const state: SwarmState = { runId, concurrency: 2, nextCounter: 1, workers: [worker] };
+    saveState(state, dir);
+
+    const stub = makeStubPi((argv) => {
+      const [a, b] = argv;
+      if (a === "agent" && b === "list") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ result: { agents: [{ name: "execrun-w1" }] } }),
+          stderr: "",
+        };
+      }
+      if (a === "agent" && b === "wait") {
+        return { code: waitCode, stdout: waitStdout, stderr: waitStderr };
+      }
+      if (a === "agent" && b === "get") {
+        return { code: 0, stdout: realWaitEnvelope("blocked", "execrun-w1", "w1:pZ"), stderr: "" };
+      }
+      if (a === "agent" && b === "read") {
+        return { code: 0, stdout: "Commit these changes?\n> Yes\n  No\n", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+    return { runId, poll, stub };
+  }
+
+  const paneCloses = (stub: { calls: ExecCall[] }) =>
+    stub.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "close");
+
+  test("a blocked settle keeps the pane open and parks the worker at awaiting_relay", async () => {
+    const { runId, poll, stub } = setup(realWaitEnvelope("blocked", "execrun-w1", "w1:pZ"));
+
+    const res = (await poll.execute(
+      ...(["call-1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { details: { events: { kind: string }[] } };
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["blocked"]);
+    // The load-bearing assertions: the relay target must survive.
+    expect(paneCloses(stub)).toHaveLength(0);
+    const persisted = loadState(runId, dir);
+    expect(persisted?.workers).toHaveLength(1);
+    expect(persisted?.workers[0]?.lifecycle).toBe("awaiting_relay");
+  });
+
+  test("the pre-fix flat payload shape closes the pane and drops the worker -- the live bug, pinned", async () => {
+    // Exactly what a blocked worker's settle looked like to the old parser:
+    // real status present, but at result.agent_status instead of
+    // result.agent.agent_status, so it fell through to "error".
+    const flat = JSON.stringify({ result: { agent_status: "blocked" } });
+    const { runId, poll, stub } = setup(flat);
+
+    const res = (await poll.execute(
+      ...(["call-1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { details: { events: { kind: string }[] } };
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["error"]);
+    expect(paneCloses(stub)).toHaveLength(1);
+    expect(loadState(runId, dir)?.workers).toHaveLength(0);
+  });
+
+  test("a genuine herdr timeout closes the pane and drops the worker", async () => {
+    const stderr = JSON.stringify({
+      error: { code: "timeout", message: "timed out waiting for agent status" },
+      id: "cli:agent:wait",
+    });
+    const { runId, poll, stub } = setup("", 1, stderr);
+
+    const res = (await poll.execute(
+      ...(["call-1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { details: { events: { kind: string }[] } };
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["timed_out"]);
+    expect(paneCloses(stub)).toHaveLength(1);
+    expect(loadState(runId, dir)?.workers).toHaveLength(0);
+  });
+
+  test("an idle settle finishes the worker and frees its pane", async () => {
+    const { runId, poll, stub } = setup(realWaitEnvelope("idle", "execrun-w1", "w1:pZ"));
+
+    const res = (await poll.execute(
+      ...(["call-1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { details: { events: { kind: string }[] } };
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
+    expect(paneCloses(stub)).toHaveLength(1);
+    expect(loadState(runId, dir)?.workers).toHaveLength(0);
   });
 });
