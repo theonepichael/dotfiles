@@ -722,6 +722,11 @@ dest = "~/.pi/agent/extensions/grill-tool.ts"
 harness = "pi"
 
 [[link]]
+src = "pi/extensions/herdr-blocked-bridge.ts"
+dest = "~/.pi/agent/extensions/herdr-blocked-bridge.ts"
+harness = "pi"
+
+[[link]]
 src = "pi/extensions/question-tool.ts"
 dest = "~/.pi/agent/extensions/question-tool.ts"
 harness = "pi"
