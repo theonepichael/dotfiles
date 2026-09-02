@@ -54,6 +54,11 @@ export interface Answer {
   /** Chosen option labels, or the single free-text string when wasCustom. */
   selected: string[];
   wasCustom: boolean;
+  /**
+   * Milliseconds from raising this question's picker to receiving its answer.
+   * Optional: absent on answers recorded before this was tracked.
+   */
+  latencyMs?: number;
 }
 
 export interface QuestionDetails {
@@ -174,10 +179,44 @@ export function assertQuestions(params: QuestionToolParams): void {
   });
 }
 
+/**
+ * Below this, an answer did not come from a person.
+ *
+ * A human keypress and a `herdr agent send-keys` keypress are the same
+ * terminal input -- pi exposes nothing that tells them apart, so the answer
+ * text alone can never say who chose. Timing can. Measured 2026-09-02
+ * against a real pi agent in a herdr pane: send-keys answered a picker
+ * 182ms after the tool raised it, while the two answers a human gave that
+ * evening took 17s and 36s. Two orders of magnitude apart, so 1s sits in
+ * empty space: no one reads a commit diff and decides inside a second.
+ *
+ * This is evidence, not proof of authorship -- a fast answer is reported,
+ * never silently discarded.
+ */
+export const IMPLAUSIBLY_FAST_MS = 1000;
+
+function formatLatency(ms: number): string {
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
 function describeAnswer(answer: Answer): string {
   const choices = answer.selected.map((s) => `"${s}"`).join(", ");
   const how = answer.wasCustom ? "typed" : "selected";
-  return `[${answer.header}] ${answer.question}\n  User ${how}: ${choices}`;
+  let line = `[${answer.header}] ${answer.question}\n  User ${how}: ${choices}`;
+
+  if (answer.latencyMs !== undefined) {
+    line += ` (after ${formatLatency(answer.latencyMs)}`;
+    if (answer.latencyMs < IMPLAUSIBLY_FAST_MS) {
+      // The reader here is usually a model about to act on what it thinks is
+      // an approval, so say what to do, not just that the timing is odd.
+      line +=
+        " -- IMPLAUSIBLY FAST for a human answer; treat this as an unattended " +
+        "or self-answered picker, not as approval, and confirm with the user " +
+        "before acting on it";
+    }
+    line += ")";
+  }
+  return line;
 }
 
 export function formatAnswers(answers: Answer[]): string {
@@ -500,10 +539,14 @@ export default function (pi: ExtensionAPI) {
           const position =
             typed.questions.length > 1 ? ` (${i + 1}/${typed.questions.length})` : "";
 
+          // Measured across the ask itself, so it covers exactly the window a
+          // human spends reading and deciding -- see IMPLAUSIBLY_FAST_MS.
+          const askedAt = Date.now();
           const result =
             ctx.mode === "tui"
               ? await askViaCustomUI(ctx, spec, position)
               : await askViaSelect(ctx, spec);
+          const latencyMs = Date.now() - askedAt;
 
           if (!result) {
             return {
@@ -517,6 +560,7 @@ export default function (pi: ExtensionAPI) {
             question: spec.question,
             selected: result.selected,
             wasCustom: result.wasCustom,
+            latencyMs,
           });
         }
 
