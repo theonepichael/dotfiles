@@ -110,7 +110,10 @@ const ALLOW_PATTERNS: string[] = [
 const DENY_PATTERNS: string[] = [];
 
 export function patternToRegExp(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+  // `[\\s\\S]` rather than `.` so a wildcard also covers literal newlines —
+  // only escaped continuations and quoted newlines survive segmentation into
+  // a segment, and neither can hide a top-level operator.
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[\\s\\S]*");
   return new RegExp(`^${escaped}$`);
 }
 
@@ -119,10 +122,162 @@ const DENY_REGEXPS = DENY_PATTERNS.map(patternToRegExp);
 
 export type Verdict = "allow" | "deny" | "ask";
 
+type ScanState = "normal" | "single" | "double";
+
+/**
+ * Quote- and escape-aware scan of one command (assumed trimmed), producing
+ * the segments a per-segment allowlist check runs against: operators
+ * (`;`, `&&`, `||`, `|`, `&`, newline) split only at top level — outside
+ * quotes, unescaped, and not part of a redirection (`2>&1`, `>&2`, `<&0`,
+ * `&>`) — while segments keep their original text so the pattern globs
+ * match real content. Command substitution (backticks, `$(`, `<(`, `>(`)
+ * cannot be resolved statically, so its presence outside single quotes is
+ * reported and the caller lands on ask.
+ *
+ * Deliberately fail-closed wherever bash is subtler than this scan: an
+ * unclosed quote or a trailing backslash reports ambiguity, heredoc bodies
+ * segment on their newlines (their lines fail the allowlist → ask), and
+ * ANSI-C `$'...'` quoting is unmodeled (the scan closes its quote state
+ * early, which can only turn quoted text into extra failing segments).
+ */
+function scanCommand(command: string): {
+  segments: string[];
+  substitution: boolean;
+  ambiguous: boolean;
+} {
+  const segments: string[] = [];
+  let current = "";
+  let substitution = false;
+  let ambiguous = false;
+  let state: ScanState = "normal";
+
+  const endSegment = (): void => {
+    const trimmed = current.trim();
+    if (trimmed !== "") segments.push(trimmed);
+    current = "";
+  };
+
+  let i = 0;
+  while (i < command.length) {
+    const c = command[i]!;
+
+    if (state === "single") {
+      if (c === "'") state = "normal";
+      current += c;
+      i++;
+      continue;
+    }
+
+    if (state === "double") {
+      if (c === '"') {
+        state = "normal";
+        current += c;
+        i++;
+        continue;
+      }
+      // In double quotes bash escapes only " ` \ and newline; before any
+      // other character (notably `$` and a backtick) the backslash is
+      // literal, so scanning continues and a live substitution after it is
+      // still seen (`\\$(x)` triggers, `\$(x)` false-asks — safe direction).
+      if (c === "\\" && i + 1 < command.length && ['"', "\\", "\n"].includes(command[i + 1]!)) {
+        current += c + command[i + 1]!;
+        i += 2;
+        continue;
+      }
+      if (c === "`" || (c === "$" && command[i + 1] === "(")) substitution = true;
+      current += c;
+      i++;
+      continue;
+    }
+
+    // normal state
+    if (c === "\\") {
+      if (i + 1 >= command.length) {
+        ambiguous = true;
+        break;
+      }
+      // Escapes the next character unconditionally — including `\;` and a
+      // line continuation `\<newline>`, neither of which is a boundary.
+      current += c + command[i + 1]!;
+      i += 2;
+      continue;
+    }
+    if (c === "'") {
+      state = "single";
+      current += c;
+      i++;
+      continue;
+    }
+    if (c === '"') {
+      state = "double";
+      current += c;
+      i++;
+      continue;
+    }
+    if (
+      c === "`" ||
+      (c === "$" && command[i + 1] === "(") ||
+      ((c === "<" || c === ">") && command[i + 1] === "(")
+    ) {
+      substitution = true;
+      current += c;
+      i++;
+      continue;
+    }
+    // A `#` at a word start begins a comment: drop the rest of the line so
+    // it cannot manufacture a failing segment.
+    if (c === "#" && current.trim() === "") {
+      while (i < command.length && command[i] !== "\n") i++;
+      continue;
+    }
+    if (c === ";" || c === "\n") {
+      endSegment();
+      i++;
+      continue;
+    }
+    if (c === "|") {
+      // `||` and `|&` are two-character operator tokens.
+      endSegment();
+      i += command[i + 1] === "|" || command[i + 1] === "&" ? 2 : 1;
+      continue;
+    }
+    if (c === "&") {
+      if (command[i + 1] === ">" || command[i - 1] === ">" || command[i - 1] === "<") {
+        // Descriptor redirection (`2>&1`, `>&2`, `<&0`, `&>`, `&>>`) — not a
+        // boundary. `&` preceded by a plain argument digit (`sleep 1&echo`)
+        // still backgrounds, matching bash.
+        current += c;
+        i++;
+        continue;
+      }
+      endSegment();
+      i += command[i + 1] === "&" ? 2 : 1;
+      continue;
+    }
+    current += c;
+    i++;
+  }
+
+  if (state !== "normal") ambiguous = true;
+  endSegment();
+  return { segments, substitution, ambiguous };
+}
+
 export function classify(command: string): Verdict {
   const trimmed = command.trim();
-  if (DENY_REGEXPS.some((re) => re.test(trimmed))) return "deny";
-  if (ALLOW_REGEXPS.some((re) => re.test(trimmed))) return "allow";
+  // Empty and operator-only input: nothing runnable, nothing allowlisted — ask.
+  if (trimmed === "") return "ask";
+
+  const { segments, substitution, ambiguous } = scanCommand(trimmed);
+
+  // Reduction order: deny anywhere wins, then ambiguity/substitution forces
+  // ask, then allow only when at least one segment exists and every one
+  // clears the allowlist (never `[]`'s vacuous every()), else ask.
+  if (segments.some((s) => DENY_REGEXPS.some((re) => re.test(s)))) return "deny";
+  if (substitution || ambiguous) return "ask";
+  if (segments.length > 0 && segments.every((s) => ALLOW_REGEXPS.some((re) => re.test(s)))) {
+    return "allow";
+  }
   return "ask";
 }
 
