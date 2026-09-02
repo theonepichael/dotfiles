@@ -642,28 +642,102 @@ export interface ParsedPicker {
 
 const OPTION_LINE = /^\s*(>)?\s*(\d+)\.\s+(.+?)\s*$/;
 const OTHER_OPTION_LABEL = "Something else (type it)";
+/**
+ * question-tool.ts's picker closes with one of exactly three hint lines --
+ * select, multi-select, and the free-text edit mode -- and wraps the whole
+ * block in full-width accent rules. Those are the only marks in the pane that
+ * belong to the live picker and nothing else, so they are what the parse
+ * anchors on.
+ */
+const PICKER_FOOTER = /(?:↑↓ navigate|Enter to submit).*Esc to (?:cancel|go back)/;
+const PICKER_RULE = /^─{3,}\s*$/;
 
-/** Parse question-tool.ts's rendered picker (plain `recent-unwrapped` text, no ANSI) into its option list and current selection. */
+/**
+ * Parse question-tool.ts's rendered picker (plain `recent-unwrapped` text, no
+ * ANSI) into its option list and current selection.
+ *
+ * Anchored to the LAST rendered picker rather than scanning the whole
+ * capture, because `agent read` hands back 500 lines of scrollback and any
+ * numbered line in it used to parse as an option. Observed on 2026-09-02: a
+ * plan list sitting above a real picker contributed "1. Merge to main and
+ * push" as option 1, and the navigation keys were then computed from that
+ * fabricated index -- submitting whatever happened to sit at the resulting
+ * offset. Reading the wrong list is worse than reading none, so anything
+ * unexpected inside the window yields no options at all and the caller falls
+ * back to needs_manual.
+ */
 export function parsePicker(content: string): ParsedPicker {
+  const lines = content.split("\n");
+
+  let footer = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (PICKER_FOOTER.test(lines[i]!)) {
+      footer = i;
+      break;
+    }
+  }
+  if (footer === -1) return { selectedIndex: null, options: [] };
+
+  let opening = -1;
+  for (let i = footer - 1; i >= 0; i--) {
+    if (PICKER_RULE.test(lines[i]!)) {
+      opening = i;
+      break;
+    }
+  }
+  if (opening === -1) return { selectedIndex: null, options: [] };
+
   const options: RenderedOption[] = [];
-  let selectedIndex: number | null = null;
-  for (const line of content.split("\n")) {
+  const selected: number[] = [];
+  for (const line of lines.slice(opening + 1, footer)) {
     const m = OPTION_LINE.exec(line);
     if (!m) continue;
-    const index = Number(m[2]);
-    const label = m[3]!;
-    options.push({ index, label });
-    if (m[1] === ">") selectedIndex = index;
+    options.push({ index: Number(m[2]), label: m[3]! });
+    if (m[1] === ">") selected.push(Number(m[2]));
   }
-  return { selectedIndex, options };
+
+  // render() numbers options `${i + 1}`, so a real picker's indices are always
+  // 1..N with no gaps. Anything else means the window caught something that is
+  // not an option list -- a description that happens to start with a number,
+  // a redraw seam -- and there is no safe way to navigate a list we misread.
+  const contiguous = options.length > 0 && options.every((option, i) => option.index === i + 1);
+  if (!contiguous) return { selectedIndex: null, options: [] };
+
+  return { selectedIndex: selected.length === 1 ? selected[0]! : null, options };
+}
+
+/** Shortest answer allowed to match as a fragment; below this, only an exact label will do. */
+const MIN_PARTIAL_ANSWER = 3;
+
+/** True when `needle` appears in `haystack` bounded by non-alphanumerics on both sides. */
+function containsAsWord(haystack: string, needle: string): boolean {
+  const isWordChar = (c: string | undefined) => c !== undefined && /[a-z0-9]/.test(c);
+  let from = 0;
+  for (;;) {
+    const at = haystack.indexOf(needle, from);
+    if (at === -1) return false;
+    if (!isWordChar(haystack[at - 1]) && !isWordChar(haystack[at + needle.length])) {
+      return true;
+    }
+    from = at + 1;
+  }
 }
 
 /**
- * Match a free-text answer to a listed option -- case-insensitive exact
- * match first, then a substring match, both excluding the always-present
+ * Match a free-text answer to a listed option -- case-insensitive exact match
+ * first, then a whole-word fragment match, both excluding the always-present
  * free-text escape option (never auto-select "Something else" via fuzzy
- * matching). Returns null on no match or an ambiguous (multiple) match --
- * the caller falls back to reporting needsManual rather than guessing.
+ * matching). Returns null on no match or an ambiguous (multiple) match -- the
+ * caller falls back to reporting needsManual rather than guessing.
+ *
+ * The fragment match is bounded on word edges because a bare substring test
+ * inverted answers on the approval gate this tool exists to relay:
+ * matchOption("no", ["Commit now (Recommended)", "Stop here"]) found "no"
+ * inside "now", matched exactly one option, and committed for a user who had
+ * said no. Reproduced live on 2026-09-02 against a real picker. Answers
+ * shorter than MIN_PARTIAL_ANSWER skip the fragment pass entirely, so a
+ * two-letter answer can only ever take the exact path -- "no" still answers
+ * an option actually labelled "No".
  */
 export function matchOption(
   answer: string,
@@ -677,8 +751,9 @@ export function matchOption(
 
   const exact = candidates.filter((o) => o.label.toLowerCase() === needle);
   if (exact.length === 1) return exact[0]!;
+  if (needle.length < MIN_PARTIAL_ANSWER) return null;
 
-  const partial = candidates.filter((o) => o.label.toLowerCase().includes(needle));
+  const partial = candidates.filter((o) => containsAsWord(o.label.toLowerCase(), needle));
   if (partial.length === 1) return partial[0]!;
 
   return null;
