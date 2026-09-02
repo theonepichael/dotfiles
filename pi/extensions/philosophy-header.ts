@@ -11,6 +11,7 @@
  */
 
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 
 /** π wordmark, 17 columns wide. */
 export const PI_LOGO: readonly string[] = [
@@ -52,9 +53,22 @@ export function pickTagline(sample: number): string {
   return TAGLINES[clamped]!;
 }
 
-/** Build the header's rendered lines. Pure, so the layout is testable. */
-export function renderHeaderLines(tagline: string, fg: Colorize): string[] {
-  return [
+/**
+ * Build the header's rendered lines, clipped to `width`. Pure, so the layout
+ * is testable.
+ *
+ * `width` is required rather than optional: pi kills the whole session with an
+ * uncaughtException when a header line is wider than the terminal, and this
+ * header once did exactly that -- a worker pane 42 columns wide died on the
+ * 64-character tagline. An optional width would let a caller reintroduce the
+ * crash by omitting it, so the type system insists.
+ *
+ * Every line is clipped, not just the tagline, so a line added here later
+ * cannot bring the crash back. The wordmark is 17 columns and the hint line
+ * 40, both of which overflow a narrow pane on their own.
+ */
+export function renderHeaderLines(tagline: string, fg: Colorize, width: number): string[] {
+  const lines = [
     "",
     ...PI_LOGO.map((line) => fg("accent", line)),
     "",
@@ -62,6 +76,9 @@ export function renderHeaderLines(tagline: string, fg: Colorize): string[] {
     fg("dim", "  /hotkeys · ctrl+c clear · escape abort"),
     "",
   ];
+  // Clipping after colorizing, the way custom-footer.ts does it --
+  // truncateToWidth measures visible columns, so the escapes do not count.
+  return lines.map((line) => truncateToWidth(line, width));
 }
 
 export default function (pi: ExtensionAPI) {
@@ -74,8 +91,8 @@ export default function (pi: ExtensionAPI) {
     tagline = pickTagline(Math.random());
 
     ctx.ui.setHeader((_tui, theme: Theme) => ({
-      render(_width: number): string[] {
-        return renderHeaderLines(tagline, (role, text) => theme.fg(role, text));
+      render(width: number): string[] {
+        return renderHeaderLines(tagline, (role, text) => theme.fg(role, text), width);
       },
       invalidate() {},
     }));
