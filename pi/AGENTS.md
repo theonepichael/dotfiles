@@ -16,6 +16,24 @@ already caught this class once: `custom-footer.ts` was hand-symlinked from
 the worktree it was written in, so when that worktree was removed the
 installed link dangled and the extension silently stopped loading.
 
+## herdr-agent-state.ts is the standing exception
+
+`~/.pi/agent/extensions/herdr-agent-state.ts` is the one regular file in the
+installed extensions directory that dotfiles does not own. herdr installs it
+itself (`herdr integration install pi`) and keeps it versioned there —
+`herdr integration status` reports `pi: current (vN)` for it. The swarm
+toolset's blocked-worker reporting depends on it.
+
+So don't vendor it into `pi/extensions/` — that would fight herdr's
+installer on every `herdr integration` upgrade — and don't remove the
+`ignore = ["herdr-agent-state.ts"]` from the `[[managed_dir]]` entry for
+`~/.pi/agent/extensions`: without it, `install.py --check-links` reports the
+file as unmanaged in a declared-exclusive directory. Both halves are pinned
+by tests in `test/test_pi_extension_links.py`.
+
+If the file goes missing or stale, the fix is `herdr integration install
+pi`, not a hand-copied or vendored file.
+
 ## Never repoint `~/.pi/agent/extensions` at a worktree — use `pi -e`
 
 To load an in-progress extension in a real pi, pass it explicitly:
