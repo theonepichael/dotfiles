@@ -33,6 +33,7 @@ import registerSwarmTools, {
   openPaneSoftCap,
   paneIdentityMismatch,
   PANE_CAPTURE_CHARS,
+  parseAgentListIds,
   parsePicker,
   reconcileState,
   saveState,
@@ -659,6 +660,26 @@ describe("reconcileState", () => {
     expect(reconciled.workers).toHaveLength(0);
     expect(dropped).toHaveLength(2);
   });
+
+  test("a live list mixing a named worker with an unnamed foreign agent keeps only the worker", () => {
+    // herdr omits `name` entirely for agents not started with an explicit
+    // name (captured live, herdr 0.8.2 -- see realAgentListEnvelope). The
+    // parse must extract only the named worker: never dropping it, never
+    // adopting the unnamed stranger.
+    const state = makeState({ workers: [makeWorker({ agent: "probe-w1" })] });
+    const liveIds = parseAgentListIds(
+      realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY, {
+        agent: "pi",
+        agent_status: "idle",
+        name: "probe-w1",
+        pane_id: "w1:p2N",
+      }),
+    );
+    expect(liveIds).toEqual(["probe-w1"]);
+    const { state: reconciled, dropped } = reconcileState(state, liveIds);
+    expect(reconciled.workers.map((w) => w.agent)).toEqual(["probe-w1"]);
+    expect(dropped).toHaveLength(0);
+  });
 });
 
 describe("state persistence", () => {
@@ -739,6 +760,39 @@ function realWaitEnvelope(agentStatus: string, name: string, paneId: string): st
   });
 }
 
+/** One entry of a real `herdr agent list` payload. `name` is omitted entirely (not undefined) exactly when the agent was not started via `herdr agent start <NAME>`. */
+interface RealAgentListEntry {
+  agent: string;
+  agent_status: string;
+  name?: string;
+  pane_id: string;
+}
+
+/**
+ * A real `herdr agent list` payload shape, captured from herdr 0.8.2 on
+ * 2026-09-02. Entries are verbatim from the capture -- in particular `name`
+ * is present only when the agent was started with an explicit name, and a
+ * claude session launched without one carries NO name key at all:
+ *   {"agent":"claude","agent_status":"working","pane_id":"w1:pX"}               -> no name key
+ *   {"agent":"pi","agent_status":"idle","name":"probe-w1","pane_id":"w1:p2N"}   -> name key present
+ * Swarm workers are always started named (buildAgentStartArgv passes the
+ * synthetic id as NAME), so parseAgentListIds reading `.name` matches our
+ * workers and ignores unnamed foreign agents. Shaped to the real wire
+ * format on purpose, like realWaitEnvelope above -- an earlier hand-written
+ * `{name: ...}` stub pinned the code's own assumption, so the fixture could
+ * never have caught a mismatch either way.
+ */
+function realAgentListEnvelope(...agents: RealAgentListEntry[]): string {
+  return JSON.stringify({ result: { agents } });
+}
+
+/** The captured unnamed claude-shaped entry, verbatim. */
+const UNNAMED_CLAUDE_ENTRY: RealAgentListEntry = {
+  agent: "claude",
+  agent_status: "working",
+  pane_id: "w1:pX",
+};
+
 interface ExecCall {
   argv: string[];
 }
@@ -793,7 +847,14 @@ describe("swarm_poll execute() wiring", () => {
       if (a === "agent" && b === "list") {
         return {
           code: 0,
-          stdout: JSON.stringify({ result: { agents: [{ name: "execrun-w1" }] } }),
+          // Real wire shape (see realAgentListEnvelope): our named worker
+          // alongside an unnamed foreign agent it must ignore.
+          stdout: realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY, {
+            agent: "pi",
+            agent_status: "idle",
+            name: "execrun-w1",
+            pane_id: "w1:pZ",
+          }),
           stderr: "",
         };
       }
@@ -1590,10 +1651,17 @@ describe("swarm_resolve_blocked execute() wiring", () => {
       const [a, b] = argv;
       if (a === "agent" && b === "list") {
         // getOrInitState reconciles against this; an empty list would drop the
-        // seeded worker before the code under test ever runs.
+        // seeded worker before the code under test ever runs. Real wire shape
+        // (see realAgentListEnvelope): the named worker alongside an unnamed
+        // foreign agent the parse must ignore.
         return {
           code: 0,
-          stdout: JSON.stringify({ result: { agents: [{ name: AGENT }] } }),
+          stdout: realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY, {
+            agent: "pi",
+            agent_status: "idle",
+            name: AGENT,
+            pane_id: PANE,
+          }),
           stderr: "",
         };
       }
@@ -1829,8 +1897,15 @@ describe("swarm_poll and workers parked at awaiting_relay", () => {
         ? {
             code: 0,
             // reconcileState prunes against this; an empty list would drop the
-            // parked worker before the emptiness check ever sees it.
-            stdout: JSON.stringify({ result: { agents: [{ name: "relayrun-w1" }] } }),
+            // parked worker before the emptiness check ever sees it. Real wire
+            // shape (see realAgentListEnvelope): the named worker alongside an
+            // unnamed foreign agent the parse must ignore.
+            stdout: realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY, {
+              agent: "pi",
+              agent_status: "idle",
+              name: "relayrun-w1",
+              pane_id: "w1:pA",
+            }),
             stderr: "",
           }
         : { code: 0, stdout: "", stderr: "" },

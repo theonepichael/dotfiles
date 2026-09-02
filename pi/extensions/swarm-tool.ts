@@ -535,6 +535,32 @@ export function buildAgentListArgv(): string[] {
   return ["agent", "list"];
 }
 
+export function parseAgentListIds(stdout: string): string[] {
+  try {
+    const parsed = JSON.parse(stdout) as {
+      result?: { agents?: { name?: string }[] };
+    };
+    // Each `agent list` entry carries the caller-chosen herdr name directly
+    // as `.name` (confirmed live, herdr 0.8.2, 2026-09-02) -- this is what
+    // `reconcileState` must match against `worker.agent` (the synthetic id
+    // assigned at spawn time). The key is present exactly when the agent was
+    // started with an explicit name (`herdr agent start <NAME>`) and absent
+    // entirely otherwise -- an unnamed entry is a foreign/interactive agent,
+    // never one of ours, so skipping nameless entries is correct, not a gap.
+    // Swarm workers are always started named: buildAgentStartArgv passes the
+    // synthetic id as the NAME argument. Do not re-derive this from an
+    // unnamed agent and conclude `.name` is the wrong field -- an earlier
+    // version read `agent_session.value` (a pi session file path) instead,
+    // which could never match a synthetic id like "run1-w1" and would have
+    // wrongly dropped every genuinely-live worker as dead.
+    return (parsed.result?.agents ?? [])
+      .map((a) => a.name)
+      .filter((v): v is string => typeof v === "string");
+  } catch {
+    return [];
+  }
+}
+
 // ---------------------------------------------------------------------------
 // herdr response parsing
 // ---------------------------------------------------------------------------
@@ -971,26 +997,6 @@ export default function (pi: ExtensionAPI) {
         lifecycle: "active" as const,
       },
     };
-  }
-
-  function parseAgentListIds(stdout: string): string[] {
-    try {
-      const parsed = JSON.parse(stdout) as {
-        result?: { agents?: { name?: string }[] };
-      };
-      // Each `agent list` entry carries the caller-chosen herdr name
-      // directly as `.name` (confirmed live) -- this is what `reconcileState`
-      // must match against `worker.agent` (the synthetic id assigned at
-      // spawn time). An earlier version of this read `agent_session.value`
-      // (a pi session file path) instead, which could never match a
-      // synthetic id like "run1-w1" -- every reconciliation would have
-      // wrongly dropped every genuinely-live worker as dead.
-      return (parsed.result?.agents ?? [])
-        .map((a) => a.name)
-        .filter((v): v is string => typeof v === "string");
-    } catch {
-      return [];
-    }
   }
 
   /** Loads state, reconciling against herdr's live truth only on a cold load (state wasn't already in this process's memory) -- avoids a herdr round-trip on every call once a run is warm. */
