@@ -132,11 +132,14 @@ loop:
 
     current_plan = revise current_plan yourself, addressing
                    valid points from the critique. For any point you
-                   reject, append a brief "Rejected feedback" note to
+                   reject, append a brief 1-2 sentence note under a
+                   trailing "## Rejected Feedback" header in
                    current_plan stating what was suggested and why —
-                   the reviewer is called statelessly each round, so
-                   without this it will just repeat the same rejected
-                   suggestion instead of engaging with your reasoning.
+                   never quote entire critique paragraphs or debate at
+                   length. The reviewer is called statelessly each
+                   round, so without this it will just repeat the same
+                   rejected suggestion instead of engaging with your
+                   reasoning.
     prior_critique = critique
     round += 1
 
@@ -158,10 +161,14 @@ a separate critique-notes file, written to `<current_plan without its
 extension>-critique-notes.md` (e.g.
 `~/.claude/data/grill/<topic-slug>-plan-critique-notes.md`) — a round-by-round
 record of what was raised each round, what changed in response, and the
-rejected-feedback rationale. Then rewrite each affected step in the plan itself
-to state the final decision plainly, as if it had been correct from the start,
-and drop any trailing per-round changelog section. Downstream tooling
-(`dev_status.py` `related_files`, a future executor session, `grill.py
+rejected-feedback rationale. `second_opinion.py` automatically strips
+recognized ephemeral process headers (`## Critique History`, `## Review
+History`, `## Round-by-Round Notes`, `## Rejected Feedback`) before sending
+payloads to backends to conserve payload bandwidth, but the saved plan file
+itself must still be cleaned up manually. Then rewrite each affected step in
+the plan itself to state the final decision plainly, as if it had been correct
+from the start, and drop any trailing per-round changelog section. Downstream
+tooling (`dev_status.py` `related_files`, a future executor session, `grill.py
 plan_path`) reads the plan file as *the* plan — the critique history is a
 companion artifact, not inline noise in it.
 

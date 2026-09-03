@@ -780,6 +780,7 @@ second_opinion.py — one-shot adversarial critique of a plan from a non-Claude 
 - Public functions:
   - `build_prompt(plan_text: str, focus_hints: str | None) -> str` — Build the critique prompt, optionally inserting plan-specific focus hints.
   - `die(msg: str) -> NoReturn` — Print an error to stderr, prefixed for this script, and exit with status 1.
+  - `sanitize_plan_text(plan_text: str) -> tuple[str, int]` — Strip ephemeral review debris headers/sections from a plan.
   - `resolve_plan_text(arg: str) -> str` — Resolve a CLI argument to plan text: a file's contents, or the arg itself.
   - `run_agy(prompt: str, *, model_index: int | None = None) -> str` — Run the ``agy`` backend and return its critique text.
   - `run_opencode(prompt: str, *, model_index: int | None = None) -> str` — Run the ``opencode`` backend's adversary agent and return its critique text.

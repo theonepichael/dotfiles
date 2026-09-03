@@ -1454,6 +1454,95 @@ class BackendTimeoutDefaultSubprocessTest(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), "120")
 
 
+class SanitizePlanTextTests(unittest.TestCase):
+    def test_90_strips_whitelisted_headings_and_content(self) -> None:
+        plan = (
+            "# Main Plan\n"
+            "Here is the architecture.\n\n"
+            "## Rejected Feedback\n"
+            "We decided not to use SQLite.\n"
+            "### Sub-note\n"
+            "Details on why SQLite was rejected.\n\n"
+            "## Implementation Steps\n"
+            "1. Do the work.\n"
+        )
+        sanitized, bytes_saved = second_opinion.sanitize_plan_text(plan)
+        self.assertNotIn("Rejected Feedback", sanitized)
+        self.assertNotIn("SQLite", sanitized)
+        self.assertIn("# Main Plan", sanitized)
+        self.assertIn("## Implementation Steps", sanitized)
+        self.assertIn("1. Do the work.", sanitized)
+        self.assertGreater(bytes_saved, 0)
+        self.assertEqual(
+            bytes_saved, len(plan.encode("utf-8")) - len(sanitized.encode("utf-8"))
+        )
+
+    def test_91_preserves_code_fences_with_matching_strings(self) -> None:
+        plan = (
+            "# My Plan\n"
+            "```markdown\n"
+            "## Rejected Feedback\n"
+            "This is documentation showing what not to do.\n"
+            "```\n"
+            "~~~python\n"
+            "# Critique History\n"
+            "def foo(): pass\n"
+            "~~~\n"
+            "## Next Steps\n"
+            "Ship it.\n"
+        )
+        sanitized, bytes_saved = second_opinion.sanitize_plan_text(plan)
+        self.assertIn("## Rejected Feedback", sanitized)
+        self.assertIn("# Critique History", sanitized)
+        self.assertIn("def foo(): pass", sanitized)
+        self.assertEqual(bytes_saved, 0)
+
+    def test_92_preserves_legitimate_architectural_sections(self) -> None:
+        plan = (
+            "# RFC\n"
+            "## Alternatives Considered\n"
+            "Alternative A and B were considered.\n\n"
+            "## Rejected Alternatives\n"
+            "Architecture reasons for rejecting X.\n\n"
+            "## Changelog\n"
+            "User-facing API changes in v2.\n"
+        )
+        sanitized, bytes_saved = second_opinion.sanitize_plan_text(plan)
+        self.assertIn("## Alternatives Considered", sanitized)
+        self.assertIn("## Rejected Alternatives", sanitized)
+        self.assertIn("## Changelog", sanitized)
+        self.assertEqual(bytes_saved, 0)
+        self.assertEqual(sanitized, plan)
+
+    def test_93_whitelisted_heading_at_eof(self) -> None:
+        plan = "# Plan\nSpecs.\n## Critique History\nRound 1: fixed bug.\n"
+        sanitized, bytes_saved = second_opinion.sanitize_plan_text(plan)
+        self.assertNotIn("Critique History", sanitized)
+        self.assertNotIn("Round 1", sanitized)
+        self.assertIn("# Plan\nSpecs.", sanitized)
+        self.assertGreater(bytes_saved, 0)
+
+    def test_94_cmd_review_logs_stripped_bytes_notice(self) -> None:
+        plan = "# Plan\n## Rejected Feedback\nOld note.\n## Step\nGo."
+        err = io.StringIO()
+        out = io.StringIO()
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {"agy": lambda p, model_index=None: "ok"},
+            ),
+            patch("sys.stderr", err),
+            patch("sys.stdout", out),
+        ):
+            second_opinion.cmd_review(ns(plan=plan, focus_file=None, backend=None))
+        self.assertIn(
+            "[second_opinion] stripped inline review debris from plan", err.getvalue()
+        )
+        self.assertIn("bytes saved", err.getvalue())
+
+
 class DataDirSelfEnsureTests(unittest.TestCase):
     """second_opinion.py shares grill.py's artifact directory.
 

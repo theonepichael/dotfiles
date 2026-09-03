@@ -313,6 +313,10 @@ Be specific and concrete:
 - What did the author miss or assume without justification?
 - Where do you disagree, and why?
 - Is there a simpler approach?
+
+Keep critiques focused and concise: do not emit full replacement implementations,
+long code listings, or boilerplate rewrites. Critique mechanisms, invariants,
+interfaces, and failure modes directly in prose.
 {focus_section}
 If the plan is genuinely solid, say so briefly — but don't pad
 agreement with praise. Skip preamble.
@@ -351,6 +355,86 @@ def die(msg: str) -> NoReturn:
     """Print an error to stderr, prefixed for this script, and exit with status 1."""
     print(f"[second_opinion] {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+PROCESS_SCAFFOLDING_HEADERS: tuple[str, ...] = (
+    "critique notes",
+    "critique history",
+    "review history",
+    "round-by-round notes",
+    "rejected feedback",
+    "adversarial review notes",
+)
+
+
+def sanitize_plan_text(plan_text: str) -> tuple[str, int]:
+    """Strip ephemeral review debris headers/sections from a plan.
+
+    Uses a line-by-line state machine respecting markdown code blocks so code
+    or comments matching whitelisted headings are never stripped. When a
+    whitelisted process heading at level L (e.g. ``## Rejected Feedback`` or
+    ``# Critique notes — ...``) is encountered, lines are omitted until the
+    next heading of level <= L (or EOF).
+
+    Returns:
+        A tuple of ``(sanitized_text, bytes_saved)`` where bytes_saved is the
+        difference in UTF-8 encoded byte count.
+    """
+    lines = plan_text.splitlines(keepends=True)
+    kept_lines: list[str] = []
+    in_code_block = False
+    fence_char = ""
+    stripping_level: int | None = None
+
+    for line in lines:
+        stripped = line.strip()
+        # Track fenced code blocks (``` or ~~~)
+        if stripped.startswith(("```", "~~~")):
+            char = stripped[0]
+            if not in_code_block:
+                in_code_block = True
+                fence_char = char
+            elif fence_char == char:
+                in_code_block = False
+                fence_char = ""
+
+            if stripping_level is None:
+                kept_lines.append(line)
+            continue
+
+        if in_code_block:
+            if stripping_level is None:
+                kept_lines.append(line)
+            continue
+
+        # Check for markdown heading outside code blocks
+        if stripped.startswith("#"):
+            hashes, _, title = stripped.partition(" ")
+            if hashes and set(hashes) == {"#"}:
+                level = len(hashes)
+                clean_title = title.strip().lower()
+                if stripping_level is not None and level <= stripping_level:
+                    stripping_level = None
+
+                # Match if title starts with any whitelisted process prefix
+                # (e.g., "critique notes — ...", "critique history: ...", "rejected feedback")
+                if any(
+                    clean_title == prefix
+                    or clean_title.startswith(
+                        (f"{prefix}:", f"{prefix} —", f"{prefix} -")
+                    )
+                    for prefix in PROCESS_SCAFFOLDING_HEADERS
+                ):
+                    stripping_level = level
+                    continue
+
+        if stripping_level is None:
+            kept_lines.append(line)
+
+    sanitized = "".join(kept_lines)
+    orig_bytes = len(plan_text.encode("utf-8"))
+    sanitized_bytes = len(sanitized.encode("utf-8"))
+    return sanitized, max(0, orig_bytes - sanitized_bytes)
 
 
 def resolve_plan_text(arg: str) -> str:
@@ -628,6 +712,12 @@ def cmd_review(args: argparse.Namespace) -> None:
             die("no backend available — install one of: " + ", ".join(BACKEND_PRIORITY))
 
     plan_text = resolve_plan_text(args.plan)
+    plan_text, bytes_saved = sanitize_plan_text(plan_text)
+    if bytes_saved > 0:
+        print(
+            f"[second_opinion] stripped inline review debris from plan ({bytes_saved} bytes saved)",
+            file=sys.stderr,
+        )
     focus_hints = None
     if args.focus_file:
         focus_path = Path(args.focus_file).expanduser()
