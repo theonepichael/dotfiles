@@ -20,7 +20,10 @@ import registerSwarmTools, {
   canSpawnNew,
   classifyWaitResult,
   findTabByLabel,
+  itemPaths,
+  parseReadyItems,
   parseTabCreate,
+  selectSchedulable,
   loadState,
   looksTruncated,
   matchOption,
@@ -1322,6 +1325,204 @@ describe("swarm_spawn worker bootstrap", () => {
 
   // Cleanup that fails is still cleanup: the reason it was cleaning up after
   // has to survive it.
+  /** Stubs dev_status.py's `ready` alongside a healthy tab create. */
+  const withReady = (items: { id: string; paths?: string[] }[]) => (argv: string[]) =>
+    argv[0] === "ready" || argv[1] === "ready" || argv.includes("ready")
+      ? {
+          code: 0,
+          stdout: JSON.stringify(
+            items.map((i) => ({
+              id: i.id,
+              related_files: (i.paths ?? []).map((path) => ({ path })),
+            })),
+          ),
+          stderr: "",
+        }
+      : tabCreateOk(argv);
+
+  test("with a prefix and no items, it selects from the READY queue itself", async () => {
+    const { spawn, stub } = stubFor(withReady([{ id: "meta-a" }, { id: "meta-b" }]));
+
+    const res = (await spawn.execute(
+      ...(["call-1", { runId: "selfsel", prefix: "meta-", concurrency: 2 }] as unknown as never[]),
+    )) as { details: { spawned: { slug: string }[] } };
+
+    expect(res.details.spawned.map((w) => w.slug)).toEqual(["meta-a", "meta-b"]);
+    // and it asked dev_status rather than being told
+    const ask = stub.calls.find((c) => c.argv.includes("ready"));
+    expect(ask?.argv).toContain("--prefix");
+    expect(ask?.argv).toContain("meta-");
+  });
+
+  test("two ready items editing the same file do not spawn together, and the loser is named in the text", async () => {
+    const { spawn } = stubFor(
+      withReady([
+        { id: "meta-a", paths: ["/repo/pi/extensions/swarm-tool.ts"] },
+        { id: "meta-b", paths: ["/repo/pi/extensions/swarm-tool.ts"] },
+      ]),
+    );
+
+    const res = (await spawn.execute(
+      ...(["call-1", { runId: "overlap", prefix: "meta-", concurrency: 3 }] as unknown as never[]),
+    )) as {
+      content: { text: string }[];
+      details: { spawned: { slug: string }[]; deferred: { slug: string }[] };
+    };
+
+    expect(res.details.spawned.map((w) => w.slug)).toEqual(["meta-a"]);
+    expect(res.details.deferred.map((d) => d.slug)).toEqual(["meta-b"]);
+    // The orchestrator only ever reads `content`, so a deferral invisible
+    // there is an item silently dropped from the run.
+    const text = res.content.map((c) => c.text).join("\n");
+    expect(text).toContain("meta-b");
+    expect(text).toContain("deferred");
+    expect(text).toContain("swarm-tool.ts");
+  });
+
+  // The second wave has to see what the first wave's workers claimed, which
+  // is why the paths live on the worker record rather than being re-derived.
+  test("a later wave defers a candidate that collides with a worker still running", async () => {
+    // Concurrency 2, not 1, and the distinction is the whole test: at 1 the
+    // second wave has zero headroom, so meta-b is skipped for the cap before
+    // the overlap check ever runs -- an assertion that would pass with path
+    // collision detection removed entirely.
+    const { spawn } = stubFor(
+      withReady([
+        { id: "meta-a", paths: ["/repo/shared.ts"] },
+        { id: "meta-b", paths: ["/repo/shared.ts"] },
+      ]),
+    );
+
+    await spawn.execute(
+      ...(["call-1", { runId: "wave", prefix: "meta-", concurrency: 2 }] as unknown as never[]),
+    );
+    const second = (await spawn.execute(
+      ...(["call-2", { runId: "wave", prefix: "meta-", concurrency: 2 }] as unknown as never[]),
+    )) as { details: { spawned: unknown[]; deferred: { slug: string }[]; skipped: string[] } };
+
+    expect(second.details.spawned).toHaveLength(0);
+    expect(second.details.skipped).toEqual([]);
+    expect(second.details.deferred.map((d) => d.slug)).toEqual(["meta-b"]);
+  });
+
+  // THE RETRY LOOP, found on a live run rather than here: a worker whose tab
+  // was closed left its item exactly as it found it -- READY, because it died
+  // before reaching `dev_status.py start` -- so the very next wave selected
+  // and spawned that same item again. Unbounded, and flatly against
+  // swarm_poll's own promise that a failed worker is never silently retried.
+  // The stub is what hid it: a fixed `ready` list cannot express an item
+  // coming back, so this test drives the real sequence instead.
+  test("an item whose worker died is not selected again by a later wave", async () => {
+    const { spawn, stub } = stubFor(withReady([{ id: "meta-a" }, { id: "meta-b" }]));
+
+    const first = (await spawn.execute(
+      ...(["c1", { runId: "noretry", prefix: "meta-", concurrency: 1 }] as unknown as never[]),
+    )) as { details: { spawned: { slug: string; agent: string }[] } };
+    expect(first.details.spawned.map((w) => w.slug)).toEqual(["meta-a"]);
+
+    // meta-a's worker dies. A fresh tool instance reloads the run from disk
+    // and reconciles it against herdr's live agent list -- which the stub
+    // answers empty -- so the dead worker is dropped exactly as it would be
+    // after a restart. dev_status still reports meta-a as READY.
+    const { spawn: spawn2, stub: stub2 } = stubFor(withReady([{ id: "meta-a" }, { id: "meta-b" }]));
+    const second = (await spawn2.execute(
+      ...(["c2", { runId: "noretry", prefix: "meta-", concurrency: 1 }] as unknown as never[]),
+    )) as { details: { spawned: { slug: string }[] } };
+
+    // meta-b, never meta-a again.
+    expect(second.details.spawned.map((w) => w.slug)).toEqual(["meta-b"]);
+    const label = (calls: ExecCall[]) =>
+      calls
+        .filter((c) => c.argv[0] === "tab" && c.argv[1] === "create")
+        .map((c) => c.argv[c.argv.indexOf("--label") + 1]);
+    expect(label(stub.calls)).toEqual(["meta-a"]);
+    expect(label(stub2.calls)).toEqual(["meta-b"]);
+  });
+
+  test("naming an item explicitly still retries it -- that is the caller asking", async () => {
+    // The guard is on automatic selection only. A human who names a slug
+    // after reading the digest means it.
+    const { spawn } = stubFor(withReady([{ id: "meta-a" }]));
+
+    await spawn.execute(
+      ...(["c1", { runId: "explicit", prefix: "meta-", concurrency: 1 }] as unknown as never[]),
+    );
+    const { spawn: spawn2 } = stubFor(withReady([{ id: "meta-a" }]));
+    const again = (await spawn2.execute(
+      ...(["c2", { runId: "explicit", items: ["meta-a"], concurrency: 1 }] as unknown as never[]),
+    )) as { details: { spawned: { slug: string }[] } };
+
+    expect(again.details.spawned.map((w) => w.slug)).toEqual(["meta-a"]);
+  });
+
+  test("a deferred item is not treated as attempted, so a later wave still takes it", async () => {
+    // Deferring is not trying. An item held back for overlap was never handed
+    // to anyone, and becoming schedulable later is the whole point.
+    const { spawn } = stubFor(
+      withReady([
+        { id: "meta-a", paths: ["/repo/s.ts"] },
+        { id: "meta-b", paths: ["/repo/s.ts"] },
+      ]),
+    );
+
+    const first = (await spawn.execute(
+      ...(["c1", { runId: "defnotatt", prefix: "meta-", concurrency: 3 }] as unknown as never[]),
+    )) as { details: { deferred: { slug: string }[] } };
+    expect(first.details.deferred.map((d) => d.slug)).toEqual(["meta-b"]);
+
+    const { spawn: spawn2 } = stubFor(
+      withReady([
+        { id: "meta-a", paths: ["/repo/s.ts"] },
+        { id: "meta-b", paths: ["/repo/s.ts"] },
+      ]),
+    );
+    const second = (await spawn2.execute(
+      ...(["c2", { runId: "defnotatt", prefix: "meta-", concurrency: 3 }] as unknown as never[]),
+    )) as { details: { spawned: { slug: string }[] } };
+    expect(second.details.spawned.map((w) => w.slug)).toEqual(["meta-b"]);
+  });
+
+  // A lock timeout or a broken dev_status.py yields zero candidates, which is
+  // byte-identical to a drained queue: "Spawned 0 worker(s)". The orchestrator
+  // would end the run and never report the items it silently left behind.
+  test("a failed READY query stops the run instead of looking like an empty queue", async () => {
+    const { spawn } = stubFor((argv) =>
+      argv.includes("ready")
+        ? { code: 1, stdout: "", stderr: "Traceback: could not acquire backlog lock" }
+        : tabCreateOk(argv),
+    );
+
+    await expect(
+      spawn.execute(
+        ...(["c1", { runId: "readyfail", prefix: "meta-", concurrency: 2 }] as unknown as never[]),
+      ),
+    ).rejects.toThrow(/could not acquire backlog lock/);
+  });
+
+  test("a slug repeated in an explicit items list spawns one worker, not two", async () => {
+    // Two workers on one item means two worktrees racing each other's commits.
+    // Nothing else catches it: an item with no related_files collides with
+    // nothing, itself included.
+    const { spawn } = stubFor(withReady([{ id: "meta-a" }]));
+
+    const res = (await spawn.execute(
+      ...([
+        "c1",
+        { runId: "dupes", items: ["meta-a", "meta-a"], concurrency: 3 },
+      ] as unknown as never[]),
+    )) as { details: { spawned: { slug: string }[] } };
+
+    expect(res.details.spawned.map((w) => w.slug)).toEqual(["meta-a"]);
+  });
+
+  test("neither items nor prefix is refused rather than swarming every project at once", async () => {
+    const { spawn } = stubFor(tabCreateOk);
+
+    await expect(
+      spawn.execute(...(["call-1", { runId: "unscoped", concurrency: 2 }] as unknown as never[])),
+    ).rejects.toThrow(/items.*prefix|prefix.*items/i);
+  });
+
   // THE ORPHAN. `tab create` exiting 0 with output that will not parse has
   // already created a tab, and the id needed to close it was in exactly the
   // response that could not be read. Every other post-create failure goes
@@ -1996,5 +2197,126 @@ describe("swarm_poll blocking wait", () => {
     expect(a!.details.events.length + b!.details.events.length).toBe(2);
     expect(a!.details.events).not.toEqual([]);
     expect(b!.details.events).not.toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scheduling: which items may run together, and what tops the pool back up.
+//
+// Two items that edit the same file cannot run concurrently -- their worktrees
+// diverge and the second merge conflicts. That collision is not hypothetical:
+// meta-swarm-trust-ack-fail-open and meta-swarm-poll-abort-and-orphan-pane
+// both edit swarm-tool.ts and had to be held out of the same batch by hand.
+// The signal was already in every item's related_files; nothing read it.
+//
+// READY is computed, not stored -- an item becomes ready the moment its last
+// blocker is approved -- so a fixed items[] taken at call time goes stale as
+// soon as a worker finishes. dev_status.py's `ready` reports the bucket it
+// already builds for the dashboard, so the blocker walk is never reimplemented
+// here.
+// ---------------------------------------------------------------------------
+
+describe("parseReadyItems / itemPaths", () => {
+  test("reads the id and related_files of each ready item", () => {
+    const stdout = JSON.stringify([
+      { id: "a", related_files: [{ path: "/repo/x.ts" }, { path: "/repo/y.ts" }] },
+      { id: "b", related_files: [] },
+    ]);
+    const items = parseReadyItems(stdout);
+    expect(items.map((i) => i.id)).toEqual(["a", "b"]);
+    expect(itemPaths(items[0]!)).toEqual(["/repo/x.ts", "/repo/y.ts"]);
+    expect(itemPaths(items[1]!)).toEqual([]);
+  });
+
+  test("an item with no related_files has no paths, rather than throwing", () => {
+    // Plenty of real items carry related_files: [] or omit it entirely. Such
+    // an item constrains nothing and is constrained by nothing.
+    expect(itemPaths({ id: "a" })).toEqual([]);
+    expect(itemPaths({ id: "a", related_files: [{}] })).toEqual([]);
+  });
+
+  test("returns an empty list on unparseable output instead of throwing", () => {
+    expect(parseReadyItems("not json")).toEqual([]);
+    expect(parseReadyItems("{}")).toEqual([]);
+    expect(parseReadyItems("")).toEqual([]);
+  });
+});
+
+describe("selectSchedulable", () => {
+  const item = (id: string, ...paths: string[]) => ({
+    id,
+    related_files: paths.map((path) => ({ path })),
+  });
+
+  test("two items touching the same file do not go into one wave", () => {
+    const res = selectSchedulable(
+      [item("a", "/r/shared.ts"), item("b", "/r/shared.ts"), item("c", "/r/other.ts")],
+      [],
+      3,
+    );
+    expect(res.slugs).toEqual(["a", "c"]);
+    expect(res.deferred.map((d) => d.slug)).toEqual(["b"]);
+    expect(res.deferred[0]?.reason).toContain("/r/shared.ts");
+  });
+
+  test("an item overlapping a worker already running is deferred too", () => {
+    const res = selectSchedulable([item("a", "/r/live.ts")], ["/r/live.ts"], 3);
+    expect(res.slugs).toEqual([]);
+    expect(res.deferred.map((d) => d.slug)).toEqual(["a"]);
+  });
+
+  test("a directory and a file inside it count as overlapping", () => {
+    // An item scoped to a whole module collides with one scoped to a file in
+    // it, even though the two strings differ.
+    const res = selectSchedulable([item("a", "/r/pkg"), item("b", "/r/pkg/deep/file.ts")], [], 3);
+    expect(res.slugs).toEqual(["a"]);
+    expect(res.deferred.map((d) => d.slug)).toEqual(["b"]);
+  });
+
+  test("a directory written with a trailing slash still contains its files", () => {
+    // "/r/pkg/" + "/" builds "/r/pkg//", which nothing inside it starts with.
+    const res = selectSchedulable([item("a", "/r/pkg/"), item("b", "/r/pkg/deep/f.ts")], [], 3);
+    expect(res.slugs).toEqual(["a"]);
+    expect(res.deferred.map((d) => d.slug)).toEqual(["b"]);
+  });
+
+  test("a path that merely shares a name prefix is not an overlap", () => {
+    // "/r/pkg" must not swallow "/r/pkg-other" -- that is string prefixing,
+    // not containment, and it would defer unrelated work forever.
+    const res = selectSchedulable([item("a", "/r/pkg"), item("b", "/r/pkg-other/f.ts")], [], 3);
+    expect(res.slugs).toEqual(["a", "b"]);
+    expect(res.deferred).toEqual([]);
+  });
+
+  test("items past the headroom are skipped for the cap, not deferred for overlap", () => {
+    // The two are different facts and the orchestrator acts differently on
+    // them: a capped item is coming next wave regardless, a deferred one is
+    // waiting on a specific worker to finish.
+    const res = selectSchedulable([item("a", "/r/1"), item("b", "/r/2"), item("c", "/r/3")], [], 2);
+    expect(res.slugs).toEqual(["a", "b"]);
+    expect(res.skipped).toEqual(["c"]);
+    expect(res.deferred).toEqual([]);
+  });
+
+  test("items with no related_files never block each other", () => {
+    const res = selectSchedulable([item("a"), item("b"), item("c")], ["/r/live.ts"], 3);
+    expect(res.slugs).toEqual(["a", "b", "c"]);
+  });
+
+  // TERMINATION. A deferred item must always become schedulable eventually,
+  // or a top-up loop spins forever on a queue it can never drain.
+  test("with nothing running, the first candidate is always schedulable", () => {
+    const res = selectSchedulable([item("a", "/r/s.ts"), item("b", "/r/s.ts")], [], 3);
+    expect(res.slugs).toEqual(["a"]);
+    // ...and once a finishes, b has nothing left to collide with.
+    const next = selectSchedulable([item("b", "/r/s.ts")], [], 3);
+    expect(next.slugs).toEqual(["b"]);
+  });
+
+  test("zero headroom selects nothing and defers nothing", () => {
+    const res = selectSchedulable([item("a", "/r/1")], [], 0);
+    expect(res.slugs).toEqual([]);
+    expect(res.deferred).toEqual([]);
+    expect(res.skipped).toEqual(["a"]);
   });
 });

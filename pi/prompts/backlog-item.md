@@ -280,9 +280,14 @@ tab, each running its own `/backlog-item --auto <slug>`. Requires
 pane); if it isn't, say so and stop rather than falling back to `--auto`
 silently. Full design: `~/.claude/data/grill/2026-09-01-pi-side-agent-swarm-orchestratio-plan.md`.
 
-Queue selection is identical to `--auto`'s no-slug batch mode: every READY
-item, in dashboard order, fixed at the start of the run. `--swarm` never
-takes a single-item target (see the invocation note above).
+Queue selection is delegated to `swarm_spawn`. Pass it a `prefix` scoping
+the run (`meta-` for tooling work, `iron-lb-` for that project, and so on)
+rather than a fixed list of slugs: it re-reads the READY set from
+`dev_status.py` on every call, so an item unblocked by a worker that just
+finished is picked up on the next spawn without you naming it. A `prefix` is
+required when you do not pass `items` — selecting from the whole READY queue
+unscoped would pull unrelated projects into one run. `--swarm` never takes a
+single-item target (see the invocation note above).
 
 Uses the `swarm_spawn`, `swarm_poll`, and `swarm_resolve_blocked` tools
 (`pi/extensions/swarm-tool.ts`) — never hand-compose `herdr` bash commands
@@ -291,9 +296,16 @@ shell-interpolated), state persistence across a crash/restart, and the
 concurrency-cap accounting.
 
 1. Pick a `runId` for this invocation (e.g. a short timestamp-based slug)
-   and call `swarm_spawn` with the full READY queue and the concurrency —
-   it spawns up to the cap, reporting any items skipped (cap) or failed to
-   spawn. Each worker's tab is created with `PI_AGENT_UNATTENDED=1` in its
+   and call `swarm_spawn` with the run's `prefix` and the concurrency — it
+   spawns up to the cap, reporting any items skipped (cap), deferred (file
+   overlap) or failed to spawn.
+
+   **Deferred is not skipped.** Two items whose `related_files` name the same
+   file are never spawned into the same wave: each worker gets its own
+   worktree, so the second to merge would conflict. A deferred item is still
+   owed and becomes schedulable once the worker it collided with finishes; a
+   skipped one was only held back by the concurrency cap and is coming next
+   wave regardless. Both are named in the tool's result text. Each worker's tab is created with `PI_AGENT_UNATTENDED=1` in its
    environment, so both gate extensions settle themselves at pi's module
    load, before the worker can be handed anything. Nothing is negotiated
    over the wire and there is no acknowledgement to wait for.
@@ -382,7 +394,10 @@ concurrency-cap accounting.
    - **`finished`** / **`timed_out`** / **`error`** — record the outcome for
      the end-of-run digest (approved / flagged / timed out / failed); all
      three have already closed that worker's tab and freed its slot, and none
-     is ever silently retried. `timed_out` and `error` are deliberately
+     is ever silently retried. A freed slot is the cue to call `swarm_spawn`
+     again with the same `runId` and `prefix`: that re-reads READY, so a
+     worker that just unblocked two items causes those items to be picked up
+     without anyone naming them. `timed_out` and `error` are deliberately
      different and must not be reported as one: `timed_out` means herdr's own
      wait deadline genuinely elapsed, while `error` means something else went
      wrong — the agent disappeared, it crashed, or its response could not be
@@ -398,8 +413,11 @@ concurrency-cap accounting.
      A `swarm_poll` that returns saying it was **aborted** is not an outcome
      for the digest: its workers were left untouched and are still running,
      so poll again rather than treating the run as finished.
-3. Repeat step 2 until `swarm_poll` reports no active workers and the
-   digest accounts for the whole queue. "No active workers" on its own is
+3. Repeat steps 1 and 2 — spawn, poll, spawn again — until `swarm_spawn`
+   reports nothing left to spawn, `swarm_poll` reports no active workers, and
+   the digest accounts for the whole queue. A spawn that returns zero
+   spawned while naming deferred items is not the end of the run: poll the
+   workers still running, then spawn again once one of them finishes. "No active workers" on its own is
    not the end of the run: when workers are still parked awaiting a relay,
    `swarm_poll` names them and the answer each is waiting on is still owed —
    resolve those with `swarm_resolve_blocked` before treating the queue as
