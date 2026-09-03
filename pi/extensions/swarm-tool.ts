@@ -371,11 +371,40 @@ export function reconcileState(
 // Naming
 // ---------------------------------------------------------------------------
 
-/** Synthetic herdr agent name incorporating the slug, capped at herdr's 32-char limit. */
+/**
+ * Project prefixes backlog slugs share within a wave. Stripped before naming
+ * because they carry no distinguishing information -- the head of every slug
+ * in a run is often identical (three `meta-second-opinion-*` items once
+ * rendered as the same 32-char name), so the budget is better spent on the
+ * tail, which is what actually tells items apart. Longest match first, so a
+ * future prefix that extends another (e.g. `meta-x-` vs `meta-`) strips
+ * correctly, and only that one is removed.
+ */
+const PROJECT_PREFIXES = ["iron-lb-", "meta-", "work-"];
+
+/** Synthetic herdr agent name incorporating the slug, capped at herdr's 32-char limit.
+ *
+ * Truncates from the slug's HEAD, keeping its tail: the `w<counter>` segment
+ * guarantees uniqueness within a run, so the slug's only job here is
+ * readability, and the tail is the part a human maps back to an item.
+ */
 export function nextAgentId(runId: string, counter: number, slug?: string): string {
   const cleanSlug = slug ? slug.replace(/[^a-zA-Z0-9_-]/g, "") : "";
-  const base = cleanSlug ? `${runId}-w${counter}-${cleanSlug}` : `${runId}-w${counter}`;
-  return base.slice(0, 32);
+  // Longest match, and only ONE: reduce-and-strip-each would take both
+  // prefixes off a slug like `meta-work-foo` and leave `foo`, silently
+  // discarding a segment that distinguishes it.
+  const matched = PROJECT_PREFIXES.filter((prefix) => cleanSlug.startsWith(prefix)).sort(
+    (a, b) => b.length - a.length,
+  )[0];
+  const stripped = matched ? cleanSlug.slice(matched.length) : cleanSlug;
+  if (!stripped) return `${runId}-w${counter}`;
+  const base = `${runId}-w${counter}-${stripped}`;
+  if (base.length <= 32) return base;
+  // Not enough budget for any slug tail (pathological runId): fall back to a
+  // plain truncation rather than slicing a negative count.
+  const remaining = 32 - `${runId}-w${counter}-`.length;
+  if (remaining < 1) return base.slice(0, 32);
+  return `${runId}-w${counter}-${stripped.slice(-remaining)}`;
 }
 
 // ---------------------------------------------------------------------------
