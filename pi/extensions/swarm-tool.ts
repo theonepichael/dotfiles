@@ -112,6 +112,13 @@ const DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
  * forever, holding its slot until someone killed the orchestrator by hand.
  */
 const DEFAULT_WORKER_DEADLINE_MS = 4 * 60 * 60 * 1000;
+
+// How long a worker may sit at awaiting_relay before the poll says so out
+// loud. Not a stop: a relay answered at minute 31 is still worth having, and
+// killing the worker would destroy finished work over a slow human. It is
+// purely a signal, so the run cannot go quiet with a pane nobody was told
+// about.
+const DEFAULT_RELAY_STALL_MS = 30 * 60 * 1000;
 /**
  * How long the liveness probe may take before it is abandoned as
  * inconclusive. Short, because `agent get` is a local socket round-trip --
@@ -205,6 +212,14 @@ export interface WorkerRecord {
    * not be reasoned about or reproduced after the fact.
    */
   model?: string;
+  /**
+   * Epoch ms this worker parked at `awaiting_relay`, cleared when it resumes.
+   *
+   * Separate from `workingSinceMs` on purpose: that clock stops here, so
+   * without this one a parked worker has no clock at all. See
+   * `stalledRelayWorkers`.
+   */
+  awaitingRelaySinceMs?: number;
   lifecycle: WorkerLifecycle;
 }
 
@@ -294,6 +309,23 @@ type SpawnOutcome =
  */
 export type PollEventKind = "blocked" | "finished" | "timed_out" | "error" | "still_working";
 
+/**
+ * Whether a blocked worker's prompt is one the swarm can answer.
+ *
+ * Detection of blocked-ness is already class-wide -- herdr-blocked-bridge.ts
+ * listens to pi's ui_prompt_start, which fires for every blocking `ctx.ui.*`
+ * prompt -- but ANSWERING is not. `swarm_resolve_blocked` drives
+ * question-tool.ts's numbered picker by arrow key, and nothing else. A
+ * guard-rails `rm -rf` confirmation, a `/compact` select, or any pi built-in
+ * prompt parks the worker just the same, and the orchestrator had no way to
+ * tell the two apart: both simply appeared as `blocked`.
+ *
+ * So an unattended batch that hit a non-picker prompt stopped making progress
+ * with no signal naming the pane or the reason (observed live 2026-09-02,
+ * cleared by a human send-keys).
+ */
+export type BlockClass = "answerable" | "needs_human";
+
 export interface PollEvent {
   kind: PollEventKind;
   agent: string;
@@ -301,6 +333,7 @@ export interface PollEvent {
   paneId: string;
   rawPrompt?: string; // blocked only
   truncated?: boolean; // blocked only
+  blockClass?: BlockClass; // blocked only
   detail?: string; // timed_out/error only -- the raw herdr error detail, for an honest digest
   elapsedMs?: number; // still_working only -- working time so far, against the budget
   checkIn?: number; // still_working only -- 1-based, so "check-in 7 of a 4h budget" is sayable
@@ -452,6 +485,64 @@ export function buildTabCreateArgv(cwd: string, label: string): string[] {
     WORKER_UNATTENDED_ENV,
     "--no-focus",
   ];
+}
+
+/**
+ * Classify a blocked worker's captured pane as answerable or not.
+ *
+ * The test is exactly what `swarm_resolve_blocked` can actually drive: a
+ * question-tool picker that `parsePicker` recognises. That is deliberate --
+ * the classifier must never claim answerable for something the relay would
+ * then fail on, so it reuses the same parser rather than a looser heuristic
+ * of its own.
+ *
+ * An absent or empty capture is `needs_human`, not `answerable`. The read
+ * failed or the pane was empty, and guessing answerable would send arrow
+ * keys at a prompt nobody has read.
+ *
+ * This does NOT teach the relay to answer confirm dialogs. Approving
+ * arbitrary bash on a human's behalf is what the gate exists to prevent;
+ * `parsePicker` refusing them is correct and stays. The point here is only
+ * to say WHICH kind of block this is, so the orchestrator can relay one and
+ * escalate the other instead of treating every block alike.
+ */
+export function classifyBlock(rawPrompt: string | undefined): BlockClass {
+  if (!rawPrompt) return "needs_human";
+  return parsePicker(rawPrompt).options.length > 0 ? "answerable" : "needs_human";
+}
+
+/**
+ * Workers parked awaiting a relay for longer than `stallMs`.
+ *
+ * A SECOND clock, deliberately separate from the working-time budget. That
+ * budget measures time a worker spends WORKING and is folded shut the moment
+ * it parks, precisely so hours spent waiting on a human are never charged
+ * against it -- charging them would stop a worker at the instant its relay
+ * was finally answered. The consequence is that a parked worker is otherwise
+ * completely unbounded, which is the gap this closes: the budget bounds a
+ * worker that is working, this bounds one waiting on a human who may never
+ * come.
+ *
+ * An `active` worker is never stalled here however long it has run -- that is
+ * the budget's business, and double-reporting it would make a busy worker
+ * look stuck.
+ *
+ * A parked record with no stamp is not reported. Such a record was written
+ * before this existed, and inventing a stall for it would fire a spurious
+ * escalation on the first poll after an upgrade. The caller stamps it
+ * instead, so it is bounded from that moment on.
+ */
+export function stalledRelayWorkers(
+  workers: WorkerRecord[],
+  now: number,
+  stallMs: number,
+): WorkerRecord[] {
+  return workers.filter(
+    (w) =>
+      w.lifecycle === "awaiting_relay" &&
+      w.awaitingRelaySinceMs !== undefined &&
+      now - w.awaitingRelaySinceMs >= stallMs,
+  );
 }
 
 export function buildTabCloseArgv(tabId: string): string[] {
@@ -1448,6 +1539,7 @@ export default function (pi: ExtensionAPI) {
      */
     timeoutMs: number;
     deadlineMs: number;
+    stallMs: number;
   }
 
   const runtimes = new Map<string, RunRuntime>();
@@ -1462,6 +1554,7 @@ export default function (pi: ExtensionAPI) {
         spawnChain: Promise.resolve(),
         timeoutMs: DEFAULT_WAIT_TIMEOUT_MS,
         deadlineMs: DEFAULT_WORKER_DEADLINE_MS,
+        stallMs: DEFAULT_RELAY_STALL_MS,
       };
       runtimes.set(runId, rt);
     }
@@ -1949,6 +2042,11 @@ export default function (pi: ExtensionAPI) {
           description: `How long one herdr wait runs before the poller checks in on a worker -- a CHECK-IN INTERVAL, not a kill deadline. A worker still working when it elapses is probed, waited on again, and reported as still_working; nothing is closed. A wait already running keeps the value it started with, and the next check-in picks up the current one. Default ${DEFAULT_WAIT_TIMEOUT_MS}.`,
         }),
       ),
+      relayStallMs: Type.Optional(
+        Type.Number({
+          description: `How long a worker may sit at awaiting_relay before the poll names it as needing a human, in ms. A signal, never a stop -- the worker keeps its pane and its work. Its own clock, separate from workerDeadlineMs, which measures WORKING time and is stopped while a worker is parked. Default ${DEFAULT_RELAY_STALL_MS}.`,
+        }),
+      ),
       workerDeadlineMs: Type.Optional(
         Type.Number({
           description: `The whole-item budget for one worker, measured in WORKING time -- time parked awaiting a relay does not count. A worker still going past it is stopped deliberately and reported as timed_out, with its worktree path and the item's likely in-progress claim, so nothing is lost silently. Only ever observed at a check-in, so a worker can run up to one timeoutMs past it. Default ${DEFAULT_WORKER_DEADLINE_MS}.`,
@@ -1956,11 +2054,28 @@ export default function (pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params, signal) {
-      const typed = params as { runId: string; timeoutMs?: number; workerDeadlineMs?: number };
+      const typed = params as {
+        runId: string;
+        timeoutMs?: number;
+        workerDeadlineMs?: number;
+        relayStallMs?: number;
+      };
       const state = await getOrInitState(typed.runId, DEFAULT_CONCURRENCY);
       const rt = getRuntime(typed.runId);
       rt.timeoutMs = typed.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
       rt.deadlineMs = typed.workerDeadlineMs ?? DEFAULT_WORKER_DEADLINE_MS;
+      rt.stallMs = typed.relayStallMs ?? DEFAULT_RELAY_STALL_MS;
+
+      // Stamp any parked worker written before this clock existed, rather
+      // than leaving it unbounded forever. Stamping now means it is measured
+      // from this poll instead of from whenever it really parked -- late, but
+      // bounded, which is the whole point.
+      const stampNow = Date.now();
+      for (const w of state.workers) {
+        if (w.lifecycle === "awaiting_relay" && w.awaitingRelaySinceMs === undefined) {
+          w.awaitingRelaySinceMs = stampNow;
+        }
+      }
 
       const active = state.workers.filter((w) => w.lifecycle === "active");
       for (const w of active) armWait(rt, w);
@@ -1974,9 +2089,13 @@ export default function (pi: ExtensionAPI) {
         // never fire and the poll below would hang on a promise nothing
         // resolves. Naming it instead is what lets the run continue.
         const awaitingRelay = state.workers.filter((w) => w.lifecycle === "awaiting_relay");
+        const stalledHere = stalledRelayWorkers(state.workers, Date.now(), rt.stallMs);
+        const stalledAgents = new Set(stalledHere.map((w) => w.agent));
+        const describe = (w: WorkerRecord) =>
+          `${w.agent} (${w.slug}, pane ${w.paneId})${stalledAgents.has(w.agent) ? ` -- STALLED, over ${formatDuration(rt.stallMs)} with no answer` : ""}`;
         const text = awaitingRelay.length
           ? `No active workers to poll. ${awaitingRelay.length} worker(s) awaiting a relay -- answer each with swarm_resolve_blocked before polling again: ${awaitingRelay
-              .map((w) => `${w.agent} (${w.slug}, pane ${w.paneId})`)
+              .map(describe)
               .join(", ")}.`
           : "No active workers to poll.";
         return {
@@ -2036,7 +2155,11 @@ export default function (pi: ExtensionAPI) {
           // The clock pauses here. Hours spent waiting on a human are not
           // hours the worker spent working, and charging them to the budget
           // would stop a worker at the moment its relay was finally answered.
-          foldWorkingSegment(worker, Date.now());
+          event.blockClass = classifyBlock(event.rawPrompt);
+          const parkedAt = Date.now();
+          foldWorkingSegment(worker, parkedAt);
+          // The relay clock starts exactly where the working clock stops.
+          worker.awaitingRelaySinceMs = parkedAt;
           worker.lifecycle = "awaiting_relay";
         } else if (event.kind === "still_working") {
           // Alive, inside its budget, and already re-armed by the settle
@@ -2052,21 +2175,37 @@ export default function (pi: ExtensionAPI) {
       }
       persist(state);
 
+      const stalled = stalledRelayWorkers(state.workers, Date.now(), rt.stallMs);
+      const stalledNote = stalled.length
+        ? `\n\n${stalled.length} worker(s) have been awaiting a relay for over ${formatDuration(rt.stallMs)} and are not progressing -- each needs a human answer in its own pane: ${stalled
+            .map((w) => `${w.agent} (${w.slug}, pane ${w.paneId})`)
+            .join(", ")}.`
+        : "";
+
       return {
         content: [
           {
             type: "text",
-            text: events
-              .map((e) => {
-                if (e.kind === "blocked") {
-                  return `${e.slug} (${e.agent}) is blocked${e.truncated ? " -- content may be truncated, inspect pane " + e.paneId + " directly" : ""}:\n${e.rawPrompt}`;
-                }
-                if (e.kind === "still_working") {
-                  return `${e.slug} (${e.agent}) still_working -- check-in ${e.checkIn}, ${formatDuration(e.elapsedMs ?? 0)} of working time so far against a ${formatDuration(rt.deadlineMs)} budget. Nothing settled and no slot was freed; poll again.`;
-                }
-                return `${e.slug} (${e.agent}) ${e.kind}${e.detail ? `: ${e.detail}` : ""}`;
-              })
-              .join("\n\n"),
+            text:
+              events
+                .map((e) => {
+                  if (e.kind === "blocked") {
+                    // The class goes in the text, not in `details`: no provider
+                    // adapter in @earendil-works/pi-ai reads details, so a
+                    // classification put there would be invisible to the very
+                    // model that has to act on it.
+                    const verdict =
+                      e.blockClass === "answerable"
+                        ? "answerable -- a question-tool picker, so answer it with swarm_resolve_blocked"
+                        : `needs_human -- NOT a question-tool picker, so swarm_resolve_blocked cannot drive it. Relay the prompt below to the user verbatim and tell them to answer in pane ${e.paneId} themselves`;
+                    return `${e.slug} (${e.agent}, pane ${e.paneId}) is blocked [${verdict}]${e.truncated ? " -- content may be truncated, inspect the pane directly" : ""}:\n${e.rawPrompt}`;
+                  }
+                  if (e.kind === "still_working") {
+                    return `${e.slug} (${e.agent}) still_working -- check-in ${e.checkIn}, ${formatDuration(e.elapsedMs ?? 0)} of working time so far against a ${formatDuration(rt.deadlineMs)} budget. Nothing settled and no slot was freed; poll again.`;
+                  }
+                  return `${e.slug} (${e.agent}) ${e.kind}${e.detail ? `: ${e.detail}` : ""}`;
+                })
+                .join("\n\n") + stalledNote,
           },
         ],
         details: { events },
@@ -2246,6 +2385,10 @@ export default function (pi: ExtensionAPI) {
       // moves -- a future path back to active that forgets this would
       // silently charge a worker for the hours it spent waiting on a human.
       worker.workingSinceMs = Date.now();
+      // The relay clock stops where the working clock restarts, so a worker
+      // answered and later re-blocked is measured from its NEW park, not its
+      // first one.
+      worker.awaitingRelaySinceMs = undefined;
       worker.lifecycle = "active";
       persist(state);
       return {

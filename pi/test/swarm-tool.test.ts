@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import registerSwarmTools, {
   activeWorkerCount,
+  classifyBlock,
   classifyTimeoutProbe,
   deadlineStopDetail,
   elapsedWorkingMs,
@@ -30,6 +31,7 @@ import registerSwarmTools, {
   parseReadyItems,
   parseTabCreate,
   selectSchedulable,
+  stalledRelayWorkers,
   loadState,
   looksTruncated,
   matchOption,
@@ -2960,5 +2962,72 @@ describe("swarm_spawn model passthrough", () => {
       lifecycle: "active",
     };
     expect(unpinned.model).toBeUndefined();
+  });
+});
+
+// A guard-rails `warn rm -rf` confirmation, as it renders in a worker's pane.
+// Deliberately NOT a question-tool picker: no `1.`-numbered option list, no
+// `>` marker, no picker footer. This is the shape that used to park a worker
+// at awaiting_relay indistinguishably from an answerable one.
+const GUARD_RAILS_CONFIRM_OUTPUT = `
+ guard-rails
+
+ This command contains \`rm -rf\`. Run it anyway?
+
+ [y/N]
+`;
+
+describe("classifyBlock", () => {
+  test("a real picker capture is answerable", () => {
+    expect(classifyBlock(REAL_PICKER_OUTPUT)).toBe("answerable");
+  });
+
+  test("a guard-rails confirm capture needs a human", () => {
+    expect(classifyBlock(GUARD_RAILS_CONFIRM_OUTPUT)).toBe("needs_human");
+  });
+
+  test("the two land in different buckets -- the whole point of the item", () => {
+    expect(classifyBlock(REAL_PICKER_OUTPUT)).not.toBe(classifyBlock(GUARD_RAILS_CONFIRM_OUTPUT));
+  });
+
+  test("scrollback holding a numbered plan is not mistaken for an answerable picker", () => {
+    // parsePicker already refuses this (non-contiguous / no real footer);
+    // classifyBlock must not soften that into a false `answerable`, which
+    // would send arrow keys computed from a fabricated index.
+    expect(classifyBlock(PICKER_BELOW_A_NUMBERED_PLAN)).toBe("answerable");
+  });
+
+  test("an unread or empty pane needs a human rather than defaulting to answerable", () => {
+    expect(classifyBlock(undefined)).toBe("needs_human");
+    expect(classifyBlock("")).toBe("needs_human");
+  });
+});
+
+describe("stalledRelayWorkers", () => {
+  const STALL = 30 * 60 * 1000;
+
+  test("a worker parked past the stall deadline is reported", () => {
+    const w = makeWorker({ agent: "w1", lifecycle: "awaiting_relay" });
+    w.awaitingRelaySinceMs = 1_000;
+    expect(stalledRelayWorkers([w], 1_000 + STALL, STALL).map((x) => x.agent)).toEqual(["w1"]);
+  });
+
+  test("a worker parked inside the deadline is not", () => {
+    const w = makeWorker({ agent: "w1", lifecycle: "awaiting_relay" });
+    w.awaitingRelaySinceMs = 1_000;
+    expect(stalledRelayWorkers([w], 1_000 + STALL - 1, STALL)).toEqual([]);
+  });
+
+  test("an ACTIVE worker is never stalled, however long it has been working", () => {
+    // The working budget owns that case, and it is deliberately a different
+    // clock: this one must not double-report a worker that is simply busy.
+    const w = makeWorker({ agent: "w1", lifecycle: "active" });
+    w.awaitingRelaySinceMs = 1_000;
+    expect(stalledRelayWorkers([w], 1_000 + STALL * 10, STALL)).toEqual([]);
+  });
+
+  test("a parked worker with no stamp is not reported, so an upgrade cannot fabricate a stall", () => {
+    const w = makeWorker({ agent: "w1", lifecycle: "awaiting_relay" });
+    expect(stalledRelayWorkers([w], Date.now(), STALL)).toEqual([]);
   });
 });
