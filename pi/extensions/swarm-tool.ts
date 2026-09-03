@@ -196,6 +196,15 @@ export interface WorkerRecord {
    * budget", which reads as a stall rather than a resumption.
    */
   checkIns?: number;
+  /**
+   * The model this worker was started on, when one was pinned.
+   *
+   * Recorded so a run can say what actually did the work. Absent means the
+   * worker took pi's own default, which is what every worker did before this
+   * was wired -- and which no digest could report, so a finished run could
+   * not be reasoned about or reproduced after the fact.
+   */
+  model?: string;
   lifecycle: WorkerLifecycle;
 }
 
@@ -611,7 +620,7 @@ export function parseTabCreate(stdout: string): TabCreateResult | undefined {
   }
 }
 
-export function buildAgentStartArgv(agentId: string, paneId: string): string[] {
+export function buildAgentStartArgv(agentId: string, paneId: string, model?: string): string[] {
   return [
     "agent",
     "start",
@@ -622,6 +631,12 @@ export function buildAgentStartArgv(agentId: string, paneId: string): string[] {
     paneId,
     "--timeout",
     String(AGENT_START_TIMEOUT_MS),
+    // Everything pi needs goes AFTER the separator. herdr's usage is
+    // `agent start <NAME> --kind <KIND> --pane <ID> [OPTIONS] [-- [AGENT_ARG]...]`,
+    // so `--model` handed to herdr directly is an unknown flag; only the
+    // trailing block reaches the agent. Omitting the model omits the
+    // separator too -- a bare trailing `--` is a different command line.
+    ...(model ? ["--", "--model", model] : []),
   ];
 }
 
@@ -1305,8 +1320,9 @@ export default function (pi: ExtensionAPI) {
     agentId: string,
     slug: string,
     paths: string[],
+    model?: string,
   ): Promise<SpawnOutcome> {
-    const startResult = await herdr(pi, buildAgentStartArgv(agentId, paneId));
+    const startResult = await herdr(pi, buildAgentStartArgv(agentId, paneId, model));
     if (startResult.code !== 0) {
       return failWithTab(
         slug,
@@ -1339,6 +1355,7 @@ export default function (pi: ExtensionAPI) {
         paths,
         cwd: process.cwd(),
         workingSinceMs: Date.now(),
+        model,
         lifecycle: "active" as const,
       },
     };
@@ -1676,6 +1693,7 @@ export default function (pi: ExtensionAPI) {
       "A per-item spawn failure (agent_not_ready, agent_prompt_stalled, spawn_error, or an unparseable tab-create response) is reported in `failed`, not thrown -- other items in the batch are unaffected. Any failure after the tab exists carries that pane's captured output in its reason, and the tab is closed.",
       "Call swarm_poll next to begin the completion loop.",
       "Items are re-read from dev_status on every call, so an item unblocked by a worker that just finished is picked up by the next spawn without being named. Pass `prefix` (not `items`) to let it select, and call it again each time swarm_poll frees a slot -- swarm_poll itself never spawns.",
+      "Every worker in a wave starts on the same `model` when one is given, and on pi's own default when it is not. The model is recorded on each worker, so the end-of-run digest can say what actually did the work -- without it a finished run cannot be reproduced or reasoned about.",
       "Two items whose related_files name the same file are never spawned into the same wave: each worker has its own worktree, so the second to merge would conflict. The loser is reported as deferred, still owed, and becomes schedulable once the worker it collided with finishes. Deferred is not the same as skipped (cap) -- a skipped item is coming next wave regardless.",
     ],
     parameters: Type.Object({
@@ -1698,6 +1716,12 @@ export default function (pi: ExtensionAPI) {
       concurrency: Type.Optional(
         Type.Number({ description: "Max concurrent active workers. Default 3." }),
       ),
+      model: Type.Optional(
+        Type.String({
+          description:
+            'Model for every worker in this wave, as pi accepts it ("provider/id", e.g. "opencode-go/glm-5.3-flash"). Omit to let each worker take pi\'s own default. An unknown id is not caught here: it fails when pi starts inside the worker tab, and surfaces as an agent_not_ready spawn failure with that pane\'s output attached.',
+        }),
+      ),
     }),
     async execute(_toolCallId, params) {
       const typed = params as {
@@ -1705,6 +1729,7 @@ export default function (pi: ExtensionAPI) {
         items?: string[];
         prefix?: string;
         concurrency?: number;
+        model?: string;
       };
       if (!typed.items && !typed.prefix) {
         throw new Error(
@@ -1815,6 +1840,7 @@ export default function (pi: ExtensionAPI) {
                 agentId,
                 p.slug,
                 itemPaths(readyById.get(p.slug) ?? { id: p.slug }),
+                typed.model,
               );
             } catch (e) {
               // A throw out of spawnInto's herdr calls is a post-create
