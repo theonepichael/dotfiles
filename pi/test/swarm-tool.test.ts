@@ -98,11 +98,48 @@ describe("nextAgentId", () => {
     expect(nextAgentId("run1", 12)).toBe("run1-w12");
     expect(nextAgentId("run1", 1, "fix-bug")).toBe("run1-w1-fix-bug");
     expect(nextAgentId("run1", 1, "a-very-long-backlog-item-slug-name-that-exceeds-limits")).toBe(
-      "run1-w1-a-very-long-backlog-item",
+      "run1-w1-name-that-exceeds-limits",
     );
     expect(
       nextAgentId("run1", 1, "a-very-long-backlog-item-slug-name-that-exceeds-limits").length,
     ).toBeLessThanOrEqual(32);
+  });
+
+  test("strips a known project prefix even when no truncation is needed", () => {
+    expect(nextAgentId("r1", 1, "meta-fix-bug")).toBe("r1-w1-fix-bug");
+    expect(nextAgentId("r1", 1, "work-fix-bug")).toBe("r1-w1-fix-bug");
+  });
+
+  test("truncates from the slug's head, so the distinguishing tail survives", () => {
+    expect(nextAgentId("shakedown1", 3, "meta-second-opinion-copilot-model-pool")).toBe(
+      "shakedown1-w3-copilot-model-pool",
+    );
+  });
+
+  test("two slugs sharing a project prefix produce visibly different names", () => {
+    const a = nextAgentId("shakedown1", 1, "meta-second-opinion-copilot-argv");
+    const b = nextAgentId("shakedown1", 2, "meta-second-opinion-pi-size-guard");
+    expect(a).toBe("shakedown1-w1-inion-copilot-argv");
+    expect(b).toBe("shakedown1-w2-nion-pi-size-guard");
+    expect(a).not.toBe(b);
+    expect(a.length).toBeLessThanOrEqual(32);
+    expect(b.length).toBeLessThanOrEqual(32);
+  });
+
+  test("strips the longest matching prefix", () => {
+    expect(nextAgentId("r1", 1, "iron-lb-some-fancy-long-item-slug-here-ok")).toBe(
+      "r1-w1-ncy-long-item-slug-here-ok",
+    );
+  });
+
+  test("a slug that is exactly a prefix leaves no dangling separator", () => {
+    expect(nextAgentId("run1", 1, "meta-")).toBe("run1-w1");
+  });
+
+  test("a pathological runId longer than the cap still yields a 32-char name", () => {
+    const id = nextAgentId("a".repeat(40), 1, "meta-x");
+    expect(id.length).toBeLessThanOrEqual(32);
+    expect(id).toBe("a".repeat(32));
   });
 });
 
