@@ -689,9 +689,10 @@ export function buildAgentStartArgv(agentId: string, paneId: string, model?: str
  * and no window in which a worker holds real work while still armed. It also
  * sidesteps the reason that handshake could only ever cover one gate: pi
  * loads each extension separately, so a session-wide switch cannot be shared
- * between them in module state -- /trust-session tried exactly that and is a
- * proven no-op. An environment variable each gate reads for itself has no
- * such failure mode.
+ * between them in module state -- /trust-session tried exactly that and was
+ * a silent no-op until it was rewired onto the shared extension event bus.
+ * An environment variable each gate reads for itself has no such failure
+ * mode, which is why the swarm still prefers it over any runtime handshake.
  *
  * The two gates draw DIFFERENT conclusions from it, on purpose:
  *   - permission-gate.ts allows. Its "ask" tier is everything outside a

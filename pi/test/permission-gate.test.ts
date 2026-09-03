@@ -5,7 +5,6 @@ import permissionGate, {
   initialGateEnabled,
   isPermissionGateEnabled,
   patternToRegExp,
-  setPermissionGateEnabled,
 } from "../extensions/permission-gate";
 
 describe("patternToRegExp", () => {
@@ -122,8 +121,13 @@ type Handler = (
 ) => Promise<void>;
 
 describe("/permission-gate-disable", () => {
-  afterEach(() => {
-    setPermissionGateEnabled(true);
+  afterEach(async () => {
+    // Re-arm through the gate's own enable command -- the same path a real
+    // session uses. There is no exported setter to call here on purpose: an
+    // exported setter was how /trust-session flipped private module copies
+    // for months while reporting success (see the extension's comment).
+    const commands = loadCommands();
+    await commands["permission-gate-enable"]!.handler("", { ui: { notify: () => {} } });
   });
 
   function loadCommands() {
@@ -133,6 +137,7 @@ describe("/permission-gate-disable", () => {
       registerCommand: (name: string, opts: { description: string; handler: Handler }) => {
         commands[name] = opts;
       },
+      events: { emit: () => {}, on: () => () => {} },
     } as unknown as Parameters<typeof permissionGate>[0]);
     return commands;
   }
