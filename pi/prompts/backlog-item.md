@@ -504,5 +504,50 @@ writes and the commit-on-`main` worktree policy are untouched.
    proactive-capture digest entries exactly as `--auto`'s own end-of-run
    step does.
 
+   **Write the digest in two registers, and keep them apart.**
+
+   - **Observed** — what the tools actually returned: which items spawned,
+     which blocked and on what, which relays you resolved, which finished or
+     stopped on budget, and the commit sha named in a land gate. This is the
+     only register that may be written in the indicative.
+   - **Worker reported** — anything a worker said about its own work: what
+     its diff contained, which tests it ran, what it decided not to do.
+     Attribute it every time. "w2 reported that…", never "w2 did…".
+
+   You have no independent view of what a worker did. You see events and you
+   see the worker's narration, so a worker that misdescribes its own diff
+   will propagate that description into the digest unchanged — and the
+   digest is the only account most items get, because nobody reads two
+   workers' transcripts.
+
+   **Never write "verified", "confirmed" or "I checked" for something you
+   did not run yourself in this session.** If you did run it, name the
+   command and quote its result. This is the sharpest edge of the rule: on
+   2026-09-03 an orchestrator relayed "the 3 full-suite failures are in
+   `toggle-check.test.ts` and reproduce on untouched main (verified myself)"
+   when there were no such failures anywhere — the suite gives 432 pass, 0
+   fail on main. Repeating a worker's claim is a flaw a careful reader can
+   discount; vouching for it removes the very suspicion that would catch it.
+   That claim also came one step from corrupting another item, whose whole
+   premise is that `toggle-check.test.ts` passes green while the feature it
+   covers is a proven no-op.
+
+   **For anything about what landed, name the commit sha and stop.** Do not
+   paraphrase a worker's account of its diff. `git show <sha>` is ground
+   truth and the human can run it; your paraphrase is a second-hand copy
+   that can be wrong in ways nothing will catch. A digest once said a worker
+   had reverted a stray one-line change before commit — the hunk is in
+   `897f00b` and on main today.
+
+   **Keep it cheap.** This is a register change, not a verification pass:
+   naming a sha costs nothing, and you are not asked to read every diff. By
+   the end of a long run your context is filling and a rule that costs a
+   full diff read per item will not survive, so do not adopt one.
+
+   **None of this means write less.** The same digest that stated a
+   falsehood also surfaced a real anomaly nobody else had caught. Keep
+   surfacing anomalies, including ones you cannot confirm — just mark an
+   unconfirmed one as what it is, rather than promoting it to fact.
+
 Steps 10 and 11's live-approval requirement is never bypassed in this mode
 — it is *how* the blocked-event relay above works, not an exception to it.
