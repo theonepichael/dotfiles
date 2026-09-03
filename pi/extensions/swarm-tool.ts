@@ -8,7 +8,7 @@ import { permissionGateAckPath } from "./permission-gate";
 
 // Registers swarm_spawn / swarm_poll / swarm_resolve_blocked -- lets a pi
 // session process several READY dev_status.py backlog items concurrently by
-// spawning one recursive pi worker per item in its own herdr pane, pooling
+// spawning one recursive pi worker per item in its own herdr tab, pooling
 // completion via herdr's socket API. Design, decisions, and three rounds of
 // /second-opinion critique: ~/.claude/data/grill/2026-09-01-pi-side-agent-swarm-orchestratio-plan.md
 // and its -critique-notes.md companion.
@@ -95,6 +95,14 @@ export interface WorkerRecord {
   agent: string; // synthetic id, e.g. "w1" -- never the raw slug (herdr names cap at 32 chars)
   slug: string;
   paneId: string;
+  /**
+   * The tab this worker owns, closed when it is dropped.
+   *
+   * Optional only for state files written before workers had their own tabs:
+   * those workers live in split panes, and closing them still goes through
+   * `pane close`. A worker spawned by this version always carries one.
+   */
+  tabId?: string;
   lifecycle: WorkerLifecycle;
 }
 
@@ -200,191 +208,62 @@ export function nextAgentId(runId: string, counter: number, slug?: string): stri
 // straight through as one of these elements.
 // ---------------------------------------------------------------------------
 
-export function buildPaneRenameArgv(paneId: string, label: string): string[] {
-  return ["pane", "rename", paneId, label];
+/**
+ * One worker, one herdr tab.
+ *
+ * The shipped version carved worker panes out of the orchestrator's own pane
+ * with `pane split`, and everything that made that hard -- an equal-share
+ * split plan, a 40x10 usability floor, a batch trimmed when the terminal
+ * could not fit it -- existed only because panes inside one tab divide a
+ * fixed width between them. Tabs do not: measured against herdr 0.8.2 on
+ * 2026-09-02, a `tab create --no-focus` root pane reports the full terminal
+ * (168x38 here) while unfocused, and a pi agent started in it reads back at
+ * that same size.
+ *
+ * Width was never only a comfort question. A worker pane in a three-way split
+ * was 42 columns, which is narrow enough that pi wraps its own picker footer,
+ * which is what made every relay in the first live swarm run fail to parse.
+ * Removing the split removes that whole class, and concurrency stops being
+ * bounded by the terminal's geometry.
+ *
+ * `--label` carries the slug, so the tab bar names the item -- the pane
+ * rename this replaces was only ever visible in the sidebar.
+ */
+export function buildTabCreateArgv(cwd: string, label: string): string[] {
+  return ["tab", "create", "--cwd", cwd, "--label", label, "--no-focus"];
 }
 
-export function buildPaneSplitArgv(
-  direction: "right" | "down",
-  cwd: string,
-  opts: { paneId?: string; ratio?: number } = {},
-): string[] {
-  // Without an explicit pane, herdr splits whatever `--current` resolves to.
-  // A plan splits the pane it created last, so it has to name one.
-  const target = opts.paneId ?? "--current";
-  const argv = ["pane", "split", target, "--direction", direction];
-  if (opts.ratio !== undefined) {
-    argv.push("--ratio", String(opts.ratio));
-  }
-  argv.push("--cwd", cwd, "--no-focus");
-  return argv;
+export function buildTabCloseArgv(tabId: string): string[] {
+  return ["tab", "close", tabId];
 }
 
-/** Asks herdr for the layout of the tab holding the orchestrator's pane. */
-export function buildPaneLayoutArgv(): string[] {
-  return ["pane", "layout", "--current"];
-}
-
-/** A pane's size in terminal cells, as `herdr pane layout` reports it. */
-export interface PaneRect {
-  width: number;
-  height: number;
+/** The two ids a worker needs: the pane to start its agent in, the tab to close when it is done. */
+export interface TabCreateResult {
+  paneId: string;
+  tabId: string;
 }
 
 /**
- * Read the orchestrator's own pane rect out of `herdr pane layout --current`.
+ * Read both ids out of a `herdr tab create` response.
  *
- * `paneId` should be `HERDR_PANE_ID`, which is the pane the split will target.
- * That is not always the focused pane -- the person driving the swarm may be
- * looking somewhere else -- so the focused pane is only a fallback.
+ * They live in different objects -- `.result.root_pane.pane_id` and
+ * `.result.tab.tab_id` -- and a worker is only recordable with both. One
+ * without the other produces a tab that can be started into and never closed,
+ * which is the orphan class this change is meant to end, so a partial
+ * response is treated as no response at all.
  */
-export function parseCurrentPaneRect(
-  stdout: string,
-  paneId: string | undefined,
-): PaneRect | undefined {
+export function parseTabCreate(stdout: string): TabCreateResult | undefined {
   try {
     const parsed = JSON.parse(stdout) as {
-      result?: {
-        layout?: {
-          focused_pane_id?: string;
-          panes?: { pane_id?: string; rect?: { width?: number; height?: number } }[];
-        };
-      };
+      result?: { root_pane?: { pane_id?: string }; tab?: { tab_id?: string } };
     };
-    const layout = parsed.result?.layout;
-    const panes = layout?.panes ?? [];
-    const mine =
-      panes.find((pane) => pane.pane_id === paneId) ??
-      panes.find((pane) => pane.pane_id === layout?.focused_pane_id);
-    const rect = mine?.rect;
-    if (typeof rect?.width !== "number" || typeof rect.height !== "number") return undefined;
-    return { width: rect.width, height: rect.height };
+    const paneId = parsed.result?.root_pane?.pane_id;
+    const tabId = parsed.result?.tab?.tab_id;
+    if (typeof paneId !== "string" || typeof tabId !== "string") return undefined;
+    return { paneId, tabId };
   } catch {
     return undefined;
   }
-}
-
-/**
- * Smallest worker pane worth spawning into. These are *usability* floors, not
- * crash floors.
- *
- * Measured 2026-09-02 against pi 0.84.4 with every extension in this repo
- * loaded: pi starts cleanly at 10 columns and 3 rows. It used to abort at
- * startup in anything narrower than its widest header line, which is what
- * made a small pane look fatal -- that was this repo's own header ignoring
- * the width it was handed, fixed in philosophy-header.ts. What is left is
- * simply that nobody can read a diff or a test failure in a 21-column pane,
- * so the swarm says so instead of spawning workers no one can use.
- */
-export const MIN_WORKER_PANE_COLS = 40;
-export const MIN_WORKER_PANE_ROWS = 10;
-
-/** One planned `herdr pane split`, to be run in order. */
-export interface SplitStep {
-  slug: string;
-  direction: "right" | "down";
-  /**
-   * Fraction the pane being split keeps; herdr gives the new pane the rest.
-   * Measured against herdr 0.8.2: `--ratio 0.3333` on a 168-column pane
-   * leaves it at 56 and creates one of 112.
-   */
-  ratio: number;
-  /**
-   * Size the pane this step creates ends at, once the whole plan has run.
-   * Absent when herdr could not report the layout, in which case no floor was
-   * applied either.
-   */
-  rect?: PaneRect;
-}
-
-export interface SplitPlan {
-  steps: SplitStep[];
-  rejected: { slug: string; reason: string }[];
-}
-
-function paneTooNarrowReason(start: PaneRect, requested: number): string {
-  return (
-    `pane_too_narrow: splitting a ${start.width}x${start.height} pane ` +
-    `${requested} way(s) leaves under ${MIN_WORKER_PANE_COLS}x${MIN_WORKER_PANE_ROWS} per worker`
-  );
-}
-
-/**
- * Plan the pane splits for a batch of workers.
- *
- * The shipped version alternated `right`/`down` and split `--current` every
- * time, which halves the same pane repeatedly: three workers out of a 168
- * column tab left panes of 21 columns, and the reported failure said nothing
- * about width. Splitting the *previous* new pane with a ratio of one over the
- * shares still to carve gives every pane an equal share instead.
- *
- * Orientation comes from the geometry rather than the loop index. Side by side
- * is preferred because reading code wants columns; splitting down preserves
- * the full width and is the fallback when the pane is already narrow. When
- * even that does not clear the floor, the batch is trimmed -- a swarm of two
- * beats a swarm of none -- and whatever is left over is rejected by name.
- */
-export function planSplits(start: PaneRect | undefined, slugs: readonly string[]): SplitPlan {
-  const rejected: { slug: string; reason: string }[] = [];
-  if (slugs.length === 0) return { steps: [], rejected };
-
-  // Geometry only drives the usability floor. If herdr cannot report it, even
-  // splits are still strictly better than halving one pane per worker, so the
-  // run proceeds unguarded rather than refusing to spawn on a missing field.
-  if (start === undefined) {
-    return {
-      steps: slugs.map((slug, i) => ({
-        slug,
-        direction: "right" as const,
-        ratio: 1 / (slugs.length + 1 - i),
-      })),
-      rejected,
-    };
-  }
-
-  // `shares` counts the orchestrator's own pane, which keeps one share.
-  const orientationFor = (
-    workers: number,
-  ): { direction: "right" | "down"; rect: PaneRect } | undefined => {
-    const shares = workers + 1;
-    const across = Math.floor(start.width / shares);
-    if (across >= MIN_WORKER_PANE_COLS && start.height >= MIN_WORKER_PANE_ROWS) {
-      return { direction: "right", rect: { width: across, height: start.height } };
-    }
-    const downward = Math.floor(start.height / shares);
-    if (start.width >= MIN_WORKER_PANE_COLS && downward >= MIN_WORKER_PANE_ROWS) {
-      return { direction: "down", rect: { width: start.width, height: downward } };
-    }
-    return undefined;
-  };
-
-  let workers = slugs.length;
-  let choice = orientationFor(workers);
-  while (choice === undefined && workers > 1) {
-    workers -= 1;
-    choice = orientationFor(workers);
-  }
-
-  if (choice === undefined) {
-    for (const slug of slugs) {
-      rejected.push({ slug, reason: paneTooNarrowReason(start, slugs.length) });
-    }
-    return { steps: [], rejected };
-  }
-
-  const steps: SplitStep[] = [];
-  for (let i = 0; i < workers; i++) {
-    steps.push({
-      slug: slugs[i]!,
-      direction: choice.direction,
-      ratio: 1 / (workers + 1 - i),
-      rect: choice.rect,
-    });
-  }
-  for (const slug of slugs.slice(workers)) {
-    rejected.push({ slug, reason: paneTooNarrowReason(start, slugs.length) });
-  }
-  return { steps, rejected };
 }
 
 export function buildAgentStartArgv(agentId: string, paneId: string): string[] {
@@ -524,6 +403,19 @@ export function buildAgentReadArgv(agentId: string, lines: number): string[] {
 
 export function buildPaneCloseArgv(paneId: string): string[] {
   return ["pane", "close", paneId];
+}
+
+/**
+ * How a worker is torn down.
+ *
+ * A worker spawned by this version owns its whole tab, so closing the tab is
+ * what removes it. `paneId` is the fallback for a worker restored from a
+ * state file written when workers lived in panes split out of the
+ * orchestrator's own -- closing its pane is still the right cleanup for that
+ * layout, and a run in flight across the upgrade should not leak.
+ */
+export function buildWorkerCloseArgv(worker: WorkerRecord): string[] {
+  return worker.tabId ? buildTabCloseArgv(worker.tabId) : buildPaneCloseArgv(worker.paneId);
 }
 
 /** By pane id, not agent id -- a spawn can fail before `agent start` succeeds, and the pane's text is exactly what diagnoses that. */
@@ -847,17 +739,17 @@ export default function (pi: ExtensionAPI) {
   /**
    * Closes a worker's pane on a path that is dropping it from state anyway.
    *
-   * Dropping the state entry without this leaves a live pi in a pane nothing
-   * will ever poll, answer, or clean up, and every later split subdivides the
-   * layout around it. A close that fails must not throw: the relay failure
+   * Dropping the state entry without this leaves a live pi in a tab nothing
+   * will ever poll, answer, or clean up -- burning a model and holding the
+   * worktree it was working in. A close that fails must not throw: the relay failure
    * being reported is the root cause, and a cleanup problem never replaces it
-   * -- the same rule failWithPane follows on the spawn side.
+   * -- the same rule failWithTab follows on the spawn side.
    */
-  async function closeWorkerPane(paneId: string, signal?: AbortSignal): Promise<void> {
+  async function closeWorker(worker: WorkerRecord, signal?: AbortSignal): Promise<void> {
     try {
-      await herdr(pi, buildPaneCloseArgv(paneId), signal);
+      await herdr(pi, buildWorkerCloseArgv(worker), signal);
     } catch {
-      // Pane already gone, or herdr unresponsive -- nothing left to clean up.
+      // Already gone, or herdr unresponsive -- nothing left to clean up.
     }
   }
 
@@ -899,17 +791,18 @@ export default function (pi: ExtensionAPI) {
    * Both halves are fixes for observed damage. The capture: a pane's text is
    * the only record of an early worker crash, and the sibling pane-width bug
    * was diagnosed entirely from a leaked pane. The close: two failed runs on
-   * 2026-09-02 left six orphan panes open, and each retry subdivides the
-   * layout further, so a later round produces panes too small for pi even
-   * when the first round was fine.
+   * 2026-09-02 left six orphan panes open. Tabs no longer subdivide the
+   * layout the way splits did, so a leak is less destructive than it was --
+   * but a live pi in a tab nobody polls is still a leak.
    *
    * A capture that itself fails (hard-crashed pane, unresponsive herdr) is
    * noted and the original reason is preserved unchanged -- a capture problem
    * must never replace the root cause.
    */
-  async function failWithPane(
+  async function failWithTab(
     slug: string,
     paneId: string,
+    tabId: string,
     reason: string,
   ): Promise<{ slug: string; failed: { slug: string; reason: string } }> {
     let capture: string;
@@ -924,7 +817,9 @@ export default function (pi: ExtensionAPI) {
       capture = `<pane capture threw: ${String(e)}>`;
     }
     try {
-      await herdr(pi, buildPaneCloseArgv(paneId));
+      // The whole tab, not just the pane: a worker owns its tab outright, and
+      // a tab left holding a dead pane is the leak this replaces.
+      await herdr(pi, buildTabCloseArgv(tabId));
     } catch {
       // Same rule as the capture: a cleanup problem is not the root cause,
       // and a rejected close must not throw this function's reason away.
@@ -937,15 +832,22 @@ export default function (pi: ExtensionAPI) {
    * agent, take its bash permission gate down, then hand it its item.
    *
    * Split out of the spawn loop so the caller can wrap the whole thing in one
-   * catch -- every failure in here has a pane to capture and close, including
-   * one that arrives as a thrown exec rejection rather than a non-zero exit.
+   * catch -- every failure in here has a pane to capture and a tab to close,
+   * including one that arrives as a thrown exec rejection rather than a
+   * non-zero exit.
    */
-  async function spawnInto(paneId: string, agentId: string, slug: string): Promise<SpawnOutcome> {
+  async function spawnInto(
+    paneId: string,
+    tabId: string,
+    agentId: string,
+    slug: string,
+  ): Promise<SpawnOutcome> {
     const startResult = await herdr(pi, buildAgentStartArgv(agentId, paneId));
     if (startResult.code !== 0) {
-      return failWithPane(
+      return failWithTab(
         slug,
         paneId,
+        tabId,
         `agent_not_ready: ${startResult.stderr || startResult.stdout}`,
       );
     }
@@ -965,16 +867,18 @@ export default function (pi: ExtensionAPI) {
       buildAgentPromptArgv(agentId, `${WORKER_TRUST_COMMAND} ${ackToken}`),
     );
     if (trustResult.code !== 0) {
-      return failWithPane(
+      return failWithTab(
         slug,
         paneId,
+        tabId,
         `agent_prompt_failed: ${trustResult.stderr || trustResult.stdout}`,
       );
     }
     if (!(await awaitTrustAck(ackToken))) {
-      return failWithPane(
+      return failWithTab(
         slug,
         paneId,
+        tabId,
         `permission_gate_not_disabled: no acknowledgement for token ${ackToken} within ${trustAckTimeoutMs()} ms`,
       );
     }
@@ -983,9 +887,10 @@ export default function (pi: ExtensionAPI) {
       buildAgentPromptArgv(agentId, `/backlog-item --auto ${slug}`),
     );
     if (promptResult.code !== 0) {
-      return failWithPane(
+      return failWithTab(
         slug,
         paneId,
+        tabId,
         `agent_prompt_stalled: ${promptResult.stderr || promptResult.stdout}`,
       );
     }
@@ -994,6 +899,7 @@ export default function (pi: ExtensionAPI) {
         agent: agentId,
         slug,
         paneId,
+        tabId,
         lifecycle: "active" as const,
       },
     };
@@ -1122,11 +1028,11 @@ export default function (pi: ExtensionAPI) {
     name: "swarm_spawn",
     label: "Swarm spawn",
     description:
-      "Spawn recursive pi workers for a batch of READY backlog items, one herdr pane each, up to the concurrency cap.",
+      "Spawn recursive pi workers for a batch of READY backlog items, one herdr tab each, up to the concurrency cap.",
     promptSnippet: "Spawn concurrent pi workers for a batch of backlog items via herdr",
     promptGuidelines: [
-      "Panes are split sequentially (herdr pane split mutates shared layout state -- concurrent splits race), then agent start+prompt run concurrently across the resulting panes.",
-      "A per-item spawn failure (agent_not_ready, agent_prompt_failed, permission_gate_not_disabled, agent_prompt_stalled, spawn_error, or an unparseable pane-split response) is reported in `failed`, not thrown -- other items in the batch are unaffected. Any failure after the pane exists carries that pane's captured output in its reason, and the pane is closed.",
+      "Tabs are created sequentially (herdr tab create mutates shared workspace state), then agent start+prompt run concurrently across the resulting root panes. Every tab is full terminal size, so concurrency is not bounded by the terminal's width.",
+      "A per-item spawn failure (agent_not_ready, agent_prompt_failed, permission_gate_not_disabled, agent_prompt_stalled, spawn_error, or an unparseable tab-create response) is reported in `failed`, not thrown -- other items in the batch are unaffected. Any failure after the tab exists carries that pane's captured output in its reason, and the tab is closed.",
       "Call swarm_poll next to begin the completion loop.",
     ],
     parameters: Type.Object({
@@ -1153,81 +1059,55 @@ export default function (pi: ExtensionAPI) {
         const budget = spawnBudget(state, typed.items.length);
         const toSpawn = typed.items.slice(0, budget);
 
-        const splitPanes: {
+        const tabs: {
           slug: string;
-          paneId?: string;
+          created?: TabCreateResult;
           failed?: { slug: string; reason: string };
         }[] = [];
-        // Measure before carving. Splitting `--current` once per worker halves
-        // the same pane every time, which is how a 168-column tab produced
-        // 21-column workers; the plan splits each new pane instead, with a ratio
-        // that lands every pane on an equal share.
-        const layoutResult = await herdr(pi, buildPaneLayoutArgv());
-        const startRect =
-          layoutResult.code === 0
-            ? parseCurrentPaneRect(layoutResult.stdout, process.env.HERDR_PANE_ID)
-            : undefined;
-        const plan = planSplits(startRect, toSpawn);
-        for (const rejection of plan.rejected) {
-          splitPanes.push({ slug: rejection.slug, failed: rejection });
-        }
 
-        // Each step splits the pane the previous step created, so the target
-        // walks outward; the first one splits the orchestrator's own pane.
-        let splitTarget: string | undefined;
-        for (const step of plan.steps) {
-          const result = await herdr(
-            pi,
-            buildPaneSplitArgv(step.direction, process.cwd(), {
-              ...(splitTarget ? { paneId: splitTarget } : {}),
-              ratio: step.ratio,
-            }),
-          );
+        // Sequential, still, and for the reason this tool's promptGuidelines
+        // already give: tab creation mutates shared workspace state. What is
+        // gone with the splits is the geometry -- no layout to measure, no
+        // share to divide, no batch to trim, because every tab starts at the
+        // full terminal size regardless of how many already exist.
+        for (const slug of toSpawn) {
+          const result = await herdr(pi, buildTabCreateArgv(process.cwd(), slug));
           if (result.code !== 0) {
-            splitPanes.push({
-              slug: step.slug,
+            tabs.push({
+              slug,
+              failed: { slug, reason: `tab create failed: ${result.stderr || result.stdout}` },
+            });
+            continue;
+          }
+          const created = parseTabCreate(result.stdout);
+          if (!created) {
+            tabs.push({
+              slug,
               failed: {
-                slug: step.slug,
-                reason: `pane split failed: ${result.stderr || result.stdout}`,
+                slug,
+                reason: `could not parse tab create response: ${result.stdout.slice(0, 200)}`,
               },
             });
             continue;
           }
-          try {
-            const parsed = JSON.parse(result.stdout) as {
-              result?: { pane?: { pane_id?: string } };
-            };
-            const paneId = parsed.result?.pane?.pane_id;
-            if (!paneId) throw new Error("no pane_id in response");
-            await herdr(pi, buildPaneRenameArgv(paneId, step.slug));
-            splitPanes.push({ slug: step.slug, paneId });
-            splitTarget = paneId;
-          } catch (e) {
-            splitPanes.push({
-              slug: step.slug,
-              failed: {
-                slug: step.slug,
-                reason: `could not parse pane split response: ${String(e)}`,
-              },
-            });
-          }
+          tabs.push({ slug, created });
         }
 
         const startResults = await Promise.allSettled(
-          splitPanes.map(async (p): Promise<SpawnOutcome> => {
-            if (p.failed || !p.paneId) return { slug: p.slug, failed: p.failed };
-            const paneId = p.paneId;
+          tabs.map(async (p): Promise<SpawnOutcome> => {
+            if (p.failed || !p.created) return { slug: p.slug, failed: p.failed };
+            const { paneId, tabId } = p.created;
             state.nextCounter += 1;
             const agentId = nextAgentId(typed.runId, state.nextCounter, p.slug);
             try {
-              return await spawnInto(paneId, agentId, p.slug);
+              return await spawnInto(paneId, tabId, agentId, p.slug);
             } catch (e) {
-              // A throw out of spawnInto's herdr calls is a post-split failure
-              // like any other. Without this it lands in allSettled's rejected
-              // branch, which files the failure against slug "unknown" and
-              // leaves the pane open -- losing both the item's identity and the
-              // pane text that would say what happened.
-              return failWithPane(p.slug, paneId, `spawn_error: ${String(e)}`);
+              // A throw out of spawnInto's herdr calls is a post-create
+              // failure like any other. Without this it lands in allSettled's
+              // rejected branch, which files the failure against slug "unknown"
+              // and leaves the tab open -- losing both the item's identity and
+              // the pane text that would say what happened.
+              return failWithTab(p.slug, paneId, tabId, `spawn_error: ${String(e)}`);
             }
           }),
         );
@@ -1342,7 +1222,7 @@ export default function (pi: ExtensionAPI) {
           event.truncated = truncated;
           worker.lifecycle = "awaiting_relay";
         } else {
-          await herdr(pi, buildPaneCloseArgv(worker.paneId), signal);
+          await herdr(pi, buildWorkerCloseArgv(worker), signal);
           state.workers = state.workers.filter((w) => w.agent !== worker.agent);
         }
       }
@@ -1464,7 +1344,7 @@ export default function (pi: ExtensionAPI) {
         signal,
       );
       if (keysResult.code !== 0) {
-        await closeWorkerPane(worker.paneId, signal);
+        await closeWorker(worker, signal);
         state.workers = state.workers.filter((w) => w.agent !== typed.agent);
         persist(state);
         return {
@@ -1513,7 +1393,7 @@ export default function (pi: ExtensionAPI) {
       );
 
       if (verify.code !== 0) {
-        await closeWorkerPane(worker.paneId, signal);
+        await closeWorker(worker, signal);
         state.workers = state.workers.filter((w) => w.agent !== typed.agent);
         persist(state);
         return {
