@@ -716,6 +716,16 @@ export function buildReadyArgv(prefix?: string): string[] {
 /** One READY item, as much of it as scheduling needs. */
 export interface ReadyItem {
   id: string;
+  /**
+   * Whether a worker may be given this item, as reported by
+   * `dev_status.py ready`.
+   *
+   * Deliberately `unknown` rather than `boolean | undefined`: the value comes
+   * from a JSON payload this module does not control, and the check below
+   * requires an explicit `true`, so anything else -- absent, null, a string --
+   * lands in the same fail-closed branch.
+   */
+  worker_safe?: unknown;
   related_files?: { path?: unknown }[];
 }
 
@@ -759,6 +769,16 @@ export interface SelectionResult {
   deferred: { slug: string; reason: string }[];
   /** Held back only because the concurrency cap was already full. */
   skipped: string[];
+  /**
+   * Never schedulable: a worker must not take this item at all.
+   *
+   * A third category on purpose. `skipped` is coming next wave regardless and
+   * `deferred` is waiting on a named worker, so both end when a worker
+   * finishes -- but a refused item is owed nothing and will never be spawned.
+   * Folding it into either would leave the orchestrator polling for a worker
+   * that was never started, on a queue that cannot drain.
+   */
+  refused: { slug: string; reason: string }[];
 }
 
 /**
@@ -789,6 +809,7 @@ export function selectSchedulable(
   const slugs: string[] = [];
   const deferred: { slug: string; reason: string }[] = [];
   const skipped: string[] = [];
+  const refused: { slug: string; reason: string }[] = [];
   const taken = [...takenPaths];
 
   const seen = new Set<string>();
@@ -799,6 +820,23 @@ export function selectSchedulable(
     // worktree, racing each other's commits.
     if (seen.has(candidate.id)) continue;
     seen.add(candidate.id);
+    // Before the cap and before the collision check: a refused item must never
+    // be reported as skipped, which would promise it a later wave that will
+    // never take it, nor as deferred, which would promise it a worker.
+    if (candidate.worker_safe !== true) {
+      refused.push({
+        slug: candidate.id,
+        reason:
+          candidate.worker_safe === false
+            ? "the backlog reports this item is not worker-safe -- its prefix " +
+              "names the harness repo, or is unrecognised. A worker would be " +
+              "editing the code it is running. Work it in a normal session."
+            : "dev_status.py ready reported no worker_safe field for this " +
+              "item, so eligibility is unknown and it is refused rather than " +
+              "assumed safe. Update the installed dev_status.py.",
+      });
+      continue;
+    }
     if (slugs.length >= headroom) {
       skipped.push(candidate.id);
       continue;
@@ -816,7 +854,7 @@ export function selectSchedulable(
     taken.push(...paths);
   }
 
-  return { slugs, deferred, skipped };
+  return { slugs, deferred, skipped, refused };
 }
 
 export function buildTabListArgv(): string[] {
@@ -2168,12 +2206,14 @@ export default function (pi: ExtensionAPI) {
 
         const skipped = selection.skipped;
         const deferred = selection.deferred;
+        const refused = selection.refused;
 
         const parts = [
           `Spawned ${spawned.length} worker(s)`,
           `${failed.length} failed to spawn`,
           `${skipped.length} skipped (cap)`,
           `${deferred.length} deferred (file overlap)`,
+          `${refused.length} refused (not worker-safe)`,
         ];
         const lines = [`${parts.join(", ")}.`];
         for (const f of failed) lines.push(`- ${f.slug}: ${reasonHeadline(f.reason)}`);
@@ -2181,15 +2221,27 @@ export default function (pi: ExtensionAPI) {
         // orchestrator has to know they are still owed, and no provider
         // adapter reads `details`.
         for (const d of deferred) lines.push(`- ${d.slug}: deferred -- ${d.reason}`);
+        // Refused items are named for the same reason deferred ones are -- no
+        // provider adapter reads `details` -- but they mean the opposite thing,
+        // so the wording must not invite another wave.
+        for (const r of refused) lines.push(`- ${r.slug}: refused -- ${r.reason}`);
         if (spawned.length === 0 && deferred.length > 0) {
           lines.push(
             "Nothing spawned but items remain: poll the running workers, then call swarm_spawn again once one finishes.",
+          );
+        } else if (spawned.length === 0 && refused.length > 0) {
+          // Terminal, not a retry. Refused items never become schedulable, so
+          // an orchestrator that polled and re-spawned here would loop on a
+          // queue that cannot drain.
+          lines.push(
+            "Nothing spawned and the remaining items are refused, not waiting: they are never schedulable by a worker. " +
+              "This is the end of the swarm phase for this prefix -- report them as needing a normal session rather than polling or spawning again.",
           );
         }
 
         return {
           content: [{ type: "text", text: lines.join("\n") }],
-          details: { spawned, failed, skipped, deferred },
+          details: { spawned, failed, skipped, deferred, refused },
         };
       });
     },

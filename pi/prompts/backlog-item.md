@@ -352,14 +352,25 @@ writes and the commit-on-`main` worktree policy are untouched.
 1. Pick a `runId` for this invocation (e.g. a short timestamp-based slug)
    and call `swarm_spawn` with the run's `prefix` and the concurrency — it
    spawns up to the cap, reporting any items skipped (cap), deferred (file
-   overlap) or failed to spawn.
+   overlap), refused (not worker-safe) or failed to spawn.
 
    **Deferred is not skipped.** Two items whose `related_files` name the same
    file are never spawned into the same wave: each worker gets its own
    worktree, so the second to merge would conflict. A deferred item is still
    owed and becomes schedulable once the worker it collided with finishes; a
    skipped one was only held back by the concurrency cap and is coming next
-   wave regardless. Both are named in the tool's result text. Each worker's tab is created with `PI_AGENT_UNATTENDED=1` in its
+   wave regardless. Both are named in the tool's result text.
+
+   **Refused is neither, and it is terminal.** An item is refused when the
+   backlog reports it is not worker-safe -- its prefix names the harness repo,
+   so a worker would be editing the code it is running -- or when its
+   eligibility could not be read at all. Unlike a skipped or deferred item, a
+   refused one is owed nothing: it never becomes schedulable, no matter how
+   many workers finish. A wave that spawns nothing and names only refused items
+   is the END of the swarm phase for this prefix, not a reason to poll and
+   spawn again. Report those items as needing a normal session and move on.
+   `swarm_spawn` says so explicitly in that case; believe it rather than
+   retrying. Each worker's tab is created with `PI_AGENT_UNATTENDED=1` in its
    environment, so both gate extensions settle themselves at pi's module
    load, before the worker can be handed anything. Nothing is negotiated
    over the wire and there is no acknowledgement to wait for.
@@ -511,7 +522,11 @@ writes and the commit-on-`main` worktree policy are untouched.
    reports nothing left to spawn, `swarm_poll` reports no active workers, and
    the digest accounts for the whole queue. A spawn that returns zero
    spawned while naming deferred items is not the end of the run: poll the
-   workers still running, then spawn again once one of them finishes. "No active workers" on its own is
+   workers still running, then spawn again once one of them finishes. A spawn
+   that returns zero spawned while naming only REFUSED items is the opposite --
+   those never become schedulable, so polling and re-spawning would loop on a
+   queue that cannot drain. Name them in the digest as needing a normal session
+   and treat the prefix as done. "No active workers" on its own is
    not the end of the run: when workers are still parked awaiting a relay,
    `swarm_poll` names them and the answer each is waiting on is still owed —
    resolve those with `swarm_resolve_blocked` before treating the queue as

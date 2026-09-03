@@ -4652,6 +4652,54 @@ class BacklogTestCase(unittest.TestCase):
         with patch.object(dev_status.subprocess, "run", return_value=fake):
             self.assertIsNone(dev_status._repo_name_for_path("/not/a/repo/x.py"))
 
+    def test_ws1_prefix_of_prefers_the_longest_known_prefix(self):
+        self.assertEqual(dev_status.prefix_of("iron-lb-wearable-card"), "iron-lb")
+        self.assertEqual(dev_status.prefix_of("atk-publish-remote"), "atk")
+
+    def test_ws2_project_prefixes_are_worker_safe(self):
+        self.assertTrue(dev_status.is_worker_safe("atk"))
+        self.assertTrue(dev_status.is_worker_safe("iron-lb"))
+
+    def test_ws3_the_harness_prefix_is_not_worker_safe(self):
+        harness = dev_status.REPO_PREFIXES[dev_status.HARNESS_REPO]
+        self.assertFalse(dev_status.is_worker_safe(harness))
+
+    def test_ws4_unknown_prefixes_are_unsafe_not_safe(self):
+        # A whitelist, deliberately. `pi-` and `dotfiles-` are real prefixes in
+        # the store, both dotfiles work, and an unsafe-only-if-meta rule classed
+        # them as swarmable. `work-` has its own policy and must never swarm.
+        for prefix in ("pi", "dotfiles", "work", "brand-new-project"):
+            self.assertFalse(
+                dev_status.is_worker_safe(prefix), f"{prefix}- should not be swarmable"
+            )
+
+    def test_ws5_ready_reports_worker_safe_per_item(self):
+        self.write_items(
+            [
+                make_item("atk-a"),
+                make_item("meta-b"),
+                make_item("iron-lb-c"),
+            ]
+        )
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.cmd_ready(_args(prefix=None))
+        by_id = {i["id"]: i for i in json.loads(out.getvalue())}
+        self.assertIs(by_id["atk-a"]["worker_safe"], True)
+        self.assertIs(by_id["meta-b"]["worker_safe"], False)
+        self.assertIs(by_id["iron-lb-c"]["worker_safe"], True)
+
+    def test_ws6_ready_reports_worker_safe_on_every_item(self):
+        # swarm-tool.ts fails closed on a missing field, so an item without it
+        # would be refused rather than skipped -- silently halving a wave.
+        self.write_items([make_item("atk-a"), make_item("meta-b")])
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            dev_status.cmd_ready(_args(prefix=None))
+        for item in json.loads(out.getvalue()):
+            self.assertIn("worker_safe", item, item["id"])
+
+
 
 # Every env var _detect_harness consults, in its documented resolution order.
 _HARNESS_ENV_VARS = (

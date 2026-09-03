@@ -1323,6 +1323,47 @@ the undocumented machine-dependent coupling that install contract removed.
 """
 
 
+WORKER_SAFE_PREFIXES: frozenset[str] = frozenset(
+    prefix for repo, prefix in REPO_PREFIXES.items() if repo != HARNESS_REPO
+)
+"""Prefixes a swarm worker may be given items under.
+
+A whitelist, not a blacklist. An unknown prefix is unsafe: `pi-` and
+`dotfiles-` are both real prefixes in the store and both name dotfiles work, so
+an "unsafe only if `meta-`" rule classed the harness's own backlog as
+swarmable. `work-` has its own policy and must never reach a swarm either.
+Defaulting unknown to unsafe makes a new project explicitly opt in by being
+added to :data:`REPO_PREFIXES`, which is one edit in one place.
+"""
+
+
+def prefix_of(slug: str) -> str:
+    """The slug's prefix, preferring the longest known one.
+
+    ``iron-lb-x`` is ``iron-lb``, not the ``iron`` a split on the first dash
+    would give.
+    """
+    for known in sorted(REPO_PREFIXES.values(), key=len, reverse=True):
+        if slug.startswith(f"{known}-"):
+            return known
+    return slug.split("-")[0]
+
+
+def is_worker_safe(prefix: str) -> bool:
+    """Whether a swarm worker may be handed items under this prefix.
+
+    The harness's own prefix is unsafe because a worker would be editing the
+    code it is running. Everything unrecognised is unsafe too -- see
+    :data:`WORKER_SAFE_PREFIXES`.
+
+    This is the single source of truth for the fact, in Python and beyond:
+    ``cmd_ready`` stamps it onto every emitted item so ``swarm_spawn`` in
+    ``pi/extensions/swarm-tool.ts`` can read it without a second copy of the
+    scheme in TypeScript.
+    """
+    return prefix in WORKER_SAFE_PREFIXES
+
+
 def _repo_name_for_path(path: str) -> str | None:
     """Resolve a file path to the directory name of the git repo containing it.
 
@@ -1419,14 +1460,7 @@ def _prefix_check_reminder(
 
     # Longest-first: `iron-lb-x` must report `iron-lb-`, not the `iron-` that a
     # split on the first dash would produce.
-    actual = next(
-        (
-            known
-            for known in sorted(set(REPO_PREFIXES.values()), key=len, reverse=True)
-            if slug.startswith(f"{known}-")
-        ),
-        slug.split("-")[0],
-    )
+    actual = prefix_of(slug)
     print(
         f"[{cmd}] {slug} carries the prefix '{actual}-', but its related_files "
         f"are in {repo}, whose prefix is '{expected}-'. A prefix names the "
@@ -2968,7 +3002,15 @@ def cmd_ready(args: argparse.Namespace) -> None:
     _in_progress, ready, _blocked, _in_review, _done = _render_order(items)
     if args.prefix:
         ready = [item for item in ready if item["id"].startswith(args.prefix)]
-    print(json.dumps(ready, indent=2))
+    # Stamped here rather than derived by each consumer: swarm_spawn lives in
+    # TypeScript and cannot import this module, and a second copy of the prefix
+    # scheme there would drift the moment REPO_PREFIXES changed. Every item
+    # carries it, because the consumer fails closed on a missing field.
+    stamped = [
+        {**item, "worker_safe": is_worker_safe(prefix_of(str(item["id"])))}
+        for item in ready
+    ]
+    print(json.dumps(stamped, indent=2))
 
 
 def cmd_list(args: argparse.Namespace) -> None:
