@@ -432,7 +432,7 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `anchor(relpath: str) -> str` — Return the GitHub heading anchor for a module section.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
 - Subcommand handlers: `cmd_function_name`
-- Tested by: `claude/scripts/test_gen_interfaces.py`
+- Tested by: `claude/scripts/test_gen_interfaces.py`, `test/test_dev_status_tool_action_coverage.py`
 
 ### `claude/scripts/gen_second_opinion.py`
 
