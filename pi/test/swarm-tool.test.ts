@@ -14,16 +14,13 @@ import registerSwarmTools, {
   buildAgentStartArgv,
   buildAgentWaitArgv,
   buildPaneCloseArgv,
-  buildPaneRenameArgv,
-  buildPaneLayoutArgv,
-  buildPaneSplitArgv,
+  buildTabCloseArgv,
+  buildTabCreateArgv,
+  buildWorkerCloseArgv,
   canOpenNewPane,
   canSpawnNew,
   classifyWaitResult,
-  MIN_WORKER_PANE_COLS,
-  MIN_WORKER_PANE_ROWS,
-  parseCurrentPaneRect,
-  planSplits,
+  parseTabCreate,
   loadState,
   looksTruncated,
   matchOption,
@@ -77,6 +74,7 @@ function makeWorker(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
     agent: "run1-w1",
     slug: "iron-lb-example",
     paneId: "w1:pA",
+    tabId: "w1:tA",
     lifecycle: "active",
     ...overrides,
   };
@@ -101,21 +99,38 @@ describe("nextAgentId", () => {
 });
 
 describe("herdr argv builders", () => {
-  test("pane rename: pane id and label", () => {
-    expect(buildPaneRenameArgv("w1:pA", "my-slug")).toEqual(["pane", "rename", "w1:pA", "my-slug"]);
-  });
-
-  test("pane split: current pane, direction, cwd, no-focus", () => {
-    expect(buildPaneSplitArgv("right", "/repo")).toEqual([
-      "pane",
-      "split",
-      "--current",
-      "--direction",
-      "right",
+  test("tab create: cwd, slug label, and never steals the human's focus", () => {
+    expect(buildTabCreateArgv("/repo", "my-slug")).toEqual([
+      "tab",
+      "create",
       "--cwd",
       "/repo",
+      "--label",
+      "my-slug",
       "--no-focus",
     ]);
+  });
+
+  test("tab close: the tab id", () => {
+    expect(buildTabCloseArgv("w1:tN")).toEqual(["tab", "close", "w1:tN"]);
+  });
+
+  test("tearing a worker down closes the tab it owns", () => {
+    expect(buildWorkerCloseArgv(makeWorker({ paneId: "w1:pA", tabId: "w1:tA" }))).toEqual([
+      "tab",
+      "close",
+      "w1:tA",
+    ]);
+  });
+
+  test("a worker restored from a pre-tabs state file is still closed by its pane", () => {
+    // Workers used to live in panes split out of the orchestrator's own, so a
+    // state file written by that version carries no tabId. Closing its tab is
+    // not an option and skipping the close would leak a live pi into a pane
+    // nothing polls, so the pane close stays reachable for exactly this case.
+    const legacy = makeWorker({ paneId: "w1:pA" });
+    delete legacy.tabId;
+    expect(buildWorkerCloseArgv(legacy)).toEqual(["pane", "close", "w1:pA"]);
   });
 
   test("agent start: kind pi, targets the given pane", () => {
@@ -837,6 +852,7 @@ describe("swarm_poll execute() wiring", () => {
       agent: "execrun-w1",
       slug: "some-item",
       paneId: "w1:pZ",
+      tabId: "w1:tZ",
       lifecycle: "active",
     };
     const state: SwarmState = { runId, concurrency: 2, nextCounter: 1, workers: [worker] };
@@ -876,8 +892,8 @@ describe("swarm_poll execute() wiring", () => {
     return { runId, poll, stub };
   }
 
-  const paneCloses = (stub: { calls: ExecCall[] }) =>
-    stub.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "close");
+  const workerCloses = (stub: { calls: ExecCall[] }) =>
+    stub.calls.filter((c) => c.argv[0] === "tab" && c.argv[1] === "close");
 
   test("a blocked settle keeps the pane open and parks the worker at awaiting_relay", async () => {
     const { runId, poll, stub } = setup(realWaitEnvelope("blocked", "execrun-w1", "w1:pZ"));
@@ -888,7 +904,7 @@ describe("swarm_poll execute() wiring", () => {
 
     expect(res.details.events.map((e) => e.kind)).toEqual(["blocked"]);
     // The load-bearing assertions: the relay target must survive.
-    expect(paneCloses(stub)).toHaveLength(0);
+    expect(workerCloses(stub)).toHaveLength(0);
     const persisted = loadState(runId, dir);
     expect(persisted?.workers).toHaveLength(1);
     expect(persisted?.workers[0]?.lifecycle).toBe("awaiting_relay");
@@ -906,7 +922,7 @@ describe("swarm_poll execute() wiring", () => {
     )) as { details: { events: { kind: string }[] } };
 
     expect(res.details.events.map((e) => e.kind)).toEqual(["error"]);
-    expect(paneCloses(stub)).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
     expect(loadState(runId, dir)?.workers).toHaveLength(0);
   });
 
@@ -922,7 +938,7 @@ describe("swarm_poll execute() wiring", () => {
     )) as { details: { events: { kind: string }[] } };
 
     expect(res.details.events.map((e) => e.kind)).toEqual(["timed_out"]);
-    expect(paneCloses(stub)).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
     expect(loadState(runId, dir)?.workers).toHaveLength(0);
   });
 
@@ -934,7 +950,7 @@ describe("swarm_poll execute() wiring", () => {
     )) as { details: { events: { kind: string }[] } };
 
     expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
-    expect(paneCloses(stub)).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
     expect(loadState(runId, dir)?.workers).toHaveLength(0);
   });
 
@@ -956,7 +972,7 @@ describe("swarm_poll execute() wiring", () => {
     )) as { details: { events: { kind: string; detail?: string }[] } };
 
     expect(res.details.events.map((e) => e.kind)).toEqual(["error"]);
-    expect(paneCloses(stub)).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
     expect(loadState(runId, dir)?.workers).toHaveLength(0);
   });
 });
@@ -1069,11 +1085,13 @@ describe("swarm_spawn worker bootstrap", () => {
     return { spawn, stub };
   }
 
-  const paneSplitOk = (argv: string[]) =>
-    argv[0] === "pane" && argv[1] === "split"
+  const tabCreateOk = (argv: string[]) =>
+    argv[0] === "tab" && argv[1] === "create"
       ? {
           code: 0,
-          stdout: JSON.stringify({ result: { pane: { pane_id: "w1:pN" } } }),
+          stdout: JSON.stringify({
+            result: { root_pane: { pane_id: "w1:pN" }, tab: { tab_id: "w1:tN" } },
+          }),
           stderr: "",
         }
       : { code: 0, stdout: "", stderr: "" };
@@ -1081,8 +1099,8 @@ describe("swarm_spawn worker bootstrap", () => {
   const prompts = (stub: { calls: ExecCall[] }) =>
     stub.calls.filter((c) => c.argv[0] === "agent" && c.argv[1] === "prompt");
 
-  const paneCloses = (stub: { calls: ExecCall[] }) =>
-    stub.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "close");
+  const workerCloses = (stub: { calls: ExecCall[] }) =>
+    stub.calls.filter((c) => c.argv[0] === "tab" && c.argv[1] === "close");
 
   const PANE_TEXT = "worker log: pi started, gate never came down";
 
@@ -1109,7 +1127,7 @@ describe("swarm_spawn worker bootstrap", () => {
         else writeFileSync(join(ackDir, `${token}.json`), JSON.stringify({ token }));
         return { code: 0, stdout: "", stderr: "" };
       }
-      return paneSplitOk(argv);
+      return tabCreateOk(argv);
     };
 
   const spawnItems = (spawn: { execute: (...a: never[]) => Promise<unknown> }, items: string[]) =>
@@ -1179,8 +1197,8 @@ describe("swarm_spawn worker bootstrap", () => {
   test("a spawn that throws does not wedge the run's queue", async () => {
     let explode = true;
     const { spawn } = stubFor((argv) => {
-      if (explode && argv[0] === "pane" && argv[1] === "split") {
-        throw new Error("herdr fell over mid-split");
+      if (explode && argv[0] === "tab" && argv[1] === "create") {
+        throw new Error("herdr fell over mid-create");
       }
       return respondingWorker()(argv);
     });
@@ -1250,7 +1268,7 @@ describe("swarm_spawn worker bootstrap", () => {
     // Every post-split failure, not just a failed agent start, leaves the
     // pane's text on the record and the pane itself closed.
     expect(res.details.failed[0]?.reason).toContain(PANE_TEXT);
-    expect(paneCloses(stub)).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
   });
 
   // An orchestrator only ever reads `content`. Confirmed live on 2026-09-02:
@@ -1281,7 +1299,7 @@ describe("swarm_spawn worker bootstrap", () => {
       withPaneText((argv) =>
         isTrustPrompt(argv)
           ? { code: 1, stdout: "", stderr: '{"error":{"code":"agent_not_found"}}' }
-          : paneSplitOk(argv),
+          : tabCreateOk(argv),
       ),
     );
 
@@ -1291,7 +1309,7 @@ describe("swarm_spawn worker bootstrap", () => {
     expect(res.details.failed[0]?.reason).not.toContain("permission_gate_not_disabled");
     expect(res.details.failed[0]?.reason).toContain("agent_not_found");
     expect(res.details.failed[0]?.reason).toContain(PANE_TEXT);
-    expect(paneCloses(stub)).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
     // and it never went on to hand the worker real work
     expect(prompts(stub)).toHaveLength(1);
   });
@@ -1349,14 +1367,14 @@ describe("swarm_spawn worker bootstrap", () => {
       if (argv[0] === "pane" && argv[1] === "read") {
         return { code: 0, stdout: "pi: terminal too narrow, exiting", stderr: "" };
       }
-      return paneSplitOk(argv);
+      return tabCreateOk(argv);
     });
 
     const res = await spawnOne(spawn);
 
     expect(res.details.failed[0]?.reason).toContain("agent_not_ready");
     expect(res.details.failed[0]?.reason).toContain("pi: terminal too narrow");
-    expect(paneCloses(stub)).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
   });
 
   test("a capture that itself fails leaves the original failure reason intact", async () => {
@@ -1367,14 +1385,14 @@ describe("swarm_spawn worker bootstrap", () => {
       if (argv[0] === "pane" && argv[1] === "read") {
         return { code: 1, stdout: "", stderr: "pane is gone" };
       }
-      return paneSplitOk(argv);
+      return tabCreateOk(argv);
     });
 
     const res = await spawnOne(spawn);
 
     // A capture problem never replaces the root cause.
     expect(res.details.failed[0]?.reason).toContain("agent_not_ready");
-    expect(paneCloses(stub)).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
   });
 
   test("the pane capture is bounded, so one failure cannot flood the digest", async () => {
@@ -1385,7 +1403,7 @@ describe("swarm_spawn worker bootstrap", () => {
       if (argv[0] === "pane" && argv[1] === "read") {
         return { code: 0, stdout: "x".repeat(PANE_CAPTURE_CHARS * 3), stderr: "" };
       }
-      return paneSplitOk(argv);
+      return tabCreateOk(argv);
     });
 
     const res = await spawnOne(spawn);
@@ -1402,7 +1420,7 @@ describe("swarm_spawn worker bootstrap", () => {
     const { spawn, stub } = stubFor(
       withPaneText((argv) => {
         if (isTrustPrompt(argv)) throw new Error("herdr socket closed");
-        return paneSplitOk(argv);
+        return tabCreateOk(argv);
       }),
     );
 
@@ -1411,7 +1429,7 @@ describe("swarm_spawn worker bootstrap", () => {
     expect(res.details.failed[0]?.slug).toBe("some-item");
     expect(res.details.failed[0]?.reason).toContain("herdr socket closed");
     expect(res.details.failed[0]?.reason).toContain(PANE_TEXT);
-    expect(paneCloses(stub)).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
   });
 
   // Cleanup that fails is still cleanup: the reason it was cleaning up after
@@ -1423,8 +1441,8 @@ describe("swarm_spawn worker bootstrap", () => {
       }
       if (argv[0] === "pane" && argv[1] === "read")
         return { code: 0, stdout: PANE_TEXT, stderr: "" };
-      if (argv[0] === "pane" && argv[1] === "close") throw new Error("pane already gone");
-      return paneSplitOk(argv);
+      if (argv[0] === "tab" && argv[1] === "close") throw new Error("tab already gone");
+      return tabCreateOk(argv);
     });
 
     const res = await spawnOne(spawn);
@@ -1435,160 +1453,54 @@ describe("swarm_spawn worker bootstrap", () => {
   });
 });
 
-describe("planSplits", () => {
-  // herdr's measured split arithmetic (2026-09-02, herdr 0.8.2): `--ratio R`
-  // leaves the pane being split at R of its size and gives the new pane the
-  // rest. 168 columns split at 1/3 yields 56 and 112.
-  const applyPlan = (
-    start: { width: number; height: number },
-    steps: ReturnType<typeof planSplits>["steps"],
-  ) => {
-    let remainder = { ...start };
-    const created: { width: number; height: number }[] = [];
-    for (const step of steps) {
-      if (step.direction === "right") {
-        const kept = Math.floor(remainder.width * step.ratio);
-        created.push({ width: remainder.width - kept, height: remainder.height });
-        remainder = { width: remainder.width - kept, height: remainder.height };
-      } else {
-        const kept = Math.floor(remainder.height * step.ratio);
-        created.push({ width: remainder.width, height: remainder.height - kept });
-        remainder = { width: remainder.width, height: remainder.height - kept };
-      }
-    }
-    return created;
-  };
-
-  test("three workers on a 168x38 layout get even panes, not 21 columns", () => {
-    // The shipped `i % 2` code split `--current` every time, so a 168-column
-    // tab produced 21-column workers. Observed live 2026-09-02.
-    const plan = planSplits({ width: 168, height: 38 }, ["a", "b", "c"]);
-    expect(plan.rejected).toEqual([]);
-    expect(plan.steps).toHaveLength(3);
-    expect(plan.steps.every((s) => s.direction === "right")).toBe(true);
-    expect(plan.steps.map((s) => s.rect!.width)).toEqual([42, 42, 42]);
-  });
-
-  test("the planned ratios really do produce the predicted panes", () => {
-    const start = { width: 168, height: 38 };
-    const plan = planSplits(start, ["a", "b", "c"]);
-    const widths = applyPlan(start, plan.steps).map((r) => r.width);
-    // Every worker pane ends at one equal share, and the orchestrator keeps one.
-    expect(widths).toEqual([126, 84, 42]);
-    expect(widths[widths.length - 1]).toBe(42);
-  });
-
-  test("falls back to splitting down when side-by-side would go under the floor", () => {
-    // A narrow orchestrator pane: 84 / 4 = 21 columns, under the floor, but
-    // splitting down keeps the full width.
-    const plan = planSplits({ width: 84, height: 40 }, ["a", "b", "c"]);
-    expect(plan.rejected).toEqual([]);
-    expect(plan.steps.every((s) => s.direction === "down")).toBe(true);
-    expect(plan.steps.every((s) => s.rect!.width === 84)).toBe(true);
-  });
-
-  test("spawns fewer workers rather than none when only some fit", () => {
-    // 130 columns fits two workers at 43 each (130/3) but not three at 32
-    // (130/4), and 38 rows will not take a four-way downward split either.
-    const plan = planSplits({ width: 130, height: 38 }, ["a", "b", "c"]);
-    expect(plan.steps.map((s) => s.slug)).toEqual(["a", "b"]);
-    expect(plan.steps.every((s) => s.direction === "right")).toBe(true);
-    expect(plan.steps.map((s) => s.rect!.width)).toEqual([43, 43]);
-    expect(plan.rejected.map((r) => r.slug)).toEqual(["c"]);
-    expect(plan.rejected[0]!.reason).toContain("pane_too_narrow");
-  });
-
-  test("rejects every slug, with the numbers, when nothing fits", () => {
-    const plan = planSplits({ width: 30, height: 6 }, ["a", "b"]);
-    expect(plan.steps).toEqual([]);
-    expect(plan.rejected.map((r) => r.slug)).toEqual(["a", "b"]);
-    for (const r of plan.rejected) {
-      expect(r.reason).toContain("pane_too_narrow");
-      expect(r.reason).toContain("30x6");
-    }
-  });
-
-  test("no planned pane is ever under the floor it was planned against", () => {
-    for (const width of [40, 60, 84, 100, 168, 240]) {
-      for (const height of [10, 24, 38, 60]) {
-        for (const n of [1, 2, 3, 4, 5]) {
-          const slugs = Array.from({ length: n }, (_, i) => `s${i}`);
-          const plan = planSplits({ width, height }, slugs);
-          for (const step of plan.steps) {
-            expect(step.rect!.width).toBeGreaterThanOrEqual(MIN_WORKER_PANE_COLS);
-            expect(step.rect!.height).toBeGreaterThanOrEqual(MIN_WORKER_PANE_ROWS);
-          }
-          expect(plan.steps.length + plan.rejected.length).toBe(n);
-        }
-      }
-    }
-  });
-
-  test("plans even splits unguarded when herdr cannot report the layout", () => {
-    // A missing rect must not stop the swarm: even splits are still better
-    // than halving one pane per worker, so the floor is simply not applied.
-    const plan = planSplits(undefined, ["a", "b", "c"]);
-    expect(plan.rejected).toEqual([]);
-    expect(plan.steps.map((s) => s.slug)).toEqual(["a", "b", "c"]);
-    expect(plan.steps.every((s) => s.direction === "right")).toBe(true);
-    expect(plan.steps.every((s) => s.rect === undefined)).toBe(true);
-    expect(plan.steps.map((s) => s.ratio)).toEqual([1 / 4, 1 / 3, 1 / 2]);
-  });
-
-  test("an empty queue plans nothing", () => {
-    expect(planSplits({ width: 168, height: 38 }, [])).toEqual({ steps: [], rejected: [] });
-  });
-});
-
-describe("buildPaneLayoutArgv / parseCurrentPaneRect", () => {
-  test("asks herdr for the current pane's layout", () => {
-    expect(buildPaneLayoutArgv()).toEqual(["pane", "layout", "--current"]);
-  });
-
-  test("picks the rect of the pane the orchestrator is actually in", () => {
-    // Verbatim shape from `herdr pane layout --current` (herdr 0.8.2).
-    const stdout = JSON.stringify({
-      id: "cli:pane:layout",
-      result: {
-        layout: {
-          area: { height: 38, width: 168, x: 32, y: 1 },
-          focused_pane_id: "w1:pOther",
-          panes: [
-            { focused: false, pane_id: "w1:pMine", rect: { height: 38, width: 84, x: 32, y: 1 } },
-            { focused: true, pane_id: "w1:pOther", rect: { height: 38, width: 84, x: 116, y: 1 } },
-          ],
-          splits: [],
-          tab_id: "w1:t1",
-          workspace_id: "w1",
-        },
-        type: "pane_layout",
+describe("parseTabCreate", () => {
+  // Verbatim shape of a real `herdr tab create --cwd ... --label ... --no-focus`
+  // response, herdr 0.8.2, captured 2026-09-02. The two ids the swarm needs sit
+  // in different objects: the pane to start an agent in, the tab to close later.
+  const REAL_TAB_CREATE = JSON.stringify({
+    id: "cli:tab:create",
+    result: {
+      root_pane: {
+        agent_status: "unknown",
+        cwd: "/home/yanil/dotfiles",
+        focused: false,
+        pane_id: "w1:p2W",
+        revision: 0,
+        scroll: { max_offset_from_bottom: 0, offset_from_bottom: 0, viewport_rows: 38 },
+        tab_id: "w1:tN",
+        terminal_id: "term_65a871a75f6c053",
+        workspace_id: "w1",
       },
-    });
-    // HERDR_PANE_ID names the orchestrator's pane, which need not be focused.
-    expect(parseCurrentPaneRect(stdout, "w1:pMine")).toEqual({ width: 84, height: 38 });
-  });
-
-  test("falls back to the focused pane when the id is unknown", () => {
-    const stdout = JSON.stringify({
-      result: {
-        layout: {
-          focused_pane_id: "w1:pB",
-          panes: [
-            { pane_id: "w1:pA", rect: { height: 10, width: 20, x: 0, y: 0 } },
-            { pane_id: "w1:pB", rect: { height: 38, width: 168, x: 0, y: 0 } },
-          ],
-        },
+      tab: {
+        agent_status: "unknown",
+        focused: false,
+        label: "tabexp",
+        number: 21,
+        pane_count: 1,
+        tab_id: "w1:tN",
+        workspace_id: "w1",
       },
-    });
-    expect(parseCurrentPaneRect(stdout, undefined)).toEqual({ width: 168, height: 38 });
+      type: "tab_created",
+    },
   });
 
-  test("returns undefined rather than guessing when the shape is unrecognized", () => {
-    expect(parseCurrentPaneRect("not json", "w1:pA")).toBeUndefined();
-    expect(parseCurrentPaneRect("{}", "w1:pA")).toBeUndefined();
-    expect(
-      parseCurrentPaneRect(JSON.stringify({ result: { layout: { panes: [] } } }), "w1:pA"),
-    ).toBeUndefined();
+  test("reads the root pane id and the tab id out of a real response", () => {
+    expect(parseTabCreate(REAL_TAB_CREATE)).toEqual({ paneId: "w1:p2W", tabId: "w1:tN" });
+  });
+
+  test("returns undefined rather than a half-identified worker when either id is missing", () => {
+    // A worker recorded with a pane but no tab can be started and never closed,
+    // which is exactly the orphan-pane class this change is meant to end.
+    const noTab = JSON.stringify({ result: { root_pane: { pane_id: "w1:p2W" } } });
+    const noPane = JSON.stringify({ result: { tab: { tab_id: "w1:tN" } } });
+    expect(parseTabCreate(noTab)).toBeUndefined();
+    expect(parseTabCreate(noPane)).toBeUndefined();
+  });
+
+  test("returns undefined on unparseable output instead of throwing", () => {
+    expect(parseTabCreate("not json")).toBeUndefined();
+    expect(parseTabCreate("{}")).toBeUndefined();
+    expect(parseTabCreate("")).toBeUndefined();
   });
 });
 
@@ -1611,6 +1523,7 @@ describe("swarm_resolve_blocked execute() wiring", () => {
   const RUN = "resolverun";
   const AGENT = "resolverun-w1";
   const PANE = "w1:pZ";
+  const TAB = "w1:tZ";
 
   /**
    * Stands in for herdr's own `agent wait`: returns the agent once it reaches
@@ -1641,6 +1554,7 @@ describe("swarm_resolve_blocked execute() wiring", () => {
       agent: AGENT,
       slug: "some-item",
       paneId: PANE,
+      tabId: TAB,
       lifecycle: "awaiting_relay",
     };
     saveState({ runId: RUN, concurrency: 2, nextCounter: 1, workers: [worker] }, dir);
@@ -1755,8 +1669,8 @@ describe("swarm_resolve_blocked execute() wiring", () => {
     });
   });
 
-  const paneCloses = (stub: { calls: ExecCall[] }) =>
-    stub.calls.filter((c) => c.argv[0] === "pane" && c.argv[1] === "close");
+  const workerCloses = (stub: { calls: ExecCall[] }) =>
+    stub.calls.filter((c) => c.argv[0] === "tab" && c.argv[1] === "close");
 
   // THE REGRESSION. A worker that answers correctly resumes its turn and
   // enters `working`. Pre-fix the verify asked only for idle/done/blocked, so
@@ -1771,7 +1685,7 @@ describe("swarm_resolve_blocked execute() wiring", () => {
 
     expect(res.details.relayFailed).toBe(false);
     expect(res.content[0]?.text).toContain("back in the active pool");
-    expect(paneCloses(stub)).toHaveLength(0);
+    expect(workerCloses(stub)).toHaveLength(0);
     const persisted = loadState(RUN, dir);
     expect(persisted?.workers[0]?.lifecycle).toBe("active");
   });
@@ -1801,7 +1715,7 @@ describe("swarm_resolve_blocked execute() wiring", () => {
     expect(res.details.relayFailed).toBe(true);
     // Dropping the worker from state without closing its pane leaves a live
     // pi in an orphan pane that nothing will ever poll or clean up.
-    expect(paneCloses(stub)).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
     expect(loadState(RUN, dir)?.workers).toHaveLength(0);
   });
 
@@ -1835,14 +1749,14 @@ describe("swarm_resolve_blocked execute() wiring", () => {
     const res = await run(resolve);
 
     expect(res.details.relayFailed).toBe(true);
-    expect(paneCloses(stub)).toHaveLength(1);
+    expect(workerCloses(stub)).toHaveLength(1);
     expect(loadState(RUN, dir)?.workers).toHaveLength(0);
   });
 
   test("a pane close that fails does not mask the relay failure", async () => {
     const { resolve } = setup((argv) => {
       if (argv[0] === "agent" && argv[1] === "wait") return waitLike("blocked")(argv);
-      if (argv[0] === "pane" && argv[1] === "close") throw new Error("pane already gone");
+      if (argv[0] === "tab" && argv[1] === "close") throw new Error("tab already gone");
       return undefined;
     });
 
@@ -1885,6 +1799,7 @@ describe("swarm_poll and workers parked at awaiting_relay", () => {
             agent: "relayrun-w1",
             slug: "stuck-item",
             paneId: "w1:pQ",
+            tabId: "w1:tQ",
             lifecycle: "awaiting_relay",
           },
         ],

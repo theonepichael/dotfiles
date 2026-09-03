@@ -267,7 +267,7 @@ confirming or declining each in turn.
 
 Runs the READY queue concurrently instead of one item at a time — `N`
 recursive pi workers (default 3, from `--swarm=N`), each in its own herdr
-pane, each running its own `/backlog-item --auto <slug>`. Requires
+tab, each running its own `/backlog-item --auto <slug>`. Requires
 `HERDR_ENV=1` (this session must itself be running inside a herdr-managed
 pane); if it isn't, say so and stop rather than falling back to `--auto`
 silently. Full design: `~/.claude/data/grill/2026-09-01-pi-side-agent-swarm-orchestratio-plan.md`.
@@ -280,7 +280,7 @@ Uses the `swarm_spawn`, `swarm_poll`, and `swarm_resolve_blocked` tools
 (`pi/extensions/swarm-tool.ts`) — never hand-compose `herdr` bash commands
 for this; the tools own argv safety (a human's relay answer is never
 shell-interpolated), state persistence across a crash/restart, and the
-concurrency/pane-cap accounting.
+concurrency-cap accounting.
 
 1. Pick a `runId` for this invocation (e.g. a short timestamp-based slug)
    and call `swarm_spawn` with the full READY queue and the concurrency —
@@ -314,18 +314,15 @@ concurrency/pane-cap accounting.
    the two rules above key off. The worker pane's captured output is recorded
    alongside it but is not in that text — read it back from the run's record
    when diagnosing, rather than expecting it inline. Every failure after a
-   pane exists closes that pane, so a failed round leaves no orphan panes to
-   subdivide the layout for the next one.
+   tab exists closes that tab, so a failed round leaves no orphan workers
+   behind.
 
-   Worker panes are carved from the orchestrator's own pane in equal shares,
-   so N workers each get roughly a (N+1)th of it rather than the half-of-a-half
-   that repeated splitting used to produce. When even shares would leave panes
-   too cramped to read a diff in, the batch is trimmed to what fits and the
-   remainder is reported as `pane_too_narrow`, naming the pane size and the
-   split count. That is a property of the geometry, not of the item: re-spawning
-   it into the same pane will fail identically, so report it, leave the item
-   READY, and either widen the pane or run the swarm from a full-width tab
-   before trying again.
+   Each worker gets its own herdr tab, not a slice of the orchestrator's
+   pane. A tab's root pane is the full terminal size however many tabs are
+   open, so the batch is never trimmed for want of width and the concurrency
+   you ask for is the concurrency you get. Nothing is reported as too narrow
+   any more; a spawn failure now always names a herdr-level or worker-level
+   fault rather than the geometry.
 2. Loop: call `swarm_poll`. It blocks until at least one worker settles and
    returns every event that settled in that window (usually one,
    occasionally more — process all of them before polling again):
@@ -366,7 +363,7 @@ concurrency/pane-cap accounting.
      questions into one message.
    - **`finished`** / **`timed_out`** — record the outcome for the
      end-of-run digest (approved / flagged / timed out); the tool has
-     already closed that worker's pane and freed its slot. `swarm_poll`
+     already closed that worker's tab and freed its slot. `swarm_poll`
      itself spawns the next READY item into a new pane when there's queue
      left and the cap has headroom — no separate `swarm_spawn` call needed
      mid-run.
@@ -375,7 +372,7 @@ concurrency/pane-cap accounting.
    not the end of the run: when workers are still parked awaiting a relay,
    `swarm_poll` names them and the answer each is waiting on is still owed —
    resolve those with `swarm_resolve_blocked` before treating the queue as
-   drained, or the run ends with a live worker holding an open pane.
+   drained, or the run ends with a live worker holding an open tab.
 4. **End of run** — same shape as `--auto`'s: a dashboard-style summary of
    every item (done, flagged, timed out), then walk any accumulated
    proactive-capture digest entries exactly as `--auto`'s own end-of-run
