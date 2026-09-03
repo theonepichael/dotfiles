@@ -179,6 +179,12 @@ src = "claude/output-styles/ConciseSTE.md"
 dest = "~/.claude/output-styles/ConciseSTE.md"
 harness = "claude"
 
+[[link]]
+src = "claude/output-styles/PlainEngineer.md"
+dest = "~/.claude/output-styles/PlainEngineer.md"
+harness = "claude"
+
+
 # ── shared scripts ───────────────────────────────────────────────────────
 # Needed by Claude Code's hooks AND Copilot's AND opencode's hooks/skills
 # (opencode's own dashboard.md/grill-me.md commands call these same paths),

@@ -1051,6 +1051,7 @@ are copy-once seeds for exactly that reason.
 | `claude/icons/opencode.png` | not symlinked by `links.toml` |
 | `claude/icons/pi.png` | not symlinked by `links.toml` |
 | `claude/output-styles/ConciseSTE.md` | `~/.claude/output-styles/ConciseSTE.md` (claude) |
+| `claude/output-styles/PlainEngineer.md` | `~/.claude/output-styles/PlainEngineer.md` (claude) |
 | `claude/scripts/AGENTS.md` | not symlinked by `links.toml` |
 | `claude/scripts/CLAUDE.md` | not symlinked by `links.toml` |
 | `claude/scripts/contract_fingerprints.json` | not symlinked by `links.toml` |
