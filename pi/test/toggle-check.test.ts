@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import guardRails from "../extensions/guard-rails";
 import permissionGate from "../extensions/permission-gate";
 import trustSession from "../extensions/trust-session";
@@ -103,5 +103,95 @@ describe("real-world layout: guard-rails, permission-gate, and trust-session all
 
     const result = await fireCommand(handlers, "sudo apt update", true);
     expect(result.titles).toEqual(["⚠️ sudo", "Run bash command?"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unattended sessions.
+//
+// A swarm worker lives in a herdr tab nobody is watching, so ctx.hasUI is true
+// -- it really is a TUI -- while no human will ever answer a dialog in it. A
+// worker that reached guard-rails' rm -rf or sudo confirmation waited forever
+// while herdr still reported it as working, and the run stopped making
+// progress with no signal (observed live, 2026-09-02).
+//
+// The resolution is to BLOCK, not to allow. Disabling guard-rails wholesale
+// would also drop protected-path writes and the git-commit-on-main worktree
+// policy, which is far more autonomy than the stranding problem calls for.
+// These tests pin both halves: the two dialogs become refusals, and nothing
+// else changes.
+// ---------------------------------------------------------------------------
+
+describe("guard-rails in an unattended session", () => {
+  const prior = process.env.PI_AGENT_UNATTENDED;
+
+  function unattended(): void {
+    process.env.PI_AGENT_UNATTENDED = "1";
+  }
+
+  afterEach(() => {
+    if (prior === undefined) delete process.env.PI_AGENT_UNATTENDED;
+    else process.env.PI_AGENT_UNATTENDED = prior;
+  });
+
+  test("rm -rf is refused outright, with no dialog raised", async () => {
+    unattended();
+    const { pi, handlers } = makeFakePi();
+    guardRails(pi as any);
+
+    // confirmResult true: had a dialog been raised at all, the command would
+    // have been allowed through. It must never get that far.
+    const res = await fireCommand(handlers, "rm -rf /tmp/scratch", true);
+
+    expect(res.titles).toEqual([]);
+    expect(res.finalResult?.block).toBe(true);
+    expect(res.finalResult?.reason).toContain("no human is watching");
+  });
+
+  test("sudo is refused outright, with no dialog raised", async () => {
+    unattended();
+    const { pi, handlers } = makeFakePi();
+    guardRails(pi as any);
+
+    const res = await fireCommand(handlers, "sudo apt update", true);
+
+    expect(res.titles).toEqual([]);
+    expect(res.finalResult?.block).toBe(true);
+    expect(res.finalResult?.reason).toContain("no human is watching");
+  });
+
+  test("an attended session still asks, rather than refusing", async () => {
+    // The same handler, same command, only the environment differs -- this is
+    // what makes the two tests above about unattendedness and not about
+    // guard-rails having simply started blocking rm -rf for everyone.
+    const { pi, handlers } = makeFakePi();
+    guardRails(pi as any);
+
+    const res = await fireCommand(handlers, "rm -rf /tmp/scratch", true);
+
+    expect(res.titles).toEqual(["⚠️ rm -rf"]);
+    expect(res.finalResult).toBeUndefined();
+  });
+
+  test("everything else guard-rails protects stays armed", async () => {
+    unattended();
+    const { pi, handlers } = makeFakePi();
+    guardRails(pi as any);
+
+    // A protected-path write is blocked without ever consulting a human, so
+    // it is unaffected by whether one is present -- and must stay that way.
+    const { ctx } = makeCtx(true);
+    const event = { toolName: "write", input: { path: "repo/.env.production" } };
+    let result: any;
+    for (const h of handlers) {
+      const r = await h(event, ctx);
+      if (r !== undefined) {
+        result = r;
+        break;
+      }
+    }
+
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toContain("protected");
   });
 });

@@ -1,10 +1,8 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { isValidAckToken } from "../extensions/permission-gate";
 import registerSwarmTools, {
-  ackMatches,
   activeWorkerCount,
   buildAgentGetArgv,
   buildAgentListArgv,
@@ -36,9 +34,8 @@ import registerSwarmTools, {
   saveState,
   spawnBudget,
   statePath,
-  trustAckToken,
   waitResultDetail,
-  WORKER_TRUST_COMMAND,
+  WORKER_UNATTENDED_ENV,
   type SwarmState,
   type WorkerRecord,
 } from "../extensions/swarm-tool";
@@ -99,7 +96,7 @@ describe("nextAgentId", () => {
 });
 
 describe("herdr argv builders", () => {
-  test("tab create: cwd, slug label, and never steals the human's focus", () => {
+  test("tab create: cwd, slug label, unattended env, and never steals the human's focus", () => {
     expect(buildTabCreateArgv("/repo", "my-slug")).toEqual([
       "tab",
       "create",
@@ -107,6 +104,8 @@ describe("herdr argv builders", () => {
       "/repo",
       "--label",
       "my-slug",
+      "--env",
+      "PI_AGENT_UNATTENDED=1",
       "--no-focus",
     ]);
   });
@@ -1010,71 +1009,20 @@ describe("swarm_poll execute() wiring", () => {
 // bounded sliding window of rendered rows (see permission-gate.ts).
 // ---------------------------------------------------------------------------
 
-describe("trustAckToken", () => {
-  test("is a valid ack token, carries the agent id, and never repeats", () => {
-    const a = trustAckToken("bootrun-w1-some-item");
-    const b = trustAckToken("bootrun-w1-some-item");
-    expect(isValidAckToken(a)).toBe(true);
-    expect(a.startsWith("bootrun-w1-some-item")).toBe(true);
-    // The random suffix is what makes a stale ack harmless: a zombie worker
-    // from a crashed run cannot write the path this spawn is polling.
-    expect(a).not.toBe(b);
-  });
-
-  test("normalizes an agent id that strays outside the token charset", () => {
-    expect(isValidAckToken(trustAckToken("run/1 w:1"))).toBe(true);
-  });
-});
-
-describe("ackMatches", () => {
-  test("accepts only a complete ack carrying this spawn's exact token", () => {
-    expect(ackMatches(JSON.stringify({ token: "tok-abcd1234" }), "tok-abcd1234")).toBe(true);
-  });
-
-  test("another worker's ack does not satisfy this one", () => {
-    expect(ackMatches(JSON.stringify({ token: "other-abcd1234" }), "tok-abcd1234")).toBe(false);
-  });
-
-  test("a partial or shapeless file is not confirmation", () => {
-    expect(ackMatches('{"token":"tok-abcd12', "tok-abcd1234")).toBe(false);
-    expect(ackMatches("", "tok-abcd1234")).toBe(false);
-    expect(ackMatches(JSON.stringify({}), "tok-abcd1234")).toBe(false);
-    expect(ackMatches(JSON.stringify({ token: 7 }), "tok-abcd1234")).toBe(false);
-  });
-});
-
 describe("swarm_spawn worker bootstrap", () => {
   let dir: string;
-  let ackDir: string;
   let priorStateDir: string | undefined;
-  let priorAckDir: string | undefined;
-  let priorTimeout: string | undefined;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "swarm-spawn-boot-"));
-    ackDir = mkdtempSync(join(tmpdir(), "swarm-spawn-ack-"));
     priorStateDir = process.env.PI_SWARM_STATE_DIR;
-    priorAckDir = process.env.PI_PERMISSION_GATE_ACK_DIR;
-    priorTimeout = process.env.PI_SWARM_TRUST_ACK_TIMEOUT_MS;
     process.env.PI_SWARM_STATE_DIR = dir;
-    // Both the writing side (permission-gate.ts) and the polling side
-    // (swarm-tool.ts) resolve through this, so a test can keep the whole
-    // handshake off the real ~/.pi.
-    process.env.PI_PERMISSION_GATE_ACK_DIR = ackDir;
-    process.env.PI_SWARM_TRUST_ACK_TIMEOUT_MS = "600";
   });
 
   afterEach(() => {
-    for (const [k, v] of [
-      ["PI_SWARM_STATE_DIR", priorStateDir],
-      ["PI_PERMISSION_GATE_ACK_DIR", priorAckDir],
-      ["PI_SWARM_TRUST_ACK_TIMEOUT_MS", priorTimeout],
-    ] as const) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
     rmSync(dir, { recursive: true, force: true });
-    rmSync(ackDir, { recursive: true, force: true });
   });
 
   function stubFor(respond: (argv: string[]) => { code: number; stdout: string; stderr: string }) {
@@ -1112,23 +1060,8 @@ describe("swarm_spawn worker bootstrap", () => {
         ? { code: 0, stdout: PANE_TEXT, stderr: "" }
         : respond(argv);
 
-  const isTrustPrompt = (argv: string[]) =>
-    argv[0] === "agent" && argv[1] === "prompt" && (argv[3] ?? "").startsWith(WORKER_TRUST_COMMAND);
-
-  const tokenOf = (argv: string[]) => (argv[3] ?? "").slice(WORKER_TRUST_COMMAND.length + 1);
-
-  /** Stands in for a real worker: applies the command and writes its own ack, exactly as permission-gate.ts does. */
-  const respondingWorker =
-    (opts: { writeAck?: (token: string) => void } = {}) =>
-    (argv: string[]) => {
-      if (isTrustPrompt(argv)) {
-        const token = tokenOf(argv);
-        if (opts.writeAck) opts.writeAck(token);
-        else writeFileSync(join(ackDir, `${token}.json`), JSON.stringify({ token }));
-        return { code: 0, stdout: "", stderr: "" };
-      }
-      return tabCreateOk(argv);
-    };
+  const isItemPrompt = (argv: string[]) =>
+    argv[0] === "agent" && argv[1] === "prompt" && (argv[3] ?? "").startsWith("/backlog-item");
 
   const spawnItems = (spawn: { execute: (...a: never[]) => Promise<unknown> }, items: string[]) =>
     spawn.execute(
@@ -1159,7 +1092,7 @@ describe("swarm_spawn worker bootstrap", () => {
     }>;
 
   test("two concurrent spawns for one runId cannot exceed the cap between them", async () => {
-    const { spawn } = stubFor(respondingWorker());
+    const { spawn } = stubFor(tabCreateOk);
 
     const [first, second] = await Promise.all([
       spawnRun(spawn, "racerun", ["a1", "a2"], 2),
@@ -1175,7 +1108,7 @@ describe("swarm_spawn worker bootstrap", () => {
   // cap has no room for comes back as skipped, so the orchestrator can see its
   // items were not lost.
   test("the second concurrent spawn reports its items rather than losing them", async () => {
-    const { spawn } = stubFor(respondingWorker());
+    const { spawn } = stubFor(tabCreateOk);
 
     const [first, second] = await Promise.all([
       spawnRun(spawn, "accounted", ["a1", "a2"], 2),
@@ -1200,7 +1133,7 @@ describe("swarm_spawn worker bootstrap", () => {
       if (explode && argv[0] === "tab" && argv[1] === "create") {
         throw new Error("herdr fell over mid-create");
       }
-      return respondingWorker()(argv);
+      return tabCreateOk(argv);
     });
 
     await spawnRun(spawn, "wedged", ["a1"], 2).catch(() => undefined);
@@ -1210,22 +1143,32 @@ describe("swarm_spawn worker bootstrap", () => {
     expect(after.details.spawned).toHaveLength(1);
   });
 
-  test("turns the bash permission gate off before handing the worker its item", async () => {
-    const { spawn, stub } = stubFor(respondingWorker());
+  // The gates settle themselves from the tab's environment, before pi starts.
+  // This replaced a prompt-plus-acknowledgement handshake that could only ever
+  // cover one of the two gates, and left a window in which a worker held real
+  // work while still armed.
+  test("the worker's tab carries the unattended environment", async () => {
+    const { spawn, stub } = stubFor(tabCreateOk);
     await spawnOne(spawn);
 
-    const sent = prompts(stub).map((c) => c.argv[3] ?? "");
-    // Order is load-bearing: the gate must be down before any work starts,
-    // or the worker stalls on its first non-allowlisted bash call.
-    expect(sent).toHaveLength(2);
-    expect(sent[0]?.startsWith("/permission-gate-disable ")).toBe(true);
-    expect(sent[1]).toBe("/backlog-item --auto some-item");
+    const create = stub.calls.find((c) => c.argv[0] === "tab" && c.argv[1] === "create");
+    expect(create?.argv).toContain("--env");
+    expect(create?.argv).toContain(WORKER_UNATTENDED_ENV);
   });
 
-  // THE REGRESSION. Pre-fix this worker was reported in `failed` as
-  // permission_gate_not_disabled, because `--wait` cannot succeed against a
-  // client-side slash command that never enters the working state.
-  test("a worker whose gate does come down is spawned, not discarded", async () => {
+  test("the worker is sent its item and nothing else", async () => {
+    const { spawn, stub } = stubFor(tabCreateOk);
+    await spawnOne(spawn);
+
+    // Exactly one prompt. A second one would mean something is still being
+    // negotiated over the wire that the environment should have settled.
+    expect(prompts(stub).map((c) => c.argv[3] ?? "")).toEqual(["/backlog-item --auto some-item"]);
+  });
+
+  // THE REGRESSION, kept because the constraint outlives the handshake that
+  // exposed it: `--wait` cannot succeed against a prompt that produces no
+  // observed lifecycle change, and a spawn must not read that as failure.
+  test("a healthy worker is spawned, not discarded on a --wait artefact", async () => {
     const { spawn, stub } = stubFor((argv) =>
       // Real herdr's answer to `agent prompt ... --wait` here: exit 1,
       // agent_prompt_stalled, captured live on 2026-09-02.
@@ -1240,7 +1183,7 @@ describe("swarm_spawn worker bootstrap", () => {
               },
             }),
           }
-        : respondingWorker()(argv),
+        : tabCreateOk(argv),
     );
 
     const res = await spawnOne(spawn);
@@ -1252,25 +1195,6 @@ describe("swarm_spawn worker bootstrap", () => {
     expect(prompts(stub).some((c) => c.argv.includes("--wait"))).toBe(false);
   });
 
-  test("a confirmed ack file is deleted, so the directory does not accumulate", async () => {
-    const { spawn } = stubFor(respondingWorker());
-    await spawnOne(spawn);
-    expect(readdirSync(ackDir)).toEqual([]);
-  });
-
-  test("an ack that never arrives fails as permission_gate_not_disabled", async () => {
-    const { spawn, stub } = stubFor(withPaneText(respondingWorker({ writeAck: () => {} })));
-
-    const res = await spawnOne(spawn);
-
-    expect(res.details.spawned).toHaveLength(0);
-    expect(res.details.failed[0]?.reason).toContain("permission_gate_not_disabled");
-    // Every post-split failure, not just a failed agent start, leaves the
-    // pane's text on the record and the pane itself closed.
-    expect(res.details.failed[0]?.reason).toContain(PANE_TEXT);
-    expect(workerCloses(stub)).toHaveLength(1);
-  });
-
   // An orchestrator only ever reads `content`. Confirmed live on 2026-09-02:
   // a real swarm_spawn failure returned its detail in `details`, and the
   // model's very next turn reported "no per-item failure details were
@@ -1278,13 +1202,19 @@ describe("swarm_spawn worker bootstrap", () => {
   // orchestrator to act differently per reason, so the classification has to
   // travel in the text or that instruction is unfollowable.
   test("a failure's classification reaches the content text, not just details", async () => {
-    const { spawn } = stubFor(withPaneText(respondingWorker({ writeAck: () => {} })));
+    const { spawn } = stubFor(
+      withPaneText((argv) =>
+        argv[0] === "agent" && argv[1] === "start"
+          ? { code: 1, stdout: "", stderr: '{"error":{"code":"agent_not_ready"}}' }
+          : tabCreateOk(argv),
+      ),
+    );
 
     const res = await spawnOne(spawn);
     const text = res.content.map((c) => c.text).join("\n");
 
     expect(text).toContain("some-item");
-    expect(text).toContain("permission_gate_not_disabled");
+    expect(text).toContain("agent_not_ready");
     // The pane capture deliberately stays behind in `details`: at
     // PANE_CAPTURE_CHARS per failure, a whole batch of them would flood the
     // orchestrator's context with terminal dumps to no purpose.
@@ -1292,12 +1222,12 @@ describe("swarm_spawn worker bootstrap", () => {
     expect(res.details.failed[0]?.reason).toContain(PANE_TEXT);
   });
 
-  // A submission failure (agent_not_found, herdr down) is a different defect
-  // from a gate that would not come down, and must not wear its name.
-  test("an undeliverable trust prompt fails as agent_prompt_failed, not as a gate failure", async () => {
+  // The item prompt is the only thing sent over the wire now, so an
+  // undeliverable one is the only prompt-level spawn failure left.
+  test("an undeliverable item prompt fails as agent_prompt_stalled", async () => {
     const { spawn, stub } = stubFor(
       withPaneText((argv) =>
-        isTrustPrompt(argv)
+        isItemPrompt(argv)
           ? { code: 1, stdout: "", stderr: '{"error":{"code":"agent_not_found"}}' }
           : tabCreateOk(argv),
       ),
@@ -1305,54 +1235,10 @@ describe("swarm_spawn worker bootstrap", () => {
 
     const res = await spawnOne(spawn);
 
-    expect(res.details.failed[0]?.reason).toContain("agent_prompt_failed");
-    expect(res.details.failed[0]?.reason).not.toContain("permission_gate_not_disabled");
+    expect(res.details.failed[0]?.reason).toContain("agent_prompt_stalled");
     expect(res.details.failed[0]?.reason).toContain("agent_not_found");
     expect(res.details.failed[0]?.reason).toContain(PANE_TEXT);
     expect(workerCloses(stub)).toHaveLength(1);
-    // and it never went on to hand the worker real work
-    expect(prompts(stub)).toHaveLength(1);
-  });
-
-  test("one worker's ack cannot satisfy another worker's check", async () => {
-    let first: string | null = null;
-    const { spawn } = stubFor(
-      respondingWorker({
-        writeAck: (token) => {
-          // Only the first worker ever acks; the second's poll must not be
-          // satisfied by a file sitting in the shared directory.
-          if (first === null) {
-            first = token;
-            writeFileSync(join(ackDir, `${token}.json`), JSON.stringify({ token }));
-          }
-        },
-      }),
-    );
-
-    const res = await spawnItems(spawn, ["item-a", "item-b"]);
-
-    expect(res.details.spawned).toHaveLength(1);
-    expect(res.details.failed).toHaveLength(1);
-    expect(res.details.failed[0]?.reason).toContain("permission_gate_not_disabled");
-  });
-
-  test("a partially written ack is not confirmation, but the completed one is", async () => {
-    const timers: Timer[] = [];
-    const { spawn } = stubFor(
-      respondingWorker({
-        writeAck: (token) => {
-          const path = join(ackDir, `${token}.json`);
-          writeFileSync(path, '{"token":"' + token.slice(0, 4));
-          timers.push(setTimeout(() => writeFileSync(path, JSON.stringify({ token })), 150));
-        },
-      }),
-    );
-
-    const res = await spawnOne(spawn);
-    for (const t of timers) clearTimeout(t);
-
-    expect(res.details.failed).toEqual([]);
-    expect(res.details.spawned).toHaveLength(1);
   });
 
   // A pane's terminal text is the only record of an early worker crash --
@@ -1419,7 +1305,7 @@ describe("swarm_spawn worker bootstrap", () => {
   test("a herdr call that throws is still captured, attributed, and its pane closed", async () => {
     const { spawn, stub } = stubFor(
       withPaneText((argv) => {
-        if (isTrustPrompt(argv)) throw new Error("herdr socket closed");
+        if (isItemPrompt(argv)) throw new Error("herdr socket closed");
         return tabCreateOk(argv);
       }),
     );
