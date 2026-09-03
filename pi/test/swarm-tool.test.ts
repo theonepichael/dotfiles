@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import registerSwarmTools, {
   activeWorkerCount,
   classifyBlock,
+  noteResolveFailure,
+  pickerLabels,
   classifyTimeoutProbe,
   deadlineStopDetail,
   elapsedWorkingMs,
@@ -3029,5 +3031,118 @@ describe("stalledRelayWorkers", () => {
   test("a parked worker with no stamp is not reported, so an upgrade cannot fabricate a stall", () => {
     const w = makeWorker({ agent: "w1", lifecycle: "awaiting_relay" });
     expect(stalledRelayWorkers([w], Date.now(), STALL)).toEqual([]);
+  });
+});
+
+describe("pickerLabels", () => {
+  test("returns the worker's real rendered labels, in order", () => {
+    expect(pickerLabels(REAL_PICKER_OUTPUT)).toEqual(["OK", "Cancel", "Something else (type it)"]);
+  });
+
+  test("a non-picker prompt yields no labels rather than invented ones", () => {
+    expect(pickerLabels(GUARD_RAILS_CONFIRM_OUTPUT)).toEqual([]);
+    expect(pickerLabels(undefined)).toEqual([]);
+  });
+});
+
+describe("noteResolveFailure", () => {
+  test("records the attempted answer and why it failed", () => {
+    const w = makeWorker({ agent: "w1", lifecycle: "awaiting_relay" });
+    noteResolveFailure(w, "Merge, push, clean up", "no listed option matched", 5_000);
+    expect(w.lastResolveFailure).toEqual({
+      answer: "Merge, push, clean up",
+      reason: "no listed option matched",
+      at: 5_000,
+    });
+  });
+
+  test("a later failure replaces the earlier one, so the report is current", () => {
+    const w = makeWorker({ agent: "w1", lifecycle: "awaiting_relay" });
+    noteResolveFailure(w, "first", "a", 1);
+    noteResolveFailure(w, "second", "b", 2);
+    expect(w.lastResolveFailure?.answer).toBe("second");
+  });
+});
+
+describe("a stranded awaiting_relay record is reconciled on a warm poll", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-strand-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Three of four workers in the 2026-09-03 harness2 run ended awaiting_relay
+  // with their agents already gone. reconcileState drops such records, but only
+  // on a COLD load -- a warm orchestrator never re-reads, so the run reported
+  // unanswered relays forever and could not spawn (awaiting_relay is excluded
+  // from activeWorkerCount but INCLUDED in openPaneCount). A human found it
+  // from a dashboard in another pane.
+  test("the second poll drops a worker whose agent has vanished, and says so", async () => {
+    const runId = "strandrun";
+    saveState(
+      {
+        runId,
+        concurrency: 2,
+        nextCounter: 1,
+        workers: [
+          {
+            agent: "strandrun-w1",
+            slug: "stranded-item",
+            paneId: "w1:pQ",
+            tabId: "w1:tQ",
+            lifecycle: "awaiting_relay",
+          },
+        ],
+      },
+      dir,
+    );
+
+    let agentAlive = true;
+    const stub = makeStubPi((argv) =>
+      argv[0] === "agent" && argv[1] === "list"
+        ? {
+            code: 0,
+            stdout: agentAlive
+              ? realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY, {
+                  agent: "pi",
+                  agent_status: "idle",
+                  name: "strandrun-w1",
+                  pane_id: "w1:pA",
+                })
+              : realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY),
+            stderr: "",
+          }
+        : { code: 0, stdout: "", stderr: "" },
+    );
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+
+    // Poll once while the agent is live: the record is legitimately awaiting.
+    const first = (await poll.execute(
+      ...(["c1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { content: { type: string; text: string }[] };
+    expect(first.content.map((c) => c.text).join("\n")).toContain("strandrun-w1");
+
+    // The worker's agent goes away. The run is now WARM -- getOrInitState
+    // returns the cached state and never re-lists.
+    agentAlive = false;
+    const second = (await poll.execute(
+      ...(["c2", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { content: { type: string; text: string }[] };
+    const text = second.content.map((c) => c.text).join("\n");
+
+    expect(text).not.toContain("swarm_resolve_blocked");
+    expect(text.toLowerCase()).toContain("gone");
+    expect(loadState(runId, dir)?.workers ?? []).toEqual([]);
   });
 });

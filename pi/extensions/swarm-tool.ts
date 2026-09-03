@@ -220,6 +220,15 @@ export interface WorkerRecord {
    * `stalledRelayWorkers`.
    */
   awaitingRelaySinceMs?: number;
+  /**
+   * The last relay answer that failed to match, if one did.
+   *
+   * Without it a failed resolve left no trace: the worker stayed at
+   * awaiting_relay and the next poll reported an ordinary unanswered relay,
+   * indistinguishable from one nobody had tried yet. That is exactly how the
+   * 2026-09-03 stall formed and went unnoticed.
+   */
+  lastResolveFailure?: { answer: string; reason: string; at: number };
   lifecycle: WorkerLifecycle;
 }
 
@@ -334,6 +343,7 @@ export interface PollEvent {
   rawPrompt?: string; // blocked only
   truncated?: boolean; // blocked only
   blockClass?: BlockClass; // blocked only
+  options?: string[]; // blocked only -- the worker's REAL rendered labels
   detail?: string; // timed_out/error only -- the raw herdr error detail, for an honest digest
   elapsedMs?: number; // still_working only -- working time so far, against the budget
   checkIn?: number; // still_working only -- 1-based, so "check-in 7 of a 4h budget" is sayable
@@ -532,6 +542,37 @@ export function classifyBlock(rawPrompt: string | undefined): BlockClass {
  * escalation on the first poll after an upgrade. The caller stamps it
  * instead, so it is bounded from that moment on.
  */
+/**
+ * The option labels a blocked worker is really rendering.
+ *
+ * `swarm_resolve_blocked` matches an answer against these exact strings, read
+ * fresh off the pane -- so an orchestrator that composes its OWN labels for
+ * the human ("Merge, push, clean up" for a worker showing "Leave it
+ * unlanded") produces an answer that matches nothing. The resolve returns
+ * needs_manual, the worker is never moved off awaiting_relay, and the run
+ * strands with no message explaining why.
+ *
+ * Putting them on the event is what lets the orchestrator mirror them
+ * structurally instead of reading them out of prose and retyping them. Three
+ * of four workers in one run stranded this way on 2026-09-03; the one that
+ * did not was the one where the orchestrator had just been corrected by hand,
+ * and the correction did not survive to the next worker.
+ */
+export function pickerLabels(rawPrompt: string | undefined): string[] {
+  if (!rawPrompt) return [];
+  return parsePicker(rawPrompt).options.map((o) => o.label);
+}
+
+/** Record a relay answer that matched no listed option, so a later poll can say so. */
+export function noteResolveFailure(
+  worker: WorkerRecord,
+  answer: string,
+  reason: string,
+  now: number,
+): void {
+  worker.lastResolveFailure = { answer, reason, at: now };
+}
+
 export function stalledRelayWorkers(
   workers: WorkerRecord[],
   now: number,
@@ -2088,16 +2129,53 @@ export default function (pi: ExtensionAPI) {
         // it is blocked on the orchestrator, not on herdr, so a wait would
         // never fire and the poll below would hang on a promise nothing
         // resolves. Naming it instead is what lets the run continue.
+        // Re-reconcile HERE, warm. reconcileState already drops records whose
+        // agent is gone, but only on a cold load -- a warm orchestrator never
+        // re-reads, so a worker that finished and vanished stayed listed as
+        // awaiting a relay forever. That is not cosmetic: awaiting_relay is
+        // excluded from activeWorkerCount but INCLUDED in openPaneCount, so
+        // stranded records eat the pane soft cap while contributing nothing,
+        // and dispatch stops for a reason no message explains. Three of four
+        // workers in the 2026-09-03 harness2 run ended this way and a human
+        // had to find it from a dashboard in another pane.
+        //
+        // This is exactly the right moment: nothing is active, so the
+        // distinction between "genuinely waiting on a human" and "dead record"
+        // is the only thing that matters, and a live agent is never dropped.
+        const relistResult = await herdr(pi, buildAgentListArgv(), signal);
+        let goneNote = "";
+        if (relistResult.code === 0) {
+          const liveNow = parseAgentListIds(relistResult.stdout);
+          const { state: pruned, dropped } = reconcileState(state, liveNow);
+          if (dropped.length) {
+            state.workers = pruned.workers;
+            // A dropped worker must not keep a wait slot: its agent is
+            // gone, so nothing will ever settle that arm.
+            for (const w of dropped) rt.inFlight.delete(w.agent);
+            persist(state);
+            goneNote = ` ${dropped.length} stale record(s) cleared -- their agents are gone from herdr, so they were finished or dead, not waiting: ${dropped
+              .map((w) => `${w.agent} (${w.slug})`)
+              .join(", ")}.`;
+          }
+        }
+
         const awaitingRelay = state.workers.filter((w) => w.lifecycle === "awaiting_relay");
         const stalledHere = stalledRelayWorkers(state.workers, Date.now(), rt.stallMs);
         const stalledAgents = new Set(stalledHere.map((w) => w.agent));
         const describe = (w: WorkerRecord) =>
-          `${w.agent} (${w.slug}, pane ${w.paneId})${stalledAgents.has(w.agent) ? ` -- STALLED, over ${formatDuration(rt.stallMs)} with no answer` : ""}`;
-        const text = awaitingRelay.length
-          ? `No active workers to poll. ${awaitingRelay.length} worker(s) awaiting a relay -- answer each with swarm_resolve_blocked before polling again: ${awaitingRelay
-              .map(describe)
-              .join(", ")}.`
-          : "No active workers to poll.";
+          `${w.agent} (${w.slug}, pane ${w.paneId})` +
+          (stalledAgents.has(w.agent)
+            ? ` -- STALLED, over ${formatDuration(rt.stallMs)} with no answer`
+            : "") +
+          (w.lastResolveFailure
+            ? ` -- a previous answer ${JSON.stringify(w.lastResolveFailure.answer)} failed to land (${w.lastResolveFailure.reason}); re-read the pane and answer with its EXACT rendered label`
+            : "");
+        const text =
+          (awaitingRelay.length
+            ? `No active workers to poll. ${awaitingRelay.length} worker(s) awaiting a relay -- answer each with swarm_resolve_blocked before polling again: ${awaitingRelay
+                .map(describe)
+                .join(", ")}.`
+            : "No active workers to poll.") + goneNote;
         return {
           content: [{ type: "text", text }],
           details: { events: [] as PollEvent[] },
@@ -2156,6 +2234,7 @@ export default function (pi: ExtensionAPI) {
           // hours the worker spent working, and charging them to the budget
           // would stop a worker at the moment its relay was finally answered.
           event.blockClass = classifyBlock(event.rawPrompt);
+          event.options = pickerLabels(event.rawPrompt);
           const parkedAt = Date.now();
           foldWorkingSegment(worker, parkedAt);
           // The relay clock starts exactly where the working clock stops.
@@ -2198,7 +2277,15 @@ export default function (pi: ExtensionAPI) {
                       e.blockClass === "answerable"
                         ? "answerable -- a question-tool picker, so answer it with swarm_resolve_blocked"
                         : `needs_human -- NOT a question-tool picker, so swarm_resolve_blocked cannot drive it. Relay the prompt below to the user verbatim and tell them to answer in pane ${e.paneId} themselves`;
-                    return `${e.slug} (${e.agent}, pane ${e.paneId}) is blocked [${verdict}]${e.truncated ? " -- content may be truncated, inspect the pane directly" : ""}:\n${e.rawPrompt}`;
+                    // The labels are quoted verbatim and called out as such,
+                    // because swarm_resolve_blocked matches on these exact
+                    // strings. An orchestrator that relays a paraphrase of them
+                    // produces an answer matching nothing, and the worker is
+                    // never moved off awaiting_relay.
+                    const labels = (e.options ?? []).length
+                      ? `\nRelay these option labels to the user VERBATIM -- swarm_resolve_blocked matches on these exact strings, so a paraphrase strands the worker: ${(e.options ?? []).map((l) => JSON.stringify(l)).join(", ")}`
+                      : "";
+                    return `${e.slug} (${e.agent}, pane ${e.paneId}) is blocked [${verdict}]${e.truncated ? " -- content may be truncated, inspect the pane directly" : ""}:\n${e.rawPrompt}${labels}`;
                   }
                   if (e.kind === "still_working") {
                     return `${e.slug} (${e.agent}) still_working -- check-in ${e.checkIn}, ${formatDuration(e.elapsedMs ?? 0)} of working time so far against a ${formatDuration(rt.deadlineMs)} budget. Nothing settled and no slot was freed; poll again.`;
@@ -2222,6 +2309,7 @@ export default function (pi: ExtensionAPI) {
     promptGuidelines: [
       "answer is matched against the blocked worker's currently rendered option labels (re-read fresh, not from a stale raw_prompt) -- pass the user's own words, not a paraphrase, so the match is against what they actually said.",
       "herdr agent prompt refuses a blocked agent outright -- this tool drives the picker via arrow-key navigation instead, the only way to answer it.",
+      "When you relay a blocked worker's gate to the user, quote the worker's OWN listed option labels verbatim -- the poll result prints them for exactly this. Never compose your own wording for them, however much clearer it reads: swarm_resolve_blocked matches the answer against the labels the worker is really rendering, so a paraphrased option matches nothing, the resolve returns needs_manual, and the worker is left at awaiting_relay consuming a pane slot while the run reports it as simply unanswered.",
       "Every outcome leads with its own marker word -- resolved:, needs_manual:, or relay_failed: -- and names the agent, its item slug and its pane, so branch on that word. If answer matches no listed option (or matches more than one ambiguously), the result is needs_manual: instead of a guess; relay it back to the user verbatim, pane and listed option labels included, rather than retrying blindly.",
       "Verifies the worker actually left `blocked` within a short window after submitting; if it didn't (pane closed, still stuck), the item is marked relay_failed rather than silently treated as resolved.",
       "Re-checks the target's pane_id against what it was spawned into immediately before sending any keys -- if herdr's agent-name-to-pane mapping ever drifted, this is what catches it (a stale mapping would make read/match agree with the wrong pane too, so this is a second, independent identity check, not a repeat of the read). A mismatch is reported as needs_manual: and sends nothing.",
@@ -2267,7 +2355,9 @@ export default function (pi: ExtensionAPI) {
             {
               type: "text",
               text:
-                `needs_manual: could not match "${typed.answer}" to exactly one listed option for ` +
+                (noteResolveFailure(worker, typed.answer, "no listed option matched", Date.now()),
+                persist(state),
+                `needs_manual: could not match "${typed.answer}" to exactly one listed option for `) +
                 `${typed.agent} (${worker.slug}, pane ${worker.paneId}). Listed options: ` +
                 `${optionList || "(none parsed)"}. Attach directly ` +
                 `(herdr agent attach ${typed.agent}) or retry with text matching one option's ` +
@@ -2290,7 +2380,9 @@ export default function (pi: ExtensionAPI) {
             {
               type: "text",
               text:
-                `needs_manual: ${typed.agent} (${worker.slug})'s pane identity no longer matches ` +
+                (noteResolveFailure(worker, typed.answer, "pane identity mismatch", Date.now()),
+                persist(state),
+                `needs_manual: ${typed.agent} (${worker.slug})'s pane identity no longer matches `) +
                 `pane ${worker.paneId}, what it was spawned into -- refusing to send keys rather ` +
                 `than risk hitting the wrong pane. Attach directly ` +
                 `(herdr agent attach ${typed.agent}) to answer it by hand.`,
@@ -2389,6 +2481,7 @@ export default function (pi: ExtensionAPI) {
       // answered and later re-blocked is measured from its NEW park, not its
       // first one.
       worker.awaitingRelaySinceMs = undefined;
+      worker.lastResolveFailure = undefined;
       worker.lifecycle = "active";
       persist(state);
       return {
