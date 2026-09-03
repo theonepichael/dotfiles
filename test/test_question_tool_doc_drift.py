@@ -85,6 +85,23 @@ def test_prompt_ports_route_enumerable_choices_to_the_question_tool() -> None:
         )
 
 
+def test_generated_pi_to_tickets_skill_routes_choices_to_the_question_tool() -> None:
+    # pi/skills/to-tickets/SKILL.md is generated from gen_skills_params.py's
+    # pi row; it must match the fixed pi/prompts/to-tickets.md convention:
+    # question tool first, plain text only where the tool is absent.
+    text = _read("pi/skills/to-tickets/SKILL.md")
+    assert "`question` tool" in text, (
+        "generated pi to-tickets skill still routes choices to plain text"
+    )
+    assert "State the options in plain text" not in text, (
+        "generated pi to-tickets skill still leads with plain text before "
+        "the question tool"
+    )
+    assert "only in a session where the tool is genuinely absent" in text, (
+        "generated pi to-tickets skill lost the plain-text-only-as-fallback framing"
+    )
+
+
 def test_make_skill_keeps_plain_text_only_for_agy_shared_skills() -> None:
     text = _read("pi/prompts/make-skill.md")
     # The stale justification ("Pi's built-in tools... no built-in
