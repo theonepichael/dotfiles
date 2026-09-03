@@ -333,15 +333,24 @@ export function isPermissionGateEnabled(): boolean {
   return enabled;
 }
 
-/**
- * Exported so trust-session.ts can flip this gate alongside guard-rails.ts's
- * without reaching into module-private state.
- */
-export function setPermissionGateEnabled(value: boolean): void {
-  enabled = value;
-}
+// No exported setter on purpose. One used to live here ("Exported so
+// trust-session.ts can flip this gate") -- but pi evaluates every extension
+// in its own jiti registry, so trust-session's imported setter ran against a
+// private copy and the loaded gate never saw the flip: /trust-session
+// reported success while changing nothing (proven live 2026-09-02).
+// Cross-extension toggling now arrives over the shared event bus below.
 
 export default function (pi: ExtensionAPI) {
+  // /trust-session and /trust-session-off broadcast here (see their comment
+  // for why the channel name is a duplicated literal rather than an import).
+  // The listener mutates the same module-level `enabled` the tool_call
+  // handler reads. Malformed payloads are ignored: a wrong shape must never
+  // silently disarm (or spuriously re-arm) the gate.
+  pi.events.on("session-trust-changed", (data) => {
+    const trusted = (data as { trusted?: unknown } | null | undefined)?.trusted;
+    if (typeof trusted === "boolean") enabled = !trusted;
+  });
+
   pi.on("tool_call", async (event, ctx) => {
     if (!enabled) return undefined;
     if (!isToolCallEventType("bash", event)) return;
@@ -373,7 +382,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("permission-gate-disable", {
     description: "Disable the bash permission-gate for this session (trust mode)",
     handler: async (_args, ctx) => {
-      setPermissionGateEnabled(false);
+      enabled = false;
       ctx.ui.notify("Permission gate disabled — all bash commands run unconfirmed", "warning");
     },
   });
@@ -381,7 +390,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("permission-gate-enable", {
     description: "Re-enable the bash permission-gate",
     handler: async (_args, ctx) => {
-      setPermissionGateEnabled(true);
+      enabled = true;
       ctx.ui.notify("Permission gate enabled", "info");
     },
   });

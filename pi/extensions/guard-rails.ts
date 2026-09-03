@@ -37,11 +37,12 @@ export function isGuardRailsEnabled(): boolean {
   return enabled;
 }
 
-// Exported so trust-session.ts can flip this gate alongside
-// permission-gate.ts's without reaching into module-private state.
-export function setGuardRailsEnabled(value: boolean): void {
-  enabled = value;
-}
+// No exported setter on purpose. One used to live here ("Exported so
+// trust-session.ts can flip this gate") -- but pi evaluates every extension
+// in its own jiti registry, so trust-session's imported setter ran against a
+// private copy and the loaded gate never saw the flip: /trust-session
+// reported success while changing nothing (proven live 2026-09-02).
+// Cross-extension toggling now arrives over the shared event bus below.
 
 export function isDangerousRm(command: string): boolean {
   const rmMatches = command.matchAll(/\brm\s+([^;&|`$()]+)/gi);
@@ -212,6 +213,16 @@ async function sharedBashGuard(
 }
 
 export default function (pi: ExtensionAPI) {
+  // /trust-session and /trust-session-off broadcast here (see their comment
+  // for why the channel name is a duplicated literal rather than an import).
+  // The listener mutates the same module-level `enabled` the tool_call
+  // handler reads. Malformed payloads are ignored: a wrong shape must never
+  // silently disarm (or spuriously re-arm) the gate.
+  pi.events.on("session-trust-changed", (data) => {
+    const trusted = (data as { trusted?: unknown } | null | undefined)?.trusted;
+    if (typeof trusted === "boolean") enabled = !trusted;
+  });
+
   pi.on("tool_call", async (event, ctx) => {
     if (!enabled) return undefined;
 
