@@ -413,7 +413,23 @@ writes and the commit-on-`main` worktree policy are untouched.
      behind an `idle` orchestrator). But this is still a
      live commit/merge approval, not a mechanical judgment call: never
      answer on the user's behalf, no exceptions, exactly as step 10/11 above
-     require outside swarm mode. Once they answer, call
+     require outside swarm mode.
+
+     **When you put the choice to the user, quote the worker's own option
+     labels verbatim.** `swarm_poll` prints them for exactly this purpose,
+     already quoted. Composing your own wording for them — even wording that
+     reads better — is what strands a worker: `swarm_resolve_blocked` matches
+     the answer against the labels the worker is really rendering, so an
+     invented option matches nothing, the resolve returns `needs_manual:`,
+     and the worker never leaves `awaiting_relay`. That state is excluded
+     from the active count but still consumes a pane slot, so enough of them
+     and the run cannot spawn at all, for a reason no message explains. On
+     2026-09-03 three of four workers in one run ended this way, and it took
+     a human reading a dashboard in another pane to notice; the single worker
+     that resolved cleanly was the one where this correction had just been
+     given by hand, and it did not survive to the next worker.
+
+     Once they answer, call
      `swarm_resolve_blocked` with that exact text — never a summary or
      paraphrase; it matches the text against the worker's currently listed
      option labels and navigates to the match. Every outcome it reports
