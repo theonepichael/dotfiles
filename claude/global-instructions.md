@@ -135,13 +135,35 @@ When the user says "add this as a backlog item" or a variation of it, run:
 python3 ~/.claude/scripts/dev_status.py add '{"id": "<prefix-slug>", "summary": "<concise title>", "category": "<bug|feature|chore|research>", "context": "<what was happening>", "next_steps": "<what to pick up from>", "related_files": [{"path": "<abs path>", "note": "<note>"}]}'
 ```
 
-The `id` field is **required**. Use a kebab-case slug with a project prefix:
-- `ajhp-` for ai-job-hunter-pro items
-- `meta-` for tooling / infrastructure items
-- `work-` for day-job items — this is also what `/standup`'s
-  `work_backlog_prefixes` config filters on; keep the two in sync if the
-  prefix ever changes
-- other prefixes as appropriate for the project
+The `id` field is **required**. Use a kebab-case slug whose prefix names the
+**repo the work targets** — not the mood of the work:
+
+| prefix | repo | safe for a swarm worker |
+|---|---|---|
+| `iron-lb-` | iron-logbook | yes |
+| `ajhp-` | ai-job-hunter-pro | yes |
+| `atk-` | agent-toolkit | yes |
+| `meta-` | dotfiles — the harness itself | **never** |
+| `work-` | day-job work | separate policy |
+
+`meta-` is the established name dotfiles goes by rather than a literal
+directory name. What matters is that the mapping is one-to-one, so a prefix
+answers "which repo" without ambiguity.
+
+Why the repo and not the topic: a swarm scopes its queue by prefix, and pi's
+`--swarm[=N]` requires one because selecting the whole READY queue unscoped
+pulls unrelated projects into a single run. So the prefix is load-bearing for
+safety. A `meta-` item edits the harness a worker is itself running, which is
+why it never goes to a worker — hand those to a normal session. An item
+touching two repos is not made safe by any prefix; keep it under `meta-`.
+
+`work-` is also what `/standup`'s `work_backlog_prefixes` config filters on;
+keep the two in sync if that prefix ever changes.
+
+`add` prints a reminder when a new item's prefix disagrees with the repo its
+`related_files` live in. It never blocks the add, and — unlike the other
+reminders there — it is **not** silenced by `DEVSTATUS_AGENT=1`, since an agent
+is the only caller that ever adds an item.
 
 Infer all fields from the current conversation.
 Only include files actually relevant to picking up the work later.
