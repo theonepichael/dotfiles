@@ -295,6 +295,43 @@ for this; the tools own argv safety (a human's relay answer is never
 shell-interpolated), state persistence across a crash/restart, and the
 concurrency-cap accounting.
 
+### Creating the orchestrator tab
+
+The orchestrator — this session — runs in a tab you create by hand, unlike
+the worker tabs, which `swarm_spawn` creates for you. Create it with:
+
+```bash
+herdr tab create --cwd <repo> --label swarm-<runId> \
+    --env PI_AGENT_UNATTENDED=1 --no-focus
+```
+
+**`--env PI_AGENT_UNATTENDED=1` is required, not a convenience.** Without
+it the orchestrator runs fully gated while its workers do not, and that
+costs twice over.
+
+It makes verification expensive. The orchestrator should check a worker's
+claims against the repo rather than repeat them — an end-of-run digest once
+stated a worker had reverted a stray change before commit when `git show`
+proved it had not. But a gated orchestrator needs a human keystroke for
+every `git log`, `git status` or `git worktree list` it runs, so the
+verification is dear at exactly the moment it should be cheap.
+
+Worse, it makes the orchestrator's own status ambiguous.
+`herdr-blocked-bridge.ts` reports a session as `blocked` for *any* blocking
+ui prompt, so from outside the pane "a worker needs your approval" and "the
+orchestrator wants to run `git log`" look identical. With the flag set no
+permission prompt can fire, so every `blocked` the orchestrator reports is
+a relay and nothing else.
+
+What the flag does *not* do is disarm the orchestrator. It is read by both
+gate extensions at pi's module load, and they reach opposite conclusions on
+purpose: `permission-gate.ts` stops arming, so bash runs without a dialog,
+while `guard-rails.ts` keeps every rule armed and turns its two interactive
+confirmations into refusals — `rm -rf` and `sudo` are blocked outright,
+with a reason the agent can read, rather than asked about. Protected-path
+writes and the commit-on-`main` worktree policy are untouched.
+
+
 1. Pick a `runId` for this invocation (e.g. a short timestamp-based slug)
    and call `swarm_spawn` with the run's `prefix` and the concurrency — it
    spawns up to the cap, reporting any items skipped (cap), deferred (file
