@@ -254,9 +254,12 @@ remove something.
   - **`pi/settings.json`**, copy-once-and-report-drift same as Claude's
     `settings.json` (no bash permission allowlist to seed — that lives in
     `permission-gate.ts` instead).
-  - Pi has no structured multi-choice prompt either, so its ported skills
-    use plain conversational back-and-forth for judgment calls, same as
-    Copilot/agy.
+  - Pi has no built-in structured multi-choice prompt, but `question-tool.ts`
+    (above) supplies the `question` tool for interactive sessions — a hard
+    error in headless `-p`/JSON modes, absent when launched with
+    `--no-extensions` — so its ported skills use the `question` tool for
+    enumerable judgment calls and plain conversational back-and-forth only
+    where the tool is genuinely unavailable.
   - See `pi/CLAUDE_CODE_PARITY.md` for the full verification notes.
 
 The shared `~/.claude/scripts/*.py` (dev_status, grill, second_opinion,
