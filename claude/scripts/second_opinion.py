@@ -638,7 +638,8 @@ def cmd_review(args: argparse.Namespace) -> None:
 
     model_index = getattr(args, "model_index", None)
     verbose = getattr(args, "verbose", False)
-    failures = []
+    failures: list[str] = []
+    size_rule_outs: list[llm_backends.BackendPayloadSizeError] = []
     for backend in candidates:
         _vprint_pool_choice(backend, model_index, verbose=verbose)
         if model_index is not None:
@@ -648,6 +649,8 @@ def cmd_review(args: argparse.Namespace) -> None:
         try:
             critique = BACKEND_RUNNERS[backend](prompt, model_index=model_index)
         except BackendError as exc:
+            if isinstance(exc, llm_backends.BackendPayloadSizeError):
+                size_rule_outs.append(exc)
             cli_common.vprint(
                 f"[second_opinion] {backend_label(backend, model_index=model_index)} "
                 f"failed: {exc}",
@@ -659,6 +662,12 @@ def cmd_review(args: argparse.Namespace) -> None:
         print(critique)
         return
 
+    if size_rule_outs and len(size_rule_outs) == len(candidates):
+        prompt_bytes = len(prompt.encode())
+        die(
+            f"all backends ruled out by payload size ({prompt_bytes} bytes) — "
+            + "; ".join(failures)
+        )
     die("all backends failed — " + "; ".join(failures))
 
 

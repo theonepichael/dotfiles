@@ -516,6 +516,30 @@ class RunPiTests(unittest.TestCase):
             llm_backends.run_pi("prompt", model=None, timeout=60)
         self.assertIn("tool-call markup", str(cm.exception))
 
+    def test_66_oversized_prompt_raises_without_spawning_command(self) -> None:
+        oversized = "a" * (llm_backends.PI_MAX_PROMPT_BYTES + 1)
+        with (
+            patch.object(llm_backends, "build_isolated_command") as mock_build,
+            patch.object(llm_backends, "run_backend_command") as mock_run,
+            self.assertRaises(llm_backends.BackendPayloadSizeError) as cm,
+        ):
+            llm_backends.run_pi(oversized, model=None, timeout=60)
+        mock_build.assert_not_called()
+        mock_run.assert_not_called()
+        err_msg = str(cm.exception)
+        self.assertIn(str(len(oversized.encode())), err_msg)
+        self.assertIn(str(llm_backends.PI_MAX_PROMPT_BYTES), err_msg)
+        self.assertIn("opencode-go gateway", err_msg)
+
+    def test_67_exact_limit_prompt_proceeds(self) -> None:
+        exact = "a" * llm_backends.PI_MAX_PROMPT_BYTES
+        with patch.object(
+            llm_backends, "run_backend_command", return_value="ok"
+        ) as mock_run:
+            result = llm_backends.run_pi(exact, model=None, timeout=60)
+        self.assertEqual(result, "ok")
+        mock_run.assert_called_once()
+
 
 class RunOpencodeTests(_ContainmentStubbed):
     def _run_command_returning(

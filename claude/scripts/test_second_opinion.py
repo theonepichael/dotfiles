@@ -16,8 +16,8 @@ import json
 import os
 import shutil
 import subprocess
-import tempfile
 import sys
+import tempfile
 import unittest
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -847,7 +847,9 @@ class CmdDetectTests(unittest.TestCase):
                 "shutil.which",
                 side_effect=lambda b: "/usr/bin/agy" if b == "agy" else None,
             ),
-            patch.object(second_opinion.llm_backends, "containment_available", lambda: True),
+            patch.object(
+                second_opinion.llm_backends, "containment_available", lambda: True
+            ),
             patch("sys.stdout", out),
         ):
             second_opinion.cmd_detect(ns())
@@ -959,6 +961,65 @@ class CmdReviewTests(unittest.TestCase):
         self.assertIn("opencode broke", err.getvalue())
         self.assertIn("pi broke", err.getvalue())
         self.assertIn("copilot broke", err.getvalue())
+        self.assertIn("all backends failed — ", err.getvalue())
+
+    def test_45b_all_backends_ruled_out_by_size(self) -> None:
+        err = io.StringIO()
+        with (
+            patch(
+                "shutil.which",
+                side_effect=lambda b: f"/usr/bin/{b}" if b == "pi" else None,
+            ),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "pi": lambda p, model_index=None: (_ for _ in ()).throw(
+                        second_opinion.llm_backends.BackendPayloadSizeError(
+                            "pi payload too large"
+                        )
+                    ),
+                },
+            ),
+            self.assertRaises(SystemExit) as cm,
+            patch("sys.stderr", err),
+        ):
+            second_opinion.cmd_review(ns(plan="my plan", backend="pi"))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("all backends ruled out by payload size", err.getvalue())
+        self.assertIn("pi: pi payload too large", err.getvalue())
+
+    def test_45c_mixed_failure_reports_generic_message(self) -> None:
+        err = io.StringIO()
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(
+                second_opinion,
+                "BACKEND_RUNNERS",
+                {
+                    "agy": lambda p, model_index=None: (_ for _ in ()).throw(
+                        second_opinion.BackendError("agy broke")
+                    ),
+                    "pi": lambda p, model_index=None: (_ for _ in ()).throw(
+                        second_opinion.llm_backends.BackendPayloadSizeError(
+                            "pi payload too large"
+                        )
+                    ),
+                    "opencode": lambda p, model_index=None: (_ for _ in ()).throw(
+                        second_opinion.BackendError("opencode broke")
+                    ),
+                    "copilot": lambda p, model_index=None: (_ for _ in ()).throw(
+                        second_opinion.BackendError("copilot broke")
+                    ),
+                },
+            ),
+            self.assertRaises(SystemExit) as cm,
+            patch("sys.stderr", err),
+        ):
+            second_opinion.cmd_review(ns(plan="my plan"))
+        self.assertEqual(cm.exception.code, 1)
+        self.assertIn("all backends failed — ", err.getvalue())
+        self.assertNotIn("all backends ruled out by payload size", err.getvalue())
 
     def test_46_plan_file_contents_used_not_the_path(self) -> None:
         import tempfile

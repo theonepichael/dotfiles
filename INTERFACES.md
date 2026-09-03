@@ -697,6 +697,7 @@ llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, open
   - `class IsolationError(RuntimeError)` — A backend cannot be invoked because it does not meet the contract.
   - `class BackendError(Exception)` — A backend was invoked but failed (timeout or nonzero exit).
   - `class BackendTimeoutError(BackendError)` — A backend call failed because every attempt (initial + retries) timed out -- the specific silent-stall failure mode instrumentation exists to measure, distinct from a normal nonzero-exit or empty-output failure.
+  - `class BackendPayloadSizeError(BackendError)` — A backend call was rejected before invocation because the payload exceeds the maximum size known to work reliably for that backend.
 - Public functions:
   - `containment_available() -> bool` — Whether OS containment can actually be established on this host.
   - `daemon_listening(backend: str) -> bool` — Whether a daemon belonging to ``backend`` currently holds a listening socket.

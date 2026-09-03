@@ -487,6 +487,18 @@ class BackendTimeoutError(BackendError):
     """
 
 
+class BackendPayloadSizeError(BackendError):
+    """A backend call was rejected before invocation because the payload
+    exceeds the maximum size known to work reliably for that backend.
+
+    A strict BackendError subclass: callers treating all failures generically
+    catch this unchanged, while callers reporting rule-outs distinguish it.
+    """
+
+
+PI_MAX_PROMPT_BYTES = 14000
+
+
 def available_backends() -> list[str]:
     """Return the backends in :data:`BACKEND_PRIORITY` that are on ``PATH``."""
     return [b for b in BACKEND_PRIORITY if shutil.which(b)]
@@ -845,12 +857,22 @@ def run_pi(prompt: str, *, model: str | None, timeout: float) -> str:
     wasted wall time (120s -> 240s) before falling through to the next
     backend, with no expected gain in success rate. Small prompts (<1KB)
     succeed in ~3s, so this only bites realistic-sized review prompts.
+    Prompts over :data:`PI_MAX_PROMPT_BYTES` (14000 bytes) are refused
+    immediately to avoid waiting for deterministic timeouts.
 
     Raises:
+        BackendPayloadSizeError: If ``prompt`` exceeds :data:`PI_MAX_PROMPT_BYTES`.
         BackendError: If the process exits nonzero or produces no output
             (via :func:`run_backend_command`), or the output is dominated by
             leaked tool-call markup (via :func:`_raise_on_emitted_tool_call`).
     """
+    prompt_bytes = len(prompt.encode())
+    if prompt_bytes > PI_MAX_PROMPT_BYTES:
+        raise BackendPayloadSizeError(
+            f"prompt size ({prompt_bytes} bytes) exceeds pi limit "
+            f"({PI_MAX_PROMPT_BYTES} bytes); pi's opencode-go gateway "
+            f"deterministically stalls on larger payloads"
+        )
     cmd = build_isolated_command("pi", prompt, model=model)
     with _track_backend_call("pi", model, prompt):
         text = run_backend_command(cmd, timeout)
