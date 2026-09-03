@@ -240,6 +240,38 @@ export function buildTabCloseArgv(tabId: string): string[] {
   return ["tab", "close", tabId];
 }
 
+export function buildTabListArgv(): string[] {
+  return ["tab", "list"];
+}
+
+/**
+ * The id of the one tab carrying `label`, if there is exactly one.
+ *
+ * Used to recover from a `tab create` that exits 0 with output that will not
+ * parse: the tab exists, and the id needed to close it was in precisely the
+ * response that could not be read. The label is the slug this spawn asked
+ * for, so it is the only handle left.
+ *
+ * Deliberately refuses to guess. Two tabs sharing the label cannot say which
+ * one this spawn created, and closing the wrong one would close a tab a human
+ * opened -- worse than the leak it is trying to clean up. Zero matches means
+ * the same thing from the other side. Both cases return undefined so the
+ * caller reports the leak by name instead.
+ */
+export function findTabByLabel(stdout: string, label: string): string | undefined {
+  try {
+    const parsed = JSON.parse(stdout) as {
+      result?: { tabs?: { tab_id?: unknown; label?: unknown }[] };
+    };
+    const matches = (parsed.result?.tabs ?? []).filter(
+      (t) => t.label === label && typeof t.tab_id === "string",
+    );
+    return matches.length === 1 ? (matches[0]!.tab_id as string) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The two ids a worker needs: the pane to start its agent in, the tab to close when it is done. */
 export interface TabCreateResult {
   paneId: string;
@@ -741,6 +773,28 @@ export default function (pi: ExtensionAPI) {
   }
 
   /**
+   * Finds and closes the tab a failed `tab create` left behind, returning its
+   * id when it could be identified and closed.
+   *
+   * Only reached on the parse-failure path, so it costs nothing in the normal
+   * case. Like every other cleanup here it must not throw: it is running
+   * inside the reporting of another failure, and a recovery problem never
+   * replaces the root cause.
+   */
+  async function recoverTabByLabel(label: string): Promise<string | undefined> {
+    try {
+      const listing = await herdr(pi, buildTabListArgv());
+      if (listing.code !== 0) return undefined;
+      const tabId = findTabByLabel(listing.stdout, label);
+      if (!tabId) return undefined;
+      const closed = await herdr(pi, buildTabCloseArgv(tabId));
+      return closed.code === 0 ? tabId : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * Records a pane's terminal text into a failure reason, then closes the
    * pane.
    *
@@ -928,6 +982,52 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  /**
+   * Parks until the next event lands on this run's queue, or the tool call is
+   * aborted. Resolves true if woken by an event, false if aborted.
+   *
+   * Two things this has to get right, both of them leaks.
+   *
+   * The abort signal was previously handed to every herdr call that FOLLOWS
+   * the wait but not to the wait itself, so an aborted swarm_poll never
+   * returned -- the only thing that could settle its promise was a worker's
+   * `agent wait`, up to 30 minutes away. Racing the signal fixes the hang.
+   *
+   * And whichever way it settles, the resolver has to come back out of
+   * `rt.waiters`. A resolver left behind is woken by some later event, runs
+   * against a queue another poll has already drained, and is then woken
+   * again by every event after that -- the list only ever grew.
+   */
+  function waitForEvent(rt: RunRuntime, signal?: AbortSignal): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const cleanup = (): void => {
+        const i = rt.waiters.indexOf(wake);
+        if (i !== -1) rt.waiters.splice(i, 1);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      const wake = (): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(true);
+      };
+      const onAbort = (): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(false);
+      };
+      if (signal?.aborted) {
+        settled = true;
+        resolve(false);
+        return;
+      }
+      rt.waiters.push(wake);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
   /** Arms a worker's wait call if one isn't already running for it. Idempotent -- safe to call every time swarm_poll checks in on the active pool. */
   function armWait(rt: RunRuntime, worker: WorkerRecord, timeoutMs: number): void {
     if (rt.inFlight.has(worker.agent)) return;
@@ -1009,11 +1109,21 @@ export default function (pi: ExtensionAPI) {
           }
           const created = parseTabCreate(result.stdout);
           if (!created) {
+            // The tab exists -- herdr exited 0 -- and the id that would close
+            // it was in the response that just failed to parse. Every other
+            // post-create failure goes through failWithTab and cleans up
+            // after itself; without this one, a live pi sits in a tab nothing
+            // will ever poll, answer or close. The label is the slug, so it
+            // is the one handle left.
+            const orphan = await recoverTabByLabel(slug);
+            const head = result.stdout.slice(0, 200);
             tabs.push({
               slug,
               failed: {
                 slug,
-                reason: `could not parse tab create response: ${result.stdout.slice(0, 200)}`,
+                reason: orphan
+                  ? `could not parse tab create response; the tab it created was found by label and closed (${orphan}): ${head}`
+                  : `could not parse tab create response, and no single tab labelled "${slug}" was found -- a tab may be open and unaccounted for, close it by hand: ${head}`,
               },
             });
             continue;
@@ -1121,8 +1231,29 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
-      if (rt.pendingEvents.length === 0) {
-        await new Promise<void>((resolve) => rt.waiters.push(resolve));
+      // A loop, not a single park. One event wakes EVERY queued waiter, and
+      // the first to run takes the whole queue with splice(0) below -- so a
+      // concurrent poll can wake to nothing. Returning an empty list there
+      // told the orchestrator the run had gone quiet while it was in fact
+      // still working, so a poll that loses that race goes back to waiting.
+      let aborted = false;
+      while (rt.pendingEvents.length === 0) {
+        if (!(await waitForEvent(rt, signal))) {
+          aborted = true;
+          break;
+        }
+      }
+
+      if (aborted) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "swarm_poll aborted before any worker settled. Workers are untouched and still running -- poll again to pick their events back up.",
+            },
+          ],
+          details: { events: [] as PollEvent[] },
+        };
       }
 
       const events = rt.pendingEvents.splice(0);
