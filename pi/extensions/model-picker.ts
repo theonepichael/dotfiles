@@ -400,22 +400,22 @@ const PANEL_BG = "customMessageBg" as const;
 
 /**
  * Draw the dialog content as a solid floating panel: rounded corners,
- * solid side borders, bg-filled rows.
+ * solid side borders, bg-filled rows with uniform background across border cells.
  */
 function renderPanel(content: string[], width: number, theme: Theme): string[] {
   const inner = Math.max(1, width - 4);
   const filled = (line: string): string =>
-    theme.bg(PANEL_BG, ` ${truncateToWidth(line, inner, "", true)} `);
+    theme.bg(
+      PANEL_BG,
+      `${theme.fg("accent", "│")} ${truncateToWidth(line, inner, "", true)} ${theme.fg("accent", "│")}`,
+    );
   const edge = (l: string, r: string) =>
-    theme.fg("accent", l) +
-    theme.bg(PANEL_BG, theme.fg("dim", "─".repeat(inner + 2))) +
-    theme.fg("accent", r);
+    theme.bg(
+      PANEL_BG,
+      theme.fg("accent", l) + theme.fg("dim", "─".repeat(inner + 2)) + theme.fg("accent", r),
+    );
 
-  return [
-    edge("╭", "╮"),
-    ...content.map((line) => `${theme.fg("accent", "│")}${filled(line)}${theme.fg("accent", "│")}`),
-    edge("╰", "╯"),
-  ];
+  return [edge("╭", "╮"), ...content.map(filled), edge("╰", "╯")];
 }
 
 export default function modelPicker(pi: ExtensionAPI) {
