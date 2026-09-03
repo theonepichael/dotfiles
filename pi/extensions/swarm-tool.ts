@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -344,6 +344,7 @@ export interface PollEvent {
   truncated?: boolean; // blocked only
   blockClass?: BlockClass; // blocked only
   options?: string[]; // blocked only -- the worker's REAL rendered labels
+  captures?: CaptureOffer[]; // finished only -- offers the worker queued instead of asking
   detail?: string; // timed_out/error only -- the raw herdr error detail, for an honest digest
   elapsedMs?: number; // still_working only -- working time so far, against the budget
   checkIn?: number; // still_working only -- 1-based, so "check-in 7 of a 4h budget" is sayable
@@ -355,6 +356,91 @@ export interface PollEvent {
 
 export function statePath(runId: string, stateDir: string = herdrStateDir()): string {
   return join(stateDir, `swarm-${runId}.json`);
+}
+
+/**
+ * A queued proactive-capture offer a worker wants recorded.
+ *
+ * `kind` mirrors CLAUDE.md's own protocols so the orchestrator can present
+ * each offer the way its protocol specifies: a backlog `add`, a
+ * `pending add`, or an `out-of-scope add`.
+ */
+export interface CaptureOffer {
+  kind: string;
+  id: string;
+  summary: string;
+}
+
+/**
+ * Where a worker writes the capture offers it wants the orchestrator to ask
+ * about, keyed by slug rather than agent id.
+ *
+ * By slug because the tab -- and therefore the env var naming this path --
+ * is created before an agent id exists, and a slug is unique within a run
+ * anyway (an item spawns once).
+ *
+ * The slug is reduced to its basename and stripped of anything outside
+ * `[A-Za-z0-9._-]`, so a crafted slug cannot walk out of the state dir.
+ */
+export function capturePath(
+  runId: string,
+  slug: string,
+  stateDir: string = herdrStateDir(),
+): string {
+  const safeRun = runId.replace(/[^A-Za-z0-9._-]/g, "_");
+  const safeSlug = (slug.split("/").pop() ?? "").replace(/[^A-Za-z0-9._-]/g, "_");
+  return join(stateDir, `swarm-${safeRun}-capture-${safeSlug}.json`);
+}
+
+/**
+ * Read a worker's queued capture offers, CONSUMING the file.
+ *
+ * Consumed because this is called as the worker finishes, immediately before
+ * its tab is closed and its record dropped. A file left behind would be
+ * re-read by a later poll with no worker left to attribute it to, and the
+ * human would be asked the same questions twice.
+ *
+ * Anything unreadable -- absent, malformed, wrong shape -- yields no offers
+ * rather than throwing. This runs inside swarm_poll's drain loop, where an
+ * exception would abandon every event queued behind it; losing a housekeeping
+ * offer is a far smaller harm than losing a worker's outcome.
+ */
+export function readCaptureOffers(
+  runId: string,
+  slug: string,
+  stateDir: string = herdrStateDir(),
+): CaptureOffer[] {
+  const path = capturePath(runId, slug, stateDir);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return [];
+  }
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    // Best effort. A file we could read but not delete is better reported
+    // once than not at all.
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    const offers =
+      parsed && typeof parsed === "object" && "offers" in parsed
+        ? (parsed as { offers: unknown }).offers
+        : null;
+    if (!Array.isArray(offers)) return [];
+    return offers.flatMap((o): CaptureOffer[] => {
+      if (!o || typeof o !== "object") return [];
+      const rec = o as Record<string, unknown>;
+      const kind = typeof rec.kind === "string" ? rec.kind : "";
+      const id = typeof rec.id === "string" ? rec.id : "";
+      const summary = typeof rec.summary === "string" ? rec.summary : "";
+      return kind && id ? [{ kind, id, summary }] : [];
+    });
+  } catch {
+    return [];
+  }
 }
 
 export function loadState(runId: string, stateDir: string = herdrStateDir()): SwarmState | null {
@@ -483,7 +569,7 @@ export function nextAgentId(runId: string, counter: number, slug?: string): stri
  * reason there is no trust prompt to send afterwards -- see
  * WORKER_UNATTENDED_ENV.
  */
-export function buildTabCreateArgv(cwd: string, label: string): string[] {
+export function buildTabCreateArgv(cwd: string, label: string, captureFile?: string): string[] {
   return [
     "tab",
     "create",
@@ -493,6 +579,9 @@ export function buildTabCreateArgv(cwd: string, label: string): string[] {
     label,
     "--env",
     WORKER_UNATTENDED_ENV,
+    // A second --env, not a replacement: the worker needs both, and the
+    // unattended flag is what settles its gates at module load.
+    ...(captureFile ? ["--env", `PI_SWARM_CAPTURE_FILE=${captureFile}`] : []),
     "--no-focus",
   ];
 }
@@ -1959,7 +2048,10 @@ export default function (pi: ExtensionAPI) {
         // share to divide, no batch to trim, because every tab starts at the
         // full terminal size regardless of how many already exist.
         for (const slug of toSpawn) {
-          const result = await herdr(pi, buildTabCreateArgv(process.cwd(), slug));
+          const result = await herdr(
+            pi,
+            buildTabCreateArgv(process.cwd(), slug, capturePath(typed.runId, slug)),
+          );
           if (result.code !== 0) {
             tabs.push({
               slug,
@@ -2244,6 +2336,14 @@ export default function (pi: ExtensionAPI) {
           // Alive, inside its budget, and already re-armed by the settle
           // handler. Nothing to close, no slot freed -- it is a check-in.
         } else {
+          // Read the worker's queued capture offers BEFORE dropping it. The
+          // record is deleted on the next line and the tab closes with it, so
+          // this is the last moment anything can be attributed to this item.
+          // Carrying them here is what lets the orchestrator ask the human
+          // once for the whole run instead of once per worker: a worker no
+          // longer holds a concurrency slot open through a relay round trip
+          // per housekeeping offer.
+          event.captures = readCaptureOffers(state.runId, worker.slug);
           // closeWorker, not a bare herdr call: a close that rejects must not
           // throw out of this loop and abandon every event after it in the
           // same batch. Its own comment states the rule -- a cleanup problem
@@ -2290,7 +2390,14 @@ export default function (pi: ExtensionAPI) {
                   if (e.kind === "still_working") {
                     return `${e.slug} (${e.agent}) still_working -- check-in ${e.checkIn}, ${formatDuration(e.elapsedMs ?? 0)} of working time so far against a ${formatDuration(rt.deadlineMs)} budget. Nothing settled and no slot was freed; poll again.`;
                   }
-                  return `${e.slug} (${e.agent}) ${e.kind}${e.detail ? `: ${e.detail}` : ""}`;
+                  const captures = (e.captures ?? []).length
+                    ? `\n  Queued capture offers from this worker -- do NOT ask about them now; fold them into your single end-of-run digest walk: ${(
+                        e.captures ?? []
+                      )
+                        .map((c) => `[${c.kind}] ${c.id} -- ${c.summary}`)
+                        .join("; ")}`
+                    : "";
+                  return `${e.slug} (${e.agent}) ${e.kind}${e.detail ? `: ${e.detail}` : ""}${captures}`;
                 })
                 .join("\n\n") + stalledNote,
           },

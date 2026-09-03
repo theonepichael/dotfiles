@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import registerSwarmTools, {
   activeWorkerCount,
+  capturePath,
   classifyBlock,
   noteResolveFailure,
   pickerLabels,
@@ -32,6 +33,7 @@ import registerSwarmTools, {
   itemPaths,
   parseReadyItems,
   parseTabCreate,
+  readCaptureOffers,
   selectSchedulable,
   stalledRelayWorkers,
   loadState,
@@ -3144,5 +3146,80 @@ describe("a stranded awaiting_relay record is reconciled on a warm poll", () => 
     expect(text).not.toContain("swarm_resolve_blocked");
     expect(text.toLowerCase()).toContain("gone");
     expect(loadState(runId, dir)?.workers ?? []).toEqual([]);
+  });
+});
+
+describe("worker capture offers travel to the orchestrator", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-capture-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("the spawned tab is told where to write its offers", () => {
+    const argv = buildTabCreateArgv("/repo", "my-slug", "/state/swarm-r1-capture-my-slug.json");
+    expect(argv).toContain("PI_SWARM_CAPTURE_FILE=/state/swarm-r1-capture-my-slug.json");
+    // The unattended env must survive alongside it, not be replaced.
+    expect(argv).toContain("PI_AGENT_UNATTENDED=1");
+  });
+
+  test("omitting the capture path leaves the argv exactly as it was", () => {
+    expect(buildTabCreateArgv("/repo", "my-slug")).toEqual([
+      "tab",
+      "create",
+      "--cwd",
+      "/repo",
+      "--label",
+      "my-slug",
+      "--env",
+      "PI_AGENT_UNATTENDED=1",
+      "--no-focus",
+    ]);
+  });
+
+  test("offers are read back and the file is consumed, so a re-poll cannot double-report", () => {
+    const path = capturePath("r1", "my-slug", dir);
+    writeFileSync(
+      path,
+      JSON.stringify({
+        offers: [
+          { kind: "backlog", id: "meta-thing", summary: "a thing worth doing" },
+          { kind: "out-of-scope", id: "some-concept", summary: "declined outright" },
+        ],
+      }),
+      "utf8",
+    );
+    const first = readCaptureOffers("r1", "my-slug", dir);
+    expect(first).toHaveLength(2);
+    expect(first[0]?.kind).toBe("backlog");
+    expect(first[0]?.id).toBe("meta-thing");
+    // Consumed: the worker's tab is closed and its record dropped right
+    // after this, so a file left behind would be re-reported by any later
+    // poll with no worker to attribute it to.
+    expect(readCaptureOffers("r1", "my-slug", dir)).toEqual([]);
+  });
+
+  test("a worker that queued nothing yields no offers rather than an error", () => {
+    expect(readCaptureOffers("r1", "never-wrote", dir)).toEqual([]);
+  });
+
+  test("a malformed capture file is ignored rather than crashing the poll", () => {
+    writeFileSync(capturePath("r1", "bad", dir), "{not json", "utf8");
+    expect(readCaptureOffers("r1", "bad", dir)).toEqual([]);
+  });
+
+  test("a slug that could escape the state dir cannot", () => {
+    const path = capturePath("r1", "../../etc/passwd", dir);
+    expect(path.startsWith(dir)).toBe(true);
+    expect(path).not.toContain("..");
   });
 });
