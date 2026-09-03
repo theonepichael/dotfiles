@@ -378,7 +378,7 @@ export function reconcileState(
  * rendered as the same 32-char name), so the budget is better spent on the
  * tail, which is what actually tells items apart. Longest match first, so a
  * future prefix that extends another (e.g. `meta-x-` vs `meta-`) strips
- * correctly.
+ * correctly, and only that one is removed.
  */
 const PROJECT_PREFIXES = ["iron-lb-", "meta-", "work-"];
 
@@ -390,10 +390,13 @@ const PROJECT_PREFIXES = ["iron-lb-", "meta-", "work-"];
  */
 export function nextAgentId(runId: string, counter: number, slug?: string): string {
   const cleanSlug = slug ? slug.replace(/[^a-zA-Z0-9_-]/g, "") : "";
-  const stripped = PROJECT_PREFIXES.reduce(
-    (s, prefix) => (s.startsWith(prefix) ? s.slice(prefix.length) : s),
-    cleanSlug,
-  );
+  // Longest match, and only ONE: reduce-and-strip-each would take both
+  // prefixes off a slug like `meta-work-foo` and leave `foo`, silently
+  // discarding a segment that distinguishes it.
+  const matched = PROJECT_PREFIXES.filter((prefix) => cleanSlug.startsWith(prefix)).sort(
+    (a, b) => b.length - a.length,
+  )[0];
+  const stripped = matched ? cleanSlug.slice(matched.length) : cleanSlug;
   if (!stripped) return `${runId}-w${counter}`;
   const base = `${runId}-w${counter}-${stripped}`;
   if (base.length <= 32) return base;

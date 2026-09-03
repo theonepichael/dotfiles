@@ -132,6 +132,13 @@ describe("nextAgentId", () => {
     );
   });
 
+  test("strips exactly ONE prefix, never both", () => {
+    // Reducing over PROJECT_PREFIXES and stripping each match in turn would
+    // take `meta-` and then `work-` off this slug and leave `double-prefix`,
+    // silently dropping a segment that tells items apart.
+    expect(nextAgentId("r1", 1, "meta-work-double-prefix")).toBe("r1-w1-work-double-prefix");
+  });
+
   test("a slug that is exactly a prefix leaves no dangling separator", () => {
     expect(nextAgentId("run1", 1, "meta-")).toBe("run1-w1");
   });
