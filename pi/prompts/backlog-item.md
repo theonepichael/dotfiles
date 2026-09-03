@@ -391,17 +391,41 @@ concurrency-cap accounting.
      calling `swarm_resolve_blocked`, or surfacing `needs_manual:`) before
      moving to the next event in the same batch; never stack multiple relay
      questions into one message.
+   - **`still_working`** — a check-in, **not an outcome**. The worker's wait
+     window elapsed, it was confirmed alive and still inside its working-time
+     budget, and a fresh wait is already armed. Three things follow, and each
+     is a separate way to get this wrong: it frees **no** concurrency slot,
+     so it is never a cue to call `swarm_spawn`; its item stays in the active
+     working set rather than the accounted-for one; and it is never a row in
+     the end-of-run summary. The event names its check-in number and the
+     working time so far against the budget (e.g. "check-in 7, 3h31m of a 4h
+     budget") — relay that to the user when it is worth their attention, then
+     simply poll again. An elapsed wait against a live worker used to close
+     its tab and drop it; it now produces this and nothing else.
    - **`finished`** / **`timed_out`** / **`error`** — record the outcome for
-     the end-of-run digest (approved / flagged / timed out / failed); all
-     three have already closed that worker's tab and freed its slot, and none
-     is ever silently retried. A freed slot is the cue to call `swarm_spawn`
-     again with the same `runId` and `prefix`: that re-reads READY, so a
-     worker that just unblocked two items causes those items to be picked up
-     without anyone naming them. `timed_out` and `error` are deliberately
-     different and must not be reported as one: `timed_out` means herdr's own
-     wait deadline genuinely elapsed, while `error` means something else went
-     wrong — the agent disappeared, it crashed, or its response could not be
-     recognised — and carries the raw reason after the kind.
+     the end-of-run digest (approved / flagged / stopped on budget / failed);
+     all three have already closed that worker's tab and freed its slot, and
+     none is ever silently retried. A freed slot is the cue to call
+     `swarm_spawn` again with the same `runId` and `prefix`: that re-reads
+     READY, so a worker that just unblocked two items causes those items to
+     be picked up without anyone naming them. The three are deliberately
+     different and must not be reported as one:
+     - `timed_out` means the worker exceeded its whole-item **working-time
+       budget** and was stopped deliberately — not that a wait deadline
+       elapsed, which is now merely a check-in. Its item is probably still
+       `in-progress` with a live claim and its worktree survives on disk, so
+       the event carries the worktree path and the recovery commands: relay
+       that detail verbatim rather than reporting the worker as having
+       misbehaved. The detail also says whether the worker's liveness was
+       **confirmed** before it was stopped, or whether the liveness probe
+       failed and the stop rests on the budget alone — never report the
+       second as though it were the first.
+     - `error` means the agent is positively gone (herdr reported
+       `agent_not_found`), it crashed, or the wait itself failed, and carries
+       the raw reason after the kind. A *transient* failure of the liveness
+       check is not an error and never appears here: it re-arms, because
+       killing a healthy worker on an inconclusive signal is the defect this
+       tool was fixed for.
 
      **`swarm_poll` does not spawn anything.** It arms waits, drains events
      and closes finished workers' tabs; that is all. When an event frees a
@@ -423,7 +447,7 @@ concurrency-cap accounting.
    resolve those with `swarm_resolve_blocked` before treating the queue as
    drained, or the run ends with a live worker holding an open tab.
 4. **End of run** — same shape as `--auto`'s: a dashboard-style summary of
-   every item (done, flagged, timed out), then walk any accumulated
+   every item (done, flagged, stopped on budget, failed), then walk any accumulated
    proactive-capture digest entries exactly as `--auto`'s own end-of-run
    step does.
 

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
@@ -50,6 +50,37 @@ import { Type } from "typebox";
 // timeout; anything else (agent_not_found, a crash, an unparseable
 // response) is reported as "error" instead, with the raw detail attached,
 // rather than silently mislabeled as a timeout that never happened.
+//
+// A sixth surfaced on the first end-to-end shakedown, and it is why the wait
+// path now looks the way it does. swarm_poll treated an elapsed wait as a
+// dead worker: `finished`, `timed_out` and `error` all fell into the same
+// `else` branch, which closed the tab and dropped the worker. But an elapsed
+// wait means NOTHING SETTLED IN THE WINDOW, which is exactly what a healthy
+// worker doing several minutes of real work looks like -- herdr documents
+// `agent wait` as a wait deadline, not a liveness check. A worker several
+// minutes into a real item (item claimed, worktree created, spec written, a
+// four-criterion gate set) was destroyed the moment the deadline elapsed,
+// costing its in-flight context and everything it had written inside its
+// worktree, and leaving an orphaned worktree, a stale claim blocking a later
+// start, and a digest line reporting it as having misbehaved. The 30-minute
+// constant's old comment -- "matching --auto's generous per-step
+// conventions" -- was the bug in miniature: the wait is armed once per
+// WORKER and covers the whole item, not one step.
+//
+// The fix separates two durations that were conflated. `timeoutMs` is a
+// CHECK-IN INTERVAL: when it elapses, `agent get` is asked whether the
+// worker is alive, and a live one is simply waited on again and reported as
+// `still_working`. `workerDeadlineMs` is the whole-item budget, measured in
+// WORKING time so hours parked awaiting a human relay do not count, and it
+// is the only thing that stops a live worker. Two rules keep the probe from
+// re-deriving the original bug one layer down: it fails OPEN, so only
+// herdr's own `agent_not_found` closes a worker and every inconclusive
+// answer re-arms; and the budget bounds those inconclusive answers too, so a
+// worker wedged badly enough that `agent get` itself cannot answer is still
+// stopped rather than re-arming forever. A stop reports whether liveness was
+// actually confirmed, because saying "still working" about a worker whose
+// probe failed would be the same class of lie as the mislabeled timeout that
+// started all this.
 
 /**
  * Where a run's state file lives. Resolved per call, not captured at module
@@ -65,7 +96,29 @@ function herdrStateDir(): string {
 const DEFAULT_CONCURRENCY = 3;
 const OPEN_PANE_SOFT_CAP_MULTIPLIER = 2;
 const AGENT_START_TIMEOUT_MS = 30_000;
-const DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes, matching --auto's generous per-step conventions
+/**
+ * How long one `herdr agent wait` runs before the poller checks in on the
+ * worker. A CHECK-IN INTERVAL, not a kill deadline -- see the header comment
+ * above for the live run this distinction cost. A worker still working when
+ * it elapses is probed and waited on again.
+ */
+const DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
+/**
+ * The whole-item budget for one worker, measured in WORKING time (see
+ * `elapsedWorkingMs`). An item runs baseline, spec, optional critique, TDD,
+ * full verify and a commit gate, so 4 hours is far above any observed run and
+ * far below "never". "Never" is not an option: without a budget, a worker
+ * wedged badly enough that even `agent get` cannot answer would re-arm
+ * forever, holding its slot until someone killed the orchestrator by hand.
+ */
+const DEFAULT_WORKER_DEADLINE_MS = 4 * 60 * 60 * 1000;
+/**
+ * How long the liveness probe may take before it is abandoned as
+ * inconclusive. Short, because `agent get` is a local socket round-trip --
+ * and because a probe that hangs would strand the very worker it was added to
+ * protect: `try`/`catch` catches throws, not hangs.
+ */
+const PROBE_TIMEOUT_MS = 15_000;
 const RESOLVE_VERIFY_TIMEOUT_MS = 5_000;
 const BLOCKED_READ_LINES = 500;
 const BLOCKED_READ_LINES_RETRY = 2000;
@@ -101,7 +154,88 @@ export interface WorkerRecord {
    * nothing, which is the pre-existing behaviour.
    */
   paths?: string[];
+  /**
+   * Epoch ms the worker's CURRENT working segment began.
+   *
+   * Stamped at spawn, folded into `accumulatedWorkingMs` when the worker
+   * parks at awaiting_relay, and re-stamped when swarm_resolve_blocked
+   * returns it to active. That is what makes the budget measure WORKING time
+   * rather than wall time: a worker parked overnight waiting on a human would
+   * otherwise resume already past its deadline and be stopped on its first
+   * check-in -- destroying its work at the exact moment the human answered.
+   *
+   * Optional only for records written before budgets existed. Such a record
+   * is stamped on its first check-in rather than left without a deadline:
+   * "no deadline" would revive the unbounded hang, for exactly the state
+   * files in flight across the upgrade.
+   */
+  workingSinceMs?: number;
+  /**
+   * Working time from this worker's COMPLETED segments, in ms. Absent means
+   * zero.
+   *
+   * Without it, re-stamping `workingSinceMs` on every resume would not pause
+   * the clock, it would erase it: a worker that works 3h50m, blocks on a
+   * relay and is answered would start a fresh budget and could run 7h50m in
+   * total. The budget is per item, not per segment.
+   */
+  accumulatedWorkingMs?: number;
+  /**
+   * The orchestrator cwd this worker's tab was created in, so a deliberate
+   * stop can name the worktree its item was being worked in. Optional for
+   * records written before this existed; absent means the report says so
+   * rather than printing a guess.
+   */
+  cwd?: string;
+  /**
+   * How many check-ins this worker has had. Absent means none yet.
+   *
+   * On the record rather than in a runtime map because the working-time
+   * fields beside it are persisted: a restart that kept a worker's 3h45m
+   * elapsed but reset its count would report "check-in 1, 3h45m of a 4h
+   * budget", which reads as a stall rather than a resumption.
+   */
+  checkIns?: number;
   lifecycle: WorkerLifecycle;
+}
+
+/**
+ * Total working time so far: completed segments plus the open one.
+ *
+ * Null only when the worker has neither -- a record not yet stamped or
+ * folded. Never NaN (the optional fields default explicitly rather than
+ * landing in `undefined + number`) and never negative.
+ *
+ * `Date.now()` is not monotonic, so the open segment is clamped at zero: an
+ * NTP step backwards would otherwise subtract hours from a worker's
+ * accounting or push its deadline into the future. The clamp UNDER-counts a
+ * segment spanning a backwards step, which is the deliberate direction --
+ * under-counting hands the worker extra budget, while over-counting would
+ * stop it early, which is this file's whole bug. Measuring it exactly would
+ * need a monotonic clock kept beside this one and reconciled across restarts:
+ * real machinery to fix a case whose failure mode is already benign.
+ */
+export function elapsedWorkingMs(worker: WorkerRecord, now: number): number | null {
+  const open =
+    worker.workingSinceMs === undefined ? null : Math.max(0, now - worker.workingSinceMs);
+  if (open === null && worker.accumulatedWorkingMs === undefined) return null;
+  return (worker.accumulatedWorkingMs ?? 0) + (open ?? 0);
+}
+
+/**
+ * Folds the open segment into `accumulatedWorkingMs` and clears
+ * `workingSinceMs`.
+ *
+ * A worker with no open segment folds nothing rather than adding NaN -- a
+ * legacy record can reach the park path before its first check-in ever stamps
+ * it, because a `blocked` settle needs no probe. Idempotent, so a double-park
+ * costs nothing.
+ */
+export function foldWorkingSegment(worker: WorkerRecord, now: number): void {
+  if (worker.workingSinceMs === undefined) return;
+  worker.accumulatedWorkingMs =
+    (worker.accumulatedWorkingMs ?? 0) + Math.max(0, now - worker.workingSinceMs);
+  worker.workingSinceMs = undefined;
 }
 
 export interface SwarmState {
@@ -136,7 +270,20 @@ export interface SwarmState {
 type SpawnOutcome =
   { worker: WorkerRecord } | { slug: string; failed?: { slug: string; reason: string } };
 
-export type PollEventKind = "blocked" | "finished" | "timed_out" | "error";
+/**
+ * `still_working` is the only NON-terminal kind: the wait window elapsed, the
+ * worker was confirmed alive, its budget has not run out, and a fresh wait is
+ * already armed. Nothing was closed and no slot was freed.
+ *
+ * It exists because the alternative -- re-arming silently and emitting
+ * nothing -- would make a single swarm_poll call block for up to the whole
+ * worker budget: `waitForEvent` has no timeout of its own, so the poll parks
+ * until an event or an abort. A check-in keeps the caller's block bounded by
+ * `timeoutMs` exactly as it was before, and gives the orchestrator something
+ * honest to show a human ("check-in 7, 3h31m of a 4h budget") instead of
+ * silence that looks identical to a wedged run.
+ */
+export type PollEventKind = "blocked" | "finished" | "timed_out" | "error" | "still_working";
 
 export interface PollEvent {
   kind: PollEventKind;
@@ -146,6 +293,8 @@ export interface PollEvent {
   rawPrompt?: string; // blocked only
   truncated?: boolean; // blocked only
   detail?: string; // timed_out/error only -- the raw herdr error detail, for an honest digest
+  elapsedMs?: number; // still_working only -- working time so far, against the budget
+  checkIn?: number; // still_working only -- 1-based, so "check-in 7 of a 4h budget" is sayable
 }
 
 // ---------------------------------------------------------------------------
@@ -686,6 +835,141 @@ export function classifyWaitResult(
 }
 
 /**
+ * What swarm_poll does with a worker whose wait window elapsed.
+ *
+ * `rearm` emits no event at all beyond the check-in; `event` is a real
+ * outcome. `livenessConfirmed` is carried on a `timed_out` so the report can
+ * tell the truth about which of two very different things happened -- see
+ * `deadlineStopDetail`.
+ */
+export type TimeoutVerdict =
+  | { disposition: "rearm" }
+  | { disposition: "event"; kind: PollEventKind; livenessConfirmed?: boolean };
+
+/** The liveness probe's outcome. `abandoned` means WE gave up on it, not that herdr answered. */
+export interface ProbeResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+  abandoned: boolean;
+}
+
+/**
+ * Decide what an elapsed wait means, given a liveness probe.
+ *
+ * The governing rule is FAIL OPEN. This whole mechanism exists because a
+ * worker was killed on an inconclusive signal; killing a healthy worker
+ * because an ancillary check hiccuped would be the same bug one layer down.
+ * So only a positive statement that the agent is gone -- herdr's own
+ * `agent_not_found` -- closes it. Everything else that is not a settle
+ * re-arms.
+ *
+ * But fail open means "do not kill on uncertainty", NOT "never kill": the
+ * budget bounds ALL of it, inconclusive outcomes included. A worker wedged
+ * badly enough that `agent get` itself hangs or errors every time would
+ * otherwise re-arm forever, holding its slot until someone killed the
+ * orchestrator by hand -- precisely the stall the budget exists to prevent.
+ *
+ * `abandoned` has to be a flag rather than something inferred from `code`:
+ * `pi.exec` RESOLVES on abort, coercing a killed process's null exit to 0
+ * with empty stdout (see the header comment), so an abandoned probe is
+ * indistinguishable from "exit 0, no recognizable status" by its result
+ * alone -- and that case would close a healthy worker.
+ */
+export function classifyTimeoutProbe(
+  probe: ProbeResult,
+  elapsedMs: number | null,
+  deadlineMs: number,
+): TimeoutVerdict {
+  const overBudget = elapsedMs !== null && elapsedMs >= deadlineMs;
+  const inconclusive = (): TimeoutVerdict =>
+    overBudget
+      ? { disposition: "event", kind: "timed_out", livenessConfirmed: false }
+      : { disposition: "rearm" };
+
+  if (probe.abandoned) return inconclusive();
+  if (probe.code !== 0) {
+    const code = parseHerdrJson(probe.stderr)?.error?.code;
+    // The one code that positively means gone. Anything else -- a daemon
+    // restart, a momentary fault, an unparseable envelope -- says nothing
+    // about the worker, only about the check.
+    if (code === "agent_not_found") return { disposition: "event", kind: "error" };
+    return inconclusive();
+  }
+  const status = parseHerdrJson(probe.stdout)?.result?.agent?.agent_status;
+  if (status === "blocked") return { disposition: "event", kind: "blocked" };
+  if (status === "idle" || status === "done") return { disposition: "event", kind: "finished" };
+  if (status === undefined) return inconclusive();
+  // `working`, or a status a future herdr adds. Treated as alive rather than
+  // dead on purpose: enumerating statuses herdr MIGHT report as dead would be
+  // inventing a list from guesswork, the same mistake as the early fixtures
+  // that copied this code's own wrong assumptions and so agreed with the bug.
+  return overBudget
+    ? { disposition: "event", kind: "timed_out", livenessConfirmed: true }
+    : { disposition: "rearm" };
+}
+
+/**
+ * The worktree a worker's item was being worked in, per the repo convention
+ * `<repo>/../<repo-name>-<slug>`. Null when the record predates `cwd` being
+ * tracked.
+ *
+ * Derived, not verified: it assumes `cwd` is the repo root, which is the
+ * convention but not a checked fact -- an orchestrator launched from inside a
+ * worktree would produce a doubly-suffixed path. The report prints the cwd
+ * beside it and says which is which, rather than stripping suffixes or
+ * resolving a git common directory, either of which swaps a guess the reader
+ * can see for one they cannot.
+ */
+export function workerWorktreePath(cwd: string | undefined, slug: string): string | null {
+  if (!cwd) return null;
+  return join(dirname(cwd), `${basename(cwd)}-${slug}`);
+}
+
+/**
+ * The `detail` for a deliberately-stopped worker: what happened, and
+ * everything needed to recover the item and its worktree by hand.
+ *
+ * Two quite different things reach this, and reporting them identically would
+ * repeat this item's own root complaint -- that a wrong outcome label becomes
+ * the story the orchestrator tells the human. A confirmed-live worker really
+ * was working when its budget ran out. A worker whose probe was abandoned or
+ * failed might have crashed hours ago; claiming it "was still working" would
+ * be a fabrication, so that case names the probe's own failure instead.
+ */
+export function deadlineStopDetail(
+  worker: WorkerRecord,
+  deadlineMs: number,
+  opts: { livenessConfirmed: boolean; probeDetail?: string },
+): string {
+  const minutes = Math.round(deadlineMs / 60000);
+  const lines = opts.livenessConfirmed
+    ? [
+        `worker budget of ${minutes} min of working time elapsed while the agent still reported working -- stopped deliberately.`,
+      ]
+    : [
+        `worker budget of ${minutes} min of working time elapsed, and its liveness could NOT be verified: ${opts.probeDetail ?? "the probe gave no usable answer"}.`,
+        "It may have been working, or may have died earlier -- this stop is on the budget, not on evidence about the worker.",
+      ];
+  lines.push(
+    "",
+    `The item is very likely still in-progress with a live claim: python3 ~/.claude/scripts/dev_status.py show ${worker.slug}`,
+  );
+  const worktree = workerWorktreePath(worker.cwd, worker.slug);
+  if (worktree) {
+    lines.push(
+      `Its worktree survives on disk. Worker cwd was ${worker.cwd}; by the <repo>-<slug> convention that makes the worktree ${worktree} (derived from the cwd, not verified).`,
+      `Recover with: git -C ${worker.cwd} worktree remove --force ${worktree}, then reset the item to open to clear the claim.`,
+    );
+  } else {
+    lines.push(
+      "This worker predates cwd tracking, so its worktree path cannot be named here -- find it with git worktree list.",
+    );
+  }
+  return lines.join("\n");
+}
+
+/**
  * Cross-check that `agent get`'s reported pane_id still matches the pane
  * this worker was spawned into, right before `swarm_resolve_blocked` sends
  * any keystrokes. herdr's `agent <name>` commands (read/get/send-keys) all
@@ -711,6 +995,14 @@ export function waitResultDetail(stdout: string, stderr: string): string {
   const err = parseHerdrJson(stderr)?.error;
   if (err) return `${err.code ?? "unknown"}: ${err.message ?? stderr.trim()}`;
   return stdout.trim() || stderr.trim() || "(no output)";
+}
+
+/** Human-readable ms, for a check-in line a person reads ("3h31m", "45m"). */
+export function formatDuration(ms: number): string {
+  const totalMinutes = Math.max(0, Math.round(ms / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours > 0 ? `${hours}h${String(minutes).padStart(2, "0")}m` : `${minutes}m`;
 }
 
 /** Content that fills the requested line budget exactly is a truncation signal, not necessarily proof -- see plan section 4. */
@@ -1045,6 +1337,8 @@ export default function (pi: ExtensionAPI) {
         paneId,
         tabId,
         paths,
+        cwd: process.cwd(),
+        workingSinceMs: Date.now(),
         lifecycle: "active" as const,
       },
     };
@@ -1094,6 +1388,19 @@ export default function (pi: ExtensionAPI) {
     pendingEvents: PollEvent[];
     waiters: (() => void)[]; // resolvers for swarm_poll calls currently waiting on the next event
     spawnChain: Promise<void>; // tail of this run's serialised spawn queue -- see withSpawnLock
+    /**
+     * The most recent swarm_poll's resolved durations, read by armWait.
+     *
+     * On the runtime rather than passed as arguments because armWait re-arms
+     * from inside its own settle handler: as arguments they would freeze at
+     * whatever the FIRST poll passed, and swarm_poll's arm loop could never
+     * correct them because it no-ops on a worker already in `inFlight`. A
+     * later poll asking for a tighter check-in would be silently ignored for
+     * the rest of that worker's life. A wait already running still keeps the
+     * timeout it started with; the next re-arm picks these up.
+     */
+    timeoutMs: number;
+    deadlineMs: number;
   }
 
   const runtimes = new Map<string, RunRuntime>();
@@ -1106,6 +1413,8 @@ export default function (pi: ExtensionAPI) {
         pendingEvents: [],
         waiters: [],
         spawnChain: Promise.resolve(),
+        timeoutMs: DEFAULT_WAIT_TIMEOUT_MS,
+        deadlineMs: DEFAULT_WORKER_DEADLINE_MS,
       };
       runtimes.set(runId, rt);
     }
@@ -1191,28 +1500,169 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  /** Arms a worker's wait call if one isn't already running for it. Idempotent -- safe to call every time swarm_poll checks in on the active pool. */
-  function armWait(rt: RunRuntime, worker: WorkerRecord, timeoutMs: number): void {
+  /**
+   * Runs the liveness probe for a worker whose wait window elapsed.
+   *
+   * Bounded by PROBE_TIMEOUT_MS and reported as `abandoned` when we give up:
+   * `try`/`catch` catches throws, not hangs, and a `herdr agent get` that
+   * never returns would hold `inFlight`, push no event and run no wait --
+   * the same strand this whole change removes, reached by a different road.
+   *
+   * The timer is cleared as soon as herdr settles. A local socket round-trip
+   * normally answers in milliseconds, and leaving a 15 s timer armed per
+   * check-in would hold the event loop open and later fire an abort at an
+   * operation that finished long ago.
+   *
+   * Deliberately NOT given swarm_poll's abort signal: the probe belongs to
+   * the worker's wait chain, not to the poll call, exactly as the wait itself
+   * does.
+   */
+  async function probeLiveness(agentId: string): Promise<ProbeResult> {
+    const controller = new AbortController();
+    let abandoned = false;
+    const timer = setTimeout(() => {
+      abandoned = true;
+      controller.abort();
+    }, PROBE_TIMEOUT_MS);
+    try {
+      const result = await herdr(pi, buildAgentGetArgv(agentId), controller.signal);
+      return { ...result, abandoned };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Arms a worker's wait call if one isn't already running for it.
+   * Idempotent -- safe to call every time swarm_poll checks in on the pool.
+   *
+   * `rt.inFlight` is released HERE, in the settle handler's finally, and
+   * nowhere else. That single release point is load-bearing, and worth saying
+   * why plainly, because three separate attempts to improve on it each
+   * introduced a defect.
+   *
+   * The temptation is to hold the entry past the settle so a concurrent
+   * swarm_poll -- which arms every active worker it finds -- cannot start a
+   * second wait against a worker whose terminal event has been pushed but not
+   * yet drained. Work out what that second wait actually costs: for a
+   * `finished` settle it returns the same status immediately, for `error`
+   * likewise or `agent_not_found` once the tab is gone, for `timed_out` it
+   * sits until the tab closes and then returns `agent_not_found`. In every
+   * case: one redundant herdr call, and an event the drain loop already
+   * discards via `if (!worker) continue`. Duplication is not the historical
+   * failure -- the round-2 disaster recorded in the header was ABORTING the
+   * losers of a wait race, and nothing here ever aborts a wait.
+   *
+   * Holding the entry, by contrast, makes the release depend on some later
+   * code path running. A rejected `tab close`, an event whose worker is
+   * already out of state, or an earlier event in the same batch throwing
+   * would each leave the entry held forever on a worker still in
+   * `state.workers`: active, holding a slot, with no wait running and
+   * permanently unarmable, because armWait no-ops on a held entry. That is a
+   * strictly worse strand than the one this file exists to remove, and it is
+   * reachable three different ways.
+   */
+  function armWait(rt: RunRuntime, worker: WorkerRecord): void {
     if (rt.inFlight.has(worker.agent)) return;
     rt.inFlight.add(worker.agent);
-    void herdr(pi, buildAgentWaitArgv(worker.agent, ["idle", "done", "blocked"], timeoutMs)).then(
-      (result) => {
-        rt.inFlight.delete(worker.agent);
-        const kind = classifyWaitResult(result.code, result.stdout, result.stderr);
-        const event: PollEvent = {
-          kind,
-          agent: worker.agent,
-          slug: worker.slug,
-          paneId: worker.paneId,
-        };
-        if (kind === "timed_out" || kind === "error") {
-          event.detail = waitResultDetail(result.stdout, result.stderr);
+    const timeoutMs = rt.timeoutMs;
+    void settleWait(rt, worker, timeoutMs);
+  }
+
+  /** One armed wait, from `agent wait` through to a queued event or a re-arm. */
+  async function settleWait(
+    rt: RunRuntime,
+    worker: WorkerRecord,
+    timeoutMs: number,
+  ): Promise<void> {
+    let event: PollEvent | null = null;
+    try {
+      const result = await herdr(
+        pi,
+        buildAgentWaitArgv(worker.agent, ["idle", "done", "blocked"], timeoutMs),
+      );
+      let kind = classifyWaitResult(result.code, result.stdout, result.stderr);
+      let detail =
+        kind === "timed_out" || kind === "error"
+          ? waitResultDetail(result.stdout, result.stderr)
+          : undefined;
+
+      if (kind === "timed_out") {
+        // An elapsed wait means NOTHING SETTLED IN THE WINDOW -- which is what
+        // a healthy worker doing several minutes of real work looks like. Ask
+        // before concluding anything.
+        const probe = await probeLiveness(worker.agent);
+        const verdict = classifyTimeoutProbe(probe, elapsedWorkingMsFor(worker), rt.deadlineMs);
+        if (verdict.disposition === "rearm") {
+          worker.checkIns = (worker.checkIns ?? 0) + 1;
+          // Re-arm BEFORE the event becomes visible, so a caller woken by the
+          // check-in can never observe a worker with no wait running.
+          rt.inFlight.delete(worker.agent);
+          armWait(rt, worker);
+          rt.pendingEvents.push({
+            kind: "still_working",
+            agent: worker.agent,
+            slug: worker.slug,
+            paneId: worker.paneId,
+            elapsedMs: elapsedWorkingMs(worker, Date.now()) ?? 0,
+            checkIn: worker.checkIns,
+          });
+          wakeWaiters(rt);
+          return;
         }
-        rt.pendingEvents.push(event);
-        const waiting = rt.waiters.splice(0);
-        for (const wake of waiting) wake();
-      },
-    );
+        kind = verdict.kind;
+        detail =
+          kind === "timed_out"
+            ? deadlineStopDetail(worker, rt.deadlineMs, {
+                livenessConfirmed: verdict.livenessConfirmed === true,
+                probeDetail: probe.abandoned
+                  ? `the liveness probe did not answer within ${PROBE_TIMEOUT_MS} ms and was abandoned`
+                  : `probe: ${waitResultDetail(probe.stdout, probe.stderr)}`,
+              })
+            : kind === "error"
+              ? `probe: ${waitResultDetail(probe.stdout, probe.stderr)}`
+              : undefined;
+      }
+
+      event = { kind, agent: worker.agent, slug: worker.slug, paneId: worker.paneId };
+      if (detail !== undefined) event.detail = detail;
+    } catch (err) {
+      // pi.exec rejects on a spawn failure. Without this the handler would
+      // push nothing at all and the worker would simply go quiet.
+      event = {
+        kind: "error",
+        agent: worker.agent,
+        slug: worker.slug,
+        paneId: worker.paneId,
+        detail: `wait_failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    } finally {
+      rt.inFlight.delete(worker.agent);
+    }
+    rt.pendingEvents.push(event);
+    wakeWaiters(rt);
+  }
+
+  /**
+   * Elapsed working time for a budget decision, stamping a record that has
+   * never been stamped.
+   *
+   * A record written before budgets existed has no start time. Leaving it
+   * null would mean no budget at all, reviving the unbounded hang for exactly
+   * the state files in flight across this upgrade -- so it gets a late
+   * budget, starting now, rather than none.
+   */
+  function elapsedWorkingMsFor(worker: WorkerRecord): number | null {
+    const now = Date.now();
+    if (worker.workingSinceMs === undefined && worker.accumulatedWorkingMs === undefined) {
+      worker.workingSinceMs = now;
+    }
+    return elapsedWorkingMs(worker, now);
+  }
+
+  function wakeWaiters(rt: RunRuntime): void {
+    const waiting = rt.waiters.splice(0);
+    for (const wake of waiting) wake();
   }
 
   pi.registerTool({
@@ -1426,30 +1876,38 @@ export default function (pi: ExtensionAPI) {
     name: "swarm_poll",
     label: "Swarm poll",
     description:
-      "Wait for at least one active swarm worker to settle (blocked/finished/timed_out/error), returning every event currently queued.",
+      "Wait for at least one active swarm worker to settle (blocked/finished/timed_out/error) or check in (still_working), returning every event currently queued.",
     promptSnippet: "Wait for swarm workers to settle and report events",
     promptGuidelines: [
       "Blocks until >=1 active worker settles. Returns an array -- process every event in it, relaying each blocked event to the user one at a time, before calling swarm_poll again.",
       "A blocked event is reported with the worker's prompt quoted verbatim from herdr -- never assume it's a diff or a yes/no. Never send a blocked worker another agent prompt except the actual answer via swarm_resolve_blocked -- any prompt is interpreted as the gate's answer.",
-      "timed_out means herdr's own wait deadline genuinely elapsed. error means something else went wrong (the agent disappeared, a crash, an unrecognized response) -- both close the pane, free the slot, and get flagged in the digest, never silently retried. They are not the same failure: each event names its kind and, where there is one, the raw reason after it, in the reported text.",
-      "finished/timed_out/error events already closed their pane and freed their slot; if the READY queue still has items and the cap has headroom, call swarm_spawn again for the next batch.",
+      "still_working is a CHECK-IN, not an outcome: a worker's wait window elapsed, it was confirmed alive and inside its budget, and a fresh wait is already armed. It closes nothing and frees no slot, so it is never a cue to call swarm_spawn, its item stays in the active working set, and it is never a row in the end-of-run summary. Report it and poll again.",
+      "timed_out means the worker exceeded its whole-item WORKING-TIME budget and was stopped deliberately -- not that a wait deadline elapsed, which is now merely a check-in. Its tab is closed and its slot freed, but the item is probably still in-progress with a live claim and its worktree survives on disk, so relay the recovery detail in the event verbatim rather than reporting it as a worker that misbehaved. The detail also says whether the worker's liveness was actually confirmed before it was stopped, or whether the probe failed and the stop was on the budget alone -- do not report the second as though it were the first.",
+      "error means the agent is positively gone (herdr reported agent_not_found), it crashed, or the wait itself failed. A transient failure of the liveness check is NOT an error: it re-arms, because killing a healthy worker on an inconclusive signal is the bug this tool was fixed for.",
+      "finished/timed_out/error events already closed their pane and freed their slot; if the READY queue still has items and the cap has headroom, call swarm_spawn again for the next batch. still_working frees nothing.",
     ],
     parameters: Type.Object({
       runId: Type.String(),
       timeoutMs: Type.Optional(
         Type.Number({
-          description: `Per-worker wait timeout, applied the first time a given worker's wait is armed (a worker already being waited on keeps its original timeout). Default ${DEFAULT_WAIT_TIMEOUT_MS}.`,
+          description: `How long one herdr wait runs before the poller checks in on a worker -- a CHECK-IN INTERVAL, not a kill deadline. A worker still working when it elapses is probed, waited on again, and reported as still_working; nothing is closed. A wait already running keeps the value it started with, and the next check-in picks up the current one. Default ${DEFAULT_WAIT_TIMEOUT_MS}.`,
+        }),
+      ),
+      workerDeadlineMs: Type.Optional(
+        Type.Number({
+          description: `The whole-item budget for one worker, measured in WORKING time -- time parked awaiting a relay does not count. A worker still going past it is stopped deliberately and reported as timed_out, with its worktree path and the item's likely in-progress claim, so nothing is lost silently. Only ever observed at a check-in, so a worker can run up to one timeoutMs past it. Default ${DEFAULT_WORKER_DEADLINE_MS}.`,
         }),
       ),
     }),
     async execute(_toolCallId, params, signal) {
-      const typed = params as { runId: string; timeoutMs?: number };
+      const typed = params as { runId: string; timeoutMs?: number; workerDeadlineMs?: number };
       const state = await getOrInitState(typed.runId, DEFAULT_CONCURRENCY);
-      const timeoutMs = typed.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
       const rt = getRuntime(typed.runId);
+      rt.timeoutMs = typed.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
+      rt.deadlineMs = typed.workerDeadlineMs ?? DEFAULT_WORKER_DEADLINE_MS;
 
       const active = state.workers.filter((w) => w.lifecycle === "active");
-      for (const w of active) armWait(rt, w, timeoutMs);
+      for (const w of active) armWait(rt, w);
 
       if (active.length === 0 && rt.pendingEvents.length === 0) {
         // A worker parked at awaiting_relay is not an empty pool: it is a live
@@ -1519,9 +1977,20 @@ export default function (pi: ExtensionAPI) {
           }
           event.rawPrompt = readResult.stdout || getResult.stdout;
           event.truncated = truncated;
+          // The clock pauses here. Hours spent waiting on a human are not
+          // hours the worker spent working, and charging them to the budget
+          // would stop a worker at the moment its relay was finally answered.
+          foldWorkingSegment(worker, Date.now());
           worker.lifecycle = "awaiting_relay";
+        } else if (event.kind === "still_working") {
+          // Alive, inside its budget, and already re-armed by the settle
+          // handler. Nothing to close, no slot freed -- it is a check-in.
         } else {
-          await herdr(pi, buildWorkerCloseArgv(worker), signal);
+          // closeWorker, not a bare herdr call: a close that rejects must not
+          // throw out of this loop and abandon every event after it in the
+          // same batch. Its own comment states the rule -- a cleanup problem
+          // never replaces the outcome being reported.
+          await closeWorker(worker, signal);
           state.workers = state.workers.filter((w) => w.agent !== worker.agent);
         }
       }
@@ -1532,11 +2001,15 @@ export default function (pi: ExtensionAPI) {
           {
             type: "text",
             text: events
-              .map((e) =>
-                e.kind === "blocked"
-                  ? `${e.slug} (${e.agent}) is blocked${e.truncated ? " -- content may be truncated, inspect pane " + e.paneId + " directly" : ""}:\n${e.rawPrompt}`
-                  : `${e.slug} (${e.agent}) ${e.kind}${e.detail ? `: ${e.detail}` : ""}`,
-              )
+              .map((e) => {
+                if (e.kind === "blocked") {
+                  return `${e.slug} (${e.agent}) is blocked${e.truncated ? " -- content may be truncated, inspect pane " + e.paneId + " directly" : ""}:\n${e.rawPrompt}`;
+                }
+                if (e.kind === "still_working") {
+                  return `${e.slug} (${e.agent}) still_working -- check-in ${e.checkIn}, ${formatDuration(e.elapsedMs ?? 0)} of working time so far against a ${formatDuration(rt.deadlineMs)} budget. Nothing settled and no slot was freed; poll again.`;
+                }
+                return `${e.slug} (${e.agent}) ${e.kind}${e.detail ? `: ${e.detail}` : ""}`;
+              })
               .join("\n\n"),
           },
         ],
@@ -1711,6 +2184,12 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
+      // The clock restarts here, alongside the lifecycle change it belongs
+      // to. Together with the fold at park (swarm_poll's drain loop) and the
+      // stamp at spawn, these are the only places the working-time clock
+      // moves -- a future path back to active that forgets this would
+      // silently charge a worker for the hours it spent waiting on a human.
+      worker.workingSinceMs = Date.now();
       worker.lifecycle = "active";
       persist(state);
       return {
