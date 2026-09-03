@@ -229,6 +229,16 @@ export interface WorkerRecord {
    * 2026-09-03 stall formed and went unnoticed.
    */
   lastResolveFailure?: { answer: string; reason: string; at: number };
+  /**
+   * Mid-flight corrections sent to this worker.
+   *
+   * On the record so the end-of-run digest can say an item's premises changed
+   * under a worker and when. The raw `herdr agent prompt` this replaces left
+   * no trace: the run state had no idea an item had been amended, and the
+   * orchestrator went on polling a worker whose instructions had been
+   * rewritten underneath it.
+   */
+  amendments?: Amendment[];
   lifecycle: WorkerLifecycle;
 }
 
@@ -928,6 +938,37 @@ export function buildAgentStartArgv(agentId: string, paneId: string, model?: str
  * will answer a dialog here", which is simply true of a swarm worker.
  */
 export const WORKER_UNATTENDED_ENV = "PI_AGENT_UNATTENDED=1";
+
+/**
+ * The entire payload of an amend. Fixed, and deliberately carries no
+ * correction text.
+ *
+ * The correction lives in the backlog store, edited there before this is
+ * sent. The moment this channel carries content instead, the store stops
+ * being the single source of truth and the two can disagree -- a worker
+ * acting on a message while `show` says something else is worse than the
+ * problem being solved. So there is no parameter to smuggle content through:
+ * a caller who wants to change the work changes the item.
+ *
+ * On 2026-09-03 a worker was several minutes into an item whose stored
+ * premise was wrong -- it was reasoning carefully toward a fix that would
+ * have broken the user's work machine. The correction went through three raw
+ * `herdr agent prompt` calls. It worked, but only because a human happened
+ * to be watching, and the run recorded none of it.
+ */
+export const AMEND_INSTRUCTION =
+  "STOP and re-read your backlog item before doing anything else: run " +
+  "`python3 ~/.claude/scripts/dev_status.py show <your slug>` and read the " +
+  "whole record fresh. Its context or next_steps have been corrected since " +
+  "you started, so any plan you formed from the earlier version may now be " +
+  "wrong. Reconcile what you have already done against the updated record, " +
+  "and say plainly what changes as a result before continuing.";
+
+/** One recorded mid-flight correction of a worker's item. */
+export interface Amendment {
+  at: number;
+  by: string;
+}
 
 /**
  * `--wait` blocks until the agent settles, so a follow-up prompt can't land
@@ -2403,6 +2444,93 @@ export default function (pi: ExtensionAPI) {
           },
         ],
         details: { events },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "swarm_amend",
+    label: "Swarm amend",
+    description:
+      "Tell a running worker its backlog item has been corrected, so it re-reads the item before continuing.",
+    promptSnippet: "Tell a swarm worker to re-read its corrected item",
+    promptGuidelines: [
+      "Edit the item FIRST with dev_status.py, then call this. It sends a fixed instruction to re-read the item and carries no correction text of its own -- deliberately, so the backlog store stays the single source of truth. There is no parameter for the correction because a message and a store that disagree is worse than the problem being fixed.",
+      "Only reaches a worker that is actively working. `herdr agent prompt` refuses an agent that is already blocked, so a worker parked at a gate is reported as amend_refused: -- answer it with swarm_resolve_blocked instead, or let it finish and pick the item up again afterwards.",
+      "Every outcome leads with its own marker word -- amended:, amend_refused: or amend_failed: -- and names the agent and slug, so branch on that word.",
+      "Delivery is not synchronised with the worker's turn boundary, and cannot be: pi has no such checkpoint exposed over herdr. A prompt that lands mid-turn arrives as the worker's next input, which is fine while it is still planning and is a rewrite of finished work if it is not. So amend early, and treat a worker deep into an item as a candidate for stopping rather than correcting.",
+      "The amendment is recorded on the run state, so the end-of-run digest can say the item was corrected mid-flight and when.",
+    ],
+    parameters: Type.Object({
+      runId: Type.String({ description: "The run whose worker is being amended." }),
+      agent: Type.String({
+        description: "The worker's agent id, or its item slug -- either resolves.",
+      }),
+    }),
+    async execute(_callId: string, params: unknown, signal?: AbortSignal) {
+      const typed = params as { runId: string; agent: string };
+      const state = await getOrInitState(typed.runId, DEFAULT_CONCURRENCY);
+      const worker =
+        state.workers.find((w) => w.agent === typed.agent) ??
+        state.workers.find((w) => w.slug === typed.agent);
+
+      if (!worker) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `amend_failed: no worker in run ${typed.runId} matches "${typed.agent}" by agent id or slug. Active workers: ${
+                state.workers.map((w) => `${w.agent} (${w.slug})`).join(", ") || "none"
+              }.`,
+            },
+          ],
+          details: { amended: false, slug: "", paneId: "" },
+        };
+      }
+
+      if (worker.lifecycle !== "active") {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `amend_refused: ${worker.agent} (${worker.slug}, pane ${worker.paneId}) is parked at a gate, ` +
+                "and herdr agent prompt refuses a blocked agent -- nothing was sent. Answer it with " +
+                "swarm_resolve_blocked first, then amend, or amend after it finishes and pick the item up again.",
+            },
+          ],
+          details: { amended: false, slug: worker.slug, paneId: worker.paneId },
+        };
+      }
+
+      const result = await herdr(pi, buildAgentPromptArgv(worker.agent, AMEND_INSTRUCTION), signal);
+      if (result.code !== 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `amend_failed: ${worker.agent} (${worker.slug}) -- herdr agent prompt exited ${result.code}: ${result.stderr || result.stdout}`,
+            },
+          ],
+          details: { amended: false, slug: worker.slug, paneId: worker.paneId },
+        };
+      }
+
+      worker.amendments = [...(worker.amendments ?? []), { at: Date.now(), by: "swarm_amend" }];
+      persist(state);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `amended: ${worker.agent} (${worker.slug}, pane ${worker.paneId}) was told to re-read its item. ` +
+              "Nothing confirms it has done so -- the instruction lands as its next input, which is a correction " +
+              "while it is still planning and a rewrite of finished work if it is not. Watch its next poll event, " +
+              "and say in the end-of-run digest that this item was amended mid-flight.",
+          },
+        ],
+        details: { amended: true, slug: worker.slug, paneId: worker.paneId },
       };
     },
   });
