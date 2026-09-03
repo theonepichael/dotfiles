@@ -14,10 +14,12 @@ import registerSwarmTools, {
   buildPaneCloseArgv,
   buildTabCloseArgv,
   buildTabCreateArgv,
+  buildTabListArgv,
   buildWorkerCloseArgv,
   canOpenNewPane,
   canSpawnNew,
   classifyWaitResult,
+  findTabByLabel,
   parseTabCreate,
   loadState,
   looksTruncated,
@@ -1320,6 +1322,73 @@ describe("swarm_spawn worker bootstrap", () => {
 
   // Cleanup that fails is still cleanup: the reason it was cleaning up after
   // has to survive it.
+  // THE ORPHAN. `tab create` exiting 0 with output that will not parse has
+  // already created a tab, and the id needed to close it was in exactly the
+  // response that could not be read. Every other post-create failure goes
+  // through failWithTab and is cleaned up; this one had nothing to clean up
+  // with, and a live tab nobody polls is the leak that turned two failed runs
+  // into six orphans on 2026-09-02.
+  test("an unparseable tab create recovers the tab by its label and closes it", async () => {
+    const { spawn, stub } = stubFor((argv) => {
+      if (argv[0] === "tab" && argv[1] === "create") {
+        return { code: 0, stdout: "{not json at all", stderr: "" };
+      }
+      if (argv[0] === "tab" && argv[1] === "list") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            result: {
+              tabs: [
+                { tab_id: "w1:t1", label: "1" },
+                { tab_id: "w1:tOrphan", label: "some-item" },
+              ],
+            },
+          }),
+          stderr: "",
+        };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    const res = await spawnOne(spawn);
+
+    expect(res.details.failed[0]?.slug).toBe("some-item");
+    expect(res.details.failed[0]?.reason).toContain("could not parse tab create response");
+    expect(workerCloses(stub).map((c) => c.argv[2])).toEqual(["w1:tOrphan"]);
+  });
+
+  test("an ambiguous label closes nothing and says a tab needs closing by hand", async () => {
+    // Two tabs carry the label, or none does. Guessing which to close risks
+    // closing a tab the human opened, so the honest move is to name the leak
+    // and leave it -- herdr's own guidance is not to close what you did not
+    // create, and this path cannot prove which one that is.
+    const { spawn, stub } = stubFor((argv) => {
+      if (argv[0] === "tab" && argv[1] === "create") {
+        return { code: 0, stdout: "{not json at all", stderr: "" };
+      }
+      if (argv[0] === "tab" && argv[1] === "list") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            result: {
+              tabs: [
+                { tab_id: "w1:tA", label: "some-item" },
+                { tab_id: "w1:tB", label: "some-item" },
+              ],
+            },
+          }),
+          stderr: "",
+        };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    const res = await spawnOne(spawn);
+
+    expect(res.details.failed[0]?.reason).toContain("close it by hand");
+    expect(workerCloses(stub)).toHaveLength(0);
+  });
+
   test("a pane close that throws does not throw away the failure reason", async () => {
     const { spawn } = stubFor((argv) => {
       if (argv[0] === "agent" && argv[1] === "start") {
@@ -1387,6 +1456,47 @@ describe("parseTabCreate", () => {
     expect(parseTabCreate("not json")).toBeUndefined();
     expect(parseTabCreate("{}")).toBeUndefined();
     expect(parseTabCreate("")).toBeUndefined();
+  });
+});
+
+describe("buildTabListArgv / findTabByLabel", () => {
+  const listing = (labels: [string, string][]) =>
+    JSON.stringify({ result: { tabs: labels.map(([tab_id, label]) => ({ tab_id, label })) } });
+
+  test("tab list takes no arguments", () => {
+    expect(buildTabListArgv()).toEqual(["tab", "list"]);
+  });
+
+  test("finds a tab when exactly one carries the label", () => {
+    expect(
+      findTabByLabel(
+        listing([
+          ["w1:t1", "1"],
+          ["w1:tX", "my-slug"],
+        ]),
+        "my-slug",
+      ),
+    ).toBe("w1:tX");
+  });
+
+  test("refuses to guess when the label is ambiguous or absent", () => {
+    // Closing the wrong tab is worse than reporting a leak, and a duplicate
+    // label cannot say which one this spawn created.
+    expect(
+      findTabByLabel(
+        listing([
+          ["w1:tA", "dup"],
+          ["w1:tB", "dup"],
+        ]),
+        "dup",
+      ),
+    ).toBeUndefined();
+    expect(findTabByLabel(listing([["w1:t1", "1"]]), "missing")).toBeUndefined();
+  });
+
+  test("returns undefined on unparseable output instead of throwing", () => {
+    expect(findTabByLabel("not json", "x")).toBeUndefined();
+    expect(findTabByLabel("{}", "x")).toBeUndefined();
   });
 });
 
@@ -1723,5 +1833,168 @@ describe("swarm_poll and workers parked at awaiting_relay", () => {
     expect(text).not.toBe("No active workers to poll.");
     expect(text).toContain("relayrun-w1");
     expect(text).toContain("swarm_resolve_blocked");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// swarm_poll's blocking wait: abort, and the drain race.
+//
+// When nothing is queued, swarm_poll parks on a promise that only a worker's
+// `agent wait` can settle -- 30 minutes by default. Two things went wrong
+// there. The tool call's abort signal was passed to every herdr call AFTER
+// the wait but not to the wait itself, so an aborted poll never returned and
+// its resolver stayed in the run's waiter list forever. And when an event
+// finally arrived it woke EVERY queued waiter at once, while the first to run
+// drained the queue with splice(0) -- so any concurrent poll woke to an empty
+// queue and reported "no events" for a run that was in fact making progress.
+// ---------------------------------------------------------------------------
+
+describe("swarm_poll blocking wait", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-poll-wait-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A stub whose `agent wait` answers only when the test says so. */
+  function setup(runId: string, agents: string[]) {
+    const workers = agents.map((agent, i) => ({
+      agent,
+      slug: `item-${i}`,
+      paneId: `w1:p${i}`,
+      tabId: `w1:t${i}`,
+      lifecycle: "active" as const,
+    }));
+    saveState({ runId, concurrency: agents.length, nextCounter: agents.length, workers }, dir);
+
+    const settle = new Map<string, (r: { code: number; stdout: string; stderr: string }) => void>();
+    const calls: ExecCall[] = [];
+    const tools = new Map<string, { execute: (...a: never[]) => Promise<unknown> }>();
+    const pi = {
+      exec(_cmd: string, argv: string[]) {
+        calls.push({ argv });
+        if (argv[0] === "agent" && argv[1] === "list") {
+          return Promise.resolve({
+            code: 0,
+            stdout: JSON.stringify({
+              result: {
+                agents: workers.map((w) => ({
+                  agent: "pi",
+                  agent_status: "working",
+                  name: w.agent,
+                  pane_id: w.paneId,
+                })),
+              },
+            }),
+            stderr: "",
+          });
+        }
+        if (argv[0] === "agent" && argv[1] === "wait") {
+          // Held open until the test resolves it, the way a real worker's
+          // 30-minute wait is held open until that worker settles.
+          return new Promise((resolve) => settle.set(argv[2]!, resolve));
+        }
+        return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+      },
+      registerTool(def: { name: string; execute: (...a: never[]) => Promise<unknown> }) {
+        tools.set(def.name, def);
+      },
+    };
+    registerSwarmTools(pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+
+    const finish = async (agent: string, status: string) => {
+      // The stub's wait promise is only created once armWait has run, which
+      // happens inside the poll call after its own awaits, so wait for the
+      // registration rather than assuming a fixed number of microtasks.
+      for (let i = 0; i < 200 && !settle.has(agent); i++) {
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      if (!settle.has(agent)) throw new Error(`no wait ever armed for ${agent}`);
+      settle.get(agent)!({
+        code: 0,
+        stdout: realWaitEnvelope(status, agent, "w1:p0"),
+        stderr: "",
+      });
+    };
+
+    return { poll, calls, finish };
+  }
+
+  const runPoll = (
+    poll: { execute: (...a: never[]) => Promise<unknown> },
+    runId: string,
+    signal?: AbortSignal,
+  ) =>
+    poll.execute(
+      ...(["call", { runId, timeoutMs: 1000 }, signal] as unknown as never[]),
+    ) as Promise<{ content: { text: string }[]; details: { events: { kind: string }[] } }>;
+
+  test("an aborted poll settles instead of hanging on a promise nothing resolves", async () => {
+    const { poll } = setup("abortrun", ["abortrun-w1"]);
+    const controller = new AbortController();
+
+    const pending = runPoll(poll, "abortrun", controller.signal);
+    // Let the poll reach its wait before aborting, so this exercises the
+    // blocking path rather than the already-aborted shortcut.
+    await Promise.resolve();
+    controller.abort();
+
+    const res = await Promise.race([
+      pending,
+      new Promise<"hung">((r) => setTimeout(() => r("hung"), 2000)),
+    ]);
+
+    expect(res).not.toBe("hung");
+    expect((res as { details: { events: unknown[] } }).details.events).toEqual([]);
+    expect((res as { content: { text: string }[] }).content[0]?.text).toContain("aborted");
+  });
+
+  test("a poll already aborted before it waits returns rather than parking", async () => {
+    const { poll } = setup("prerun", ["prerun-w1"]);
+    const controller = new AbortController();
+    controller.abort();
+
+    const res = await Promise.race([
+      runPoll(poll, "prerun", controller.signal),
+      new Promise<"hung">((r) => setTimeout(() => r("hung"), 2000)),
+    ]);
+
+    expect(res).not.toBe("hung");
+  });
+
+  // THE DRAIN RACE. Both polls wake on the first event; whichever loses the
+  // splice(0) must go back to waiting, not report an empty run.
+  test("a poll that loses the drain race waits for the next event instead of reporting none", async () => {
+    const { poll, finish } = setup("racerun", ["racerun-w1", "racerun-w2"]);
+
+    const first = runPoll(poll, "racerun");
+    const second = runPoll(poll, "racerun");
+
+    await finish("racerun-w1", "idle");
+    await finish("racerun-w2", "idle");
+
+    const results = await Promise.race([
+      Promise.all([first, second]),
+      new Promise<"hung">((r) => setTimeout(() => r("hung"), 3000)),
+    ]);
+
+    expect(results).not.toBe("hung");
+    const [a, b] = results as { details: { events: { kind: string }[] } }[];
+    // Two events, two polls, one each -- and crucially neither poll reports
+    // an empty list while the run still had an event coming.
+    expect(a!.details.events.length + b!.details.events.length).toBe(2);
+    expect(a!.details.events).not.toEqual([]);
+    expect(b!.details.events).not.toEqual([]);
   });
 });
