@@ -152,6 +152,11 @@ dest = "~/.claude/commands/to-tickets.md"
 harness = "claude"
 
 [[link]]
+src = "claude/commands/swarm.md"
+dest = "~/.claude/commands/swarm.md"
+harness = "claude"
+
+[[link]]
 src = "claude/commands/skill-map.md"
 dest = "~/.claude/commands/skill-map.md"
 harness = "claude"
@@ -251,6 +256,10 @@ dest = "~/.claude/scripts/grill.py"
 [[link]]
 src = "claude/scripts/second_opinion.py"
 dest = "~/.claude/scripts/second_opinion.py"
+
+[[link]]
+src = "claude/scripts/herdr_delegate.py"
+dest = "~/.claude/scripts/herdr_delegate.py"
 
 [[link]]
 src = "claude/scripts/standup.py"
