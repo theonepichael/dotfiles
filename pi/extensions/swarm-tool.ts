@@ -91,6 +91,16 @@ export interface WorkerRecord {
    * `pane close`. A worker spawned by this version always carries one.
    */
   tabId?: string;
+  /**
+   * The files this worker's item declared it would touch (`related_files`).
+   *
+   * Held on the record so a later wave can tell whether a candidate would
+   * edit the same file as something already running, without re-querying
+   * dev_status for items that have since left READY. Optional for records
+   * written before scheduling existed: such a worker simply constrains
+   * nothing, which is the pre-existing behaviour.
+   */
+  paths?: string[];
   lifecycle: WorkerLifecycle;
 }
 
@@ -99,6 +109,27 @@ export interface SwarmState {
   concurrency: number;
   nextCounter: number;
   workers: WorkerRecord[];
+  /**
+   * Every slug this run has already handed to a worker, successfully or not.
+   *
+   * Automatic selection reads the READY set fresh on each wave, and a worker
+   * that dies without reaching `dev_status.py start` leaves its item exactly
+   * as it found it -- READY. Without this the next wave selects that same
+   * item again, and again, which is the "silently retried" behaviour
+   * swarm_poll's own guidance rules out. Caught on a live run: a worker whose
+   * tab was closed was re-spawned by the very next wave.
+   *
+   * Attempted, not completed, is the right key. The run should not re-select
+   * an item it already tried, whatever the outcome; a human decides whether a
+   * failure is worth another go, from the digest.
+   *
+   * A DEFERRED item is not attempted -- it was never handed to anyone, and
+   * becoming schedulable later is the entire point of deferring it.
+   *
+   * Optional for state files written before this existed; absent means the
+   * run has attempted nothing it can prove, which is the old behaviour.
+   */
+  attempted?: string[];
 }
 
 /** One item's outcome from the spawn loop: a live worker, or a reason it never became one. */
@@ -238,6 +269,136 @@ export function buildTabCreateArgv(cwd: string, label: string): string[] {
 
 export function buildTabCloseArgv(tabId: string): string[] {
   return ["tab", "close", tabId];
+}
+
+// ---------------------------------------------------------------------------
+// Scheduling
+// ---------------------------------------------------------------------------
+
+/**
+ * dev_status.py, the authority on which items are READY.
+ *
+ * Resolved per call rather than captured at module load, and overridable --
+ * the same seam herdrStateDir() uses, and for the same two reasons: a test
+ * can point it at a fixture, and a live check of an unreleased change can
+ * point it at a worktree copy instead of the installed symlink.
+ */
+export function devStatusPath(): string {
+  return (
+    process.env.PI_SWARM_DEV_STATUS_PATH ?? join(homedir(), ".claude", "scripts", "dev_status.py")
+  );
+}
+
+/** `dev_status.py ready` reports the bucket the dashboard already builds. */
+export function buildReadyArgv(prefix?: string): string[] {
+  const argv = ["python3", devStatusPath(), "ready"];
+  return prefix ? [...argv, "--prefix", prefix] : argv;
+}
+
+/** One READY item, as much of it as scheduling needs. */
+export interface ReadyItem {
+  id: string;
+  related_files?: { path?: unknown }[];
+}
+
+export function parseReadyItems(stdout: string): ReadyItem[] {
+  try {
+    const parsed: unknown = JSON.parse(stdout);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((i): i is ReadyItem => typeof (i as ReadyItem)?.id === "string");
+  } catch {
+    return [];
+  }
+}
+
+/** The files an item declares it will touch. Absent or malformed entries simply contribute nothing. */
+export function itemPaths(item: ReadyItem): string[] {
+  const paths = (item.related_files ?? [])
+    .map((f) => f?.path)
+    .filter((p): p is string => typeof p === "string" && p.length > 0);
+  return [...new Set(paths)];
+}
+
+/**
+ * True when two declared paths refer to overlapping work.
+ *
+ * Equality, or one containing the other as a directory. The separator check
+ * is the point: plain string prefixing would make "/r/pkg" swallow
+ * "/r/pkg-other", deferring unrelated items forever.
+ */
+function pathsCollide(a: string, b: string): boolean {
+  // Trailing slashes are stripped first, or a directory written "/repo/pkg/"
+  // builds the prefix "/repo/pkg//" and matches nothing inside itself.
+  const x = a.replace(/\/+$/, "");
+  const y = b.replace(/\/+$/, "");
+  if (x === y) return true;
+  return x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
+}
+
+export interface SelectionResult {
+  slugs: string[];
+  /** Held back because another item in this wave, or a running worker, edits the same file. */
+  deferred: { slug: string; reason: string }[];
+  /** Held back only because the concurrency cap was already full. */
+  skipped: string[];
+}
+
+/**
+ * Choose which candidates may run together.
+ *
+ * Two items that edit the same file cannot run concurrently: each worker gets
+ * its own worktree, so the second one to merge conflicts. dev_status already
+ * prevents two sessions claiming the same ITEM; nothing prevented two items
+ * claiming the same FILE, and that is the collision that actually occurred --
+ * meta-swarm-trust-ack-fail-open and meta-swarm-poll-abort-and-orphan-pane
+ * both edit swarm-tool.ts and had to be held apart by hand.
+ *
+ * `deferred` and `skipped` are kept apart because the orchestrator acts
+ * differently on them: a skipped item is coming next wave whatever happens,
+ * while a deferred one is waiting on a specific worker to finish.
+ *
+ * Termination rests on one property: with no worker running and no item yet
+ * selected, the first candidate collides with nothing, so a non-empty queue
+ * always yields at least one spawn. A deferred item therefore cannot be
+ * deferred forever -- the wave that defers it must have spawned the worker it
+ * collided with, and that worker finishes.
+ */
+export function selectSchedulable(
+  candidates: readonly ReadyItem[],
+  takenPaths: readonly string[],
+  headroom: number,
+): SelectionResult {
+  const slugs: string[] = [];
+  const deferred: { slug: string; reason: string }[] = [];
+  const skipped: string[] = [];
+  const taken = [...takenPaths];
+
+  const seen = new Set<string>();
+
+  for (const candidate of candidates) {
+    // A slug repeated in an explicit `items` list would otherwise pass every
+    // check twice and spawn two workers onto one backlog item, each in its own
+    // worktree, racing each other's commits.
+    if (seen.has(candidate.id)) continue;
+    seen.add(candidate.id);
+    if (slugs.length >= headroom) {
+      skipped.push(candidate.id);
+      continue;
+    }
+    const paths = itemPaths(candidate);
+    const clash = paths.find((p) => taken.some((t) => pathsCollide(p, t)));
+    if (clash !== undefined) {
+      deferred.push({
+        slug: candidate.id,
+        reason: `file overlap with work already in this run: ${clash}`,
+      });
+      continue;
+    }
+    slugs.push(candidate.id);
+    taken.push(...paths);
+  }
+
+  return { slugs, deferred, skipped };
 }
 
 export function buildTabListArgv(): string[] {
@@ -851,6 +1012,7 @@ export default function (pi: ExtensionAPI) {
     tabId: string,
     agentId: string,
     slug: string,
+    paths: string[],
   ): Promise<SpawnOutcome> {
     const startResult = await herdr(pi, buildAgentStartArgv(agentId, paneId));
     if (startResult.code !== 0) {
@@ -882,6 +1044,7 @@ export default function (pi: ExtensionAPI) {
         slug,
         paneId,
         tabId,
+        paths,
         lifecycle: "active" as const,
       },
     };
@@ -1062,21 +1225,43 @@ export default function (pi: ExtensionAPI) {
       "Tabs are created sequentially (herdr tab create mutates shared workspace state), then agent start+prompt run concurrently across the resulting root panes. Every tab is full terminal size, so concurrency is not bounded by the terminal's width.",
       "A per-item spawn failure (agent_not_ready, agent_prompt_stalled, spawn_error, or an unparseable tab-create response) is reported in `failed`, not thrown -- other items in the batch are unaffected. Any failure after the tab exists carries that pane's captured output in its reason, and the tab is closed.",
       "Call swarm_poll next to begin the completion loop.",
+      "Items are re-read from dev_status on every call, so an item unblocked by a worker that just finished is picked up by the next spawn without being named. Pass `prefix` (not `items`) to let it select, and call it again each time swarm_poll frees a slot -- swarm_poll itself never spawns.",
+      "Two items whose related_files name the same file are never spawned into the same wave: each worker has its own worktree, so the second to merge would conflict. The loser is reported as deferred, still owed, and becomes schedulable once the worker it collided with finishes. Deferred is not the same as skipped (cap) -- a skipped item is coming next wave regardless.",
     ],
     parameters: Type.Object({
       runId: Type.String({
         description:
           "Identifier for this swarm run -- reused across spawn/poll/resolve calls, and to recover state after a restart.",
       }),
-      items: Type.Array(Type.String(), {
-        description: "Backlog item slugs to spawn, in queue order.",
-      }),
+      items: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            "Backlog item slugs to spawn, in queue order. Omit to select automatically from the READY queue, which requires `prefix`.",
+        }),
+      ),
+      prefix: Type.Optional(
+        Type.String({
+          description:
+            'Slug prefix scoping automatic selection, e.g. "meta-". Required when `items` is omitted.',
+        }),
+      ),
       concurrency: Type.Optional(
         Type.Number({ description: "Max concurrent active workers. Default 3." }),
       ),
     }),
     async execute(_toolCallId, params) {
-      const typed = params as { runId: string; items: string[]; concurrency?: number };
+      const typed = params as {
+        runId: string;
+        items?: string[];
+        prefix?: string;
+        concurrency?: number;
+      };
+      if (!typed.items && !typed.prefix) {
+        throw new Error(
+          "swarm_spawn needs either `items` or `prefix`. Selecting from the whole READY queue " +
+            "unscoped would pull unrelated projects into this run.",
+        );
+      }
       // Everything from reading the pool to pushing the new workers runs
       // under the run's lock -- measuring the budget and acting on it have to
       // be one step, or a second caller measures a pool this one is about to
@@ -1084,8 +1269,44 @@ export default function (pi: ExtensionAPI) {
       return withSpawnLock(typed.runId, async () => {
         const state = await getOrInitState(typed.runId, typed.concurrency ?? DEFAULT_CONCURRENCY);
 
-        const budget = spawnBudget(state, typed.items.length);
-        const toSpawn = typed.items.slice(0, budget);
+        // dev_status.py owns what READY means -- it is computed from the
+        // blocker graph on every call, so an item becomes ready the moment its
+        // last blocker is approved. Asking it each wave is what makes a run
+        // follow a dependency chain instead of processing one fixed list.
+        // The records also carry related_files, which is the only signal for
+        // whether two items would edit the same file.
+        const readyResult = await pi.exec("python3", buildReadyArgv(typed.prefix).slice(1), {});
+        if (readyResult.code !== 0) {
+          // An empty queue and an unreadable one look identical downstream:
+          // both yield zero candidates and "Spawned 0 worker(s)", which the
+          // orchestrator reads as a drained run. It would then finish, leaving
+          // every remaining item unspawned and unreported. A lock timeout or a
+          // broken dev_status.py must stop the run, not quietly end it.
+          throw new Error(
+            `could not read the READY queue from dev_status.py (exit ${readyResult.code}): ` +
+              `${readyResult.stderr || readyResult.stdout || "no output"}`,
+          );
+        }
+        const ready = parseReadyItems(readyResult.stdout);
+        const readyById = new Map(ready.map((i) => [i.id, i]));
+
+        const alreadyRunning = new Set(state.workers.map((w) => w.slug));
+        const attempted = new Set(state.attempted ?? []);
+        const candidates: ReadyItem[] = (typed.items ?? ready.map((i) => i.id))
+          .filter((slug) => !alreadyRunning.has(slug))
+          // Only automatic selection skips what this run already tried. An
+          // explicit `items` list is the caller asking for those items by
+          // name, and a deliberate retry is a legitimate thing to ask for.
+          // This is not a way to double-spawn: an item whose worker is still
+          // in the pool was already removed by the `alreadyRunning` filter
+          // above, whichever way it was named.
+          .filter((slug) => typed.items !== undefined || !attempted.has(slug))
+          .map((slug) => readyById.get(slug) ?? { id: slug });
+
+        const budget = spawnBudget(state, candidates.length);
+        const takenPaths = state.workers.flatMap((w) => w.paths ?? []);
+        const selection = selectSchedulable(candidates, takenPaths, budget);
+        const toSpawn = selection.slugs;
 
         const tabs: {
           slug: string;
@@ -1138,7 +1359,13 @@ export default function (pi: ExtensionAPI) {
             state.nextCounter += 1;
             const agentId = nextAgentId(typed.runId, state.nextCounter, p.slug);
             try {
-              return await spawnInto(paneId, tabId, agentId, p.slug);
+              return await spawnInto(
+                paneId,
+                tabId,
+                agentId,
+                p.slug,
+                itemPaths(readyById.get(p.slug) ?? { id: p.slug }),
+              );
             } catch (e) {
               // A throw out of spawnInto's herdr calls is a post-create
               // failure like any other. Without this it lands in allSettled's
@@ -1162,21 +1389,34 @@ export default function (pi: ExtensionAPI) {
         }
 
         state.workers.push(...spawned);
+        // Everything handed to a worker, however it went -- see SwarmState.attempted.
+        state.attempted = [...new Set([...(state.attempted ?? []), ...toSpawn])];
         persist(state);
 
-        const skipped = typed.items.slice(budget);
+        const skipped = selection.skipped;
+        const deferred = selection.deferred;
 
-        const summary = `Spawned ${spawned.length} worker(s), ${failed.length} failed to spawn, ${skipped.length} skipped (cap).`;
-        const reasons = failed.map((f) => `- ${f.slug}: ${reasonHeadline(f.reason)}`).join("\n");
+        const parts = [
+          `Spawned ${spawned.length} worker(s)`,
+          `${failed.length} failed to spawn`,
+          `${skipped.length} skipped (cap)`,
+          `${deferred.length} deferred (file overlap)`,
+        ];
+        const lines = [`${parts.join(", ")}.`];
+        for (const f of failed) lines.push(`- ${f.slug}: ${reasonHeadline(f.reason)}`);
+        // Deferred items are named in the TEXT, not just details: the
+        // orchestrator has to know they are still owed, and no provider
+        // adapter reads `details`.
+        for (const d of deferred) lines.push(`- ${d.slug}: deferred -- ${d.reason}`);
+        if (spawned.length === 0 && deferred.length > 0) {
+          lines.push(
+            "Nothing spawned but items remain: poll the running workers, then call swarm_spawn again once one finishes.",
+          );
+        }
 
         return {
-          content: [
-            {
-              type: "text",
-              text: failed.length ? `${summary}\n${reasons}` : summary,
-            },
-          ],
-          details: { spawned, failed, skipped },
+          content: [{ type: "text", text: lines.join("\n") }],
+          details: { spawned, failed, skipped, deferred },
         };
       });
     },
