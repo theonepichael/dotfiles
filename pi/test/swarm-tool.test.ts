@@ -158,6 +158,41 @@ describe("herdr argv builders", () => {
     ]);
   });
 
+  test("agent start: a model is handed to pi after the -- separator, not to herdr", () => {
+    // herdr's usage is `agent start <NAME> --kind <KIND> --pane <ID> [OPTIONS]
+    // [-- [AGENT_ARG]...]`, so everything for pi has to sit after `--`.
+    // Without the separator herdr would reject --model as its own unknown flag.
+    const argv = buildAgentStartArgv("run1-w1", "w1:pB", "opencode-go/glm-5.3-flash");
+    expect(argv).toEqual([
+      "agent",
+      "start",
+      "run1-w1",
+      "--kind",
+      "pi",
+      "--pane",
+      "w1:pB",
+      "--timeout",
+      "30000",
+      "--",
+      "--model",
+      "opencode-go/glm-5.3-flash",
+    ]);
+  });
+
+  test("agent start: no model means today's argv exactly, separator included", () => {
+    // Omitted must stay byte-identical to the pre-change command: an empty
+    // trailing `--` is a different command line and pi parses it differently.
+    const argv = buildAgentStartArgv("run1-w1", "w1:pB", undefined);
+    expect(argv).not.toContain("--");
+    expect(argv).not.toContain("--model");
+    expect(argv).toEqual(buildAgentStartArgv("run1-w1", "w1:pB"));
+  });
+
+  test("agent start: the model is one discrete argv element, never shell-interpolated", () => {
+    const argv = buildAgentStartArgv("run1-w1", "w1:pB", "provider/model with space");
+    expect(argv[argv.length - 1]).toBe("provider/model with space");
+  });
+
   test("agent prompt: prompt is a discrete argv element, never shell-interpolated", () => {
     const nasty = `answer with a "quote" and $(rm -rf /) and 'apostrophes'`;
     const argv = buildAgentPromptArgv("run1-w1", nasty);
@@ -2825,5 +2860,61 @@ describe("deliberate-stop reporting", () => {
       livenessConfirmed: true,
     });
     expect(detail).toContain("git worktree list");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A pinned worker model reaches `herdr agent start` and is recorded.
+//
+// Before this, buildAgentStartArgv emitted no agent args at all, so every
+// worker silently took pi's default and no digest could say which model did
+// the work. The plumbing existed at both ends -- herdr forwards everything
+// after `--`, and pi --model takes a provider/id -- it was simply never wired.
+// ---------------------------------------------------------------------------
+
+describe("swarm_spawn model passthrough", () => {
+  test("the model lands after the separator, so herdr forwards it instead of rejecting it", () => {
+    const argv = buildAgentStartArgv("run1-w1", "w1:pB", "opencode-go/glm-5.3-flash");
+    const sep = argv.indexOf("--");
+    expect(sep).toBeGreaterThan(-1);
+    // Everything herdr parses must precede the separator...
+    expect(argv.slice(0, sep)).toContain("--pane");
+    expect(argv.slice(0, sep)).not.toContain("--model");
+    // ...and everything for pi must follow it, in order.
+    expect(argv.slice(sep)).toEqual(["--", "--model", "opencode-go/glm-5.3-flash"]);
+  });
+
+  test("an omitted model changes nothing about the command", () => {
+    expect(buildAgentStartArgv("run1-w1", "w1:pB")).toEqual([
+      "agent",
+      "start",
+      "run1-w1",
+      "--kind",
+      "pi",
+      "--pane",
+      "w1:pB",
+      "--timeout",
+      "30000",
+    ]);
+  });
+
+  test("a WorkerRecord can carry the model it was started on", () => {
+    // The field is what lets a digest answer "what did the work". Optional,
+    // because a record written before this existed simply took the default.
+    const pinned: WorkerRecord = {
+      agent: "run1-w1",
+      slug: "s",
+      paneId: "p",
+      model: "opencode-go/glm-5.3-flash",
+      lifecycle: "active",
+    };
+    expect(pinned.model).toBe("opencode-go/glm-5.3-flash");
+    const unpinned: WorkerRecord = {
+      agent: "run1-w2",
+      slug: "s2",
+      paneId: "p2",
+      lifecycle: "active",
+    };
+    expect(unpinned.model).toBeUndefined();
   });
 });
