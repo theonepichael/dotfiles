@@ -506,6 +506,32 @@ class BackendPayloadSizeError(BackendError):
     """
 
 
+class BackendModelPolicyError(BackendError):
+    """A backend rejected a model because the ACCOUNT cannot select models
+    through the model flag -- an entitlement failure, not a bad model id.
+
+    Concretely (copilot): GitHub Copilot's ``--model`` flag requires a Pro
+    or Enterprise plan. On a free tier EVERY id is rejected with vendor
+    wording ('Model X from --model flag is not available') that describes an
+    entitlement problem in the language of a bad-id problem -- which is why
+    it read as a wrong pool and cost two misdiagnoses (2026-09-03). The
+    re-raised message states the real cause and, for copilot, names the
+    per-machine pool variable to unset.
+
+    A strict BackendError subclass: every existing ``except BackendError``
+    call site keeps catching this unchanged, while callers reporting
+    rule-outs distinguish it.
+    """
+
+
+# The minimal stable fragment of copilot's entitlement-rejection wording.
+# Deliberately not the vendor's full sentence: they can reword the rest, and
+# a reworded message must degrade to a plain BackendError, never
+# mis-classify -- which is also why there is no retry-without-model fallback
+# keyed on this text.
+_COPILOT_MODEL_POLICY_MARKER = "from --model flag is not available"
+
+
 PI_MAX_PROMPT_BYTES = 14000
 
 
@@ -831,10 +857,32 @@ def run_copilot(prompt: str, *, model: str | None, timeout: float) -> str:
     implicit default routing (no ``--model`` flag at all) works. Callers
     should leave ``model`` unset/empty unless their account is confirmed to
     allow explicit model selection.
+
+    A failure whose text carries the vendor's entitlement fragment
+    (:data:`_COPILOT_MODEL_POLICY_MARKER`) is re-raised as
+    :class:`BackendModelPolicyError` stating the true cause -- the flag
+    needs a Pro or Enterprise plan, so no model id works -- and the pool
+    variables to unset on a free-tier machine. No retry without the model:
+    keying a fallback on vendor error text they can reword would turn a
+    working backend into a silent regression.
     """
     cmd = build_isolated_command("copilot", prompt, model=model)
     with _track_backend_call("copilot", model, prompt):
-        return run_backend_command(cmd, timeout)
+        try:
+            return run_backend_command(cmd, timeout)
+        except BackendError as exc:
+            if _COPILOT_MODEL_POLICY_MARKER in str(exc):
+                raise BackendModelPolicyError(
+                    "copilot cannot select a model: the --model flag requires "
+                    "a GitHub Copilot Pro or Enterprise plan, so no model id "
+                    "works on this account's tier -- the rejection is an "
+                    "entitlement failure, not a bad model id. Vendor wording: "
+                    f"{exc}. On a free-tier machine, unset "
+                    "SECOND_OPINION_COPILOT_MODEL_POOL (and "
+                    "SECOND_OPINION_COPILOT_MODEL) to let copilot use its "
+                    "implicit default routing."
+                ) from exc
+            raise
 
 
 _DEFAULT_PI_PROVIDER = "opencode-go"

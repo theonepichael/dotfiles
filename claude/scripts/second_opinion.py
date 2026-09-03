@@ -53,7 +53,13 @@ Env vars
                                       --model-index selects the pool
                                       regardless.
   SECOND_OPINION_COPILOT_MODEL_POOL   same, for the copilot backend and
-                                      SECOND_OPINION_COPILOT_MODEL.
+                                      SECOND_OPINION_COPILOT_MODEL. copilot's
+                                      --model flag requires a GitHub Copilot Pro
+                                      or Enterprise plan: on a free tier no id
+                                      works and the call fails with an
+                                      entitlement error naming this variable --
+                                      leave the pool unset there so copilot
+                                      uses its default.
   SECOND_OPINION_TIMEOUT_SECONDS    default per-backend timeout in seconds (default 120)
   SECOND_OPINION_AGY_TIMEOUT_SECONDS      override the timeout for agy calls only
   SECOND_OPINION_PI_TIMEOUT_SECONDS       override the timeout for pi calls only

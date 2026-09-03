@@ -129,22 +129,28 @@ class AvailableBackendsTests(unittest.TestCase):
         """resolve_backend now filters on contract eligibility, not merely on
         presence -- an installed backend that cannot be isolated must never be
         selected."""
-        with patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"):
-            with patch.object(llm_backends, "containment_available", lambda: True):
-                self.assertEqual(llm_backends.resolve_backend(), "agy")
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(llm_backends, "containment_available", lambda: True),
+        ):
+            self.assertEqual(llm_backends.resolve_backend(), "agy")
 
     def test_18b_resolve_backend_skips_a_backend_it_cannot_isolate(self) -> None:
         """On a host with no working namespaces, agy and opencode are
         ineligible (both need containment) and resolution falls to pi, which
         isolates by flags alone."""
-        with patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"):
-            with patch.object(llm_backends, "containment_available", lambda: False):
-                self.assertEqual(llm_backends.resolve_backend(), "pi")
+        with (
+            patch("shutil.which", side_effect=lambda b: f"/usr/bin/{b}"),
+            patch.object(llm_backends, "containment_available", lambda: False),
+        ):
+            self.assertEqual(llm_backends.resolve_backend(), "pi")
 
     def test_19_resolve_backend_none_when_unavailable(self) -> None:
-        with patch("shutil.which", return_value=None):
-            with patch.object(llm_backends, "containment_available", lambda: False):
-                self.assertIsNone(llm_backends.resolve_backend())
+        with (
+            patch("shutil.which", return_value=None),
+            patch.object(llm_backends, "containment_available", lambda: False),
+        ):
+            self.assertIsNone(llm_backends.resolve_backend())
 
 
 class RunCommandRealSubprocessTests(unittest.TestCase):
@@ -484,6 +490,46 @@ class RunCopilotTests(unittest.TestCase):
             ],
             60,
         )
+
+    def test_36b_entitlement_rejection_raises_policy_error(self) -> None:
+        """Regression: a copilot --model rejection is an entitlement failure
+        (the flag needs Copilot Pro/Enterprise), but the vendor words it as a
+        bad-model-id failure ('not available'), which sent two diagnoses down
+        the wrong path on 2026-09-03. The re-raised error must state the real
+        cause and the env var to unset, not just relay vendor text."""
+        vendor = 'Error: Model "opencode-go/hy3" from --model flag is not available.'
+        with (
+            patch.object(
+                llm_backends,
+                "run_backend_command",
+                side_effect=llm_backends.BackendError(f"exited 1: {vendor}"),
+            ),
+            self.assertRaises(llm_backends.BackendModelPolicyError) as cm,
+        ):
+            llm_backends.run_copilot("prompt", model="opencode-go/hy3", timeout=60)
+        msg = str(cm.exception)
+        # The true cause, in the code's own words -- never only vendor text.
+        self.assertIn("Pro or Enterprise", msg)
+        # What to unset on a free-tier machine.
+        self.assertIn("SECOND_OPINION_COPILOT_MODEL_POOL", msg)
+        # Vendor wording kept verbatim for the record; assert only the
+        # stable fragment, not the whole sentence (they may reword).
+        self.assertIn("from --model flag is not available", msg)
+        # Strict-subclass contract: generic handlers keep working.
+        self.assertIsInstance(cm.exception, llm_backends.BackendError)
+
+    def test_36c_non_entitlement_failure_stays_plain_backend_error(self) -> None:
+        with (
+            patch.object(
+                llm_backends,
+                "run_backend_command",
+                side_effect=llm_backends.BackendError("exited 1: quota exceeded"),
+            ),
+            self.assertRaises(llm_backends.BackendError) as cm,
+        ):
+            llm_backends.run_copilot("prompt", model="claude-sonnet-4.6", timeout=60)
+        self.assertNotIsInstance(cm.exception, llm_backends.BackendModelPolicyError)
+        self.assertIn("quota exceeded", str(cm.exception))
 
 
 class RunPiTests(unittest.TestCase):
@@ -928,9 +974,11 @@ class RunFunctionsLoggingTests(_ContainmentStubbed, _LogPathRedirected):
         self.assertEqual(record["outcome"], "error")
 
     def test_78_isolation_error_before_call_is_never_logged(self) -> None:
-        with patch.object(llm_backends, "containment_available", lambda: False):
-            with self.assertRaises(llm_backends.IsolationError):
-                llm_backends.run_agy("p", model="m", timeout=60)
+        with (
+            patch.object(llm_backends, "containment_available", lambda: False),
+            self.assertRaises(llm_backends.IsolationError),
+        ):
+            llm_backends.run_agy("p", model="m", timeout=60)
         self.assertEqual(_read_jsonl(self.log_path), [])
 
 

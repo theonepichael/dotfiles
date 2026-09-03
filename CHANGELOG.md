@@ -3,6 +3,28 @@
 This repo's internal tooling changes are logged here. Breaking changes to
 harness CLIs, flags, or behavior get an entry going forward.
 
+## 2026-09-03
+
+### Fixed
+
+- **Legible entitlement failure for copilot `--model` rejections
+  (`claude/scripts/llm_backends.py`).** GitHub Copilot's `--model` flag
+  requires a Pro or Enterprise plan; on a free tier EVERY id is rejected
+  with vendor wording ("Model X from --model flag is not available") that
+  describes an entitlement problem in the language of a bad-model-id
+  problem — which cost two misdiagnoses in one day, both chasing
+  "wrong" pool ids when no id can work. `run_copilot` now re-raises such
+  failures as `BackendModelPolicyError` (a strict `BackendError` subclass,
+  so generic handlers are unaffected) whose message states the real cause,
+  quotes the vendor wording, and names `SECOND_OPINION_COPILOT_MODEL_POOL`
+  as the variable to unset on a free-tier machine. Detection matches only
+  the stable vendor fragment, so a reworded message degrades to a plain
+  `BackendError`; there is deliberately **no** retry-without-model
+  fallback, because keying behavior on vendor error text they can reword
+  would turn a working backend into a silent regression. Model-selection
+  behavior is otherwise unchanged: the pool stays the per-machine switch
+  (set on Enterprise machines via `~/.secrets`, unset on free tiers).
+
 ## 2026-09-01
 
 ### Added
