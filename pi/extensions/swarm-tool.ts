@@ -1,10 +1,8 @@
-import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { permissionGateAckPath } from "./permission-gate";
 
 // Registers swarm_spawn / swarm_poll / swarm_resolve_blocked -- lets a pi
 // session process several READY dev_status.py backlog items concurrently by
@@ -71,19 +69,9 @@ const DEFAULT_WAIT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes, matching --auto's
 const RESOLVE_VERIFY_TIMEOUT_MS = 5_000;
 const BLOCKED_READ_LINES = 500;
 const BLOCKED_READ_LINES_RETRY = 2000;
-/** `herdr agent start` already gates on interactive_ready, so the worker's extensions are loaded before the trust prompt is sent -- generous for the write, well under AGENT_START_TIMEOUT_MS. */
-const TRUST_ACK_TIMEOUT_MS = 15_000;
-/** A local stat, not a socket call, so a tight interval costs nothing. */
-const TRUST_ACK_POLL_MS = 100;
 /** Enough for a pi crash trace, small enough that one failure cannot flood the orchestrator's digest. */
 export const PANE_CAPTURE_CHARS = 4000;
 const PANE_CAPTURE_LINES = 200;
-
-/** Resolved per call, same seam as herdrStateDir() -- lets a test wait out a deadline in milliseconds instead of 15 seconds. */
-function trustAckTimeoutMs(): number {
-  const override = Number(process.env.PI_SWARM_TRUST_ACK_TIMEOUT_MS);
-  return Number.isFinite(override) && override > 0 ? override : TRUST_ACK_TIMEOUT_MS;
-}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -228,9 +216,24 @@ export function nextAgentId(runId: string, counter: number, slug?: string): stri
  *
  * `--label` carries the slug, so the tab bar names the item -- the pane
  * rename this replaces was only ever visible in the sidebar.
+ *
+ * `--env` is what makes the worker's gates resolve themselves. It is set on
+ * the tab, so it is in pi's environment before pi starts, which is the whole
+ * reason there is no trust prompt to send afterwards -- see
+ * WORKER_UNATTENDED_ENV.
  */
 export function buildTabCreateArgv(cwd: string, label: string): string[] {
-  return ["tab", "create", "--cwd", cwd, "--label", label, "--no-focus"];
+  return [
+    "tab",
+    "create",
+    "--cwd",
+    cwd,
+    "--label",
+    label,
+    "--env",
+    WORKER_UNATTENDED_ENV,
+    "--no-focus",
+  ];
 }
 
 export function buildTabCloseArgv(tabId: string): string[] {
@@ -281,37 +284,54 @@ export function buildAgentStartArgv(agentId: string, paneId: string): string[] {
 }
 
 /**
- * Slash command that turns off permission-gate.ts's bash confirmation for a
- * worker's session.
+ * Marks a worker's tab as unattended, read by both gate extensions at module
+ * load.
  *
  * Pi ships no permission system of its own (docs/usage.md's Design
  * Principles: "it intentionally does not include ... permission popups").
- * permission-gate.ts supplies one, defaulting to enabled with an "ask"
- * fallback for anything outside ALLOW_PATTERNS. A worker lives in a herdr
- * TUI pane, so its `ctx.hasUI` is true and the gate raises `ctx.ui.confirm`
- * -- a question aimed at a human, in a pane no human is watching. The worker
- * then waits forever, and nothing surfaces it: `agent_status` stays
- * "working", so swarm_poll classifies it as making progress and the
- * orchestrator relays nothing until the wait's own timeout expires.
+ * This repo supplies two: permission-gate.ts confirms bash outside its
+ * allowlist, guard-rails.ts confirms `rm -rf` and `sudo`. Both raise
+ * `ctx.ui.confirm`, and a worker's `ctx.hasUI` is true because it really is a
+ * TUI -- one with nobody in front of it. The worker then waits forever while
+ * `agent_status` still reads "working", so swarm_poll sees progress and the
+ * orchestrator relays nothing. Observed live on 2026-09-02, twice.
  *
- * Only the bash gate is dropped. guard-rails.ts stays armed, so a worker
- * still cannot write into a repo's main checkout while an item is in
- * progress -- `/trust-session` would disable both, which is more autonomy
- * than an unattended worker should have.
+ * Passing this at tab creation replaces a slash-command handshake that tried
+ * to talk one gate down after the fact and then prove it had worked, with a
+ * token, an ack file, a poll and a 15-second deadline. The environment is set
+ * before pi starts, so there is no prompt to deliver, nothing to time out,
+ * and no window in which a worker holds real work while still armed. It also
+ * sidesteps the reason that handshake could only ever cover one gate: pi
+ * loads each extension separately, so a session-wide switch cannot be shared
+ * between them in module state -- /trust-session tried exactly that and is a
+ * proven no-op. An environment variable each gate reads for itself has no
+ * such failure mode.
+ *
+ * The two gates draw DIFFERENT conclusions from it, on purpose:
+ *   - permission-gate.ts allows. Its "ask" tier is everything outside a
+ *     narrow allowlist, and a worker that cannot run tests or git is useless.
+ *     This is what the swarm already did by sending /permission-gate-disable.
+ *   - guard-rails.ts blocks. `rm -rf` and `sudo` are refused with a reason
+ *     the worker can read, rather than asked about. Every other guard-rails
+ *     rule -- protected-path writes, the git-commit-on-main worktree policy
+ *     -- stays armed in a worker exactly as in an attended session.
+ *
+ * So this is not a blanket grant of autonomy. It is the statement "no human
+ * will answer a dialog here", which is simply true of a swarm worker.
  */
-export const WORKER_TRUST_COMMAND = "/permission-gate-disable";
+export const WORKER_UNATTENDED_ENV = "PI_AGENT_UNATTENDED=1";
 
 /**
  * `--wait` blocks until the agent settles, so a follow-up prompt can't land
  * while it is still processing this one.
  *
- * NOT usable for WORKER_TRUST_COMMAND, and the reason is the bug this file's
- * ack handshake exists to fix. herdr 0.8.2 documents `--wait` from a
- * non-working state as requiring an observed lifecycle change within 5000 ms,
- * with no flag to relax it. A client-side pi slash command applies instantly
- * and never enters the working state, so there is nothing to observe and the
- * call always returns agent_prompt_stalled -- on a worker whose gate had in
- * fact just come down. Confirmed live on 2026-09-02 against a real pi.
+ * Not usable for a client-side slash command. herdr 0.8.2 documents `--wait`
+ * from a non-working state as requiring an observed lifecycle change within
+ * 5000 ms, with no flag to relax it. A pi slash command applies instantly and
+ * never enters the working state, so there is nothing to observe and the call
+ * always returns agent_prompt_stalled. Confirmed live on 2026-09-02 against a
+ * real pi; it is why the worker trust step was a prompt-plus-ack rather than
+ * a prompt-plus-wait, before an environment variable removed the step.
  */
 export function buildAgentPromptArgv(
   agentId: string,
@@ -320,39 +340,6 @@ export function buildAgentPromptArgv(
 ): string[] {
   const argv = ["agent", "prompt", agentId, prompt];
   return opts.wait ? [...argv, "--wait"] : argv;
-}
-
-/**
- * Token this spawn will wait on, passed to WORKER_TRUST_COMMAND and used to
- * name the ack file the worker writes (permission-gate.ts owns the path).
- *
- * The random suffix is load-bearing, not decoration: it is what makes a stale
- * ack harmless. A zombie worker from a crashed run cannot write the file this
- * spawn polls, so no pre-send deletion is needed and no worker can be
- * confirmed by another worker's acknowledgement.
- */
-export function trustAckToken(agentId: string): string {
-  const normalized = agentId.replace(/[^A-Za-z0-9_-]/g, "-");
-  return `${normalized}-${randomBytes(4).toString("hex")}`;
-}
-
-/**
- * True when the file's contents parse and carry the exact token this spawn is
- * waiting on.
- *
- * Asserts on the token rather than the path: the token is what makes a stale
- * ack harmless, so the token is what has to be checked. A parse failure is not
- * an error -- permission-gate.ts writes to a temp file and renames, but a
- * caller that reads mid-rename, or a truncated file from an older run, simply
- * is not confirmation yet.
- */
-export function ackMatches(fileContents: string, expectedToken: string): boolean {
-  try {
-    const parsed = JSON.parse(fileContents) as { token?: unknown };
-    return parsed.token === expectedToken;
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -754,37 +741,6 @@ export default function (pi: ExtensionAPI) {
   }
 
   /**
-   * Waits for the worker to state, in its own ack file, that its bash
-   * permission gate came down.
-   *
-   * Deliberately not a read of the worker's terminal: herdr documents
-   * `agent read --source recent` as the last 80 rendered rows, so every read
-   * is a bounded sliding window -- a TUI redraw rewrites it rather than
-   * appending, an older notice can scroll out between two reads, and a stale
-   * notice from an earlier command can already be sitting in it. Each of
-   * those yields a false confirmation or a false failure. The poll is a local
-   * stat, so it adds no herdr socket traffic.
-   *
-   * Deletes the file on confirmation -- the ack answers one question once.
-   */
-  async function awaitTrustAck(token: string): Promise<boolean> {
-    const path = permissionGateAckPath(token);
-    const deadline = Date.now() + trustAckTimeoutMs();
-    for (;;) {
-      try {
-        if (ackMatches(readFileSync(path, "utf8"), token)) {
-          rmSync(path, { force: true });
-          return true;
-        }
-      } catch {
-        // Not written yet, or caught mid-rename -- both mean "not confirmed".
-      }
-      if (Date.now() >= deadline) return false;
-      await new Promise((resolve) => setTimeout(resolve, TRUST_ACK_POLL_MS));
-    }
-  }
-
-  /**
    * Records a pane's terminal text into a failure reason, then closes the
    * pane.
    *
@@ -851,37 +807,9 @@ export default function (pi: ExtensionAPI) {
         `agent_not_ready: ${startResult.stderr || startResult.stdout}`,
       );
     }
-    // Drop the bash permission gate before any work is sent -- see
-    // WORKER_TRUST_COMMAND. A worker that misses this stalls on its
-    // first non-allowlisted bash call, invisibly, so a failure here
-    // is a spawn failure rather than something to press on past.
-    //
-    // Sent WITHOUT --wait (see buildAgentPromptArgv): with it every
-    // submit failed regardless of outcome, so a non-zero exit said
-    // nothing about the gate. Without it, a non-zero exit means the
-    // prompt genuinely could not be delivered -- a herdr-level fault,
-    // not a gate that would not come down, so it gets its own reason.
-    const ackToken = trustAckToken(agentId);
-    const trustResult = await herdr(
-      pi,
-      buildAgentPromptArgv(agentId, `${WORKER_TRUST_COMMAND} ${ackToken}`),
-    );
-    if (trustResult.code !== 0) {
-      return failWithTab(
-        slug,
-        paneId,
-        tabId,
-        `agent_prompt_failed: ${trustResult.stderr || trustResult.stdout}`,
-      );
-    }
-    if (!(await awaitTrustAck(ackToken))) {
-      return failWithTab(
-        slug,
-        paneId,
-        tabId,
-        `permission_gate_not_disabled: no acknowledgement for token ${ackToken} within ${trustAckTimeoutMs()} ms`,
-      );
-    }
+    // No trust step: the tab was created with WORKER_UNATTENDED_ENV, so both
+    // gates already resolved themselves at pi's module load, before this
+    // agent could accept a prompt at all.
     const promptResult = await herdr(
       pi,
       buildAgentPromptArgv(agentId, `/backlog-item --auto ${slug}`),
@@ -1032,7 +960,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Spawn concurrent pi workers for a batch of backlog items via herdr",
     promptGuidelines: [
       "Tabs are created sequentially (herdr tab create mutates shared workspace state), then agent start+prompt run concurrently across the resulting root panes. Every tab is full terminal size, so concurrency is not bounded by the terminal's width.",
-      "A per-item spawn failure (agent_not_ready, agent_prompt_failed, permission_gate_not_disabled, agent_prompt_stalled, spawn_error, or an unparseable tab-create response) is reported in `failed`, not thrown -- other items in the batch are unaffected. Any failure after the tab exists carries that pane's captured output in its reason, and the tab is closed.",
+      "A per-item spawn failure (agent_not_ready, agent_prompt_stalled, spawn_error, or an unparseable tab-create response) is reported in `failed`, not thrown -- other items in the batch are unaffected. Any failure after the tab exists carries that pane's captured output in its reason, and the tab is closed.",
       "Call swarm_poll next to begin the completion loop.",
     ],
     parameters: Type.Object({

@@ -285,33 +285,36 @@ concurrency-cap accounting.
 1. Pick a `runId` for this invocation (e.g. a short timestamp-based slug)
    and call `swarm_spawn` with the full READY queue and the concurrency —
    it spawns up to the cap, reporting any items skipped (cap) or failed to
-   spawn. Each worker is sent `/permission-gate-disable` before its item, so
-   `permission-gate.ts`'s bash confirmation can't strand it: a worker runs
-   in a TUI pane, so the gate's `ctx.ui.confirm` would wait on a human
-   nobody has told to look, while `agent_status` stays `working` and
-   `swarm_poll` reads it as progress. `guard-rails.ts` deliberately stays
-   armed — workers still cannot write into a repo's main checkout.
+   spawn. Each worker's tab is created with `PI_AGENT_UNATTENDED=1` in its
+   environment, so both gate extensions settle themselves at pi's module
+   load, before the worker can be handed anything. Nothing is negotiated
+   over the wire and there is no acknowledgement to wait for.
 
-   The gate is confirmed by the worker's own acknowledgement file, not by
-   reading its terminal: `swarm_spawn` mints a per-worker token, passes it
-   to the command, and polls for the file the worker writes under
-   `permission-gate.ts`'s own ack directory. A terminal read cannot answer
-   this — herdr's `recent` source is a bounded window of rendered rows, so a
-   redraw or a stale notice from an earlier command produces a false
-   confirmation or a false failure. Two spawn failures follow from it, and
-   they mean different things:
+   The two gates read that variable and reach deliberately different
+   conclusions. `permission-gate.ts` starts disabled: its ask tier is
+   everything outside a narrow allowlist, and a worker that cannot run tests
+   or git is useless. `guard-rails.ts` stays fully armed and instead
+   **blocks** its two interactive confirmations — `rm -rf` and `sudo` are
+   refused with a reason the worker can read, rather than raising a dialog
+   nobody will answer. Every other guard-rails rule, including the
+   protected-path writes and the git-commit-on-main worktree policy, applies
+   to a worker exactly as it would to you.
 
-   - **`permission_gate_not_disabled`** — the prompt was delivered but no
-     acknowledgement arrived within the deadline. Report the item in the
-     digest, leave it READY, and do not re-spawn it within the same call.
-   - **`agent_prompt_failed`** — the prompt could not be delivered at all.
-     For one worker, report it and carry on with the rest of the batch. If
-     **every** worker in the batch fails this way, that is a herdr-level
-     fault: stop the run and report, rather than spawning into the same
-     fault repeatedly.
+   So a worker that tries `rm -rf` gets a clean refusal it can report,
+   instead of stalling forever while `agent_status` still reads `working`
+   and `swarm_poll` reads that as progress. If an item genuinely needs one of
+   those commands, that is a human's job, not a thing to route around.
+
+   One spawn failure concerns prompt delivery:
+
+   - **`agent_prompt_stalled`** — the item could not be delivered to the
+     worker at all. For one worker, report it and carry on with the rest of
+     the batch. If **every** worker in the batch fails this way, that is a
+     herdr-level fault: stop the run and report, rather than spawning into
+     the same fault repeatedly.
 
    Each failure names its reason in the tool's own result text, which is what
-   the two rules above key off. The worker pane's captured output is recorded
+   the rule above keys off. The worker pane's captured output is recorded
    alongside it but is not in that text — read it back from the run's record
    when diagnosing, rather than expecting it inline. Every failure after a
    tab exists closes that tab, so a failed round leaves no orphan workers
