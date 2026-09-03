@@ -4,6 +4,12 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import registerSwarmTools, {
   activeWorkerCount,
+  classifyTimeoutProbe,
+  deadlineStopDetail,
+  elapsedWorkingMs,
+  foldWorkingSegment,
+  formatDuration,
+  workerWorktreePath,
   buildAgentGetArgv,
   buildAgentListArgv,
   buildAgentPromptArgv,
@@ -930,7 +936,13 @@ describe("swarm_poll execute() wiring", () => {
     expect(loadState(runId, dir)?.workers).toHaveLength(0);
   });
 
-  test("a genuine herdr timeout closes the pane and drops the worker", async () => {
+  // Was: "a genuine herdr timeout closes the pane and drops the worker".
+  // That pinned the bug. An elapsed wait means nothing settled in the window,
+  // not that the worker died, so it now provokes a liveness probe -- and this
+  // fixture's `agent get` reports `blocked`, i.e. the worker settled during
+  // the race between the wait giving up and the probe landing. The settle
+  // wins, and the relay target survives.
+  test("a wait timeout whose probe finds the worker blocked parks it, closing nothing", async () => {
     const stderr = JSON.stringify({
       error: { code: "timeout", message: "timed out waiting for agent status" },
       id: "cli:agent:wait",
@@ -941,9 +953,11 @@ describe("swarm_poll execute() wiring", () => {
       ...(["call-1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
     )) as { details: { events: { kind: string }[] } };
 
-    expect(res.details.events.map((e) => e.kind)).toEqual(["timed_out"]);
-    expect(workerCloses(stub)).toHaveLength(1);
-    expect(loadState(runId, dir)?.workers).toHaveLength(0);
+    expect(res.details.events.map((e) => e.kind)).toEqual(["blocked"]);
+    expect(workerCloses(stub)).toHaveLength(0);
+    const persisted = loadState(runId, dir);
+    expect(persisted?.workers).toHaveLength(1);
+    expect(persisted?.workers[0]?.lifecycle).toBe("awaiting_relay");
   });
 
   test("an idle settle finishes the worker and frees its pane", async () => {
@@ -2318,5 +2332,498 @@ describe("selectSchedulable", () => {
     expect(res.slugs).toEqual([]);
     expect(res.deferred).toEqual([]);
     expect(res.skipped).toEqual(["a"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// An elapsed `herdr agent wait` is a check-in, not a death certificate.
+//
+// The live failure: a worker several minutes into a real item -- item
+// claimed, worktree created, spec written -- had its tab closed and was
+// dropped from state the moment swarm_poll's wait deadline elapsed. It was
+// not stuck. `agent wait` is a wait deadline, not a liveness check, so
+// "nothing settled in the window" is exactly what a healthy worker doing
+// several minutes of work looks like.
+//
+// These drive the registered tool's real execute() against a stubbed
+// ExtensionAPI whose `agent wait` answers differently on each call, which is
+// what lets a re-arm be observed at all.
+// ---------------------------------------------------------------------------
+
+/** herdr's own timeout envelope: JSON on stderr, nonzero exit (confirmed live). */
+const HERDR_TIMEOUT_STDERR = JSON.stringify({
+  error: { code: "timeout", message: "timed out waiting for agent status" },
+  id: "cli:agent:wait",
+});
+
+describe("swarm_poll: an elapsed wait is a check-in, not a death certificate", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-checkin-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  type Result = { code: number; stdout: string; stderr: string };
+
+  /**
+   * Seeds one active worker plus a QUEUE of `agent wait` results, one per
+   * call, so a re-arm is observable: the whole point is that the second call
+   * happens at all.
+   */
+  function setupQueued(waits: Result[], probe: Result, overrides: Partial<WorkerRecord> = {}) {
+    const runId = "checkin";
+    const worker: WorkerRecord = {
+      agent: "checkin-w1",
+      slug: "some-item",
+      paneId: "w1:pZ",
+      tabId: "w1:tZ",
+      cwd: "/home/yanil/dotfiles",
+      workingSinceMs: Date.now(),
+      lifecycle: "active",
+      ...overrides,
+    };
+    const state: SwarmState = { runId, concurrency: 2, nextCounter: 1, workers: [worker] };
+    saveState(state, dir);
+
+    let waitCall = 0;
+    const stub = makeStubPi((argv) => {
+      const [a, b] = argv;
+      if (a === "agent" && b === "list") {
+        return {
+          code: 0,
+          stdout: realAgentListEnvelope({
+            agent: "pi",
+            agent_status: "working",
+            name: "checkin-w1",
+            pane_id: "w1:pZ",
+          }),
+          stderr: "",
+        };
+      }
+      if (a === "agent" && b === "wait") {
+        const next = waits[Math.min(waitCall, waits.length - 1)];
+        waitCall += 1;
+        return next as Result;
+      }
+      if (a === "agent" && b === "get") return probe;
+      if (a === "agent" && b === "read") {
+        return { code: 0, stdout: "Commit these changes?\n> Yes\n  No\n", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+    return { runId, poll, stub, waitCalls: () => waitCall };
+  }
+
+  const closes = (stub: { calls: { argv: string[] }[] }) =>
+    stub.calls.filter((c) => c.argv[0] === "tab" && c.argv[1] === "close");
+
+  test("a still-working worker is re-armed and reported, never closed", async () => {
+    const { runId, poll, stub, waitCalls } = setupQueued(
+      [
+        { code: 1, stdout: "", stderr: HERDR_TIMEOUT_STDERR },
+        { code: 0, stdout: realWaitEnvelope("idle", "checkin-w1", "w1:pZ"), stderr: "" },
+      ],
+      { code: 0, stdout: realWaitEnvelope("working", "checkin-w1", "w1:pZ"), stderr: "" },
+    );
+
+    const res = (await poll.execute(
+      ...([
+        "call-1",
+        { runId, timeoutMs: 1000, workerDeadlineMs: 4 * 60 * 60 * 1000 },
+        undefined,
+      ] as unknown as never[]),
+    )) as { details: { events: { kind: string }[] } };
+
+    // The load-bearing assertions: the worker survives its own wait deadline.
+    expect(res.details.events.map((e) => e.kind)).toEqual(["still_working"]);
+    expect(closes(stub)).toHaveLength(0);
+    const persisted = loadState(runId, dir);
+    expect(persisted?.workers).toHaveLength(1);
+    expect(persisted?.workers[0]?.lifecycle).toBe("active");
+    // A second wait was armed -- without it the worker is alive but unwatched.
+    expect(waitCalls()).toBe(2);
+  });
+
+  test("the check-in carries its number and elapsed working time, not a bare label", async () => {
+    const { runId, poll } = setupQueued(
+      [
+        { code: 1, stdout: "", stderr: HERDR_TIMEOUT_STDERR },
+        { code: 0, stdout: realWaitEnvelope("idle", "checkin-w1", "w1:pZ"), stderr: "" },
+      ],
+      { code: 0, stdout: realWaitEnvelope("working", "checkin-w1", "w1:pZ"), stderr: "" },
+      { workingSinceMs: Date.now() - 90 * 60 * 1000, checkIns: 3 },
+    );
+
+    const res = (await poll.execute(
+      ...([
+        "call-1",
+        { runId, timeoutMs: 1000, workerDeadlineMs: 4 * 60 * 60 * 1000 },
+        undefined,
+      ] as unknown as never[]),
+    )) as { content: { text: string }[]; details: { events: { checkIn?: number }[] } };
+
+    // "still working" eight times says nothing; "check-in 4, 1h30m of a 4h
+    // budget" is the thing a human can act on before the budget stops it.
+    expect(res.details.events[0]?.checkIn).toBe(4);
+    expect(res.content[0]?.text).toContain("check-in 4");
+    expect(res.content[0]?.text).toContain("1h30m");
+    // Persisted, so a restart does not report "check-in 1" against hours.
+    expect(loadState(runId, dir)?.workers[0]?.checkIns).toBe(4);
+  });
+
+  test("past its budget, a confirmed-live worker IS stopped -- and the report can be acted on", async () => {
+    const { runId, poll, stub } = setupQueued(
+      [{ code: 1, stdout: "", stderr: HERDR_TIMEOUT_STDERR }],
+      { code: 0, stdout: realWaitEnvelope("working", "checkin-w1", "w1:pZ"), stderr: "" },
+      { workingSinceMs: Date.now() - 5 * 60 * 60 * 1000 },
+    );
+
+    const res = (await poll.execute(
+      ...([
+        "call-1",
+        { runId, timeoutMs: 1000, workerDeadlineMs: 4 * 60 * 60 * 1000 },
+        undefined,
+      ] as unknown as never[]),
+    )) as { details: { events: { kind: string; detail?: string }[] } };
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["timed_out"]);
+    expect(closes(stub)).toHaveLength(1);
+    expect(loadState(runId, dir)?.workers).toHaveLength(0);
+    // The four things that had to be cleaned up by hand after the live run.
+    const detail = res.details.events[0]?.detail ?? "";
+    expect(detail).toContain("/home/yanil/dotfiles-some-item");
+    expect(detail).toContain("in-progress with a live claim");
+    expect(detail).toContain("still reported working");
+  });
+
+  test("a stop whose probe never answered says so, instead of claiming the worker was working", async () => {
+    // pi.exec resolves on abort with a coerced exit 0 and empty stdout, which
+    // is what an abandoned probe looks like from the result alone.
+    const { runId, poll, stub } = setupQueued(
+      [{ code: 1, stdout: "", stderr: HERDR_TIMEOUT_STDERR }],
+      { code: 1, stdout: "", stderr: '{"error":{"code":"internal","message":"herdr is down"}}' },
+      { workingSinceMs: Date.now() - 5 * 60 * 60 * 1000 },
+    );
+
+    const res = (await poll.execute(
+      ...([
+        "call-1",
+        { runId, timeoutMs: 1000, workerDeadlineMs: 4 * 60 * 60 * 1000 },
+        undefined,
+      ] as unknown as never[]),
+    )) as { details: { events: { kind: string; detail?: string }[] } };
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["timed_out"]);
+    expect(closes(stub)).toHaveLength(1);
+    const detail = res.details.events[0]?.detail ?? "";
+    expect(detail).toContain("could NOT be verified");
+    expect(detail).toContain("herdr is down");
+    expect(detail).not.toContain("still reported working");
+  });
+
+  test("an agent herdr no longer knows is closed as error, not mislabelled a timeout", async () => {
+    const { runId, poll, stub } = setupQueued(
+      [{ code: 1, stdout: "", stderr: HERDR_TIMEOUT_STDERR }],
+      {
+        code: 1,
+        stdout: "",
+        stderr: JSON.stringify({
+          error: { code: "agent_not_found", message: "agent target checkin-w1 not found" },
+        }),
+      },
+    );
+
+    const res = (await poll.execute(
+      ...(["call-1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { details: { events: { kind: string; detail?: string }[] } };
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["error"]);
+    expect(closes(stub)).toHaveLength(1);
+    // The PROBE's reason, not the wait's -- the wait only ever said "timeout",
+    // which explains nothing about why the probe failed.
+    expect(res.details.events[0]?.detail).toContain("agent_not_found");
+  });
+
+  test("a finished settle costs no probe at all -- only a timeout provokes one", async () => {
+    const { runId, poll, stub } = setupQueued(
+      [{ code: 0, stdout: realWaitEnvelope("idle", "checkin-w1", "w1:pZ"), stderr: "" }],
+      { code: 0, stdout: realWaitEnvelope("working", "checkin-w1", "w1:pZ"), stderr: "" },
+    );
+
+    const res = (await poll.execute(
+      ...(["call-1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { details: { events: { kind: string }[] } };
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
+    expect(stub.calls.filter((c) => c.argv[0] === "agent" && c.argv[1] === "get")).toHaveLength(0);
+  });
+
+  test("a close that fails still drains the batch and still frees the wait slot", async () => {
+    // The drain loop used to call herdr bare here: a rejected close threw out
+    // of the loop, abandoning every event after it and leaving those workers
+    // un-dropped with their entries held.
+    const runId = "closefail";
+    const worker: WorkerRecord = {
+      agent: "closefail-w1",
+      slug: "some-item",
+      paneId: "w1:pZ",
+      tabId: "w1:tZ",
+      lifecycle: "active",
+    };
+    saveState({ runId, concurrency: 2, nextCounter: 1, workers: [worker] }, dir);
+
+    const stub = makeStubPi((argv) => {
+      const [a, b] = argv;
+      if (a === "tab" && b === "close") throw new Error("herdr socket closed");
+      if (a === "agent" && b === "list") {
+        return {
+          code: 0,
+          stdout: realAgentListEnvelope({
+            agent: "pi",
+            agent_status: "idle",
+            name: "closefail-w1",
+            pane_id: "w1:pZ",
+          }),
+          stderr: "",
+        };
+      }
+      if (a === "agent" && b === "wait") {
+        return { code: 0, stdout: realWaitEnvelope("idle", "closefail-w1", "w1:pZ"), stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const poll = stub.tools.get("swarm_poll");
+    if (!poll) throw new Error("swarm_poll was never registered");
+
+    const res = (await poll.execute(
+      ...(["call-1", { runId, timeoutMs: 1000 }, undefined] as unknown as never[]),
+    )) as { details: { events: { kind: string }[] } };
+
+    expect(res.details.events.map((e) => e.kind)).toEqual(["finished"]);
+    expect(loadState(runId, dir)?.workers).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// classifyTimeoutProbe: fail open, but bounded by the budget.
+// ---------------------------------------------------------------------------
+
+describe("classifyTimeoutProbe", () => {
+  const probe = (over: Partial<Parameters<typeof classifyTimeoutProbe>[0]> = {}) => ({
+    code: 0,
+    stdout: "",
+    stderr: "",
+    abandoned: false,
+    ...over,
+  });
+  const live = (status: string) => probe({ stdout: realWaitEnvelope(status, "w1", "w1:p1") });
+  const HOUR = 60 * 60 * 1000;
+
+  test("a positively-gone agent is the ONLY nonzero exit that closes a worker", () => {
+    const gone = probe({
+      code: 1,
+      stderr: JSON.stringify({ error: { code: "agent_not_found", message: "no such agent" } }),
+    });
+    expect(classifyTimeoutProbe(gone, 0, HOUR)).toEqual({ disposition: "event", kind: "error" });
+  });
+
+  test("a transient nonzero exit re-arms -- killing on a failed CHECK is the bug, one layer down", () => {
+    const flaky = probe({ code: 1, stderr: '{"error":{"code":"internal","message":"boom"}}' });
+    expect(classifyTimeoutProbe(flaky, 0, HOUR)).toEqual({ disposition: "rearm" });
+  });
+
+  test("an unparseable stderr on a nonzero exit re-arms rather than guessing", () => {
+    expect(classifyTimeoutProbe(probe({ code: 1, stderr: "segfault" }), 0, HOUR)).toEqual({
+      disposition: "rearm",
+    });
+  });
+
+  test("an abandoned probe re-arms: we gave up on the check, learning nothing about the worker", () => {
+    // pi.exec RESOLVES on abort with a coerced exit 0 and empty stdout, so
+    // without the flag this is indistinguishable from "no recognizable
+    // status" -- and that case must never close a live worker.
+    expect(classifyTimeoutProbe(probe({ abandoned: true }), 0, HOUR)).toEqual({
+      disposition: "rearm",
+    });
+  });
+
+  test("a settle that raced the probe wins: blocked and idle/done are reported, not overridden", () => {
+    expect(classifyTimeoutProbe(live("blocked"), 0, HOUR)).toEqual({
+      disposition: "event",
+      kind: "blocked",
+    });
+    expect(classifyTimeoutProbe(live("idle"), 0, HOUR)).toEqual({
+      disposition: "event",
+      kind: "finished",
+    });
+    expect(classifyTimeoutProbe(live("done"), 0, HOUR)).toEqual({
+      disposition: "event",
+      kind: "finished",
+    });
+  });
+
+  test("a working worker inside its budget re-arms", () => {
+    expect(classifyTimeoutProbe(live("working"), HOUR - 1, HOUR)).toEqual({
+      disposition: "rearm",
+    });
+  });
+
+  test("an unrecognized live status is treated as alive, not invented into a death", () => {
+    expect(classifyTimeoutProbe(live("hibernating"), 0, HOUR)).toEqual({ disposition: "rearm" });
+  });
+
+  test("past the budget, a confirmed-live worker is stopped and SAYS it was confirmed", () => {
+    expect(classifyTimeoutProbe(live("working"), HOUR, HOUR)).toEqual({
+      disposition: "event",
+      kind: "timed_out",
+      livenessConfirmed: true,
+    });
+  });
+
+  test("the budget bounds INCONCLUSIVE outcomes too -- otherwise the worst worker runs forever", () => {
+    // A worker wedged badly enough that agent get itself cannot answer would
+    // re-arm until someone killed the orchestrator by hand.
+    for (const p of [
+      probe({ abandoned: true }),
+      probe({ code: 1, stderr: '{"error":{"code":"internal"}}' }),
+      probe({ code: 0, stdout: "{}" }),
+    ]) {
+      expect(classifyTimeoutProbe(p, HOUR, HOUR)).toEqual({
+        disposition: "event",
+        kind: "timed_out",
+        livenessConfirmed: false,
+      });
+    }
+  });
+
+  test("a worker with no computable elapsed time is never deliberately stopped", () => {
+    expect(classifyTimeoutProbe(live("working"), null, 0)).toEqual({ disposition: "rearm" });
+    expect(classifyTimeoutProbe(probe({ abandoned: true }), null, 0)).toEqual({
+      disposition: "rearm",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Working-time accounting. The budget is per ITEM, not per segment, and the
+// arithmetic must survive an unstamped legacy record and a backwards clock.
+// ---------------------------------------------------------------------------
+
+describe("working-time accounting", () => {
+  const w = (over: Partial<WorkerRecord> = {}): WorkerRecord => ({
+    agent: "a1",
+    slug: "s",
+    paneId: "p",
+    lifecycle: "active",
+    ...over,
+  });
+
+  test("a record with neither timestamp has no computable elapsed time", () => {
+    expect(elapsedWorkingMs(w(), 1000)).toBeNull();
+  });
+
+  test("completed segments and the open one are summed", () => {
+    expect(elapsedWorkingMs(w({ accumulatedWorkingMs: 500, workingSinceMs: 100 }), 400)).toBe(800);
+  });
+
+  test("an accumulator with no open segment still counts -- a parked worker's time is not lost", () => {
+    expect(elapsedWorkingMs(w({ accumulatedWorkingMs: 500 }), 400)).toBe(500);
+  });
+
+  test("a backwards clock step clamps to zero rather than reversing the accounting", () => {
+    expect(elapsedWorkingMs(w({ accumulatedWorkingMs: 500, workingSinceMs: 900 }), 400)).toBe(500);
+  });
+
+  test("folding an unstamped legacy record adds nothing -- never NaN", () => {
+    // Reachable: a blocked settle needs no probe, so a legacy record can park
+    // before any check-in has stamped it. `undefined + number` would be NaN,
+    // and NaN >= deadline is false, so such a worker would re-arm forever.
+    const worker = w();
+    foldWorkingSegment(worker, 1000);
+    expect(worker.accumulatedWorkingMs ?? 0).toBe(0);
+    expect(Number.isNaN(worker.accumulatedWorkingMs ?? 0)).toBe(false);
+  });
+
+  test("the budget is per item: work either side of a relay accumulates", () => {
+    const worker = w({ workingSinceMs: 0 });
+    foldWorkingSegment(worker, 3000); // worked 3000 before blocking
+    expect(worker.workingSinceMs).toBeUndefined();
+    worker.workingSinceMs = 10_000; // resumed after a human answered
+    expect(elapsedWorkingMs(worker, 11_000)).toBe(4000); // 3000 + 1000, not 1000
+  });
+
+  test("folding is idempotent, so a double-park costs nothing", () => {
+    const worker = w({ workingSinceMs: 0 });
+    foldWorkingSegment(worker, 3000);
+    foldWorkingSegment(worker, 9000);
+    expect(worker.accumulatedWorkingMs).toBe(3000);
+  });
+
+  test("formatDuration reads as a person would say it", () => {
+    expect(formatDuration(45 * 60 * 1000)).toBe("45m");
+    expect(formatDuration(3 * 60 * 60 * 1000 + 31 * 60 * 1000)).toBe("3h31m");
+    expect(formatDuration(0)).toBe("0m");
+  });
+});
+
+describe("deliberate-stop reporting", () => {
+  const worker: WorkerRecord = {
+    agent: "a1",
+    slug: "some-item",
+    paneId: "p",
+    cwd: "/home/yanil/dotfiles",
+    lifecycle: "active",
+  };
+
+  test("the worktree is derived as a sibling of the repo, per the repo convention", () => {
+    expect(workerWorktreePath("/home/yanil/dotfiles", "some-item")).toBe(
+      "/home/yanil/dotfiles-some-item",
+    );
+  });
+
+  test("a record predating cwd tracking yields no path rather than a guessed one", () => {
+    expect(workerWorktreePath(undefined, "some-item")).toBeNull();
+  });
+
+  test("a confirmed-live stop says the worker was working, and names the recovery path", () => {
+    const detail = deadlineStopDetail(worker, 4 * 60 * 60 * 1000, { livenessConfirmed: true });
+    expect(detail).toContain("still reported working");
+    expect(detail).toContain("/home/yanil/dotfiles-some-item");
+    expect(detail).toContain("in-progress with a live claim");
+  });
+
+  test("an unverified stop does NOT claim the worker was working, and carries the probe's reason", () => {
+    // Reporting these two identically would repeat this tool's own root
+    // complaint: a wrong outcome label becomes the story the orchestrator
+    // tells the human.
+    const detail = deadlineStopDetail(worker, 4 * 60 * 60 * 1000, {
+      livenessConfirmed: false,
+      probeDetail: "the liveness probe did not answer within 15000 ms and was abandoned",
+    });
+    expect(detail).not.toContain("still reported working");
+    expect(detail).toContain("could NOT be verified");
+    expect(detail).toContain("abandoned");
+    expect(detail).toContain("/home/yanil/dotfiles-some-item");
+  });
+
+  test("with no cwd, the report says the path is unavailable rather than inventing one", () => {
+    const detail = deadlineStopDetail({ ...worker, cwd: undefined }, 1000, {
+      livenessConfirmed: true,
+    });
+    expect(detail).toContain("git worktree list");
   });
 });
