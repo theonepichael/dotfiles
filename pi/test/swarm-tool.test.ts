@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import registerSwarmTools, {
   activeWorkerCount,
+  AMEND_INSTRUCTION,
   capturePath,
   classifyBlock,
   noteResolveFailure,
@@ -3221,5 +3222,152 @@ describe("worker capture offers travel to the orchestrator", () => {
     const path = capturePath("r1", "../../etc/passwd", dir);
     expect(path.startsWith(dir)).toBe(true);
     expect(path).not.toContain("..");
+  });
+});
+
+describe("AMEND_INSTRUCTION", () => {
+  test("tells the worker to re-read its item, and carries no correction text", () => {
+    expect(AMEND_INSTRUCTION).toContain("dev_status.py show");
+    // The whole design rests on this: the moment the channel carries the
+    // correction itself, the backlog store stops being the single source of
+    // truth and the two can disagree. The instruction is fixed for that
+    // reason -- there is no parameter to smuggle content through.
+    expect(AMEND_INSTRUCTION.length).toBeLessThan(600);
+  });
+});
+
+describe("swarm_amend", () => {
+  let dir: string;
+  let priorStateDir: string | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "swarm-amend-"));
+    priorStateDir = process.env.PI_SWARM_STATE_DIR;
+    process.env.PI_SWARM_STATE_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (priorStateDir === undefined) delete process.env.PI_SWARM_STATE_DIR;
+    else process.env.PI_SWARM_STATE_DIR = priorStateDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function seed(runId: string, lifecycle: "active" | "awaiting_relay") {
+    saveState(
+      {
+        runId,
+        concurrency: 2,
+        nextCounter: 1,
+        workers: [
+          {
+            agent: `${runId}-w1`,
+            slug: "some-item",
+            paneId: "w1:pA",
+            tabId: "w1:tA",
+            lifecycle,
+          },
+        ],
+      },
+      dir,
+    );
+  }
+
+  function register(handler: (argv: string[]) => { code: number; stdout: string; stderr: string }) {
+    const stub = makeStubPi(handler);
+    registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
+    const amend = stub.tools.get("swarm_amend");
+    if (!amend) throw new Error("swarm_amend was never registered");
+    return { stub, amend };
+  }
+
+  const liveList = (runId: string) =>
+    realAgentListEnvelope(UNNAMED_CLAUDE_ENTRY, {
+      agent: "pi",
+      agent_status: "working",
+      name: `${runId}-w1`,
+      pane_id: "w1:pA",
+    });
+
+  test("sends the fixed re-read instruction to an active worker and records it", async () => {
+    const runId = "amendrun";
+    seed(runId, "active");
+    const sent: string[][] = [];
+    const { amend } = register((argv) => {
+      sent.push(argv);
+      if (argv[0] === "agent" && argv[1] === "list")
+        return { code: 0, stdout: liveList(runId), stderr: "" };
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    const res = (await amend.execute(
+      ...(["c1", { runId, agent: `${runId}-w1` }, undefined] as unknown as never[]),
+    )) as { content: { type: string; text: string }[] };
+    const text = res.content.map((c) => c.text).join("\n");
+
+    const prompts = sent.filter((a) => a[0] === "agent" && a[1] === "prompt");
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain(AMEND_INSTRUCTION);
+    expect(text).toContain("amended:");
+
+    // Recorded on the run, so the end-of-run digest can say an item's
+    // premises changed under a worker mid-flight -- the correction that
+    // went through a raw herdr prompt left no trace at all.
+    const saved = loadState(runId, dir);
+    expect(saved?.workers[0]?.amendments?.length).toBe(1);
+  });
+
+  test("refuses a worker parked at a gate rather than sending into a refusal", async () => {
+    // herdr agent prompt refuses a blocked agent outright, so an amend
+    // cannot reach one. The answer for that case is swarm_resolve_blocked,
+    // and saying so beats a confusing wire error.
+    const runId = "blockedrun";
+    seed(runId, "awaiting_relay");
+    const sent: string[][] = [];
+    const { amend } = register((argv) => {
+      sent.push(argv);
+      if (argv[0] === "agent" && argv[1] === "list")
+        return { code: 0, stdout: liveList(runId), stderr: "" };
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    const res = (await amend.execute(
+      ...(["c1", { runId, agent: `${runId}-w1` }, undefined] as unknown as never[]),
+    )) as { content: { type: string; text: string }[] };
+    const text = res.content.map((c) => c.text).join("\n");
+
+    expect(text).toContain("amend_refused:");
+    expect(text).toContain("swarm_resolve_blocked");
+    expect(sent.filter((a) => a[1] === "prompt")).toHaveLength(0);
+  });
+
+  test("an unknown target is reported, not silently ignored", async () => {
+    const runId = "amendrun";
+    seed(runId, "active");
+    const { amend } = register((argv) =>
+      argv[0] === "agent" && argv[1] === "list"
+        ? { code: 0, stdout: liveList(runId), stderr: "" }
+        : { code: 0, stdout: "", stderr: "" },
+    );
+    const res = (await amend.execute(
+      ...(["c1", { runId, agent: "nobody" }, undefined] as unknown as never[]),
+    )) as { content: { type: string; text: string }[] };
+    expect(res.content.map((c) => c.text).join("\n")).toContain("amend_failed:");
+  });
+
+  test("the worker can be named by slug as well as agent id", async () => {
+    const runId = "amendrun";
+    seed(runId, "active");
+    const sent: string[][] = [];
+    const { amend } = register((argv) => {
+      sent.push(argv);
+      if (argv[0] === "agent" && argv[1] === "list")
+        return { code: 0, stdout: liveList(runId), stderr: "" };
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    const res = (await amend.execute(
+      ...(["c1", { runId, agent: "some-item" }, undefined] as unknown as never[]),
+    )) as { content: { type: string; text: string }[] };
+    expect(res.content.map((c) => c.text).join("\n")).toContain("amended:");
+    expect(sent.filter((a) => a[1] === "prompt")).toHaveLength(1);
   });
 });

@@ -516,6 +516,41 @@ writes and the commit-on-`main` worktree policy are untouched.
    `swarm_poll` names them and the answer each is waiting on is still owed —
    resolve those with `swarm_resolve_blocked` before treating the queue as
    drained, or the run ends with a live worker holding an open tab.
+### Correcting a running worker's item
+
+If the user supplies a fact that makes a running item's stored premise wrong,
+**edit the item first, then call `swarm_amend`.** Never send the correction
+through a raw `herdr agent prompt`.
+
+`swarm_amend(runId, agent)` — the worker's agent id or its slug — sends one
+fixed instruction telling the worker to re-read its item with
+`dev_status.py show` and reconcile what it has already done against the
+updated record. It carries no correction text and has no parameter for any,
+on purpose: the backlog store is the single source of truth, and a message
+that disagrees with the store is worse than the problem being fixed. Outcomes
+lead with `amended:`, `amend_refused:` or `amend_failed:`.
+
+Two limits worth knowing before you rely on it.
+
+It cannot reach a parked worker. `herdr agent prompt` refuses an agent that
+is already blocked, so a worker at a gate comes back `amend_refused:` with
+nothing sent — answer it with `swarm_resolve_blocked` first, or let it finish
+and pick the item up again afterwards.
+
+**Delivery is not synchronised with the worker's turn boundary, and this is
+unsolved.** pi exposes no such checkpoint over herdr, so an amend lands as
+the worker's next input whenever that happens to be. On 2026-09-03 a
+correction landed cleanly only because the worker was between tool calls; ten
+minutes later it would have arrived as a rewrite of finished work. So amend
+early, and treat a worker deep into an item as a candidate for stopping and
+re-queueing rather than correcting in place. Nothing acknowledges that the
+worker read it either — watch its next poll event.
+
+The amendment is recorded on the run, so say in your end-of-run digest that
+the item was corrected mid-flight and when. That is exactly the kind of thing
+someone reading the digest later needs to know, and the raw prompts this
+replaces left no trace of it at all.
+
 ### A worker's own capture digest
 
 **A worker does not ask about its capture offers at all in swarm mode.** It
