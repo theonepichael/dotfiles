@@ -12,10 +12,10 @@ recipe moved out of prose and into a script:
 - ``--model`` handed straight to ``herdr agent start`` is an unknown flag to
   herdr itself; it reaches pi only after a bare ``--`` separator.
 
-The prefix assertions are the post-``meta-backlog-prefix-repo-alignment``
-design: whether a worker may take an item is a property of its prefix, so there
-is no per-item classifier to drift. ``NEVER_SWARMABLE`` is asserted to *derive*
-from ``dev_status`` rather than repeat it, which is what keeps that true.
+Whether a worker may take an item is a property of its prefix, so there is no
+per-item classifier to drift. The rule itself lives in ``dev_status`` and is
+tested in ``test_dev_status.py``; what is asserted here is that this module
+imports it rather than keeping a second copy.
 """
 
 import sys
@@ -83,27 +83,8 @@ def test_orchestrator_prompt_fans_out_and_names_no_single_item():
     assert prompt == "/backlog-item --swarm=3"
 
 
-def test_never_swarmable_is_derived_from_dev_status_not_restated():
-    assert herdr_delegate.NEVER_SWARMABLE == {
-        dev_status.REPO_PREFIXES[dev_status.HARNESS_REPO]
-    }
 
 
-def test_the_harness_prefix_is_not_worker_safe():
-    harness = dev_status.REPO_PREFIXES[dev_status.HARNESS_REPO]
-    assert not herdr_delegate.is_worker_safe(harness)
-
-
-def test_ordinary_project_prefixes_are_worker_safe():
-    assert herdr_delegate.is_worker_safe("atk")
-    assert herdr_delegate.is_worker_safe("iron-lb")
-
-
-def test_prefix_of_keeps_multi_segment_prefixes_whole():
-    # `iron-lb-x` must not be read as `iron-`; splitting on the first dash
-    # would make every iron-logbook item look like an unknown prefix.
-    assert herdr_delegate.prefix_of("iron-lb-wearable-card") == "iron-lb"
-    assert herdr_delegate.prefix_of("atk-publish-remote") == "atk"
 
 
 def test_plan_groups_ready_slugs_by_prefix_with_counts_and_safety():
@@ -124,6 +105,17 @@ def test_plan_orders_the_largest_worker_safe_prefix_first():
     )
     assert rows[0]["prefix"] == "atk"
     assert rows[0]["worker_safe"] is True
+
+
+def test_it_does_not_define_a_second_copy_of_the_prefix_rule():
+    # The property that is genuinely this module's own. The rule itself is
+    # dev_status's and is tested there; asserting its behaviour through this
+    # module would be testing at a distance and would hide where it lives.
+    source = (REPO_ROOT / "claude" / "scripts" / "herdr_delegate.py").read_text()
+    assert "def prefix_of(" not in source
+    assert "def is_worker_safe(" not in source
+    assert herdr_delegate.prefix_of is dev_status.prefix_of
+    assert herdr_delegate.is_worker_safe is dev_status.is_worker_safe
 
 
 def test_launching_the_harness_prefix_is_refused():

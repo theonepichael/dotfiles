@@ -246,6 +246,8 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `build_index(items: list[BacklogItem]) -> BacklogIndex` — Build a slug → item lookup for ``items``.
   - `effective_blockers(item: BacklogItem, index: BacklogIndex) -> list[str]` — Return ``item``'s ``blocked_by`` slugs whose referent isn't done.
   - `detect_cycle(start: str, new_dep: str, index: BacklogIndex) -> bool` — Check whether adding ``new_dep`` as a blocker of ``start`` would cycle.
+  - `prefix_of(slug: str) -> str` — The slug's prefix, preferring the longest known one.
+  - `is_worker_safe(prefix: str) -> bool` — Whether a swarm worker may be handed items under this prefix.
   - `resolve_id(arg: str, items: list[BacklogItem], pending_items: list[PendingItem]) -> tuple[str, str]` — Resolve a display number or slug to a ``(kind, slug)`` pair.
   - `require_kind(cmd: str, arg: str, kind: str, expected: str) -> None` — Exit with a helpful message if ``kind`` doesn't match ``expected``.
   - `enforce_rev_guard(cmd: str, id_arg: str, if_rev_arg: int | None, current_rev: int, items: list[BacklogItem], pending_items: list[PendingItem]) -> None` — Refuse a numeric-id mutation that lacks a fresh ``--if-rev``.
@@ -691,8 +693,6 @@ Launch pi agents in herdr tabs to work backlog items.
   - `class RefusedError(RuntimeError)` — A launch that must not proceed, with a reason fit to show the user.
 - Public functions:
   - `require_herdr_env(env: dict[str, str] | os._Environ[str]) -> None` — Refuse unless this process is inside a herdr-managed pane.
-  - `prefix_of(slug: str) -> str` — The slug's prefix, preferring the longest known one.
-  - `is_worker_safe(prefix: str) -> bool` — Whether a worker may be given items under this prefix.
   - `check_launchable(*, slug: str | None = None, prefix: str | None = None) -> None` — Refuse a launch that targets the harness's own repo.
   - `group_by_prefix(slugs: list[str]) -> list[dict[str, object]]` — Group slugs by prefix, worker-safe prefixes first, then largest first.
   - `build_tab_argv(*, cwd: str, label: str) -> list[str]` — `herdr tab create` argv.

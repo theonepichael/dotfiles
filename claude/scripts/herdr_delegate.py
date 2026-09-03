@@ -43,17 +43,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from dev_status import HARNESS_REPO, REPO_PREFIXES  # noqa: E402
+from dev_status import (  # noqa: E402
+    HARNESS_REPO,
+    REPO_PREFIXES,
+    is_worker_safe,
+    prefix_of,
+)
 
 UNATTENDED_ENV = "PI_AGENT_UNATTENDED=1"
 """Set on the tab so it is in pi's environment before pi starts."""
 
-NEVER_SWARMABLE: set[str] = {REPO_PREFIXES[HARNESS_REPO]}
-"""Prefixes a worker must never be given -- the harness's own repo.
-
-Derived, never restated: a second hardcoded list is a second thing to keep in
-sync, which is the drift this whole design exists to avoid.
-"""
+# `prefix_of` and `is_worker_safe` are imported, never redefined. The whole
+# point of the prefix scheme is one source of truth for "may a worker take
+# this?"; a second copy here would be the drift this design exists to avoid.
 
 DEV_STATUS = Path(__file__).resolve().parent / "dev_status.py"
 
@@ -76,23 +78,6 @@ def require_herdr_env(env: dict[str, str] | os._Environ[str]) -> None:
         )
 
 
-def prefix_of(slug: str) -> str:
-    """The slug's prefix, preferring the longest known one.
-
-    ``iron-lb-x`` is ``iron-lb``, not the ``iron`` a split on the first dash
-    would give.
-    """
-    for known in sorted(set(REPO_PREFIXES.values()), key=len, reverse=True):
-        if slug.startswith(f"{known}-"):
-            return known
-    return slug.split("-")[0]
-
-
-def is_worker_safe(prefix: str) -> bool:
-    """Whether a worker may be given items under this prefix."""
-    return prefix not in NEVER_SWARMABLE
-
-
 def check_launchable(*, slug: str | None = None, prefix: str | None = None) -> None:
     """Refuse a launch that targets the harness's own repo.
 
@@ -101,10 +86,13 @@ def check_launchable(*, slug: str | None = None, prefix: str | None = None) -> N
     """
     target = prefix if prefix is not None else prefix_of(slug or "")
     if not is_worker_safe(target):
+        known = ", ".join(f"{p}-" for p in sorted(REPO_PREFIXES.values()))
         raise RefusedError(
-            f"'{target}-' names the harness repo ({HARNESS_REPO}), so a worker "
-            "would be editing the code it is running. Work these in a normal "
-            "session instead."
+            f"'{target}-' is not a worker-safe prefix. Either it names the "
+            f"harness repo ({HARNESS_REPO}), so a worker would be editing the "
+            "code it is running, or it is unrecognised -- unknown prefixes are "
+            f"refused rather than assumed safe. Known prefixes: {known}. Work "
+            "these in a normal session instead."
         )
 
 

@@ -1130,8 +1130,34 @@ describe("swarm_spawn worker bootstrap", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  // These tests name their items explicitly and never cared what `ready`
+  // returned, so the stubs answered it with empty stdout. That is no longer a
+  // neutral answer: swarm_spawn looks each named slug up in the READY records
+  // and an item it cannot find has unknown eligibility, which now fails closed.
+  // Answering with the slugs these tests actually use keeps them describing
+  // bootstrap mechanics rather than accidentally exercising the guard -- which
+  // has its own block below. All are stamped worker-safe because the prefix
+  // rule is not what is under test here.
+  const BOOTSTRAP_SLUGS = ["some-item", "a1", "a2", "b1", "b2", "meta-a"];
+  const readyStub = () => ({
+    code: 0,
+    stdout: JSON.stringify(
+      BOOTSTRAP_SLUGS.map((id) => ({ id, worker_safe: true, related_files: [] })),
+    ),
+    stderr: "",
+  });
+
   function stubFor(respond: (argv: string[]) => { code: number; stdout: string; stderr: string }) {
-    const stub = makeStubPi(respond);
+    const withReady = (argv: string[]) => {
+      const answer = respond(argv);
+      // Only a SUCCESSFUL empty answer is substituted: one test makes `ready`
+      // fail on purpose to prove the run stops rather than reading as a
+      // drained queue, and overriding that would erase what it checks.
+      return argv.includes("ready") && answer.code === 0 && answer.stdout === ""
+        ? readyStub()
+        : answer;
+    };
+    const stub = makeStubPi(withReady);
     registerSwarmTools(stub.pi as unknown as Parameters<typeof registerSwarmTools>[0]);
     const spawn = stub.tools.get("swarm_spawn");
     if (!spawn) throw new Error("swarm_spawn was never registered");
@@ -1431,8 +1457,13 @@ describe("swarm_spawn worker bootstrap", () => {
       ? {
           code: 0,
           stdout: JSON.stringify(
+            // `worker_safe: true` mirrors what dev_status.py's `ready` now
+            // stamps on an ordinary item. Without it these fixtures describe a
+            // payload no real `ready` produces, and every item would be
+            // refused -- which is the guard working, not the bootstrap failing.
             items.map((i) => ({
               id: i.id,
+              worker_safe: true,
               related_files: (i.paths ?? []).map((path) => ({ path })),
             })),
           ),
@@ -2343,8 +2374,12 @@ describe("parseReadyItems / itemPaths", () => {
 });
 
 describe("selectSchedulable", () => {
+  // `worker_safe: true` is what dev_status.py's `ready` now stamps on an
+  // ordinary item. The helper carries it so these tests keep describing a
+  // normal queue; the eligibility block below covers its absence.
   const item = (id: string, ...paths: string[]) => ({
     id,
+    worker_safe: true,
     related_files: paths.map((path) => ({ path })),
   });
 
@@ -3369,5 +3404,67 @@ describe("swarm_amend", () => {
     )) as { content: { type: string; text: string }[] };
     expect(res.content.map((c) => c.text).join("\n")).toContain("amended:");
     expect(sent.filter((a) => a[1] === "prompt")).toHaveLength(1);
+  });
+});
+
+describe("selectSchedulable eligibility", () => {
+  const safe = (id: string, ...paths: string[]) => ({
+    id,
+    worker_safe: true,
+    related_files: paths.map((path) => ({ path })),
+  });
+  const unsafe = (id: string) => ({ id, worker_safe: false, related_files: [] });
+  const unstamped = (id: string) => ({ id, related_files: [] });
+
+  test("an item the backlog marks unsafe is refused, not spawned", () => {
+    const res = selectSchedulable([unsafe("meta-a"), safe("atk-b")], [], 3);
+    expect(res.slugs).toEqual(["atk-b"]);
+    expect(res.refused.map((r) => r.slug)).toEqual(["meta-a"]);
+  });
+
+  test("a refused item is neither deferred nor skipped", () => {
+    // The three mean different things to the orchestrator: skipped is coming
+    // next wave, deferred waits on a named worker, refused is never coming.
+    const res = selectSchedulable([unsafe("meta-a")], [], 3);
+    expect(res.deferred).toEqual([]);
+    expect(res.skipped).toEqual([]);
+    expect(res.refused).toHaveLength(1);
+  });
+
+  test("refusal is decided before the concurrency cap", () => {
+    // With no headroom a refused item must still read as refused; reporting it
+    // as skipped would promise it a later wave that will never take it.
+    const res = selectSchedulable([unsafe("meta-a")], [], 0);
+    expect(res.refused.map((r) => r.slug)).toEqual(["meta-a"]);
+    expect(res.skipped).toEqual([]);
+  });
+
+  test("an item with no worker_safe field fails CLOSED", () => {
+    // pi/AGENTS.md documents testing an in-progress extension with `pi -e`
+    // against the INSTALLED dev_status.py, so new TypeScript running against
+    // an older Python is the normal development path. A guard that silently
+    // switches itself off there is worse than no guard.
+    const res = selectSchedulable([unstamped("atk-a")], [], 3);
+    expect(res.slugs).toEqual([]);
+    expect(res.refused).toHaveLength(1);
+    expect(res.refused[0]!.reason).toContain("worker_safe");
+  });
+
+  test("refusal wins over a file collision, since it is the permanent one", () => {
+    const res = selectSchedulable([unsafe("meta-a")], [], 3);
+    expect(res.refused).toHaveLength(1);
+    expect(res.deferred).toEqual([]);
+  });
+
+  test("a clean queue is untouched by the guard", () => {
+    const res = selectSchedulable([safe("atk-a"), safe("iron-lb-b")], [], 3);
+    expect(res.slugs).toEqual(["atk-a", "iron-lb-b"]);
+    expect(res.refused).toEqual([]);
+  });
+
+  test("every candidate refused yields an empty wave, not an empty queue", () => {
+    const res = selectSchedulable([unsafe("meta-a"), unsafe("meta-b")], [], 3);
+    expect(res.slugs).toEqual([]);
+    expect(res.refused).toHaveLength(2);
   });
 });
