@@ -424,6 +424,10 @@ class RunAgyTests(_ContainmentStubbed):
 
 
 class RunCopilotTests(unittest.TestCase):
+    # copilot's -p/--prompt takes the next argument as its prompt VALUE, so
+    # the prompt must sit right after -p (last in _base) with the isolation
+    # flags following it -- see llm_backends.BACKEND_ISOLATION["copilot"].
+
     def test_34_no_model_omits_flag(self) -> None:
         with patch.object(
             llm_backends, "run_backend_command", return_value="text"
@@ -433,12 +437,12 @@ class RunCopilotTests(unittest.TestCase):
         mock_run.assert_called_once_with(
             [
                 "copilot",
-                "-p",
                 "--silent",
+                "-p",
+                "my prompt",
                 "--deny-tool=write",
                 "--deny-tool=shell",
                 "--no-custom-instructions",
-                "my prompt",
             ],
             60,
         )
@@ -451,12 +455,12 @@ class RunCopilotTests(unittest.TestCase):
         mock_run.assert_called_once_with(
             [
                 "copilot",
-                "-p",
                 "--silent",
+                "-p",
+                "my prompt",
                 "--deny-tool=write",
                 "--deny-tool=shell",
                 "--no-custom-instructions",
-                "my prompt",
             ],
             60,
         )
@@ -469,14 +473,14 @@ class RunCopilotTests(unittest.TestCase):
         mock_run.assert_called_once_with(
             [
                 "copilot",
-                "-p",
                 "--silent",
+                "-p",
+                "my prompt",
                 "--deny-tool=write",
                 "--deny-tool=shell",
                 "--no-custom-instructions",
                 "--model",
                 "claude-sonnet-4.6",
-                "my prompt",
             ],
             60,
         )

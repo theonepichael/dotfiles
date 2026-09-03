@@ -72,7 +72,9 @@ NOT_APPLICABLE = object()
 # so a backend added without a complete descriptor is unbuildable, instead of
 # depending on whoever adds it remembering to handle every clause.
 #
-# "_base" is the command prefix; the prompt is appended last by the builder.
+# "_base" is the command prefix; the builder appends the prompt last unless
+# the descriptor sets _prompt_follows_base (a prompt flag that consumes the
+# next token as its value -- see copilot/agy).
 # Every mechanism below was verified by running it — see the plan artifact at
 # ~/.claude/data/grill/2026-08-31-meta-second-opinion-backend-isol-plan.md.
 BACKEND_ISOLATION: dict[str, dict[str, object]] = {
@@ -94,7 +96,15 @@ BACKEND_ISOLATION: dict[str, dict[str, object]] = {
     # to deny writes on its own, but "happens to" is not a mechanism — the
     # contract requires a declared one.
     "copilot": {
-        "_base": ["copilot", "-p", "--silent"],
+        # copilot's -p/--prompt takes the next argument as its prompt value,
+        # so the prompt binds to the flag rather than trailing the command —
+        # -p must be last in _base, and the isolation flags follow the
+        # prompt. The old shape ["copilot", "-p", "--silent"] made -p
+        # swallow --silent and left the prompt as a bare positional copilot
+        # rejects. Verified against copilot --help: flags after the -p value
+        # are parsed normally.
+        "_base": ["copilot", "--silent", "-p"],
+        "_prompt_follows_base": True,
         "tools_execution": ["--deny-tool=write", "--deny-tool=shell"],
         "tools_reach": NOT_APPLICABLE,
         "skills": ["--deny-tool=write", "--deny-tool=shell"],
