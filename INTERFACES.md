@@ -46,6 +46,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`grill.py`](#claudescriptsgrillpy) | grill.py — grill-me session state CLI. All session mutations go through here. |
 | [`guard_rails.py`](#claudescriptsguardrailspy) | Pre-tool guard shared by every harness: refuse a write into a repository's main checkout while a backlog item for that repository is in progress, warn when the current worktree's base has fallen behind ``origin/main``, and (Bash, Claude Code only) deny the git-native ways to defeat the no-commit-on-main git hook (``githooks/pre-commit`` / ``githooks-global/pre-commit``). |
 | [`harness_discovery_check.py`](#claudescriptsharnessdiscoverycheckpy) | SessionStart hook + CLI: detect when a harness's instruction-file discovery behavior may have drifted from the version-pinned facts in README.md. |
+| [`herdr_delegate.py`](#claudescriptsherdrdelegatepy) | Launch pi agents in herdr tabs to work backlog items. |
 | [`link_drift_check.py`](#claudescriptslinkdriftcheckpy) | SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should. |
 | [`llm_backends.py`](#claudescriptsllmbackendspy) | llm_backends.py — shared subprocess plumbing for CLI-agent backends (agy, opencode, pi, copilot). Extracted from second_opinion.py so dev_status.py's recap generation can reuse the same process-lifecycle handling (timeouts, process-group kills, opencode JSON-event parsing) with its own timeout and model choices, without duplicating it. |
 | [`notify.py`](#claudescriptsnotifypy) | Cross-platform agent notification dispatcher. |
@@ -257,7 +258,7 @@ dev_status.py v2 — slug IDs, structured dependency graph, pure render.
   - `confirm_resolution(cmd: str, arg: str | int, item: BacklogItem | PendingItem, summary_key: str = 'summary', *, quiet: bool = False) -> None` — Echo what a mutating command resolved to, so misresolution is visible.
   - `build_parser() -> argparse.ArgumentParser` — Build the full argument parser for every subcommand.
 - Subcommand handlers: `cmd_internal_regen`, `cmd_recap`, `cmd_render`, `cmd_ready`, `cmd_list`, `cmd_show`, `cmd_add`, `cmd_update`, `cmd_start`, `cmd_done`, `cmd_review`, `cmd_approve`, `cmd_reject`, `cmd_gate_set`, `cmd_gate_pass`, `cmd_run`, `cmd_runs`, `cmd_backfill_gate`, `cmd_rename`, `cmd_block`, `cmd_unblock`, `cmd_out_of_scope_add`, `cmd_out_of_scope_link`, `cmd_out_of_scope_unlink`, `cmd_out_of_scope_remove`, `cmd_out_of_scope_list`, `cmd_out_of_scope_show`, `cmd_pending_add`, `cmd_pending_update`, `cmd_pending_list`, `cmd_remove`, `cmd_prune`
-- Tested by: `claude/scripts/test_dev_status.py`, `claude/scripts/test_dev_status_sync.py`, `claude/scripts/test_to_tickets_runner.py`
+- Tested by: `claude/scripts/test_dev_status.py`, `claude/scripts/test_dev_status_sync.py`, `claude/scripts/test_to_tickets_runner.py`, `test/test_herdr_delegate.py`
 
 ### `claude/scripts/dev_status_sync.py`
 
@@ -667,6 +668,42 @@ SessionStart hook + CLI: detect when a harness's instruction-file discovery beha
 - Subcommand handlers: `cmd_check`, `cmd_probe`
 - Tested by: `claude/scripts/test_harness_discovery_check.py`
 
+### `claude/scripts/herdr_delegate.py`
+
+Launch pi agents in herdr tabs to work backlog items.
+
+- Installed at: `~/.claude/scripts/herdr_delegate.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): Launch pi agents in herdr tabs to work backlog items.
+- Subcommands:
+  - `plan` — READY queue grouped by prefix, as JSON
+  - `launch [--slug <SLUG>] [--swarm <SWARM>] [--prefix <PREFIX>] [--model <MODEL>] [--cwd <CWD>]` — start a pi worker or orchestrator
+    - `--slug` — single item for one unattended worker
+    - `--swarm` — fan out across N workers
+    - `--prefix` — queue scope, required with --swarm
+    - `--model` — model passed through to pi after a bare --
+    - `--cwd` — working directory
+- Filesystem constants:
+  - `DEV_STATUS = Path(__file__).resolve().parent / 'dev_status.py'`
+- Explicit exit codes: `1`
+- Depends on: `dev_status.py`
+- Exceptions:
+  - `class RefusedError(RuntimeError)` — A launch that must not proceed, with a reason fit to show the user.
+- Public functions:
+  - `require_herdr_env(env: dict[str, str] | os._Environ[str]) -> None` — Refuse unless this process is inside a herdr-managed pane.
+  - `prefix_of(slug: str) -> str` — The slug's prefix, preferring the longest known one.
+  - `is_worker_safe(prefix: str) -> bool` — Whether a worker may be given items under this prefix.
+  - `check_launchable(*, slug: str | None = None, prefix: str | None = None) -> None` — Refuse a launch that targets the harness's own repo.
+  - `group_by_prefix(slugs: list[str]) -> list[dict[str, object]]` — Group slugs by prefix, worker-safe prefixes first, then largest first.
+  - `build_tab_argv(*, cwd: str, label: str) -> list[str]` — `herdr tab create` argv.
+  - `build_agent_start_argv(*, name: str, pane: str, model: str | None) -> list[str]` — `herdr agent start` argv, with any model passed through after a bare ``--``.
+  - `worker_prompt(slug: str) -> str` — One worker, one item, unattended.
+  - `orchestrator_prompt(concurrency: int) -> str` — One orchestrator; `swarm_spawn` owns the fan-out from here.
+  - `ready_slugs() -> list[str]` — Slugs currently in READY, straight from ``dev_status.py ready``.
+  - `herdr(argv: list[str]) -> dict[str, object]` — Run a herdr command and return its parsed JSON result.
+- Subcommand handlers: `cmd_plan`, `cmd_launch`
+- Tested by: `test/test_herdr_delegate.py`
+
 ### `claude/scripts/link_drift_check.py`
 
 SessionStart hook + CLI: flag when a managed symlink on this machine no longer points where links.toml says it should.
@@ -996,6 +1033,7 @@ the file existing in the repo; the description is the canonical
 | `/skill-map` | yes | — | — | — | — |
 | `/spec` | yes | yes | yes | yes | yes |
 | `/standup` | yes | yes | yes | yes | yes |
+| `/swarm` | yes | — | — | — | — |
 | `/to-tickets` | yes | yes | yes | yes | yes |
 
 - **`/analyze-sessions`** — Analyze coding-agent sessions across pi, Claude Code, opencode, Copilot CLI, and agy: calculate token/USD cost rollups, list user prompts, or search message transcripts. Use when the user asks about session costs, token usage, previous prompts, or wants to search past coding session transcripts across harnesses.
@@ -1028,6 +1066,9 @@ the file existing in the repo; the description is the canonical
 - **`/standup`** — Gather assigned work, chat signal, calendar events, pending replies, git commits, and backlog activity into a daily standup draft, saved to a dated file. Use when the user says 'standup', 'prep for standup', or wants their daily status pulled together.
   - Source: `claude/commands/standup.md`
   - Installed at: `~/.claude/commands/standup.md` (claude)
+- **`/swarm`** — Hand READY backlog items to pi agents running in herdr tabs — a real fan-out across the queue by default, or a single item when one is named. Use when the user says 'swarm', 'swarm the backlog', 'hand this to pi', 'give <item> to a pi agent', or 'delegate to a pi worker'. Requires HERDR_ENV=1; says so and stops otherwise.
+  - Source: `claude/commands/swarm.md`
+  - Installed at: `~/.claude/commands/swarm.md` (claude)
 - **`/to-tickets`** — Decompose a plan or spec into multiple linked dev_status.py backlog items — vertical-slice/tracer-bullet tickets joined by blocked_by edges — after confirming the breakdown with the user. Use when the user wants a plan broken into tickets, wants a spec turned into backlog items, or invokes /to-tickets.
   - Source: `claude/commands/to-tickets.md`
   - Installed at: `~/.claude/commands/to-tickets.md` (claude)
@@ -1399,6 +1440,12 @@ named doc, not regenerating this file.
 | `pi/skills/spec/SKILL.md` | OK |
 | `pi/skills/to-tickets/SKILL.md` | OK |
 
+### `herdr_delegate.py`
+
+| Doc | Status |
+| --- | --- |
+| `claude/commands/swarm.md` | OK |
+
 ### `second_opinion.py`
 
 | Doc | Status |
@@ -1476,4 +1523,5 @@ new one, `--check` catches it the same as any other stale content.
 | `/skill-map` | — |
 | `/spec` | `backlog-item`, `grill-me`, `second-opinion` |
 | `/standup` | `dashboard` |
+| `/swarm` | `backlog-item` |
 | `/to-tickets` | `grill-me`, `second-opinion`, `spec` |

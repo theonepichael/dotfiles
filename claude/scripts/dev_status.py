@@ -1294,6 +1294,14 @@ def _render_order(items: list[BacklogItem]) -> RenderOrder:
     return in_progress, ready, blocked, in_review, done
 
 
+HARNESS_REPO = "dotfiles"
+"""The repo holding the harness itself.
+
+Named rather than assumed so anything needing "is this the harness?" -- a
+swarm deciding whether an item is safe for a worker, say -- derives it from
+one place instead of hardcoding the prefix a second time.
+"""
+
 REPO_PREFIXES: dict[str, str] = {
     "iron-logbook": "iron-lb",
     "agent-toolkit": "atk",
