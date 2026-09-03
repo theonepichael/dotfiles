@@ -4,15 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, Model, ModelCost } from "@earendil-works/pi-ai";
 import {
+  columnWidths,
+  compareModels,
   dedupeAndSort,
+  effortBar,
   effortLevelsFor,
   formatContext,
   formatCost,
+  matchIndices,
+  modelCostScore,
   modelRef,
   prefillEffort,
-  columnWidths,
-  effortBar,
-  matchIndices,
   rowLabel,
   saveDefaultModel,
   saveEnabledModels,
@@ -91,6 +93,47 @@ describe("dedupeAndSort", () => {
       "anthropic/claude-sonnet",
       "openai/gpt-4",
       "openai/gpt-5",
+    ]);
+  });
+
+  test("compareModels sorts by price ascending and descending with missing prices last", () => {
+    const sonnet = model({
+      provider: "anthropic",
+      id: "sonnet",
+      cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 },
+    });
+    const free = model({
+      provider: "ollama",
+      id: "llama",
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    });
+    const mini = model({
+      provider: "openai",
+      id: "mini",
+      cost: { input: 0.15, output: 0.6, cacheRead: 0, cacheWrite: 0 },
+    });
+    const unknown = model({ provider: "custom", id: "x", cost: undefined });
+
+    const list = [sonnet, free, mini, unknown];
+
+    expect(modelCostScore(free.cost)).toBe(0);
+    expect(modelCostScore(sonnet.cost)).toBe(18);
+    expect(modelCostScore(unknown.cost)).toBe(Number.POSITIVE_INFINITY);
+
+    const asc = list.slice().sort((a, b) => compareModels(a, b, "price-asc"));
+    expect(asc.map(modelRef)).toEqual([
+      "ollama/llama",
+      "openai/mini",
+      "anthropic/sonnet",
+      "custom/x",
+    ]);
+
+    const desc = list.slice().sort((a, b) => compareModels(a, b, "price-desc"));
+    expect(desc.map(modelRef)).toEqual([
+      "anthropic/sonnet",
+      "openai/mini",
+      "ollama/llama",
+      "custom/x",
     ]);
   });
 });
@@ -578,6 +621,57 @@ describe("command wiring", () => {
     expect(headerLine).toBeDefined();
     expect(headerLine!.indexOf("ctx")).toBe(ctxCols[0] + 1);
     expect(headerLine!.indexOf("cost")).toBe(ctxCols[0] + 6);
+    void pending;
+  });
+
+  test("pressing Tab cycles sort modes and updates the footer label", async () => {
+    const { commands, pi, makeCtx } = makeHarness();
+    registerModelPicker(pi);
+    const { ctx, getComponent } = makeCtx("tui", {
+      modelRegistry: {
+        getAvailable: () => [
+          model({
+            provider: "anthropic",
+            id: "expensive",
+            cost: { input: 10, output: 50, cacheRead: 0, cacheWrite: 0 },
+          }),
+          model({
+            provider: "ollama",
+            id: "free",
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          }),
+        ],
+        getProviderAuthStatus: () => ({ configured: true }),
+      },
+    });
+    const pending = commands.models.handler("", ctx);
+    await Promise.resolve();
+    const component = getComponent()!;
+
+    // Initial: sort: name
+    expect(component.render(120).join("\n")).toContain("sort: name");
+
+    // First Tab: sort: price ↑ (free model on top)
+    component.handleInput("\t");
+    const asc = component.render(120).join("\n");
+    expect(asc).toContain("sort: price ↑");
+    const ascLines = asc.split("\n");
+    const freeIdx = ascLines.findIndex((l) => l.includes("ollama/free"));
+    const expIdx = ascLines.findIndex((l) => l.includes("anthropic/expensive"));
+    expect(freeIdx).toBeLessThan(expIdx);
+
+    // Second Tab: sort: price ↓ (expensive model on top)
+    component.handleInput("\t");
+    const desc = component.render(120).join("\n");
+    expect(desc).toContain("sort: price ↓");
+    const descLines = desc.split("\n");
+    const freeIdx2 = descLines.findIndex((l) => l.includes("ollama/free"));
+    const expIdx2 = descLines.findIndex((l) => l.includes("anthropic/expensive"));
+    expect(expIdx2).toBeLessThan(freeIdx2);
+
+    // Third Tab: wraps back to sort: name
+    component.handleInput("\t");
+    expect(component.render(120).join("\n")).toContain("sort: name");
     void pending;
   });
 });

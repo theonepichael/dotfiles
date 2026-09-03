@@ -14,6 +14,7 @@
  *   ↑/↓        move highlight (wraps)
  *   type/bksp  filter rows (fuzzy match on provider/id)
  *   ←/→        move the reasoning-effort segment for the highlighted model
+ *   Tab        cycle sort (name → price: low→high → price: high→low)
  *   Enter      apply panel effort + switch to the highlighted model
  *   ctrl+s     persist highlighted model as the default model
  *   ctrl+a     add all shown models to enabledModels (additive union)
@@ -53,6 +54,8 @@ export const EFFORT_DISPLAY_NAMES: Record<ModelThinkingLevel, string> = {
   max: "max",
 };
 
+export type SortMode = "name" | "price-asc" | "price-desc";
+
 type AnyModel = Model<Api>;
 
 /** Canonical "provider/id" reference for a model. */
@@ -86,6 +89,34 @@ export function formatCost(cost: ModelCost | undefined): string {
   return `$${cost.input.toFixed(2)} / $${cost.output.toFixed(2)}`;
 }
 
+/** Numerical score for sorting models by price ($in + $out). Missing prices return infinity. */
+export function modelCostScore(cost: ModelCost | undefined): number {
+  if (!cost || typeof cost.input !== "number" || typeof cost.output !== "number") {
+    return Number.POSITIVE_INFINITY;
+  }
+  return cost.input + cost.output;
+}
+
+/** Comparator for models supporting name, price ascending, and price descending. */
+export function compareModels(a: AnyModel, b: AnyModel, mode: SortMode = "name"): number {
+  if (mode === "price-asc") {
+    const scoreA = modelCostScore(a.cost);
+    const scoreB = modelCostScore(b.cost);
+    if (scoreA !== scoreB) return scoreA - scoreB;
+  } else if (mode === "price-desc") {
+    const scoreA = modelCostScore(a.cost);
+    const scoreB = modelCostScore(b.cost);
+    if (Number.isFinite(scoreA) && Number.isFinite(scoreB)) {
+      if (scoreA !== scoreB) return scoreB - scoreA;
+    } else if (Number.isFinite(scoreA)) {
+      return -1;
+    } else if (Number.isFinite(scoreB)) {
+      return 1;
+    }
+  }
+  return a.provider.localeCompare(b.provider) || a.id.localeCompare(b.id);
+}
+
 /** Dedupe by provider/id and sort by provider, then id. */
 export function dedupeAndSort(models: AnyModel[]): AnyModel[] {
   const seen = new Set<string>();
@@ -97,7 +128,7 @@ export function dedupeAndSort(models: AnyModel[]): AnyModel[] {
       unique.push(model);
     }
   }
-  return unique.sort((a, b) => a.provider.localeCompare(b.provider) || a.id.localeCompare(b.id));
+  return unique.sort((a, b) => compareModels(a, b, "name"));
 }
 
 /**
@@ -320,7 +351,6 @@ function styleRowLabel(
   }
 
   // Parse rest to colorize context, cost, badges
-  // rest pattern: "  <ctx> ctx  <cost><badges>"
   let styledRest = rest;
   const ctxIdx = rest.indexOf(" ctx  ");
   if (ctxIdx !== -1) {
@@ -340,7 +370,6 @@ function styleRowLabel(
 
     let coloredBadges = "";
     if (badgeVal) {
-      // Style badges individually
       coloredBadges = badgeVal.replace(/\[(.*?)\]/, (_match, p1: string) => {
         const parts = p1.split(", ").map((badge) => {
           if (badge === "reasoning") return theme.fg("accent", "[reasoning]");
@@ -416,14 +445,20 @@ export default function modelPicker(pi: ExtensionAPI) {
     const result = await ctx.ui.custom<{ model: AnyModel; level: ModelThinkingLevel } | null>(
       (tui: TUI, theme, _kb, done) => {
         let filter = "";
+        let sortMode: SortMode = "name";
         let innerPanelWidth = 110;
         const effortIndexByRef = new Map<string, number>();
         const allRefs = models.map(modelRef);
 
         let widths = columnWidths(models);
 
+        const getFilteredModels = (query: string): AnyModel[] => {
+          const matched = fuzzyFilter(models, query, (m) => modelRef(m));
+          return matched.slice().sort((a, b) => compareModels(a, b, sortMode));
+        };
+
         const buildItems = (query: string, columnWidthsForView: typeof widths): SelectItem[] =>
-          fuzzyFilter(models, query, (m) => modelRef(m)).map((model) => {
+          getFilteredModels(query).map((model) => {
             const ref = modelRef(model);
             const full = rowLabel(model, {
               isActive: ref === activeRef,
@@ -469,7 +504,7 @@ export default function modelPicker(pi: ExtensionAPI) {
         let selectList = makeSelectList("", widths);
 
         function relayout(): void {
-          const filtered = fuzzyFilter(models, filter, (m) => modelRef(m));
+          const filtered = getFilteredModels(filter);
           const ctxWidth =
             filtered.length > 0
               ? Math.max(...filtered.map((m) => formatContext(m.contextWindow).length))
@@ -539,7 +574,6 @@ export default function modelPicker(pi: ExtensionAPI) {
           const model = highlighted();
           if (!model) return "";
           if (!model.reasoning) {
-            // Contains "not available for this model" and "effort:" for test compatibility
             return (
               "  " +
               theme.bold("Reasoning effort") +
@@ -552,7 +586,6 @@ export default function modelPicker(pi: ExtensionAPI) {
           const levels = effortLevelsFor(model);
           const current = effortFor(model);
           const buttons = formatSegmentedButtons(levels, current);
-          // Include "effort:" and current level string for test assertions
           return (
             "  " +
             theme.bold("Reasoning effort") +
@@ -572,7 +605,20 @@ export default function modelPicker(pi: ExtensionAPI) {
           refresh();
         }
 
+        function cycleSort(): void {
+          if (sortMode === "name") sortMode = "price-asc";
+          else if (sortMode === "price-asc") sortMode = "price-desc";
+          else sortMode = "name";
+          relayout();
+          refresh();
+        }
+
         function handleInput(data: string): void {
+          if (matchesKey(data, Key.tab)) {
+            cycleSort();
+            return;
+          }
+
           if (matchesKey(data, Key.ctrl("s"))) {
             const model = highlighted();
             if (model) {
@@ -676,7 +722,6 @@ export default function modelPicker(pi: ExtensionAPI) {
 
             let content = "";
             if (filter) {
-              // Contains "filter: <filter>" for test compatibility
               content = ` ${filter} ${theme.fg("dim", `(filter: ${filter})`)}`;
             } else {
               content = ` ${theme.fg("dim", "Search models…")}`;
@@ -758,10 +803,18 @@ export default function modelPicker(pi: ExtensionAPI) {
               " " +
               theme.fg("dim", label);
 
+            const sortLabel =
+              sortMode === "name"
+                ? "sort: name"
+                : sortMode === "price-asc"
+                  ? "sort: price ↑"
+                  : "sort: price ↓";
+
             return [
               "  " +
                 [
                   pill("↑", "") + pill("↓", "navigate"),
+                  pill("Tab", sortLabel),
                   pill("Enter", "select"),
                   pill("Esc", "cancel"),
                   pill("Ctrl+S", "save default"),
