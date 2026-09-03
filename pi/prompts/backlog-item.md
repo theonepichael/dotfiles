@@ -264,10 +264,27 @@ procedure below across the queue.
 **End of run.** When the queue is exhausted (or the single item completes),
 show a dashboard-style summary of every item processed — done, skipped
 (with reason), or failed after retries — then walk the accumulated digest
-in one pass, asking in plain text for each queued item exactly as its
-originating CLAUDE.md protocol specifies (a backlog `add`, a
-`pending add`, an `out-of-scope add`), stating a recommendation first and
-confirming or declining each in turn.
+in one pass. That means a single ask covering every queued offer at once,
+never one question per offer: name each queued item as its originating
+CLAUDE.md protocol specifies (a backlog `add`, a `pending add`, an
+`out-of-scope add`), state a recommendation for each, and take the whole
+set of answers in one reply.
+
+**Unless `PI_SWARM_CAPTURE_FILE` is set in your environment.** That means you
+are a swarm worker, nobody is watching your tab, and every question you ask
+costs a five-hop relay round trip while you hold a concurrency slot open. Do
+not ask at all. Write the queued offers to that path as JSON and finish:
+
+```json
+{"offers": [
+  {"kind": "backlog", "id": "meta-some-slug", "summary": "one line"},
+  {"kind": "out-of-scope", "id": "some-concept", "summary": "one line"},
+  {"kind": "pending", "id": "some-slug", "summary": "one line"}
+]}
+```
+
+Write nothing if you queued nothing. The orchestrator reads the file as you
+finish and asks the human once for the whole run.
 
 ---
 
@@ -499,6 +516,41 @@ writes and the commit-on-`main` worktree policy are untouched.
    `swarm_poll` names them and the answer each is waiting on is still owed —
    resolve those with `swarm_resolve_blocked` before treating the queue as
    drained, or the run ends with a live worker holding an open tab.
+### A worker's own capture digest
+
+**A worker does not ask about its capture offers at all in swarm mode.** It
+writes them to the file named by `PI_SWARM_CAPTURE_FILE` in its environment
+— set on its tab at spawn — and finishes. You collect them and ask the human
+once, for the whole run, in your own end-of-run digest walk.
+
+The file is JSON, and a worker that queued nothing simply never writes it:
+
+```json
+{"offers": [
+  {"kind": "backlog", "id": "meta-some-slug", "summary": "one line"},
+  {"kind": "out-of-scope", "id": "some-concept", "summary": "one line"},
+  {"kind": "pending", "id": "some-slug", "summary": "one line"}
+]}
+```
+
+`swarm_poll` reads that file when the worker finishes — the last moment
+anything can be attributed to the item, since the record is dropped and the
+tab closes immediately after — consumes it so no later poll can re-report
+it, and prints the offers on the `finished` event. Fold them into your
+single end-of-run walk. Do not ask about them as they arrive.
+
+Why this shape rather than letting the worker ask: outside the swarm a
+worker asks the human directly and a second question is nearly free. Here
+every question is a five-hop round trip — the worker raises it, `swarm_poll`
+reports it blocked, you relay it, a human answers, `swarm_resolve_blocked`
+drives the picker back — and a blocked worker still holds its concurrency
+slot the whole time. On 2026-09-03 a worker that had already committed,
+merged, pushed and cleaned up announced its digest as "question 1/3" and
+spent three of those round trips on housekeeping, with a slot occupied by an
+item whose work was finished and landed. Asking once per run instead of once
+per offer per worker takes a ten-worker run from ten relay round trips to
+zero.
+
 4. **End of run** — same shape as `--auto`'s: a dashboard-style summary of
    every item (done, flagged, stopped on budget, failed), then walk any accumulated
    proactive-capture digest entries exactly as `--auto`'s own end-of-run
