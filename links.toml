@@ -250,6 +250,10 @@ src = "claude/scripts/gen_skills_params.py"
 dest = "~/.claude/scripts/gen_skills_params.py"
 
 [[link]]
+src = "claude/scripts/gen_core_instructions.py"
+dest = "~/.claude/scripts/gen_core_instructions.py"
+
+[[link]]
 src = "claude/scripts/grill.py"
 dest = "~/.claude/scripts/grill.py"
 
