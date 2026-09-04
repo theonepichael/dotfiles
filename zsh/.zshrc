@@ -30,6 +30,10 @@ select-word-style bash
 # Agent harness tools (completions, paths, harness aliases)
 [[ -f "$HOME/.agent-tools.zsh" ]] && source "$HOME/.agent-tools.zsh"
 
+if [[ -d "$HOME/.zsh/completions" && ":$fpath:" != *":$HOME/.zsh/completions:"* ]]; then
+    fpath=("$HOME/.zsh/completions" $fpath)
+fi
+
 autoload -Uz compinit
 compinit
 
@@ -115,3 +119,4 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 export COLORTERM=truecolor
 
 . "$HOME/.local/bin/env"
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion

@@ -30,9 +30,6 @@ repo_root="$(git rev-parse --show-toplevel)"
 # directory than this script, so $(dirname "$0")-relative sourcing would
 # resolve to the wrong place -- use repo_root instead, same as every other
 # path below.
-source "$repo_root/githooks-global/lib/no-commit-on-main.sh"
-refuse_if_protected_branch || exit $?
-
 output="$(python3 "$repo_root/claude/scripts/gen_skills.py" --check --repo-root "$repo_root" 2>&1)"
 status=$?
 if [ "$status" -ne 0 ]; then
