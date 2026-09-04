@@ -41,7 +41,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Deliberately NOT .resolve()'d: post meta-agent-toolkit-migration-cutover,
+# dev_status.py lives in agent-toolkit's checkout while this script stays in
+# dotfiles', so resolving the symlink back to dotfiles' own (now dev_status.py
+# -less) claude/scripts/ would break the import. Path(__file__).parent stays
+# at the LIVE installed directory (~/.claude/scripts/) instead, where both
+# files are siblings regardless of which repo's checkout each one symlinks
+# back to -- Python's import machinery follows a module's symlink itself,
+# same as any other file open.
+sys.path.insert(0, str(Path(__file__).parent))
 
 from dev_status import (  # noqa: E402
     HARNESS_REPO,
@@ -57,7 +65,7 @@ UNATTENDED_ENV = "PI_AGENT_UNATTENDED=1"
 # point of the prefix scheme is one source of truth for "may a worker take
 # this?"; a second copy here would be the drift this design exists to avoid.
 
-DEV_STATUS = Path(__file__).resolve().parent / "dev_status.py"
+DEV_STATUS = Path(__file__).parent / "dev_status.py"
 
 
 class RefusedError(RuntimeError):

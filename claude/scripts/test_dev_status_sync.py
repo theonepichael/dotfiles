@@ -4,6 +4,7 @@
 import argparse
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -12,7 +13,36 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
+import conftest
+
 sys.path.insert(0, str(Path(__file__).parent))
+
+# dev_status.py itself lives in agent-toolkit post meta-agent-toolkit-
+# migration-cutover -- dev_status_sync.py finds it via the live install
+# directory (Path(__file__).parent, deliberately not .resolve()'d -- see
+# its own sys.path.insert), which this test can't replicate without an
+# actual install in place. Same AGENT_TOOLKIT_PATH convention as
+# scripts/install-with-agent-toolkit.sh and test/test_herdr_delegate.py.
+_AGENT_TOOLKIT_SCRIPTS = (
+    Path(
+        os.environ.get(
+            "AGENT_TOOLKIT_PATH",
+            str(conftest._REAL_HOME / "Workspace" / "agent-toolkit"),
+        )
+    )
+    / "claude"
+    / "scripts"
+)
+if not (_AGENT_TOOLKIT_SCRIPTS / "dev_status.py").is_file():
+    pytest.skip(
+        f"dev_status.py not found under {_AGENT_TOOLKIT_SCRIPTS} -- set "
+        "AGENT_TOOLKIT_PATH to your agent-toolkit checkout to run this test",
+        allow_module_level=True,
+    )
+sys.path.insert(0, str(_AGENT_TOOLKIT_SCRIPTS))
+
 import dev_status
 import dev_status_sync as sync
 
