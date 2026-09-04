@@ -18,13 +18,41 @@ tested in ``test_dev_status.py``; what is asserted here is that this module
 imports it rather than keeping a second copy.
 """
 
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
+import conftest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "claude" / "scripts"))
+
+# dev_status.py itself lives in agent-toolkit post meta-agent-toolkit-
+# migration-cutover -- herdr_delegate.py finds it via the live install
+# directory (see its own sys.path.insert comment), which this test can't
+# replicate without an actual install in place. Same AGENT_TOOLKIT_PATH
+# convention as scripts/install-with-agent-toolkit.sh, so both point at the
+# same checkout by default. conftest._REAL_HOME, not Path.home(): this
+# module-level code runs after conftest.py has already redirected HOME to
+# its per-run sandbox, so Path.home() here would never find a real checkout
+# regardless of what's actually on disk. Skips rather than fails when
+# agent-toolkit isn't cloned alongside dotfiles -- a real state for anyone
+# besides this machine's own dotfiles checkout.
+_AGENT_TOOLKIT_PATH = Path(
+    os.environ.get(
+        "AGENT_TOOLKIT_PATH", str(conftest._REAL_HOME / "Workspace" / "agent-toolkit")
+    )
+)
+_AGENT_TOOLKIT_SCRIPTS = _AGENT_TOOLKIT_PATH / "claude" / "scripts"
+if not (_AGENT_TOOLKIT_SCRIPTS / "dev_status.py").is_file():
+    pytest.skip(
+        f"dev_status.py not found under {_AGENT_TOOLKIT_SCRIPTS} -- set "
+        "AGENT_TOOLKIT_PATH to your agent-toolkit checkout to run this test",
+        allow_module_level=True,
+    )
+sys.path.insert(0, str(_AGENT_TOOLKIT_SCRIPTS))
 
 import dev_status  # noqa: E402 — must follow sys.path.insert above
 import herdr_delegate  # noqa: E402 — must follow sys.path.insert above
@@ -55,7 +83,9 @@ def test_agent_start_never_carries_the_unattended_env():
 
 
 def test_model_reaches_pi_only_after_a_bare_separator():
-    argv = herdr_delegate.build_agent_start_argv(name="w1", pane="w1:p2", model="prov/m")
+    argv = herdr_delegate.build_agent_start_argv(
+        name="w1", pane="w1:p2", model="prov/m"
+    )
     assert "--" in argv, "herdr rejects --model as its own unknown flag"
     assert argv.index("--model") > argv.index("--")
     assert argv[argv.index("--model") + 1] == "prov/m"
@@ -83,14 +113,8 @@ def test_orchestrator_prompt_fans_out_and_names_no_single_item():
     assert prompt == "/backlog-item --swarm=3"
 
 
-
-
-
-
 def test_plan_groups_ready_slugs_by_prefix_with_counts_and_safety():
-    rows = herdr_delegate.group_by_prefix(
-        ["atk-a", "atk-b", "iron-lb-c", "meta-d"]
-    )
+    rows = herdr_delegate.group_by_prefix(["atk-a", "atk-b", "iron-lb-c", "meta-d"])
     by = {r["prefix"]: r for r in rows}
     assert by["atk"]["count"] == 2
     assert by["atk"]["worker_safe"] is True

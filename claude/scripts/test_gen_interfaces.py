@@ -426,16 +426,11 @@ class HandlerMatchingTests(unittest.TestCase):
         self.assertEqual(unmatched, [("broken",)])
         self.assertNotIn(("broken",), docstrings)
 
-    def test_real_repo_scripts_have_zero_unmatched_leaf_handlers(self) -> None:
-        """Empirical check behind the spec's design: every leaf subcommand
-        across the 4 in-scope scripts resolves to a real cmd_<path> handler."""
-        for name in ("dev_status.py", "grill.py", "second_opinion.py", "standup.py"):
-            source = (REPO_ROOT / gi.SCRIPTS_DIR / name).read_text(encoding="utf-8")
-            tree = ast.parse(source)
-            cli = gi.extract_cli(tree, gi.first_paragraph(ast.get_docstring(tree)))
-            assert cli is not None
-            _, unmatched = gi.match_leaf_handlers(tree, cli)
-            self.assertEqual(unmatched, [], f"{name} has unmatched leaf handlers")
+    # test_real_repo_scripts_have_zero_unmatched_leaf_handlers moved with
+    # dev_status.py/grill.py/second_opinion.py/standup.py to agent-toolkit
+    # (meta-agent-toolkit-migration-cutover) -- dotfiles' own remaining
+    # scripts have no comparable multi-subcommand CLI to exercise this
+    # empirical check against.
 
 
 class FingerprintTests(unittest.TestCase):
@@ -904,43 +899,11 @@ class RealSourceTests(unittest.TestCase):
         assert spec is not None
         return spec
 
-    def test_dev_status_subcommands_are_enumerated(self) -> None:
-        names = {s.name for s in self.spec_for("dev_status.py").subcommands}
-        self.assertGreaterEqual(len(names), 20)
-        self.assertLessEqual(
-            {
-                "render",
-                "add",
-                "start",
-                "done",
-                "review",
-                "approve",
-                "reject",
-                "gate-set",
-                "gate-pass",
-                "block",
-                "unblock",
-                "prune",
-                "recap",
-                "pending add",
-                "pending update",
-                "pending list",
-            },
-            names,
-        )
-
-    def test_dev_status_helper_arguments_are_resolved(self) -> None:
-        spec = self.spec_for("dev_status.py")
-        approve = subcommand(spec, "approve")
-        self.assertEqual(
-            [a.usage for a in approve.arguments], ["<slug|N>", "[--if-rev <N>]"]
-        )
-
-    def test_grill_session_flag_reaches_every_subcommand_that_takes_it(self) -> None:
-        spec = self.spec_for("grill.py")
-        decide = subcommand(spec, "decide")
-        self.assertIn("--session/-s", [a.label for a in decide.arguments])
-        self.assertEqual([a.label for a in subcommand(spec, "list").arguments], [])
+    # dev_status.py/grill.py/llm_backends.py moved to agent-toolkit entirely
+    # (meta-agent-toolkit-migration-cutover) -- their parsing-drift coverage
+    # is now that repo's own RealSourceTests to carry, not a file dotfiles
+    # still ships. install.py stays (dotfiles' own, never moves), so its
+    # coverage below is unchanged.
 
     def test_install_py_cli_is_found_through_its_parser_subclass(self) -> None:
         source = (REPO_ROOT / "install.py").read_text(encoding="utf-8")
@@ -950,12 +913,6 @@ class RealSourceTests(unittest.TestCase):
         self.assertIn("--harness", labels)
         self.assertIn("--dry-run", labels)
         self.assertIn("--rollback", labels)
-
-    def test_llm_backends_is_a_library_with_no_cli(self) -> None:
-        source = (REPO_ROOT / gi.SCRIPTS_DIR / "llm_backends.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertIsNone(gi.extract_cli(ast.parse(source), ""))
 
 
 DEV_STATUS_START_FIXTURE = """
@@ -1067,17 +1024,10 @@ class DocDriftTests(unittest.TestCase):
         self.assertEqual(doc_rows[1], "| `a-doc.md` | MISSING |")
         self.assertEqual(doc_rows[2], "| `z-doc.md` | OK |")
 
-    def test_repo_current_docs_have_zero_drift(self) -> None:
-        links = gi.load_link_table(REPO_ROOT)
-        modules = [
-            gi.analyze_module(
-                REPO_ROOT / gi.SCRIPTS_DIR / name, REPO_ROOT, set(), links
-            )
-            for name in ("dev_status.py", "grill.py", "standup.py")
-        ]
-        problems, coverage = gi.check_doc_drift(REPO_ROOT, modules)
-        self.assertEqual(problems, [])
-        self.assertGreater(sum(len(docs) for docs in coverage.values()), 0)
+    # test_repo_current_docs_have_zero_drift moved with dev_status.py/
+    # grill.py/standup.py to agent-toolkit (meta-agent-toolkit-migration-
+    # cutover) -- their generated skill docs left dotfiles along with them,
+    # so there's nothing left here for check_doc_drift to check.
 
     def _write_synthetic_repo(self, root: Path, doc_invocation: str) -> None:
         scripts = root / gi.SCRIPTS_DIR

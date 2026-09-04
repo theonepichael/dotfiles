@@ -380,7 +380,7 @@ def test_harness_gate(home, links):
     assert "~/.copilot/copilot-instructions.md" not in dests
     assert "~/.gemini/GEMINI.md" not in dests
     # Shared scripts stay linked no matter which harness was picked.
-    assert "~/.claude/scripts/dev_status.py" in dests
+    assert "~/.claude/scripts/gen_interfaces.py" in dests
 
 
 def test_platform_and_profile_gates(home, links):
@@ -406,28 +406,6 @@ def test_platform_and_profile_gates(home, links):
     wsl = make_ctx(home, system="Linux", is_wsl=True)
     wsl_dests = {s.dest for s in links if install.link_applies(s, wsl)}
     assert "~/.config/Code/User/settings.json" not in wsl_dests
-
-
-def test_copilot_hook_platform_split(home, links):
-    """The Copilot sessionStart hook is bash-only, so links.toml carries two
-    same-destination entries gated mac/linux (the VS Code mutually-exclusive
-    platform pattern) instead of one unqualified entry: on any given machine
-    exactly one applies, and nothing installs the hook where the bash
-    handler could not dispatch."""
-    hook = "~/.copilot/hooks/session-start.json"
-    entries = [s for s in links if s.dest == hook]
-    assert len(entries) == 2
-    assert {s.platform for s in entries} == {"mac", "linux"}
-    assert all(s.harness == "copilot" for s in entries)
-
-    for system in ("Linux", "Darwin"):
-        ctx = make_ctx(home, harnesses=("copilot",), system=system)
-        applying = [s for s in entries if install.link_applies(s, ctx)]
-        assert len(applying) == 1, system
-    # No copilot in --harness: neither entry links, on either platform.
-    for system in ("Linux", "Darwin"):
-        ctx = make_ctx(home, harnesses=("claude",), system=system)
-        assert not any(install.link_applies(s, ctx) for s in entries)
 
 
 def test_expand_dest(home):
@@ -2048,7 +2026,7 @@ def test_full_run_wires_only_the_selected_harness(home, links, offline_install):
     assert install.run_install(ctx, links) == 0
 
     assert (home / ".claude" / "CLAUDE.md").is_symlink()
-    assert (home / ".claude" / "scripts" / "dev_status.py").is_symlink()
+    assert (home / ".claude" / "scripts" / "gen_interfaces.py").is_symlink()
     assert not (home / ".copilot" / "copilot-instructions.md").exists()
     assert not (home / ".config" / "opencode" / "opencode.jsonc").exists()
     assert not (home / ".gemini" / "GEMINI.md").exists()

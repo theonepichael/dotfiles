@@ -1,9 +1,19 @@
 # claude/scripts/ — agent notes
 
-The shared workflow tools. Every harness in this repo — Claude Code,
-Copilot, opencode, agy, Pi — calls these same paths through
-`~/.claude/scripts/`. Only what is easy to get wrong here; general
-conventions are in the repo root's `AGENTS.md` and `STYLE.md`.
+Post meta-agent-toolkit-migration-cutover, this directory holds two kinds
+of file, not the full shared harness-tooling set it once did: this
+machine's personal-only scripts (`dev_status_sync.py`,
+`watchcommit_activity.py`, `herdr_delegate.py`,
+`opencode_skills_sync_activity.py`, `gen_core_instructions.py`, never
+moving to agent-toolkit), and `install.py`'s own local dependencies
+(`cli_common.py`, `settings_seed_drift_check.py`, `gen_interfaces.py`) —
+kept here because `install.py` imports them from its own repo checkout,
+never via the live `~/.claude/scripts/` symlink (see `install.py`'s own
+`sys.path.insert` comment). The harness-runtime scripts every harness
+actually calls through `~/.claude/scripts/` (`dev_status.py`, `grill.py`,
+`second_opinion.py`, and the rest) live in agent-toolkit now. Only what is
+easy to get wrong here; general conventions are in the repo root's
+`AGENTS.md` and `STYLE.md`.
 
 ## Standard library only
 
@@ -31,9 +41,12 @@ longer has.
 
 That check is a string comparison, not a reading. A flag can keep its name
 while its behaviour changes underneath, and every doc naming it still
-passes. After changing a script's behaviour, re-read the skill docs that
-name it — `claude/commands/`, `opencode/skills/`, `copilot/skills/`,
-`agy/skills/`, `pi/prompts/` — and fix the wording before committing.
+passes. `claude/commands/swarm.md` is the one skill doc left in this repo
+that names anything here (`herdr_delegate.py`); after changing that
+script's behaviour, re-read it and fix the wording before committing. The
+generated skill docs for the scripts that moved to agent-toolkit
+(`claude/commands/`, `opencode/skills/`, `copilot/skills/`, `agy/skills/`,
+`pi/prompts/` for the harness-runtime tools) live there now, not here.
 
 ## Every production script needs a `links.toml` entry — and no test may have one
 
