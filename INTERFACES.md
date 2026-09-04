@@ -38,6 +38,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`dev_status.py`](#claudescriptsdevstatuspy) | dev_status.py v2 — slug IDs, structured dependency graph, pure render. |
 | [`dev_status_sync.py`](#claudescriptsdevstatussyncpy) | dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending store. |
 | [`dotfiles_sync_check.py`](#claudescriptsdotfilessynccheckpy) | SessionStart hook: flag when the dotfiles repo has drifted from the last commit bundled over to a GitHub-blocked work machine. |
+| [`gen_core_instructions.py`](#claudescriptsgencoreinstructionspy) | gen_core_instructions.py — compose CORE_INSTRUCTIONS.md + personal-overlay.md into claude/global-instructions.md. |
 | [`gen_interfaces.py`](#claudescriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`gen_second_opinion.py`](#claudescriptsgensecondopinionpy) | gen_second_opinion.py — regenerate the second-opinion skill copies (one per harness, named in HARNESS_TABLE) from one canonical template. |
 | [`gen_shell_completion.py`](#claudescriptsgenshellcompletionpy) | Generate a zsh `#compdef` completion file for a harness CLI. |
@@ -345,6 +346,25 @@ SessionStart hook: flag when the dotfiles repo has drifted from the last commit 
   - `build_parser() -> argparse.ArgumentParser`
 - Subcommand handlers: `cmd_check`, `cmd_mark`
 - Tested by: `claude/scripts/test_dotfiles_sync_check.py`
+
+### `claude/scripts/gen_core_instructions.py`
+
+gen_core_instructions.py — compose CORE_INSTRUCTIONS.md + personal-overlay.md into claude/global-instructions.md.
+
+- Installed at: `~/.claude/scripts/gen_core_instructions.py` (all harnesses)
+- Entrypoint: not executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): compose CORE_INSTRUCTIONS.md + personal-overlay.md into global-instructions.md
+  - `--quiet/-q`
+  - `--verbose/-v`
+  - `--check` — exit 1 (with a diff-free notice on stderr) if the output is stale
+  - `--stdout` — print the composed file, write nothing
+  - `--repo-root` — repository root (default: inferred from this script's path)
+- Explicit exit codes: `1`, `2`
+- Depends on: `cli_common.py`
+- Public functions:
+  - `compose(repo_root: Path) -> str` — Read CORE_INSTRUCTIONS.md + personal-overlay.md, return the composed text.
+  - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
+- Tested by: `claude/scripts/test_gen_core_instructions.py`
 
 ### `claude/scripts/gen_interfaces.py`
 
@@ -1085,6 +1105,7 @@ are copy-once seeds for exactly that reason.
 
 | Source | Installed at |
 | --- | --- |
+| `claude/CORE_INSTRUCTIONS.md` | not symlinked by `links.toml` |
 | `claude/global-instructions.md` | `~/.claude/CLAUDE.md` (claude), `~/.copilot/copilot-instructions.md` (copilot), `~/.gemini/GEMINI.md` (agy), `~/.pi/agent/AGENTS.md` (pi) |
 | `claude/icons/agy.png` | not symlinked by `links.toml` |
 | `claude/icons/claude.png` | not symlinked by `links.toml` |
@@ -1093,6 +1114,7 @@ are copy-once seeds for exactly that reason.
 | `claude/icons/pi.png` | not symlinked by `links.toml` |
 | `claude/output-styles/ConciseSTE.md` | `~/.claude/output-styles/ConciseSTE.md` (claude) |
 | `claude/output-styles/PlainEngineer.md` | `~/.claude/output-styles/PlainEngineer.md` (claude) |
+| `claude/personal-overlay.md` | not symlinked by `links.toml` |
 | `claude/scripts/AGENTS.md` | not symlinked by `links.toml` |
 | `claude/scripts/CLAUDE.md` | not symlinked by `links.toml` |
 | `claude/scripts/contract_fingerprints.json` | not symlinked by `links.toml` |
