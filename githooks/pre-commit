@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
-# Block a commit that leaves a generated skill/command doc stale relative to
-# its template (gen_skills.py: dashboard/grill-me/backlog-item/make-skill;
-# gen_second_opinion.py: second-opinion), that leaves global-instructions.md
-# stale relative to CORE_INSTRUCTIONS.md/personal-overlay.md
-# (gen_core_instructions.py), or that lets a skill/command doc drift from
-# the backing script's real CLI contract (dev_status.py/grill.py/
-# standup.py and any other script gen_interfaces.py discovers), or that
-# leaves INTERFACES.md itself stale. The other generators run first so a
-# forgotten regeneration reports as that, not as a confusing downstream
-# CLI-contract-drift error from gen_interfaces.py reading stale generated
-# content. See claude/scripts/gen_interfaces.py --check for its two
-# distinct exit codes (1 = stale file, 3 = doc drift).
+# Block a commit that leaves global-instructions.md stale relative to
+# CORE_INSTRUCTIONS.md/personal-overlay.md (gen_core_instructions.py), or
+# that lets claude/commands/swarm.md drift from herdr_delegate.py's real
+# CLI contract, or that leaves INTERFACES.md itself stale. gen_core_
+# instructions.py runs first so a forgotten regeneration reports as that,
+# not as a confusing downstream CLI-contract-drift error from
+# gen_interfaces.py reading stale generated content. See
+# claude/scripts/gen_interfaces.py --check for its two distinct exit codes
+# (1 = stale file, 3 = doc drift).
+#
+# meta-agent-toolkit-migration-cutover: dropped the gen_skills.py/
+# gen_second_opinion.py checks that used to run here -- both scripts (and
+# every generated doc they checked: claude/commands/{dashboard,grill-me,
+# backlog-item,make-skill}.md, opencode/skills/second-opinion/SKILL.md,
+# etc.) moved to agent-toolkit entirely, which carries this same check in
+# its own pre-commit hook.
 set -uo pipefail
 
 # opencode-skills-live is a dedicated worktree (scripts/opencode_skills_sync.py)
@@ -30,23 +34,8 @@ repo_root="$(git rev-parse --show-toplevel)"
 # directory than this script, so $(dirname "$0")-relative sourcing would
 # resolve to the wrong place -- use repo_root instead, same as every other
 # path below.
-output="$(python3 "$repo_root/claude/scripts/gen_skills.py" --check --repo-root "$repo_root" 2>&1)"
-status=$?
-if [ "$status" -ne 0 ]; then
-    echo "$output" >&2
-    echo "" >&2
-    echo "pre-commit: a generated skill doc is stale -- run gen_skills.py, then re-stage and commit." >&2
-    exit "$status"
-fi
-
-output="$(python3 "$repo_root/claude/scripts/gen_second_opinion.py" --check --repo-root "$repo_root" 2>&1)"
-status=$?
-if [ "$status" -ne 0 ]; then
-    echo "$output" >&2
-    echo "" >&2
-    echo "pre-commit: a generated second-opinion doc is stale -- run gen_second_opinion.py, then re-stage and commit." >&2
-    exit "$status"
-fi
+source "$repo_root/githooks-global/lib/no-commit-on-main.sh"
+refuse_if_protected_branch || exit $?
 
 output="$(python3 "$repo_root/claude/scripts/gen_core_instructions.py" --check --repo-root "$repo_root" 2>&1)"
 status=$?
