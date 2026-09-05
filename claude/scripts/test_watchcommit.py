@@ -419,6 +419,117 @@ class AgentDetectionIntegrationTestCase(unittest.TestCase):
         )
 
 
+class MessageGenerationTestCase(unittest.TestCase):
+    """generate_message's diagnostics and message_for_diff's fallback path:
+    a claude CLI failure (quota exhausted, outage, timeout) must be visible
+    in the log with its actual reason, and must degrade to a clearly-marked
+    checkpoint message rather than stalling the loss-protection pipeline."""
+
+    def test_error_includes_stdout_detail(self) -> None:
+        # The claude CLI prints some failures (rate-limit notices) to stdout
+        # and exits 1 — reporting stderr alone logged an empty
+        # "claude CLI failed:" with no clue why.
+        fake = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="You've hit your weekly limit · resets 2am",
+            stderr="",
+        )
+        with (
+            patch.object(watchcommit.subprocess, "run", return_value=fake),
+            self.assertRaises(RuntimeError) as ctx,
+        ):
+            watchcommit.generate_message("diff")
+        self.assertIn("weekly limit", str(ctx.exception))
+
+    def test_message_for_diff_passes_claude_message_through(self) -> None:
+        with patch.object(watchcommit, "generate_message", return_value="feat: x"):
+            self.assertEqual(watchcommit.message_for_diff("diff"), "feat: x")
+
+    def test_message_for_diff_falls_back_when_claude_fails(self) -> None:
+        with patch.object(
+            watchcommit, "generate_message", side_effect=RuntimeError("quota")
+        ):
+            self.assertEqual(
+                watchcommit.message_for_diff("diff"), watchcommit.FALLBACK_MESSAGE
+            )
+
+
+class BackoffDelayTestCase(unittest.TestCase):
+    """backoff_delay() doubles per consecutive failure and caps, so a
+    persistently-refused cycle costs one attempt per cap-interval instead of
+    full subprocess churn every tick."""
+
+    def test_doubles_then_caps(self) -> None:
+        self.assertEqual(watchcommit.backoff_delay(1), watchcommit.POLL_INTERVAL)
+        self.assertEqual(watchcommit.backoff_delay(2), watchcommit.POLL_INTERVAL * 2)
+        self.assertEqual(watchcommit.backoff_delay(4), watchcommit.POLL_INTERVAL * 8)
+        self.assertEqual(watchcommit.backoff_delay(5), watchcommit.MAX_BACKOFF_SECONDS)
+        self.assertEqual(watchcommit.backoff_delay(50), watchcommit.MAX_BACKOFF_SECONDS)
+
+
+class CommitFailureSignalTestCase(unittest.TestCase):
+    """commit_and_push()/push() report success to the caller, so main()'s
+    backoff can see a commit that a pre-commit hook will keep refusing
+    forever — the state the no-commit-on-main guard puts a pre-exemption
+    daemon in on every single tick."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="wc-commitsig-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        state_dir = self.tmp / "state"
+        self.enterContext(patch.object(watchcommit, "STATE_DIR", state_dir))
+        self.enterContext(
+            patch.object(
+                watchcommit, "ACTIVITY_STATE_FILE", state_dir / "last-activity.json"
+            )
+        )
+
+    def _repo(self, hook_script: str | None) -> Path:
+        repo = self.tmp / f"repo-{abs(hash(hook_script)) % 10000}"
+        init_repo(repo)
+        (repo / "seed.txt").write_text("seed\n")
+        sh(repo, "git", "add", "-A")
+        sh(repo, "git", "commit", "-q", "-m", "seed")
+        if hook_script is not None:
+            hooks = self.tmp / f"hooks-{abs(hash(hook_script)) % 10000}"
+            hooks.mkdir()
+            (hooks / "pre-commit").write_text(hook_script)
+            (hooks / "pre-commit").chmod(0o755)
+            sh(repo, "git", "config", "core.hooksPath", str(hooks))
+        return repo
+
+    def test_hook_blocked_commit_reports_failure(self) -> None:
+        # Stand-in for any refusing pre-commit hook — the no-commit-on-main
+        # guard is the real-world instance.
+        repo = self._repo("#!/bin/sh\necho 'blocked' >&2\nexit 1\n")
+        (repo / "change.txt").write_text("change\n")
+        self.assertFalse(watchcommit.commit_and_push(repo, "chore: change"))
+        # The staged change is still there for a future attempt — not lost.
+        self.assertTrue(sh(repo, "git", "diff", "--cached", "--quiet").returncode != 0)
+
+    def test_successful_commit_reports_success(self) -> None:
+        remote = self.tmp / "remote.git"
+        remote.mkdir()
+        sh(remote, "git", "init", "-q", "--bare", "-b", "main")
+        repo = self._repo(None)
+        sh(repo, "git", "remote", "add", "origin", str(remote))
+        sh(repo, "git", "push", "-q", "-u", "origin", "main")
+
+        (repo / "new.txt").write_text("hi\n")
+        self.assertTrue(watchcommit.commit_and_push(repo, "chore: add new.txt"))
+
+    def test_nothing_staged_is_success_not_failure(self) -> None:
+        # Only a gitignored file changed: add -A stages nothing. That's a
+        # no-op, not a failure — it must not trip the backoff.
+        repo = self._repo(None)
+        (repo / ".gitignore").write_text("ignored.txt\n")
+        sh(repo, "git", "add", "-A")
+        sh(repo, "git", "commit", "-q", "-m", "gitignore")
+        (repo / "ignored.txt").write_text("not staged\n")
+        self.assertTrue(watchcommit.commit_and_push(repo, "chore: noop"))
+
+
 class GuardActiveTestCase(unittest.TestCase):
     """Unit tests for guard_active()/is_paused() — the wc-guard side of the
     watchcommit-can-auto-commit-mid-edit fix. wc-guard itself never touches

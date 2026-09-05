@@ -45,7 +45,17 @@ can't auto-commit it mid-edit. Unlike wc-pause/wc-resume, wc-guard never
 touches the pause-file itself — it registers its own PID under
 $STATE_DIR/guard-pids while running, and is_paused() below checks both the
 pause-file and any live, identity-verified wc-guard registration.
-"""
+
+Main-branch interaction: the no-commit-on-main pre-commit hook
+(githooks-global/lib/no-commit-on-main.sh) blocks every human/agent commit
+to main, but watchcommit's design commits straight to main — so the daemon
+sets WATCHCOMMIT_DAEMON=1 in its own process env (see DAEMON_ENV_KEY below)
+and the hook exempts exactly that process tree. When a commit is still
+refused (a repo's other pre-commit checks failed, say), or the claude CLI
+can't produce a message (quota, outage), the cycle falls back to a
+clearly-marked generic checkpoint message if needed and backs off
+exponentially (up to MAX_BACKOFF_SECONDS) instead of retrying subprocess
+churn every tick."""
 
 import json
 import os
@@ -80,6 +90,26 @@ DEFAULT_AGENT_NAMES = frozenset(
 AGENT_ENV_MARKER_KEY = "WATCHCOMMIT_AGENT"
 AGENT_ENV_MARKER_VAL = "1"
 MSG_GEN_CWD = Path(tempfile.gettempdir())  # invariant: never inside a watched repo
+
+# Identity marker watchcommit sets in its own process env (main(), before any
+# git child is spawned) so the no-commit-on-main pre-commit hook
+# (githooks-global/lib/no-commit-on-main.sh) can tell the daemon's sanctioned
+# loss-protection commits apart from every other direct commit to main, which
+# stays blocked. git passes the env down to the hook. Exact-value match on the
+# hook side — WATCHCOMMIT_DAEMON=0 (or any other value) bypasses nothing.
+DAEMON_ENV_KEY = "WATCHCOMMIT_DAEMON"
+DAEMON_ENV_VAL = "1"
+
+# Used when the claude CLI can't produce a message (quota exhausted, outage,
+# timeout). Loss protection is watchcommit's mission, so a clearly-marked
+# generic checkpoint beats stalling the backup for as long as the outage
+# lasts — a weekly quota window can be days.
+FALLBACK_MESSAGE = "chore(wip): auto-checkpoint (claude message-gen unavailable)"
+
+# Consecutive failed cycles double the poll delay up to this cap, so a
+# persistently-blocked commit (hook refusal, gen-check failure, dead remote)
+# costs one attempt per 15 minutes instead of a subprocess churn every 90s.
+MAX_BACKOFF_SECONDS = 900
 
 # Linux /proc/[pid]/comm truncates the executable basename to at most
 # TASK_COMM_LEN-1 = 15 visible chars + null. Names <=15 chars match exactly;
@@ -333,8 +363,35 @@ def generate_message(diff: str) -> str:
         cwd=str(MSG_GEN_CWD),  # invariant: never inside a watched repo
     )
     if result.returncode != 0:
-        raise RuntimeError(f"claude CLI failed: {result.stderr.strip()}")
+        # Some claude CLI failures (e.g. a rate-limit notice) print to stdout,
+        # not stderr — reporting stderr alone logged an empty detail. Either
+        # channel may carry the actual reason; prefer stderr when present.
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(f"claude CLI failed: {detail}")
     return result.stdout.strip()
+
+
+def message_for_diff(diff: str) -> str:
+    """Generate a commit message for `diff`, falling back to a clearly-marked
+    generic checkpoint message when the claude CLI can't produce one (quota,
+    outage, timeout). The fallback keeps the loss-protection pipeline moving;
+    message quality is the first casualty, not the backup itself."""
+    try:
+        return generate_message(diff)
+    except Exception as exc:
+        print(
+            f"[watchcommit] message generation failed ({exc}) — "
+            "using fallback checkpoint message",
+            file=sys.stderr,
+        )
+        return FALLBACK_MESSAGE
+
+
+def backoff_delay(consecutive_failures: int) -> int:
+    """Sleep time after a failed cycle: POLL_INTERVAL doubled per consecutive
+    failure, capped at MAX_BACKOFF_SECONDS. consecutive_failures starts at 1
+    for the first failure (delay == POLL_INTERVAL, same as a normal tick)."""
+    return min(POLL_INTERVAL * 2 ** (consecutive_failures - 1), MAX_BACKOFF_SECONDS)
 
 
 def current_branch(repo: Path) -> str:
@@ -366,32 +423,42 @@ def rebase_onto_remote(repo: Path) -> bool:
     return True
 
 
-def push(repo: Path, success_message: str, trigger: str) -> None:
+def push(repo: Path, success_message: str, trigger: str) -> bool:
     """Rebase onto the remote, then push. Safe to call whenever there are
-    local commits not yet on the remote, regardless of what put them there."""
+    local commits not yet on the remote, regardless of what put them there.
+    Returns True only when the push landed — the caller feeds this into the
+    failure backoff."""
     if not rebase_onto_remote(repo):
-        return
+        return False
     result = git(repo, "push")
     if result.returncode != 0:
         print(f"[watchcommit] push failed: {result.stderr.strip()}", file=sys.stderr)
-        return
+        return False
     print(f"[watchcommit] {success_message}")
     sha = git(repo, "rev-parse", "HEAD").stdout.strip()
     _record_activity("last_push", sha=sha, trigger=trigger)
+    return True
 
 
-def commit_and_push(repo: Path, message: str) -> None:
+def commit_and_push(repo: Path, message: str) -> bool:
+    """Stage everything, commit with `message`, push. Returns True when the
+    commit landed (push included) — False signals the caller's failure
+    backoff. A no-op commit (nothing actually staged after `add -A`, e.g.
+    only ignored files changed) counts as success, not failure."""
     git(repo, "add", "-A")
+    staged = git(repo, "diff", "--cached", "--quiet")
+    if staged.returncode == 0:
+        return True  # nothing to commit — nothing failed either
 
     result = git(repo, "commit", "-m", message, "-m", "Committed-by: watchcommit")
     if result.returncode != 0:
         print(f"[watchcommit] commit failed: {result.stderr.strip()}", file=sys.stderr)
-        return
+        return False
 
     sha = git(repo, "rev-parse", "HEAD").stdout.strip()
     _record_activity("last_commit", sha=sha, message=message)
 
-    push(repo, message, trigger="commit")
+    return push(repo, message, trigger="commit")
 
 
 def pull_ff_only(repo: Path) -> None:
@@ -421,9 +488,17 @@ def main() -> None:
         print(f"[watchcommit] not a git repo: {repo}", file=sys.stderr)
         sys.exit(1)
 
+    # Identity marker for the no-commit-on-main pre-commit hook: git passes
+    # this env down to every hook this process's git commands run, so the
+    # daemon's own commits to main pass the guard while every other writer
+    # stays blocked. Set before the loop, once — it never changes.
+    os.environ[DAEMON_ENV_KEY] = DAEMON_ENV_VAL
+
     print(f"[watchcommit] watching {repo} every {POLL_INTERVAL}s  (Ctrl-C to stop)")
 
+    consecutive_failures = 0
     while True:
+        cycle_ok = True
         try:
             if is_paused():
                 # Pause guard — either the touch-file (managed by wc-pause /
@@ -449,8 +524,9 @@ def main() -> None:
                     _clear_agent_state()
                     diff = build_diff(repo)
                     if diff:
-                        message = generate_message(diff)
-                        commit_and_push(repo, message)
+                        message = message_for_diff(diff)
+                        if not commit_and_push(repo, message):
+                            cycle_ok = False
                 elif has_unpushed_commits(repo):
                     # Working tree is clean, but a prior cycle committed and then
                     # failed to push (remote had diverged in between). Retry —
@@ -458,7 +534,10 @@ def main() -> None:
                     # since has_changes() is False here and the old loop did
                     # nothing at all in that state.
                     _clear_agent_state()
-                    push(repo, "pushed previously-stuck commit(s)", trigger="retry")
+                    if not push(
+                        repo, "pushed previously-stuck commit(s)", trigger="retry"
+                    ):
+                        cycle_ok = False
                 else:
                     # Nothing local to protect, so a plain fast-forward pull is
                     # always safe here. Keeps the working copy current even on
@@ -470,8 +549,22 @@ def main() -> None:
             sys.exit(0)
         except Exception as exc:
             print(f"[watchcommit] error: {exc}", file=sys.stderr)
+            cycle_ok = False
 
-        time.sleep(POLL_INTERVAL)
+        if cycle_ok:
+            # Success (or a skip: paused, agent-active, clean tree) — reset
+            # and go back to the normal cadence.
+            consecutive_failures = 0
+            time.sleep(POLL_INTERVAL)
+        else:
+            consecutive_failures += 1
+            delay = backoff_delay(consecutive_failures)
+            print(
+                f"[watchcommit] cycle failed ({consecutive_failures}x) — "
+                f"backing off {delay}s",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
 
 
 if __name__ == "__main__":
