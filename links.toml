@@ -116,11 +116,6 @@ src = "claude/global-instructions.md"
 dest = "~/.claude/CLAUDE.md"
 harness = "claude"
 
-[[link]]
-src = "claude/commands/swarm.md"
-dest = "~/.claude/commands/swarm.md"
-harness = "claude"
-
 # backlog-item orchestrates grill-me/second-opinion via each harness's native
 # skill mechanism. opencode and Copilot CLI have ports; agy remains unported
 # (description-match-only activation, mid-run delegation uncertain).
@@ -155,10 +150,6 @@ dest = "~/.claude/scripts/gen_interfaces.py"
 [[link]]
 src = "claude/scripts/gen_core_instructions.py"
 dest = "~/.claude/scripts/gen_core_instructions.py"
-
-[[link]]
-src = "claude/scripts/herdr_delegate.py"
-dest = "~/.claude/scripts/herdr_delegate.py"
 
 # install.py's own dependency (import cli_common), not a harness-runtime
 # script -- content is identical to agent-toolkit's copy today, so which

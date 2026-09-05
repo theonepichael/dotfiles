@@ -3,7 +3,7 @@
 Post meta-agent-toolkit-migration-cutover, this directory holds two kinds
 of file, not the full shared harness-tooling set it once did: this
 machine's personal-only scripts (`dev_status_sync.py`,
-`watchcommit_activity.py`, `herdr_delegate.py`,
+`watchcommit_activity.py`,
 `opencode_skills_sync_activity.py`, `gen_core_instructions.py`, never
 moving to agent-toolkit), and `install.py`'s own local dependencies
 (`cli_common.py`, `settings_seed_drift_check.py`, `gen_interfaces.py`) —
@@ -41,12 +41,12 @@ longer has.
 
 That check is a string comparison, not a reading. A flag can keep its name
 while its behaviour changes underneath, and every doc naming it still
-passes. `claude/commands/swarm.md` is the one skill doc left in this repo
-that names anything here (`herdr_delegate.py`); after changing that
-script's behaviour, re-read it and fix the wording before committing. The
-generated skill docs for the scripts that moved to agent-toolkit
-(`claude/commands/`, `opencode/skills/`, `copilot/skills/`, `agy/skills/`,
-`pi/prompts/` for the harness-runtime tools) live there now, not here.
+passes. No skill or command doc naming anything in this directory is left
+in this repo — the swarm command and its `herdr_delegate.py` launcher were
+the last, and the source-of-truth verdict moved both to agent-toolkit
+(`claude/commands/swarm.md` is generated there from `templates/swarm.md.tmpl`);
+after changing a script's behaviour there, the docs to re-read live on that
+side.
 
 ## Every production script needs a `links.toml` entry — and no test may have one
 
