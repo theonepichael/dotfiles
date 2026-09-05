@@ -73,7 +73,6 @@ Add `--dry-run` to preview any run (including `--rollback`) without writing or r
 | `vscode/settings.json` | VS Code user settings | Per-OS path (macOS, Linux, WSL) |
 | `vscode/keybindings.json` | VS Code keybindings | Per-OS path (macOS, Linux, WSL) |
 | `claude/global-instructions.md` | `~/.claude/CLAUDE.md`, `~/.copilot/copilot-instructions.md`, `~/.gemini/GEMINI.md`, `~/.pi/agent/AGENTS.md` | Composed personal instructions overlay |
-| `claude/commands/swarm.md` | `~/.claude/commands/swarm.md` | Swarm orchestration command |
 | `claude/output-styles/PlainEngineer.md` | `~/.claude/output-styles/PlainEngineer.md` | Custom Claude Code output style |
 | `scripts/watchcommit.py` | `~/.local/bin/watchcommit` | Background auto-commit daemon (`--profile=personal`) |
 | `scripts/wc-guard` | `~/.local/bin/wc-guard` | Watchcommit pause/resume wrapper |
