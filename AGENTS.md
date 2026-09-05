@@ -13,7 +13,7 @@ this repo.
 
 ## Standards
 
-- **House style** (Python/shell/TypeScript conventions, type hints, CLI
+- **House style** (Python/shell conventions, type hints, CLI
   ergonomics, config/secrets, logging, testing tiers, formatting/linting) —
   `STYLE.md`.
 - **Harness script interface inventory** — `INTERFACES.md`, generated from
@@ -21,36 +21,10 @@ this repo.
   changes, not the file directly. Regenerate with
   `python3 claude/scripts/gen_interfaces.py`, or check for staleness with
   `--check` (exit 1 if stale — this is what the test suite asserts).
-- **User-facing command/behavior differences across harnesses** (Claude
-  Code, Copilot, opencode, agy, Pi) — `README.md`.
-- **Per-harness porting and verification notes** —
-  `copilot/CLAUDE_CODE_PARITY.md`, `agy/CLAUDE_CODE_PARITY.md`,
-  `opencode/CLAUDE_CODE_PARITY.md`, `pi/CLAUDE_CODE_PARITY.md`.
+- **User-facing documentation** — `README.md`.
+- **Shared cross-harness coding-agent toolkit** — see `agent-toolkit`
+  (contains shared skills, hooks, MCP configs, and multi-harness documentation).
 - **Changelog of breaking/internal tooling changes** — `CHANGELOG.md`.
-
-## Harness maintenance tiers
-
-Decided 2026-08-31, after chasing a single 3-skill drift fix
-(`meta-pi-residual-skill-drift`) through a third layer of undiscovered
-divergence in one session: full generated content parity across every
-harness is not worth maintaining unconditionally. It costs a
-capability-verification pass per harness on every new skill or template
-change, and that cost is unbounded — each pass can surface more drift
-(wording, tooling, whole mechanisms) than it fixes.
-
-- **Actively maintained parity** — Claude Code, opencode, Pi. New skills get
-  generated copies for all three; capability facts (`CAPABILITY_TABLE` in
-  `claude/scripts/gen_skills.py`, and its `gen_second_opinion.py` analog) get
-  kept current for these three when touched.
-- **Best-effort** — Copilot, agy. Existing generated/hand-authored content
-  for these stays as-is; new skills do **not** get copilot/agy copies by
-  default. Fix drift there only when actually about to use that harness —
-  never as a proactive drift-chasing pass, and never let staleness there
-  block or expand an unrelated item's scope.
-
-This tier is a starting point, not a permanent ceiling — revisit it if usage
-patterns change (e.g. copilot or agy becomes a real daily fallback the way
-opencode already is for billing overflow).
 
 ## Directory instructions — read before working in these
 
@@ -62,9 +36,6 @@ not the rules themselves; the mechanics stay in the directory file.
   `test/AGENTS.md` before writing one.
 - **`claude/scripts/`** — standard library only, and the module docstrings
   are generated source, not commentary. See `claude/scripts/AGENTS.md`.
-- **`pi/`** — a new extension is invisible until `links.toml` names it, and
-  this is the only tree with its own TypeScript toolchain. See
-  `pi/AGENTS.md`.
 
 ## The `AGENTS.md` + `CLAUDE.md` convention
 

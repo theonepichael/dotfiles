@@ -25,7 +25,7 @@ marker:
 ```
 
 Reach for a marker only when the test genuinely needs the real thing —
-`test_pi_ts_checks.py` shelling out to `bun` is the canonical case. Mocking
+`test_lint.py` shelling out to `uv` is the canonical case. Mocking
 at the subprocess boundary is still the default; the markers are the
 exception, and each one should carry a comment saying why.
 

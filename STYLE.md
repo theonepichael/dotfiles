@@ -46,12 +46,6 @@ Tests & CI
 - CI (.github/workflows/python-quality.yml) runs on pushes to main and on every pull request: `uv sync --locked --dev`, then `uv run ruff check .`, `uv run ruff format --check .`, then a bare `uv run pytest` — which covers both tiers via `testpaths`, rather than naming individual files or running a separate unittest discovery step.
 - test/run.sh drives the containerized install.sh scenario suite (test/scenarios.sh) against Ubuntu and Fedora images. It needs Docker/Podman and is run locally, not in CI. Never run scenarios.sh directly on a real machine — it mutates real state.
 
-TypeScript
-- One tree only: pi/ (extensions plus their specs under pi/test/), with opencode/plugin/*.ts and agy/hooks/*.js as single-file outliers that carry no toolchain of their own.
-- Toolchain is bun-driven and declared in pi/package.json: `bun test`, `tsc --noEmit`, `oxlint extensions test`, `prettier --check extensions test`. Run from pi/, not the repo root.
-- test/test_pi_ts_checks.py drives all four stages from the Python suite, so they gate CI. They skip rather than fail when pi/node_modules is absent — run `bun install` in pi/ first, or a green suite has checked nothing.
-- Lint and format are scoped to pi/extensions and pi/test, deliberately, so markdown at pi/ root is not swept by prettier. See pi/AGENTS.md.
-
 Formatting & linting
 - Ruff is the enforced formatter and linter, configured under [tool.ruff] and [tool.ruff.lint] in pyproject.toml (`line-length = 88`; E, F, W, UP, SIM, I, PIE, ISC, FURB, TRY, ANN selected). No black, no isort.
 - Note that E501 is in the `ignore` list: the formatter wraps to 88 columns, but the linter does not fail a line that exceeds it. DTZ011, DTZ005, PLW1510, BLE001 and TRY003 are ignored too.
@@ -64,7 +58,5 @@ Formatting & linting
 Files & docs
 - Add a short module docstring to each CLI script listing: flags, env vars, files read/written, and primary exit codes. This discipline is what lets INTERFACES.md be generated from source.
 - INTERFACES.md is the interface inventory for the harness scripts, generated from those docstrings and argparse definitions. Fix the source when an interface changes; do not hand-edit the generated inventory. Regenerate with `python3 claude/scripts/gen_interfaces.py`, or check for staleness with `--check` (exit 1 if stale, which is what the test suite asserts).
-- User-facing commands are documented in README.md, per harness — that is where behavioral differences between the Claude Code, Copilot, opencode, agy and Pi ports belong.
+- User-facing documentation is in README.md. For shared cross-harness coding-agent tooling (skills, hooks, MCP, parity matrices), see agent-toolkit.
 - Directory-level agent instructions live in `<dir>/AGENTS.md` with a `CLAUDE.md` symlink beside it (no single filename reaches all five harnesses). Write one only when the directory has a convention an agent would otherwise get wrong; the repo root's AGENTS.md carries the rationale and the index.
-
-
