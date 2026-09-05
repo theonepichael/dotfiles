@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 # directory (Path(__file__).parent, deliberately not .resolve()'d -- see
 # its own sys.path.insert), which this test can't replicate without an
 # actual install in place. Same AGENT_TOOLKIT_PATH convention as
-# scripts/install-with-agent-toolkit.sh and test/test_herdr_delegate.py.
+# scripts/install-with-agent-toolkit.sh.
 _AGENT_TOOLKIT_SCRIPTS = (
     Path(
         os.environ.get(

@@ -3,6 +3,23 @@
 This repo's internal tooling changes are logged here. Breaking changes to
 harness CLIs, flags, or behavior get an entry going forward.
 
+## 2026-09-04
+
+### Changed
+
+- **agent-toolkit is the source of truth for swarm/herdr tooling.**
+  Deleted `claude/commands/swarm.md` (the hand-authored original — the
+  toolkit's copy is generated from `templates/swarm.md.tmpl` via
+  `gen_skills.py`, and this repo no longer ships that generator at all),
+  `claude/scripts/herdr_delegate.py` (byte-identical toolkit copy), and
+  this repo's `test/test_herdr_delegate.py`, along with their `links.toml`
+  entries. The harness-tree prune of the same day left these two paths
+  half-owned; any dotfiles-side edit would have silently won on the next
+  toolkit sync (plain copy) or been skipped as a generated artifact
+  (swarm.md), so edits now go to agent-toolkit only. The live
+  `~/.claude/commands/swarm.md` and `~/.claude/scripts/herdr_delegate.py`
+  destinations are unaffected — the toolkit links both.
+
 ## 2026-09-03
 
 ### Fixed

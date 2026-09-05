@@ -8,6 +8,11 @@ does not exist at the prompt, with no error anywhere to explain why.
 `test_agents_md_links.py` covers AGENTS.md symlinks and `test_pi_extension_links.py`
 covers pi extensions. This closes the same gap for `claude/commands/`, for every
 future skill rather than for the one that exposed it.
+
+The set is allowed to be empty: after the agent-toolkit cutover this repo
+ships no harness commands (the last one, swarm.md, moved to the toolkit as
+a generated copy), and git tracks no empty directories, so the honest
+states are "no commands dir at all" or "commands that are all linked".
 """
 
 import tomllib
@@ -26,7 +31,6 @@ def test_every_claude_command_has_a_links_entry() -> None:
         f"claude/commands/{p.name}"
         for p in (REPO_ROOT / "claude" / "commands").glob("*.md")
     )
-    assert commands, "no claude/commands/*.md found -- the glob is wrong"
     missing = sorted(set(commands) - _linked_sources())
     assert not missing, (
         "these command files have no links.toml entry, so they exist in the repo "

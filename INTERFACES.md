@@ -37,7 +37,6 @@ House style for these interfaces is in `STYLE.md`.
 | [`dev_status_sync.py`](#claudescriptsdevstatussyncpy) | dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending store. |
 | [`gen_core_instructions.py`](#claudescriptsgencoreinstructionspy) | gen_core_instructions.py — compose CORE_INSTRUCTIONS.md + personal-overlay.md into claude/global-instructions.md. |
 | [`gen_interfaces.py`](#claudescriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
-| [`herdr_delegate.py`](#claudescriptsherdrdelegatepy) | Launch pi agents in herdr tabs to work backlog items. |
 | [`opencode_skills_sync_activity.py`](#claudescriptsopencodeskillssyncactivitypy) | Print opencode-skills-sync's pause state and last known snapshot commit, so a session can tell whether the daemon is running and how current its mirror is -- mirrors watchcommit_activity.py's SessionStart banner role. |
 | [`settings_seed_drift_check.py`](#claudescriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo. |
 | [`watchcommit_activity.py`](#claudescriptswatchcommitactivitypy) | Print watchcommit's last known background pull/commit/push, so a session (or wc-status) can tell daemon-driven git state changes from manual ones instead of only seeing a clean/up-to-date working tree. |
@@ -224,39 +223,6 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
 - Subcommand handlers: `cmd_function_name`
 - Tested by: `claude/scripts/test_gen_interfaces.py`
 
-### `claude/scripts/herdr_delegate.py`
-
-Launch pi agents in herdr tabs to work backlog items.
-
-- Installed at: `~/.claude/scripts/herdr_delegate.py` (all harnesses)
-- Entrypoint: not executable, `#!/usr/bin/env python3`
-- CLI (`argparse`): Launch pi agents in herdr tabs to work backlog items.
-- Subcommands:
-  - `plan` — READY queue grouped by prefix, as JSON
-  - `launch [--slug <SLUG>] [--swarm <SWARM>] [--prefix <PREFIX>] [--model <MODEL>] [--cwd <CWD>]` — start a pi worker or orchestrator
-    - `--slug` — single item for one unattended worker
-    - `--swarm` — fan out across N workers
-    - `--prefix` — queue scope, required with --swarm
-    - `--model` — model passed through to pi after a bare --
-    - `--cwd` — working directory
-- Filesystem constants:
-  - `DEV_STATUS = Path(__file__).parent / 'dev_status.py'`
-- Explicit exit codes: `1`
-- Exceptions:
-  - `class RefusedError(RuntimeError)` — A launch that must not proceed, with a reason fit to show the user.
-- Public functions:
-  - `require_herdr_env(env: dict[str, str] | os._Environ[str]) -> None` — Refuse unless this process is inside a herdr-managed pane.
-  - `check_launchable(*, slug: str | None = None, prefix: str | None = None) -> None` — Refuse a launch that targets the harness's own repo.
-  - `group_by_prefix(slugs: list[str]) -> list[dict[str, object]]` — Group slugs by prefix, worker-safe prefixes first, then largest first.
-  - `build_tab_argv(*, cwd: str, label: str) -> list[str]` — `herdr tab create` argv.
-  - `build_agent_start_argv(*, name: str, pane: str, model: str | None) -> list[str]` — `herdr agent start` argv, with any model passed through after a bare ``--``.
-  - `worker_prompt(slug: str) -> str` — One worker, one item, unattended.
-  - `orchestrator_prompt(concurrency: int) -> str` — One orchestrator; `swarm_spawn` owns the fan-out from here.
-  - `ready_slugs() -> list[str]` — Slugs currently in READY, straight from ``dev_status.py ready``.
-  - `herdr(argv: list[str]) -> dict[str, object]` — Run a herdr command and return its parsed JSON result.
-- Subcommand handlers: `cmd_plan`, `cmd_launch`
-- Tested by: `test/test_herdr_delegate.py`
-
 ### `claude/scripts/opencode_skills_sync_activity.py`
 
 Print opencode-skills-sync's pause state and last known snapshot commit, so a session can tell whether the daemon is running and how current its mirror is -- mirrors watchcommit_activity.py's SessionStart banner role.
@@ -325,11 +291,7 @@ the file existing in the repo; the description is the canonical
 
 | Skill | claude | copilot | opencode | agy | pi |
 | --- | --- | --- | --- | --- | --- |
-| `/swarm` | yes | — | — | — | — |
 
-- **`/swarm`** — Hand READY backlog items to pi agents running in herdr tabs — a real fan-out across the queue by default, or a single item when one is named. Use when the user says 'swarm', 'swarm the backlog', 'hand this to pi', 'give <item> to a pi agent', or 'delegate to a pi worker'. Requires HERDR_ENV=1; says so and stops otherwise.
-  - Source: `claude/commands/swarm.md`
-  - Installed at: `~/.claude/commands/swarm.md` (claude)
 
 ---
 
@@ -554,12 +516,6 @@ invocation of a given script is not listed. `--check` exits `3` (not
 `1`) when this section would change, since the fix is editing the
 named doc, not regenerating this file.
 
-### `herdr_delegate.py`
-
-| Doc | Status |
-| --- | --- |
-| `claude/commands/swarm.md` | OK |
-
 ---
 
 ## 6. Skill cross-reference graph
@@ -573,4 +529,3 @@ new one, `--check` catches it the same as any other stale content.
 
 | Skill | Mentions |
 | --- | --- |
-| `/swarm` | — |
