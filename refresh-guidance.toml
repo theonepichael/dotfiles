@@ -1,0 +1,9 @@
+# Doc-set config for refresh_guidance.py (agent-toolkit's doc-citation
+# auditor), auto-discovered at this repo's root. Extracted verbatim from the
+# DOC_SETS["dotfiles"] entry removed from agent-toolkit's shared source
+# (commit 88fbec4) -- see that repo's atk-refresh-guidance-doc-set-leak spec
+# for the schema. Only the required keys are set; every optional key keeps
+# its DocSetConfig default.
+fixed_docs = ["README.md", "STYLE.md", "CHANGELOG.md"]
+script_dirs = ["claude/scripts", "scripts"]
+cross_repo_scripts = true
