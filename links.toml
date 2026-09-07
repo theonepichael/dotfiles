@@ -147,6 +147,15 @@ profile_exclude = ["work"]
 src = "claude/scripts/gen_core_instructions.py"
 dest = "~/.claude/scripts/gen_core_instructions.py"
 
+# seed_hook_subset_guard.py (dotfiles' own pre-commit seed-drop guard, 2026-09-07
+# meta-seed-guard-dotfiles) deliberately has no [[link]] row: githooks/pre-commit
+# invokes it repo-relative, never via the live symlink, and agent-toolkit is the
+# live-symlink owner of ~/.claude/scripts/seed_hook_subset_guard.py. A row here
+# would silently reclaim that destination on every wrapper run (dotfiles'
+# installer runs second) -- the incident test/test_link_ownership_boundary.py
+# now catches. See test/test_install.py's _REPO_LOCAL_ONLY_SCRIPTS, which
+# exempts it from the links-coverage rule for the same reason.
+
 # Pre-tool guard shared by all five harnesses: refuses a write into a repo's
 # main checkout while a backlog item for that repo is in progress, and warns
 # when a worktree's base is behind origin/main. Each harness has a thin
