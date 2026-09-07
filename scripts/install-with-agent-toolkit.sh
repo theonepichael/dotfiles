@@ -2,19 +2,27 @@
 # Runs agent-toolkit's installer, then dotfiles' own, in that fixed order,
 # for any machine that has both checked out (this one).
 #
-# Why this has to exist: install.py's symlink() unconditionally overwrites
-# whatever's at a destination -- there's no per-destination protection.
-# agent-toolkit's own links.toml deliberately symlinks the bare
-# claude/CORE_INSTRUCTIONS.md to ~/.claude/CLAUDE.md (and the copilot/gemini/
-# pi equivalents) -- correct for a coworker machine with no personal overlay.
-# On THIS machine, dotfiles instead symlinks its own composed
-# claude/global-instructions.md (CORE_INSTRUCTIONS.md + personal-overlay.md)
-# to those same 4 destinations. Whichever installer runs last wins outright,
-# with no warning either way. Running agent-toolkit first and dotfiles
-# second means dotfiles always reasserts the composed, personal version --
-# every time, not just during the one-time cutover -- so a later
-# agent-toolkit-only update (a new skill, a bugfix) can never silently drop
-# the personal overlay from every harness on this machine again.
+# Why this has to exist: agent-toolkit's own links.toml deliberately
+# symlinks the bare claude/CORE_INSTRUCTIONS.md to ~/.claude/CLAUDE.md (and
+# the copilot/gemini/pi equivalents) -- correct for a coworker machine with
+# no personal overlay. On THIS machine, dotfiles instead symlinks its own
+# composed claude/global-instructions.md (CORE_INSTRUCTIONS.md +
+# personal-overlay.md) to those same 4 destinations. Running agent-toolkit
+# first and dotfiles second means dotfiles always reasserts the composed,
+# personal version -- every time, not just during the one-time cutover --
+# so a later agent-toolkit-only update (a new skill, a bugfix) can never
+# silently drop the personal overlay from every harness on this machine
+# again.
+#
+# 2026-09-07 incident: a swarm worker ran agent-toolkit/install.py directly
+# (bypassing this wrapper) to repoint its own renamed scripts, and silently
+# won all 4 personal-overlay destinations -- nothing was stopping a direct,
+# unwrapped call. agent-toolkit/install.py now refuses those 4 destinations
+# on its own when it detects ~/dotfiles present and AGENT_TOOLKIT_INSTALL_WRAPPER
+# is unset, so this wrapper exports the marker before invoking it below.
+# That backstop protects against future direct calls; it doesn't replace
+# this script -- dotfiles' own reassert step (below) is still what actually
+# recomposes the personal overlay content on every run.
 #
 # Only for a plain install run. --rollback/--check-links/--depart/--wipe
 # each mean something different per-repo (rolling back BOTH repos' entire
@@ -58,7 +66,7 @@ fi
 
 echo "==> agent-toolkit installer ($AGENT_TOOLKIT_DIR)"
 agent_toolkit_status=0
-"$PYTHON" "$AGENT_TOOLKIT_DIR/install.py" "$@" || agent_toolkit_status=$?
+AGENT_TOOLKIT_INSTALL_WRAPPER=1 "$PYTHON" "$AGENT_TOOLKIT_DIR/install.py" "$@" || agent_toolkit_status=$?
 
 # The dotfiles reassert step below MUST still run even if agent-toolkit's
 # install reported a skip (exit 1 is install.py's normal "something was
