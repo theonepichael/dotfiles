@@ -7,7 +7,10 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-_REAL_HOME = Path(os.path.expanduser("~")).resolve()
+_REAL_HOME = Path(
+    os.environ.get("_DOTFILES_REAL_HOME") or os.path.expanduser("~")
+).resolve()
+os.environ["_DOTFILES_REAL_HOME"] = str(_REAL_HOME)
 _SANDBOX_HOME = tempfile.mkdtemp(prefix="dotfiles-pytest-home-")
 os.environ["HOME"] = _SANDBOX_HOME
 atexit.register(shutil.rmtree, _SANDBOX_HOME, ignore_errors=True)

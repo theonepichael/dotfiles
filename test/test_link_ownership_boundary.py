@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+import conftest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # The only destinations both repos are allowed to declare -- dotfiles wins
@@ -43,7 +45,8 @@ def _agent_toolkit_links_toml() -> Path | None:
     candidate = (
         Path(
             os.environ.get(
-                "AGENT_TOOLKIT_PATH", str(Path.home() / "Workspace" / "agent-toolkit")
+                "AGENT_TOOLKIT_PATH",
+                str(conftest._REAL_HOME / "Workspace" / "agent-toolkit"),
             )
         )
         / "links.toml"

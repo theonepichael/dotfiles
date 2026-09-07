@@ -25,17 +25,19 @@ sys.path.insert(0, str(Path(__file__).parent))
 # its own sys.path.insert), which this test can't replicate without an
 # actual install in place. Same AGENT_TOOLKIT_PATH convention as
 # scripts/install-with-agent-toolkit.sh.
-_AGENT_TOOLKIT_SCRIPTS = (
-    Path(
-        os.environ.get(
-            "AGENT_TOOLKIT_PATH",
-            str(conftest._REAL_HOME / "Workspace" / "agent-toolkit"),
-        )
+_AGENT_TOOLKIT_DIR = Path(
+    os.environ.get(
+        "AGENT_TOOLKIT_PATH",
+        str(conftest._REAL_HOME / "Workspace" / "agent-toolkit"),
     )
-    / "claude"
-    / "scripts"
 )
+_AGENT_TOOLKIT_SCRIPTS = _AGENT_TOOLKIT_DIR / "agent-scripts"
 if not (_AGENT_TOOLKIT_SCRIPTS / "dev_status.py").is_file():
+    if _AGENT_TOOLKIT_DIR.is_dir():
+        pytest.fail(
+            f"agent-toolkit directory found at {_AGENT_TOOLKIT_DIR}, but "
+            f"dev_status.py not found under {_AGENT_TOOLKIT_SCRIPTS}"
+        )
     pytest.skip(
         f"dev_status.py not found under {_AGENT_TOOLKIT_SCRIPTS} -- set "
         "AGENT_TOOLKIT_PATH to your agent-toolkit checkout to run this test",
