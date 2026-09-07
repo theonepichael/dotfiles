@@ -1,5 +1,13 @@
 -- ~/.config/nvim/init.lua
 
+-- Defensively guard against older Neovim versions (< 0.11)
+if vim.fn.has("nvim-0.11") == 0 then
+  vim.api.nvim_echo({
+    { "Neovim >= 0.11 is required. Please upgrade or run install.py to install the managed fallback.\n", "ErrorMsg" },
+  }, true, {})
+  return
+end
+
 -- Leader keys must be set before lazy.nvim loads any plugin
 vim.g.mapleader = " "
 vim.g.maplocalleader = "\\"

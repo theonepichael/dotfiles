@@ -5372,6 +5372,48 @@ def test_auto_cleanup_never_deletes_a_destination_another_tool_has_claimed(
     )
 
 
+def test_auto_cleanup_never_deletes_installer_managed_shims(home, offline_install):
+    """Installer-managed shims (~/.local/bin/nvim, bat, fd) recorded in manifest
+    must never be treated as orphaned links or removed during orphan cleanup,
+    even though links.toml does not declare them."""
+    ctx = make_ctx(home)
+    bin_dir = home / ".local" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+
+    shims = [bin_dir / "nvim", bin_dir / "bat", bin_dir / "fd"]
+    for shim in shims:
+        target = home / f".target-{shim.name}"
+        target.write_text("binary\n")
+        shim.symlink_to(target)
+        ctx.manifest.record_symlink(shim, target)
+
+    orphans = install._find_orphaned_links(ctx, [])
+    assert orphans == [], (
+        f"installer-managed shims were identified as orphans: {orphans}"
+    )
+
+    install._cleanup_orphaned_links(ctx, [])
+    for shim in shims:
+        assert shim.is_symlink(), f"installer-managed shim {shim.name} was removed"
+
+
+def test_neovim_fallback_version_is_0_12_5():
+    assert install.NEOVIM_FALLBACK_VERSION == "0.12.5"
+
+
+def test_installer_managed_shims_constant():
+    assert set(install.INSTALLER_MANAGED_SHIMS) == {"nvim", "bat", "fd"}
+
+
+def test_neovim_lua_guards_present():
+    repo_root = Path(__file__).resolve().parent.parent
+    init_lua = (repo_root / "nvim" / "init.lua").read_text()
+    lazy_lua = (repo_root / "nvim" / "lua" / "config" / "lazy.lua").read_text()
+
+    assert 'vim.fn.has("nvim-0.11")' in init_lua
+    assert "local uv = vim.uv or vim.loop" in lazy_lua
+
+
 def test_auto_cleanup_survives_a_different_harness_selected(
     home, dir_repo, offline_install
 ):

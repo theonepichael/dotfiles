@@ -69,11 +69,12 @@ NERD_FONT_URL = (
 # fallback path was first built for. Bump manually to upgrade. Only used on
 # Linux — apt/dnf's neovim is frequently years behind upstream, with no
 # in-repo mechanism to track a moving "latest".
-NEOVIM_FALLBACK_VERSION = "0.12.4"
+NEOVIM_FALLBACK_VERSION = "0.12.5"
 NEOVIM_FALLBACK_ASSETS = {
     "x86_64": "nvim-linux-x86_64.tar.gz",
     "aarch64": "nvim-linux-arm64.tar.gz",
 }
+INSTALLER_MANAGED_SHIMS: tuple[str, ...] = ("nvim", "bat", "fd")
 
 BREW_FORMULAE = (
     "python@3.13",
@@ -4835,6 +4836,7 @@ def _find_orphaned_links(
     anything; this mirrors that same guard here.
     """
     known = {dest for _src, dest, _rel, _applicable in links}
+    known.update(ctx.home / ".local" / "bin" / name for name in INSTALLER_MANAGED_SHIMS)
     orphans: list[Path] = []
     seen: set[Path] = set()
     for entry in ctx.manifest.entries():
