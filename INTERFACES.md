@@ -45,7 +45,7 @@ House style for these interfaces is in `STYLE.md`.
 
 Shared CLI helpers used across dotfiles scripts.
 
-- Installed at: `~/.claude/scripts/cli_common.py` (all harnesses)
+- Installed at: not symlinked by `links.toml`
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
 - Public functions:
@@ -136,7 +136,7 @@ gen_core_instructions.py — compose CORE_INSTRUCTIONS.md + personal-overlay.md 
 
 gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
 
-- Installed at: `~/.claude/scripts/gen_interfaces.py` (all harnesses)
+- Installed at: not symlinked by `links.toml`
 - Entrypoint: not executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): regenerate INTERFACES.md from the harness sources
   - `--quiet/-q`
@@ -238,7 +238,7 @@ Print opencode-skills-sync's pause state and last known snapshot commit, so a se
 
 SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo.
 
-- Installed at: `~/.claude/scripts/settings_seed_drift_check.py` (all harnesses)
+- Installed at: not symlinked by `links.toml`
 - Entrypoint: executable, `#!/usr/bin/env python3`
 - CLI (`argparse`): no `description=` set
   - `--quiet/-q`

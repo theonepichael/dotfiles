@@ -1,28 +1,17 @@
-"""Tests for shell/agent-tools.zsh extraction and .zshrc decoupling."""
+"""Tests for .zshrc's decoupling from harness-tool sourcing.
+
+shell/agent-tools.zsh itself moved to agent-toolkit's sole ownership
+2026-09-07 (meta-agent-toolkit-wrapper-enforcement) -- it's cross-harness
+tooling (completions, harness PATH entries, copilot aliases), not personal
+config, and nothing in this repo depends on a local copy the way install.py
+depends on cli_common.py. .zshrc still sources it by the same fixed
+destination regardless of which repo's copy is live-installed, which is
+what the remaining test below actually checks.
+"""
 
 from pathlib import Path
-import tomllib
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-
-
-def test_agent_tools_linked_in_links_toml():
-    links_data = tomllib.loads((REPO_ROOT / "links.toml").read_text())["link"]
-    agent_tools_link = [
-        link for link in links_data
-        if link.get("src") == "shell/agent-tools.zsh"
-    ]
-    assert len(agent_tools_link) == 1, "shell/agent-tools.zsh must be in links.toml"
-    assert agent_tools_link[0]["dest"] == "~/.agent-tools.zsh"
-
-
-def test_agent_tools_file_exists_and_has_content():
-    agent_tools = REPO_ROOT / "shell" / "agent-tools.zsh"
-    assert agent_tools.is_file(), "shell/agent-tools.zsh must exist"
-    content = agent_tools.read_text()
-    assert ".zsh/completions" in content
-    assert ".opencode/bin" in content
-    assert ".copilot_aliases" in content
 
 
 def test_zshrc_sources_agent_tools():

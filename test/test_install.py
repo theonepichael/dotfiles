@@ -311,6 +311,18 @@ def test_links_table_parses_and_sources_exist(links):
         assert spec.dest.startswith("~/")
 
 
+# 2026-09-07 (meta-agent-toolkit-wrapper-enforcement): these three are
+# install.py's own repo-relative dependencies -- it imports them from its
+# own checkout, never via the live ~/.claude/scripts/ symlink -- but
+# agent-toolkit is their permanent live-symlink owner per
+# managed-dir-resolution, so they intentionally have no links.toml row here
+# anymore. See links.toml's own comment and test_link_ownership_boundary.py,
+# which guards the live-symlink side of this split.
+_REPO_LOCAL_ONLY_SCRIPTS = frozenset(
+    {"cli_common.py", "gen_interfaces.py", "settings_seed_drift_check.py"}
+)
+
+
 def test_every_claude_script_has_a_links_entry(links):
     """Every production (non-test) script in claude/scripts/ must have a
     links.toml entry, or ~/.claude/scripts/<name> silently never exists at
@@ -320,10 +332,15 @@ def test_every_claude_script_has_a_links_entry(links):
     grill-me spot-check). Test files are excluded: they're always run
     in-repo (``python3 test_X.py`` from claude/scripts/), never invoked via
     the deployed ~/.claude/scripts/ path by any skill or production script.
+    _REPO_LOCAL_ONLY_SCRIPTS above are also excluded -- see its comment.
     """
     linked_srcs = {spec.src for spec in links}
     scripts = sorted((REPO_ROOT / "claude" / "scripts").glob("*.py"))
-    production_scripts = [p for p in scripts if not p.name.startswith("test_")]
+    production_scripts = [
+        p
+        for p in scripts
+        if not p.name.startswith("test_") and p.name not in _REPO_LOCAL_ONLY_SCRIPTS
+    ]
     missing = [
         p.name
         for p in production_scripts
@@ -380,7 +397,7 @@ def test_harness_gate(home, links):
     assert "~/.copilot/copilot-instructions.md" not in dests
     assert "~/.gemini/GEMINI.md" not in dests
     # Shared scripts stay linked no matter which harness was picked.
-    assert "~/.claude/scripts/gen_interfaces.py" in dests
+    assert "~/.claude/scripts/gen_core_instructions.py" in dests
 
 
 def test_platform_and_profile_gates(home, links):
@@ -2026,7 +2043,7 @@ def test_full_run_wires_only_the_selected_harness(home, links, offline_install):
     assert install.run_install(ctx, links) == 0
 
     assert (home / ".claude" / "CLAUDE.md").is_symlink()
-    assert (home / ".claude" / "scripts" / "gen_interfaces.py").is_symlink()
+    assert (home / ".claude" / "scripts" / "gen_core_instructions.py").is_symlink()
     assert not (home / ".copilot" / "copilot-instructions.md").exists()
     assert not (home / ".config" / "opencode" / "opencode.jsonc").exists()
     assert not (home / ".gemini" / "GEMINI.md").exists()

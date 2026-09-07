@@ -89,10 +89,6 @@ src = "zsh/.common_shell_aliases"
 dest = "~/.common_shell_aliases"
 
 [[link]]
-src = "shell/agent-tools.zsh"
-dest = "~/.agent-tools.zsh"
-
-[[link]]
 src = "shell/.poshtheme.omp.json"
 dest = "~/.poshtheme.omp.json"
 
@@ -135,36 +131,21 @@ src = "claude/scripts/dev_status_sync.py"
 dest = "~/.claude/scripts/dev_status_sync.py"
 profile_exclude = ["work"]
 
-# Repo-maintenance tool rather than a harness runtime script, but it is linked
-# like the rest so it can be run as ~/.claude/scripts/gen_interfaces.py; it
-# resolves its own symlink to find the dotfiles checkout it documents. Kept
-# post meta-agent-toolkit-migration-cutover: install.py itself needs its own
-# local copy (repo-relative, not symlink-relative -- see install.py's own
-# sys.path.insert comment), same as cli_common.py/settings_seed_drift_check.py
-# below, so gen_interfaces.py stays too rather than moving to agent-toolkit
-# exclusively.
-[[link]]
-src = "claude/scripts/gen_interfaces.py"
-dest = "~/.claude/scripts/gen_interfaces.py"
-
+# gen_interfaces.py, cli_common.py, and settings_seed_drift_check.py stay in
+# this repo's own claude/scripts/ tree -- install.py imports all three from
+# its own checkout (repo-relative, not symlink-relative -- see install.py's
+# own sys.path.insert comment), so dotfiles needs its own repo-tree copies
+# regardless of which repo's copy is live-installed. But none of the three
+# get a [[link]] row here anymore (2026-09-07, meta-agent-toolkit-
+# wrapper-enforcement): agent-toolkit is their permanent live-symlink owner
+# per managed-dir-resolution, and install-with-agent-toolkit.sh always runs
+# dotfiles' installer second -- a stale row here would silently reclaim the
+# destination back from agent-toolkit on every wrapper run, exactly the
+# incident test/test_link_ownership_boundary.py now catches. Only
+# gen_core_instructions.py is genuinely dotfiles-authored and keeps its row.
 [[link]]
 src = "claude/scripts/gen_core_instructions.py"
 dest = "~/.claude/scripts/gen_core_instructions.py"
-
-# install.py's own dependency (import cli_common), not a harness-runtime
-# script -- content is identical to agent-toolkit's copy today, so which
-# repo's symlink actually wins this destination doesn't matter; dotfiles
-# needs its own repo-tree copy regardless, since install.py always imports
-# it from its own checkout, never via the live ~/.claude/scripts/ symlink.
-[[link]]
-src = "claude/scripts/cli_common.py"
-dest = "~/.claude/scripts/cli_common.py"
-
-# Same rationale as cli_common.py above: install.py's own dependency
-# (from settings_seed_drift_check import _vscode_process_running).
-[[link]]
-src = "claude/scripts/settings_seed_drift_check.py"
-dest = "~/.claude/scripts/settings_seed_drift_check.py"
 
 # Pre-tool guard shared by all five harnesses: refuses a write into a repo's
 # main checkout while a backlog item for that repo is in progress, and warns

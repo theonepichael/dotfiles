@@ -64,7 +64,6 @@ Add `--dry-run` to preview any run (including `--rollback`) without writing or r
 | `zsh/.zshrc` | `~/.zshrc` | Core shell configuration |
 | `zsh/.zprofile` | `~/.zprofile` | macOS only (Homebrew shellenv) |
 | `zsh/.common_shell_aliases` | `~/.common_shell_aliases` | Cross-platform shell aliases |
-| `shell/agent-tools.zsh` | `~/.agent-tools.zsh` | Shell helper integrations |
 | `shell/.poshtheme.omp.json` | `~/.poshtheme.omp.json` | oh-my-posh prompt theme |
 | `tmux/.tmux.conf` | `~/.tmux.conf` | Terminal multiplexer config |
 | `alacritty/alacritty.toml` | `~/.config/alacritty/alacritty.toml` | Terminal emulator config |
