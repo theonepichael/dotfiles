@@ -142,6 +142,8 @@ cat /tmp/install-rerun.out
 font_mtime_after="$(stat -c %Y ~/.local/share/fonts/JetBrainsMonoNerdFont/.nerd-fonts-version)"
 check "version marker untouched by re-run (no re-download)" bash -c \
   "[[ '$font_mtime_before' -eq '$font_mtime_after' ]]"
+check "re-run skips already installed packages" bash -c \
+  'grep -q "already installed" /tmp/install-rerun.out'
 check "history.jsonl now holds 2 run markers (run 1 + this rerun, nothing erased)" \
   manifest_run_count 2
 

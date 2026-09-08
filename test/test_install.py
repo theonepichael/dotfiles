@@ -3534,6 +3534,8 @@ def test_install_linux_packages_no_departure_baseline_skips_probes(home, monkeyp
     assert ctx.departure_baseline is None
 
     def run(cmd, **kwargs):
+        if cmd[0] == "dpkg-query":
+            return install.CommandResult(True, "")
         if cmd[:3] == ["sudo", "apt-get", "install"]:
             return install.CommandResult(True)
         raise AssertionError(f"unexpected probe call when not tracking: {cmd!r}")
@@ -3595,6 +3597,178 @@ def test_install_ruff_uv_tool_records_transaction(home, monkeypatch):
     assert kinds(ctx, "package-installed") == [
         {"kind": "package-installed", "name": "ruff"}
     ]
+
+
+def test_install_linux_packages_skips_already_installed(home, monkeypatch):
+    ctx = make_ctx(home)
+    ctx.departure_baseline = depart.Baseline()
+    # Assume tmux and ripgrep are already installed
+    live_versions = {"tmux": "3.3a", "ripgrep": "14.1.0"}
+    installed_cmds: list[list[str]] = []
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "dpkg-query":
+            output = "".join(f"{n}\t{v}\n" for n, v in live_versions.items())
+            return install.CommandResult(True, output)
+        if cmd[:3] == ["sudo", "apt-get", "install"]:
+            pkg = cmd[-1]
+            installed_cmds.append(list(cmd))
+            live_versions[pkg] = "1.0-1"
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "run_command", run)
+    install._install_linux_packages_one_by_one(ctx, "apt", epoch=None)
+
+    # tmux and ripgrep should NOT have been installed via apt-get
+    installed_pkgs = [cmd[-1] for cmd in installed_cmds]
+    assert "tmux" not in installed_pkgs
+    assert "ripgrep" not in installed_pkgs
+    assert len(installed_pkgs) == len(install.LINUX_PACKAGES) - 2
+
+    # Manifest and transactions should only record the newly installed packages
+    txns = ctx.departure_baseline.transactions
+    assert len(txns) == len(install.LINUX_PACKAGES) - 2
+    assert not any(t["requested"] == ["tmux"] for t in txns)
+    assert not any(t["requested"] == ["ripgrep"] for t in txns)
+
+
+def test_install_mac_packages_skips_already_installed(home, monkeypatch):
+    ctx = make_ctx(home)
+    calls: list[list[str]] = []
+
+    # Suppose all casks and some formulae are already installed
+    existing_formulae = {"tmux", "ripgrep", "neovim"}
+    existing_casks = set(install.BREW_CASKS)
+
+    def run(cmd, **kwargs):
+        argv = list(cmd)
+        calls.append(argv)
+        if argv == ["brew", "list", "--formula"]:
+            return install.CommandResult(True, "\n".join(existing_formulae))
+        if argv == ["brew", "list", "--cask"]:
+            return install.CommandResult(True, "\n".join(existing_casks))
+        if argv[:2] == ["brew", "install"]:
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {argv!r}")
+
+    monkeypatch.setattr(install, "have", lambda name: name == "brew")
+    monkeypatch.setattr(install, "run_command", run)
+    install.install_mac_packages(ctx)
+
+    # brew install --cask should NOT have been called because all casks exist
+    assert not any(
+        call[:2] == ["brew", "install"] and "--cask" in call for call in calls
+    )
+
+    # brew install formulae should only be called with missing formulae
+    install_calls = [
+        call
+        for call in calls
+        if call[:2] == ["brew", "install"] and "--cask" not in call
+    ]
+    assert len(install_calls) == 1
+    passed_formulae = install_calls[0][2:]
+    for f in existing_formulae:
+        assert f not in passed_formulae
+    for f in install.BREW_FORMULAE:
+        if f not in existing_formulae:
+            assert f in passed_formulae
+
+
+def test_install_mac_packages_skips_completely_when_all_installed(home, monkeypatch):
+    ctx = make_ctx(home)
+    calls: list[list[str]] = []
+
+    def run(cmd, **kwargs):
+        argv = list(cmd)
+        calls.append(argv)
+        if argv == ["brew", "list", "--formula"]:
+            return install.CommandResult(True, "\n".join(install.BREW_FORMULAE))
+        if argv == ["brew", "list", "--cask"]:
+            return install.CommandResult(True, "\n".join(install.BREW_CASKS))
+        raise AssertionError(f"unexpected command: {argv!r}")
+
+    monkeypatch.setattr(install, "have", lambda name: name == "brew")
+    monkeypatch.setattr(install, "run_command", run)
+    install.install_mac_packages(ctx)
+
+    # Neither brew install nor brew install --cask should be called
+    assert not any(call[:2] == ["brew", "install"] for call in calls)
+
+
+def test_install_ruff_uv_tool_skips_when_already_installed(home, monkeypatch):
+    ctx = make_ctx(home)
+    ctx.departure_baseline = depart.Baseline()
+    calls: list[list[str]] = []
+
+    def run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd == ["uv", "tool", "list"]:
+            return install.CommandResult(True, "ruff v0.5.0\n")
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "have", lambda name: name in ("uv", "ruff"))
+    monkeypatch.setattr(install, "run_command", run)
+    install._install_ruff_uv_tool(ctx)
+
+    assert calls == [["uv", "tool", "list"]]
+    assert ctx.departure_baseline.transactions == []
+    assert kinds(ctx, "package-installed") == []
+
+
+def test_install_npm_harness_skips_when_already_installed(home, monkeypatch):
+    ctx = make_ctx(home, harnesses=("claude",))
+    ctx.departure_baseline = depart.Baseline()
+    calls: list[list[str]] = []
+
+    def run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:2] == ["npm", "ls"]:
+            return install.CommandResult(
+                True,
+                json.dumps(
+                    {
+                        "dependencies": {
+                            "@anthropic-ai/claude-code": {"version": "1.2.3"}
+                        }
+                    }
+                ),
+            )
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "have", lambda name: name == "npm")
+    monkeypatch.setattr(install, "run_command", run)
+    install.install_npm_harness(
+        ctx, "claude", "Claude Code", "@anthropic-ai/claude-code"
+    )
+
+    assert len(calls) == 1
+    assert calls[0][:2] == ["npm", "ls"]
+    assert ctx.departure_baseline.transactions == []
+    assert kinds(ctx, "package-installed") == []
+
+
+def test_install_nerd_font_skips_when_fc_list_detects_font(home, monkeypatch):
+    ctx = make_ctx(home)
+    calls: list[list[str]] = []
+
+    def run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if cmd[:2] == ["fc-list", ":"]:
+            return install.CommandResult(
+                True, "JetBrainsMono Nerd Font,JetBrainsMono NF:style=Regular\n"
+            )
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "have", lambda name: name == "fc-list")
+    monkeypatch.setattr(install, "run_command", run)
+    install._install_nerd_font(ctx)
+
+    assert calls == [["fc-list", ":", "family"]]
+    assert kinds(ctx, "package-installed") == []
+    font_dir = home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont"
+    assert not font_dir.exists()
 
 
 # ── package removal execution ───────────────────────────────────────────────

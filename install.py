@@ -948,17 +948,44 @@ def install_mac_packages(ctx: Context) -> None:
         _preview(f"would install casks: {' '.join(BREW_CASKS)}", quiet=ctx.opts.quiet)
         return
 
-    _header("==> Installing formulae...", quiet=ctx.opts.quiet)
-    if run_command(["brew", "install", *BREW_FORMULAE]).ok:
-        ctx.manifest.record_package("brew formulae")
-    else:
-        ctx.reporter.skip("brew formulae", "brew install failed")
+    formula_probe = run_command(["brew", "list", "--formula"], capture=True)
+    installed_formulae = set(formula_probe.stdout.split()) if formula_probe.ok else None
+    needed_formulae = (
+        [f for f in BREW_FORMULAE if f not in installed_formulae]
+        if installed_formulae is not None
+        else list(BREW_FORMULAE)
+    )
 
-    _header("==> Installing casks...", quiet=ctx.opts.quiet)
-    if run_command(["brew", "install", "--cask", *BREW_CASKS]).ok:
-        ctx.manifest.record_package("brew casks")
+    if not needed_formulae:
+        cli_common.qprint(
+            PALETTE.dim("  brew formulae: all already installed"),
+            quiet=ctx.opts.quiet,
+        )
     else:
-        ctx.reporter.skip("brew casks", "brew install --cask failed")
+        _header("==> Installing formulae...", quiet=ctx.opts.quiet)
+        if run_command(["brew", "install", *needed_formulae]).ok:
+            ctx.manifest.record_package("brew formulae")
+        else:
+            ctx.reporter.skip("brew formulae", "brew install failed")
+
+    cask_probe = run_command(["brew", "list", "--cask"], capture=True)
+    installed_casks = set(cask_probe.stdout.split()) if cask_probe.ok else None
+    needed_casks = (
+        [c for c in BREW_CASKS if c not in installed_casks]
+        if installed_casks is not None
+        else list(BREW_CASKS)
+    )
+
+    if not needed_casks:
+        cli_common.qprint(
+            PALETTE.dim("  brew casks: all already installed"), quiet=ctx.opts.quiet
+        )
+    else:
+        _header("==> Installing casks...", quiet=ctx.opts.quiet)
+        if run_command(["brew", "install", "--cask", *needed_casks]).ok:
+            ctx.manifest.record_package("brew casks")
+        else:
+            ctx.reporter.skip("brew casks", "brew install --cask failed")
 
 
 # ── packages: Linux ───────────────────────────────────────────────────────────
@@ -1008,7 +1035,11 @@ def _record_package_transaction(
 
 
 def _install_linux_packages_one_by_one(
-    ctx: Context, manager: str, epoch: dict[str, str] | None
+    ctx: Context,
+    manager: str,
+    epoch: dict[str, str] | None,
+    *,
+    installed: dict[str, str] | None = None,
 ) -> None:
     """Install each package with its own package-manager invocation.
 
@@ -1024,9 +1055,17 @@ def _install_linux_packages_one_by_one(
         else ["sudo", "apt-get", "install", "-y"]
     )
     _header(f"==> Installing packages ({manager})...", quiet=ctx.opts.quiet)
+    if installed is None and not ctx.opts.dry_run:
+        installed = epoch if epoch is not None else _capture_package_snapshot(manager)
     for pkg in LINUX_PACKAGES:
         if ctx.opts.dry_run:
             _preview(f"would run: {' '.join(base)} {pkg}", quiet=ctx.opts.quiet)
+            continue
+        if installed is not None and pkg in installed:
+            cli_common.qprint(
+                PALETTE.dim(f"  {manager} package {pkg}: already installed"),
+                quiet=ctx.opts.quiet,
+            )
             continue
         before = (
             _capture_package_snapshot(manager)
@@ -1116,6 +1155,15 @@ def _install_nerd_font(ctx: Context) -> None:
         current = ""
     if current == NERD_FONT_VERSION:
         return
+
+    if not ctx.opts.dry_run and have("fc-list"):
+        result = run_command(["fc-list", ":", "family"], capture=True)
+        if result.ok and "JetBrainsMono Nerd Font" in result.stdout:
+            cli_common.qprint(
+                PALETTE.dim("  JetBrainsMono Nerd Font: already installed"),
+                quiet=ctx.opts.quiet,
+            )
+            return
 
     if ctx.opts.dry_run:
         _preview(
@@ -1354,6 +1402,14 @@ def _install_ruff_uv_tool(ctx: Context) -> None:
         if ctx.departure_baseline is not None
         else None
     )
+    current = before if before is not None else _capture_package_snapshot("uv-tool")
+    if current is not None and "ruff" in current:
+        cli_common.qprint(
+            PALETTE.dim(f"  ruff: already installed via uv tool (v{current['ruff']})"),
+            quiet=ctx.opts.quiet,
+        )
+        return
+
     outcome = run_command(["uv", "tool", "install", "ruff"])
     after = (
         _capture_package_snapshot("uv-tool")
@@ -1371,13 +1427,11 @@ def install_linux_packages(ctx: Context) -> None:
     """Install everything the Linux/WSL branch owns: distro packages and extras."""
     manager = "dnf" if have("dnf") else "apt"
     # Captured once, immediately before any package-manager mutation this
-    # run makes — the comparand for each manager's *first* transaction in
-    # the interference-detection scheme, not re-probed per package.
-    epoch = (
-        _capture_package_snapshot(manager)
-        if ctx.departure_baseline is not None and not ctx.opts.dry_run
-        else None
-    )
+    # run makes — used both to skip already-installed packages and as the
+    # comparand for each manager's *first* transaction in the
+    # interference-detection scheme.
+    installed = _capture_package_snapshot(manager) if not ctx.opts.dry_run else None
+    epoch = installed if ctx.departure_baseline is not None else None
 
     if manager == "dnf":
         if ctx.opts.dry_run:
@@ -1388,7 +1442,7 @@ def install_linux_packages(ctx: Context) -> None:
                 ctx.reporter.skip(
                     "dnf makecache", "dnf makecache failed (offline or blocked?)"
                 )
-        _install_linux_packages_one_by_one(ctx, "dnf", epoch)
+        _install_linux_packages_one_by_one(ctx, "dnf", epoch, installed=installed)
     else:
         if ctx.opts.dry_run:
             _preview("would run: sudo apt-get update", quiet=ctx.opts.quiet)
@@ -1398,7 +1452,7 @@ def install_linux_packages(ctx: Context) -> None:
                 ctx.reporter.skip(
                     "apt update", "apt-get update failed (offline or blocked?)"
                 )
-        _install_linux_packages_one_by_one(ctx, "apt", epoch)
+        _install_linux_packages_one_by_one(ctx, "apt", epoch, installed=installed)
 
     _install_neovim_fallback(ctx)
 
@@ -1506,10 +1560,20 @@ def install_npm_harness(ctx: Context, harness: str, label: str, package: str) ->
     if ctx.opts.dry_run:
         _preview(f"would run: npm install -g {package}", quiet=ctx.opts.quiet)
         return
-    _header(f"==> Installing {label}...", quiet=ctx.opts.quiet)
     before = (
         _capture_package_snapshot("npm") if ctx.departure_baseline is not None else None
     )
+    current = before if before is not None else _capture_package_snapshot("npm")
+    if current is not None and package in current:
+        cli_common.qprint(
+            PALETTE.dim(
+                f"  {label}: already installed ({package} v{current[package]})"
+            ),
+            quiet=ctx.opts.quiet,
+        )
+        return
+
+    _header(f"==> Installing {label}...", quiet=ctx.opts.quiet)
     outcome = run_command(["npm", "install", "-g", package])
     after = (
         _capture_package_snapshot("npm") if ctx.departure_baseline is not None else None
