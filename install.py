@@ -52,7 +52,7 @@ import cli_common  # noqa: E402 — sibling dir inserted above
 
 import depart
 
-VALID_HARNESSES = ("claude", "copilot", "opencode", "agy", "pi")
+VALID_HARNESSES = ("claude", "copilot", "opencode", "agy", "pi", "codex")
 VALID_PROFILES = ("personal", "work")
 
 # Pinned rather than "latest" so every machine ends up with byte-identical
@@ -127,7 +127,7 @@ CAPS_LOCK_TO_ESCAPE = [
 ]
 
 USAGE = """\
-usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--no-nvim-pin] [--reseed | --adopt] [--quiet | --verbose]
+usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--no-nvim-pin] [--reseed | --adopt] [--quiet | --verbose]
        ./install.sh --depart [--yes] [--dry-run] [--quiet | --verbose]
        ./install.sh --check-links [--harness=...] [--profile=personal|work] [--quiet | --verbose]
 
@@ -137,7 +137,7 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi>[,...] [--profile=
               actions (--rollback, --depart, --check-links), though
               --check-links accepts it to scope which entries apply.
               Comma-separated, at least one of:
-              claude, copilot, opencode, agy, pi. No default — every run must
+              claude, copilot, opencode, agy, pi, codex. No default — every run must
               state its intent explicitly. Purely additive: omitting a harness
               you previously selected does NOT uninstall or clean it up,
               it just skips re-provisioning it this run. Removal is a
@@ -711,7 +711,7 @@ def parse_args(argv: Sequence[str]) -> Options:
         if harness not in VALID_HARNESSES:
             _fail(
                 f"unknown harness: {harness} "
-                "(must be claude, copilot, opencode, agy, and/or pi)"
+                "(must be claude, copilot, opencode, agy, pi, and/or codex)"
             )
 
     # opencode never belongs on a work machine, full stop — not "tightened
@@ -789,7 +789,7 @@ def parse_args(argv: Sequence[str]) -> Options:
     ):
         _fail(
             "no --harness specified — pass at least one of: "
-            "claude, copilot, opencode, agy, pi",
+            "claude, copilot, opencode, agy, pi, codex",
             show_usage=True,
         )
 

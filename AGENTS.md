@@ -5,7 +5,11 @@ confused with `claude/global-instructions.md`: that file is the user's
 global, cross-project instructions — authored here, then symlinked out to
 `~/.claude/CLAUDE.md`, `~/.copilot/copilot-instructions.md`,
 `~/.gemini/GEMINI.md`, `~/.pi/agent/AGENTS.md` (see `links.toml`), and read
-directly by opencode as its own global fallback.
+directly by opencode as its own global fallback. These symlink destinations
+stay dotfiles-owned by design, not as unmigrated leftovers from the
+agent-toolkit split — see agent-toolkit's `MIGRATION.md` ("What done looks
+like") for why the personal-policy overlay composition lives here while
+everything else (scripts, skills, commands) resolves to agent-toolkit.
 General workflow conventions (backlog via `dev_status.py`, git
 worktree-first policy, verification standards, etc.) are already loaded from
 there — this file doesn't repeat them, only points at what's specific to

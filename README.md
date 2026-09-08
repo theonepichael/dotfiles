@@ -6,7 +6,7 @@ Personal cross-platform system configuration for macOS and Linux/WSL. Manages sh
 
 Following the separation of the cross-harness agent toolkit into `agent-toolkit`:
 
-- **Shared agent toolkit (`agent-toolkit`)**: The upstream repository at `~/Workspace/agent-toolkit` (or your clone location) owns shared multi-harness agent tooling: slash commands, skills, hooks, MCP server configurations, and cross-harness parity for Claude Code, GitHub Copilot, opencode, Google Antigravity, and Pi. Refer to `agent-toolkit/README.md` for shared agent tooling documentation.
+- **Shared agent toolkit (`agent-toolkit`)**: The upstream repository at `~/Workspace/agent-toolkit` (or your clone location) owns shared multi-harness agent tooling: slash commands, skills, hooks, MCP server configurations, and cross-harness parity for Claude Code, GitHub Copilot, opencode, Google Antigravity, Pi, and Codex CLI. Refer to `agent-toolkit/README.md` for shared agent tooling documentation.
 - **Personal dotfiles (`dotfiles`)**: This repository owns your personal operating system configuration plus your **personal agent overlay**:
   - `claude/personal-overlay.md`: Personal workflow rules (backlog management via `dev_status.py`, worktree-first policy, proactive capture, verification standards).
   - `claude/global-instructions.md`: Composed dynamically by combining upstream core instructions with `personal-overlay.md` via `gen_core_instructions.py`.
@@ -24,7 +24,7 @@ Following the separation of the cross-harness agent toolkit into `agent-toolkit`
 > On any machine that has both repositories checked out, **always install via the wrapper script**:
 >
 > ```sh
-> ./scripts/install-with-agent-toolkit.sh --harness=claude,copilot,opencode,agy,pi
+> ./scripts/install-with-agent-toolkit.sh --harness=claude,copilot,opencode,agy,pi,codex
 > ```
 >
 > The wrapper guarantees the correct installation order: it runs `agent-toolkit`'s installer first, then immediately runs `dotfiles`' installer second to reassert the composed personal overlay.
@@ -49,7 +49,7 @@ chmod +x install.sh
 
 The symlink table lives in **`links.toml`** at the repo root. Each entry can be gated on `harness`, `platform`, `wsl`, and `profile_exclude`. Copy-once seed files (`claude/settings.json`, `opencode/opencode.jsonc`, and WSL VS Code settings) are handled directly by `install.py`.
 
-`--harness` is required on an install run: choose any combination of `claude`, `copilot`, `opencode`, `agy`, `pi` (comma-separated). In `dotfiles`, this controls which harness personal overlays and settings seeds are wired up.
+`--harness` is required on an install run: choose any combination of `claude`, `copilot`, `opencode`, `agy`, `pi`, `codex` (comma-separated). In `dotfiles`, this controls which harness personal overlays and settings seeds are wired up.
 
 `--profile` controls machine-level concerns (`personal` by default). `--profile=work` excludes `watchcommit` and rejects `opencode`. See [Work profile](#work-profile) below.
 
@@ -71,7 +71,7 @@ Add `--dry-run` to preview any run (including `--rollback`) without writing or r
 | `karabiner/karabiner.json` | `~/.config/karabiner/karabiner.json` | macOS keyboard modifications |
 | `vscode/settings.json` | VS Code user settings | Per-OS path (macOS, Linux, WSL) |
 | `vscode/keybindings.json` | VS Code keybindings | Per-OS path (macOS, Linux, WSL) |
-| `claude/global-instructions.md` | `~/.claude/CLAUDE.md`, `~/.copilot/copilot-instructions.md`, `~/.gemini/GEMINI.md`, `~/.pi/agent/AGENTS.md` | Composed personal instructions overlay |
+| `claude/global-instructions.md` | `~/.claude/CLAUDE.md`, `~/.copilot/copilot-instructions.md`, `~/.gemini/GEMINI.md`, `~/.pi/agent/AGENTS.md`, `~/.codex/AGENTS.md` | Composed personal instructions overlay. Codex caps the combined instruction chain at `project_doc_max_bytes` (32 KiB default) and this composed file is already ~31 KB of it, leaving very little headroom for a repo's own `AGENTS.md` chain — raise `project_doc_max_bytes` in `~/.codex/config.toml` if a heavy-`AGENTS.md` repo truncates. |
 | `claude/output-styles/PlainEngineer.md` | `~/.claude/output-styles/PlainEngineer.md` | Custom Claude Code output style |
 | `scripts/watchcommit.py` | `~/.local/bin/watchcommit` | Background auto-commit daemon (`--profile=personal`) |
 | `scripts/wc-guard` | `~/.local/bin/wc-guard` | Watchcommit pause/resume wrapper |

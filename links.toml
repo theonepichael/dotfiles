@@ -256,6 +256,22 @@ src = "claude/global-instructions.md"
 dest = "~/.pi/agent/AGENTS.md"
 harness = "pi"
 
+# ── Codex CLI (OpenAI) ────────────────────────────────────────────────────
+# Codex looks specifically at ~/.codex/AGENTS.md for global instructions,
+# same as agy's GEMINI.md and Pi's AGENTS.md above -- no fallback to
+# ~/.claude/CLAUDE.md, so it needs a real link of its own. This is the 5th
+# personal-overlay destination (agent-toolkit's own links.toml already
+# symlinks its generic claude/CORE_INSTRUCTIONS.md straight to this same
+# path for a standalone coworker install; this row is what composes this
+# machine's personal-policy overlay on top of it instead). See
+# agent-toolkit's MIGRATION.md ("What done looks like") for why this stays
+# dotfiles-owned rather than moving to agent-toolkit.
+
+[[link]]
+src = "claude/global-instructions.md"
+dest = "~/.codex/AGENTS.md"
+harness = "codex"
+
 # ── watchcommit (personal machines only) ─────────────────────────────────
 # It auto-pushes to a personal remote under your personal Claude account
 # login, which has no place on work hardware.

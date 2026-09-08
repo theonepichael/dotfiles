@@ -37,6 +37,7 @@ _SANCTIONED_SHARED_DESTS = {
     "~/.copilot/copilot-instructions.md",
     "~/.gemini/GEMINI.md",
     "~/.pi/agent/AGENTS.md",
+    "~/.codex/AGENTS.md",
 }
 
 
