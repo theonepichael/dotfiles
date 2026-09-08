@@ -19,7 +19,7 @@ Following the separation of the cross-harness agent toolkit into `agent-toolkit`
 
 > **IMPORTANT: Installation on dual-repo machines**
 >
-> `agent-toolkit`'s installer symlinks bare upstream core instructions (`CORE_INSTRUCTIONS.md`) to `~/.claude/CLAUDE.md` and equivalent harness paths. If `agent-toolkit/install.py` runs *after* `dotfiles/install.sh`, it will overwrite and silently detach your personal overlay.
+> `agent-toolkit`'s installer symlinks bare upstream core instructions (`CORE_INSTRUCTIONS.md`) to `~/.claude/CLAUDE.md` and equivalent harness paths. If `agent-toolkit/install.py` runs *after* this repo's `install.sh`, it will overwrite and silently detach your personal overlay.
 >
 > On any machine that has both repositories checked out, **always install via the wrapper script**:
 >
