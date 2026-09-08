@@ -320,7 +320,7 @@ def test_links_table_parses_and_sources_exist(links):
 # which guards the live-symlink side of this split.
 _REPO_LOCAL_ONLY_SCRIPTS = frozenset(
     {
-        "cli_common.py",
+        "dotfiles_cli_common.py",
         "gen_interfaces.py",
         "settings_seed_drift_check.py",
         # 2026-09-07 (meta-seed-guard-dotfiles): seed_hook_subset_guard.py is

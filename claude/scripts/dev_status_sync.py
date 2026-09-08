@@ -51,8 +51,8 @@ from pathlib import Path
 from typing import cast
 
 sys.path.insert(0, str(Path(__file__).parent))
-import cli_common
 import dev_status
+import dotfiles_cli_common as cli_common
 
 PROTOCOL_VERSION = 2
 

@@ -131,7 +131,7 @@ src = "claude/scripts/dev_status_sync.py"
 dest = "~/.claude/scripts/dev_status_sync.py"
 profile_exclude = ["work"]
 
-# gen_interfaces.py, cli_common.py, and settings_seed_drift_check.py stay in
+# gen_interfaces.py, dotfiles_cli_common.py, and settings_seed_drift_check.py stay in
 # this repo's own claude/scripts/ tree -- install.py imports all three from
 # its own checkout (repo-relative, not symlink-relative -- see install.py's
 # own sys.path.insert comment), so dotfiles needs its own repo-tree copies

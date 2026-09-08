@@ -1,11 +1,11 @@
-"""Tests for cli_common.py."""
+"""Tests for dotfiles_cli_common.py."""
 
 import argparse
 import io
 import sys
 import unittest
 
-import cli_common
+import dotfiles_cli_common as cli_common
 
 
 class AddVerbosityArgsTests(unittest.TestCase):

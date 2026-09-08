@@ -200,7 +200,7 @@ from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 
-import cli_common
+import dotfiles_cli_common as cli_common
 
 HOME = Path.home()
 DOTFILES = Path(__file__).resolve().parents[2]

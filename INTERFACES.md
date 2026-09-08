@@ -33,27 +33,14 @@ House style for these interfaces is in `STYLE.md`.
 
 | Module | Purpose |
 | --- | --- |
-| [`cli_common.py`](#claudescriptsclicommonpy) | Shared CLI helpers used across dotfiles scripts. |
 | [`dev_status_sync.py`](#claudescriptsdevstatussyncpy) | dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending store. |
+| [`dotfiles_cli_common.py`](#claudescriptsdotfilesclicommonpy) | Shared CLI helpers used across dotfiles scripts. |
 | [`gen_core_instructions.py`](#claudescriptsgencoreinstructionspy) | gen_core_instructions.py — compose CORE_INSTRUCTIONS.md + personal-overlay.md into claude/global-instructions.md. |
 | [`gen_interfaces.py`](#claudescriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`opencode_skills_sync_activity.py`](#claudescriptsopencodeskillssyncactivitypy) | Print opencode-skills-sync's pause state and last known snapshot commit, so a session can tell whether the daemon is running and how current its mirror is -- mirrors watchcommit_activity.py's SessionStart banner role. |
 | [`seed_hook_subset_guard.py`](#claudescriptsseedhooksubsetguardpy) | seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart hook groups. |
 | [`settings_seed_drift_check.py`](#claudescriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo. |
 | [`watchcommit_activity.py`](#claudescriptswatchcommitactivitypy) | Print watchcommit's last known background pull/commit/push, so a session (or wc-status) can tell daemon-driven git state changes from manual ones instead of only seeing a clean/up-to-date working tree. |
-
-### `claude/scripts/cli_common.py`
-
-Shared CLI helpers used across dotfiles scripts.
-
-- Installed at: not symlinked by `links.toml`
-- Entrypoint: not executable, no shebang
-- CLI: none (library module).
-- Public functions:
-  - `add_verbosity_args(parser: argparse.ArgumentParser) -> None` — Add mutually-exclusive --quiet/-q and --verbose/-v flags to a parser.
-  - `vprint(msg: str, *, verbose: bool, file: TextIO | None = None) -> None` — Print a diagnostic message when verbose mode is enabled.
-  - `qprint(msg: str, *, quiet: bool, file: TextIO | None = None) -> None` — Print a message unless quiet mode is enabled.
-- Tested by: `claude/scripts/test_cli_common.py`
 
 ### `claude/scripts/dev_status_sync.py`
 
@@ -82,7 +69,7 @@ dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending st
     - `--if-rev` (required)
 - Environment: `LOGNAME`, `USER`
 - Explicit exit codes: `1`, `2`
-- Depends on: `cli_common.py`
+- Depends on: `dotfiles_cli_common.py`
 - Exceptions:
   - `class SyncFatalError(Exception)` — A non-retryable sync failure.
   - `class SyncRetryableError(Exception)` — A retryable sync condition (stale rev, lock timeout, SSH hiccup).
@@ -114,6 +101,19 @@ dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending st
 - Subcommand handlers: `cmd_export`, `cmd_import`, `cmd_status`, `cmd_sync`
 - Tested by: `claude/scripts/test_dev_status_sync.py`
 
+### `claude/scripts/dotfiles_cli_common.py`
+
+Shared CLI helpers used across dotfiles scripts.
+
+- Installed at: not symlinked by `links.toml`
+- Entrypoint: not executable, no shebang
+- CLI: none (library module).
+- Public functions:
+  - `add_verbosity_args(parser: argparse.ArgumentParser) -> None` — Add mutually-exclusive --quiet/-q and --verbose/-v flags to a parser.
+  - `vprint(msg: str, *, verbose: bool, file: TextIO | None = None) -> None` — Print a diagnostic message when verbose mode is enabled.
+  - `qprint(msg: str, *, quiet: bool, file: TextIO | None = None) -> None` — Print a message unless quiet mode is enabled.
+- Tested by: `claude/scripts/test_dotfiles_cli_common.py`
+
 ### `claude/scripts/gen_core_instructions.py`
 
 gen_core_instructions.py — compose CORE_INSTRUCTIONS.md + personal-overlay.md into claude/global-instructions.md.
@@ -127,7 +127,7 @@ gen_core_instructions.py — compose CORE_INSTRUCTIONS.md + personal-overlay.md 
   - `--stdout` — print the composed file, write nothing
   - `--repo-root` — repository root (default: inferred from this script's path)
 - Explicit exit codes: `1`, `2`
-- Depends on: `cli_common.py`
+- Depends on: `dotfiles_cli_common.py`
 - Public functions:
   - `compose(repo_root: Path) -> str` — Read CORE_INSTRUCTIONS.md + personal-overlay.md, return the composed text.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
@@ -148,7 +148,7 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `--repo-root` — repository root (default: inferred from this script's path)
   - `--output`
 - Explicit exit codes: `1`, `2`, `3`
-- Depends on: `cli_common.py`
+- Depends on: `dotfiles_cli_common.py`
 - Public classes:
   - `class CliArgument` — One ``add_argument`` call, reduced to what a reader needs.
   - `class Subcommand` — One ``add_parser`` call and the arguments attached to it.
@@ -265,7 +265,7 @@ SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/
   - `HOME = Path.home()`
   - `DOTFILES = Path(__file__).resolve().parents[2]`
   - `PROFILE_MARKER = HOME / '.local' / 'state' / 'dotfiles' / 'profile'`
-- Depends on: `cli_common.py`
+- Depends on: `dotfiles_cli_common.py`
 - Exceptions:
   - `class DriftCheckError(Exception)` — Raised when drift checking can't proceed (parse failure, not a missing file).
 - Public functions:

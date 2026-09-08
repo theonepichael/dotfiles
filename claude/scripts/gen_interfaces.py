@@ -75,7 +75,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import cli_common
+import dotfiles_cli_common as cli_common
 
 HARNESS_DIRS = ("claude", "copilot", "opencode", "agy", "pi")
 SCRIPTS_DIR = "claude/scripts"

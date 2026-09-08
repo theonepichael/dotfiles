@@ -48,7 +48,7 @@ from typing import NoReturn
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "claude" / "scripts"))
 
-import cli_common  # noqa: E402 — sibling dir inserted above
+import dotfiles_cli_common as cli_common  # noqa: E402 — sibling dir inserted above
 
 import depart
 

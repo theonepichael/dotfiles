@@ -6,7 +6,7 @@ machine's personal-only scripts (`dev_status_sync.py`,
 `watchcommit_activity.py`,
 `opencode_skills_sync_activity.py`, `gen_core_instructions.py`, never
 moving to agent-toolkit), and `install.py`'s own local dependencies
-(`cli_common.py`, `settings_seed_drift_check.py`, `gen_interfaces.py`) —
+(`dotfiles_cli_common.py`, `settings_seed_drift_check.py`, `gen_interfaces.py`) —
 kept here because `install.py` imports them from its own repo checkout,
 never via the live `~/.claude/scripts/` symlink (see `install.py`'s own
 `sys.path.insert` comment). The harness-runtime scripts every harness
