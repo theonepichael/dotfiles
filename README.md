@@ -29,6 +29,8 @@ Following the separation of the cross-harness agent toolkit into `agent-toolkit`
 >
 > The wrapper guarantees the correct installation order: it runs `agent-toolkit`'s installer first, then immediately runs `dotfiles`' installer second to reassert the composed personal overlay.
 
+**Work machine, no git checkout?** The wrapper above assumes dotfiles should keep winning those five destinations — correct for a personal machine, wrong for work hardware, which shouldn't carry the personal overlay at all. If dotfiles there is a downloaded ZIP rather than a git checkout, see [`docs/work-machine-cutover.md`](docs/work-machine-cutover.md) for the inverse procedure.
+
 ---
 
 ## Quick start (standalone)
