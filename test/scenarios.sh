@@ -3,10 +3,11 @@
 # Exercises the full lifecycle: fresh install, rollback, backup-and-restore
 # of a pre-existing dotfile, work profile + guard, --force override,
 # harness opt-in selection (--harness=), opencode profile-specific
-# permission seeding, Pi's copy-once settings.json seeding (drift + --reseed
-# + rollback), and argument-parsing edge cases (including the old
-# --work/--copilot flags being rejected outright). Not meant to run on a
-# real machine.
+# permission seeding, the dotfiles/agent-toolkit skill-ownership boundary
+# (copilot/pi/opencode skill, prompt, and extension files are agent-toolkit's
+# domain now; dotfiles must not reclaim them), and argument-parsing edge
+# cases (including the old --work/--copilot flags being rejected outright).
+# Not meant to run on a real machine.
 set -uo pipefail
 
 DOTFILES="$HOME/dotfiles"
@@ -291,8 +292,8 @@ cat /tmp/harness-repeated.out
 check "repeated --harness=claude --harness=copilot selects claude" bash -c '[[ -L ~/.claude/CLAUDE.md ]]'
 check "repeated --harness=claude --harness=copilot ALSO selects copilot (not just the last flag)" \
   bash -c '[[ -e ~/.copilot/copilot-instructions.md ]]'
-check "copilot backlog-item skill symlinked" bash -c \
-  '[[ "$(readlink -f ~/.copilot/skills/backlog-item/SKILL.md)" == "'"$DOTFILES"'/copilot/skills/backlog-item/SKILL.md" ]]'
+check "copilot backlog-item skill NOT wired by dotfiles (agent-toolkit's domain)" bash -c \
+  '[[ ! -e ~/.copilot/skills/backlog-item/SKILL.md ]]'
 
 echo ""
 echo "=== 9. Additive-only: narrowing --harness on a later run doesn't uninstall ==="
@@ -305,62 +306,28 @@ check "Copilot files left in place after a narrower re-run (additive-only, no su
 ./install.sh --rollback >/tmp/rb-h3.out 2>&1
 
 echo ""
-echo "=== 9b. Pi: harness combo wiring + settings.json copy-once seeding ==="
+echo "=== 9b. Pi: harness combo wiring (agent-toolkit owns Pi's skills/prompts/extensions/settings.json now) ==="
 ./install.sh --harness=claude,pi >/tmp/harness-pi.out 2>&1
 cat /tmp/harness-pi.out
 check "Claude Code wired (pi combo)" bash -c '[[ -L ~/.claude/CLAUDE.md ]]'
-check "Pi wired (combo)" bash -c '[[ -f ~/.pi/agent/settings.json ]]'
+check "Pi settings.json NOT seeded by dotfiles (agent-toolkit's domain)" bash -c '[[ ! -e ~/.pi/agent/settings.json ]]'
 check "Copilot still NOT wired (pi combo omits it)" bash -c '[[ ! -e ~/.copilot/copilot-instructions.md ]]'
 check "pi AGENTS.md symlinks into repo's shared CLAUDE.md" bash -c \
   '[[ "$(readlink -f ~/.pi/agent/AGENTS.md)" == "'"$DOTFILES"'/claude/global-instructions.md" ]]'
-check "pi dashboard prompt symlinked" bash -c \
-  '[[ "$(readlink -f ~/.pi/agent/prompts/dashboard.md)" == "'"$DOTFILES"'/pi/prompts/dashboard.md" ]]'
-check "pi backlog-item prompt symlinked" bash -c \
-  '[[ "$(readlink -f ~/.pi/agent/prompts/backlog-item.md)" == "'"$DOTFILES"'/pi/prompts/backlog-item.md" ]]'
-check "pi permission-gate extension symlinked" bash -c \
-  '[[ "$(readlink -f ~/.pi/agent/extensions/permission-gate.ts)" == "'"$DOTFILES"'/pi/extensions/permission-gate.ts" ]]'
-check "pi ruff-format-on-edit extension symlinked" bash -c \
-  '[[ "$(readlink -f ~/.pi/agent/extensions/ruff-format-on-edit.ts)" == "'"$DOTFILES"'/pi/extensions/ruff-format-on-edit.ts" ]]'
-check "pi guard-rails extension symlinked" bash -c \
-  '[[ "$(readlink -f ~/.pi/agent/extensions/guard-rails.ts)" == "'"$DOTFILES"'/pi/extensions/guard-rails.ts" ]]'
-check "pi dev-status-tool extension symlinked" bash -c \
-  '[[ "$(readlink -f ~/.pi/agent/extensions/dev-status-tool.ts)" == "'"$DOTFILES"'/pi/extensions/dev-status-tool.ts" ]]'
-check "pi settings.json copied (not symlinked)" bash -c '[[ -f ~/.pi/agent/settings.json && ! -L ~/.pi/agent/settings.json ]]'
-check "pi settings.json matches repo seed" diff -q ~/.pi/agent/settings.json "$DOTFILES/pi/settings.json"
-
-echo ""
-echo "--- 9c. Pi settings.json drift is reported, not silently overwritten ---"
-echo '{"skills": ["/tmp/not-the-real-path"]}' >~/.pi/agent/settings.json
-./install.sh --harness=claude,pi >/tmp/pi-drift.out 2>&1
-cat /tmp/pi-drift.out
-check "pi settings.json drift reported instead of silently overwritten" grep -q "drifted" /tmp/pi-drift.out
-check "pi settings.json left untouched (copy-once, no --reseed)" bash -c \
-  '[[ "$(cat ~/.pi/agent/settings.json)" == "{\"skills\": [\"/tmp/not-the-real-path\"]}" ]]'
-
-echo ""
-echo "--- 9d. --reseed overwrites the drifted pi settings.json, backing up the drift first ---"
-./install.sh --harness=claude,pi --reseed >/tmp/pi-reseed.out 2>&1
-cat /tmp/pi-reseed.out
-check "pi settings.json reseeded to match repo copy" diff -q ~/.pi/agent/settings.json "$DOTFILES/pi/settings.json"
-check "pi settings.json .bak preserves the drifted content" \
-  bash -c '[[ "$(cat ~/.pi/agent/settings.json.bak)" == "{\"skills\": [\"/tmp/not-the-real-path\"]}" ]]'
-
-echo ""
-echo "--- 9e. --rollback restores the pre-reseed (drifted) content, mirrors scenario 3's vimrc backup+restore ---"
-./install.sh --rollback >/tmp/rb-pi.out 2>&1
-cat /tmp/rb-pi.out
-check "pi settings.json restored to its pre-reseed drifted content, not deleted" bash -c \
-  '[[ "$(cat ~/.pi/agent/settings.json)" == "{\"skills\": [\"/tmp/not-the-real-path\"]}" ]]'
-check "pi settings.json .bak cleaned up after restore" bash -c '[[ ! -e ~/.pi/agent/settings.json.bak ]]'
+check "pi dashboard prompt NOT wired by dotfiles (agent-toolkit's domain)" bash -c \
+  '[[ ! -e ~/.pi/agent/prompts/dashboard.md ]]'
+check "pi backlog-item prompt NOT wired by dotfiles (agent-toolkit's domain)" bash -c \
+  '[[ ! -e ~/.pi/agent/prompts/backlog-item.md ]]'
+check "pi permission-gate extension NOT wired by dotfiles (agent-toolkit's domain)" bash -c \
+  '[[ ! -e ~/.pi/agent/extensions/permission-gate.ts ]]'
+check "pi ruff-format-on-edit extension NOT wired by dotfiles (agent-toolkit's domain)" bash -c \
+  '[[ ! -e ~/.pi/agent/extensions/ruff-format-on-edit.ts ]]'
+check "pi guard-rails extension NOT wired by dotfiles (agent-toolkit's domain)" bash -c \
+  '[[ ! -e ~/.pi/agent/extensions/guard-rails.ts ]]'
+check "pi dev-status-tool extension NOT wired by dotfiles (agent-toolkit's domain)" bash -c \
+  '[[ ! -e ~/.pi/agent/extensions/dev-status-tool.ts ]]'
+./install.sh --rollback >/tmp/rb-h3b.out 2>&1
 check "pi AGENTS.md symlink removed by rollback" bash -c '[[ ! -e ~/.pi/agent/AGENTS.md ]]'
-check "pi dashboard prompt symlink removed by rollback" bash -c '[[ ! -e ~/.pi/agent/prompts/dashboard.md ]]'
-check "pi permission-gate extension symlink removed by rollback" \
-  bash -c '[[ ! -e ~/.pi/agent/extensions/permission-gate.ts ]]'
-check "pi guard-rails extension symlink removed by rollback" \
-  bash -c '[[ ! -e ~/.pi/agent/extensions/guard-rails.ts ]]'
-check "pi dev-status-tool extension symlink removed by rollback" \
-  bash -c '[[ ! -e ~/.pi/agent/extensions/dev-status-tool.ts ]]'
-rm -f ~/.pi/agent/settings.json
 
 echo ""
 echo "=== 10. opencode.jsonc: personal-only permission seeding ==="
@@ -373,15 +340,17 @@ check "personal opencode.jsonc has no awk (allowlist bypass removed everywhere)"
   bash -c '! grep -q "\"awk \*\"" ~/.config/opencode/opencode.jsonc'
 check "personal opencode.jsonc does not allow curl (network calls need approval)" \
   bash -c '! grep -q "\"curl \*\"" ~/.config/opencode/opencode.jsonc'
-# backlog-item port wiring. Explicit checks matter here: install.sh exits 0
-# OR 1 (ok-with-skips) on success, so a typo'd src in links.toml would
-# otherwise surface only as a silent SKIPPED line, not a failed scenario.
-check "opencode backlog-item command symlinked" bash -c \
-  '[[ "$(readlink -f ~/.config/opencode/commands/backlog-item.md)" == "'"$DOTFILES"'/opencode/command/backlog-item.md" ]]'
-check "opencode grill-me skill symlinked (backlog-item delegates via skill tool)" bash -c \
-  '[[ "$(readlink -f ~/.config/opencode/skills/grill-me/SKILL.md)" == "'"$DOTFILES"'/opencode/skills/grill-me/SKILL.md" ]]'
-check "opencode second-opinion skill symlinked (backlog-item delegates via skill tool)" bash -c \
-  '[[ "$(readlink -f ~/.config/opencode/skills/second-opinion/SKILL.md)" == "'"$DOTFILES"'/opencode/skills/second-opinion/SKILL.md" ]]'
+# backlog-item port wiring moved to agent-toolkit entirely (links.toml
+# dropped these rows in 89a9b9f) -- assert dotfiles' installer doesn't
+# reclaim them. Explicit checks matter here: install.sh exits 0 OR 1
+# (ok-with-skips) on success, so a stray re-added row in links.toml would
+# otherwise surface only as a silent extra symlink, not a failed scenario.
+check "opencode backlog-item command NOT wired by dotfiles (agent-toolkit's domain)" bash -c \
+  '[[ ! -e ~/.config/opencode/commands/backlog-item.md ]]'
+check "opencode grill-me skill NOT wired by dotfiles (agent-toolkit's domain)" bash -c \
+  '[[ ! -e ~/.config/opencode/skills/grill-me/SKILL.md ]]'
+check "opencode second-opinion skill NOT wired by dotfiles (agent-toolkit's domain)" bash -c \
+  '[[ ! -e ~/.config/opencode/skills/second-opinion/SKILL.md ]]'
 ./install.sh --rollback >/tmp/rb-oc1.out 2>&1
 
 rm -f "$MARKER"
