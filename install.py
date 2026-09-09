@@ -386,6 +386,9 @@ class Manifest:
 
     path: Path
     dry_run: bool = False
+    _entries_cache: list[dict[str, object]] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def init_run(self, profile: str, quiet: bool = False) -> None:
         """Open a new run in the history (or preview doing so)."""
@@ -419,6 +422,13 @@ class Manifest:
     def entries(self) -> list[dict[str, object]]:
         """Read every recorded entry, oldest first.
 
+        Memoized on the instance: this file only changes through this same
+        instance's ``_append``/``remove_symlink_entries``, both of which
+        invalidate the cache below, so re-reading and re-parsing an
+        unchanged (and, on a long-lived machine, ever-growing) history file
+        on every one of a run's several callers (``has_backup``, the
+        orphan-link sweep, the live-backup-paths sweep) is pure waste.
+
         Unparseable lines are dropped rather than raising: a truncated last
         line (power loss mid-append) must not make the whole history
         unrollbackable. A missing file (no run has ever recorded anything
@@ -427,8 +437,11 @@ class Manifest:
         ``--reseed``'s ``has_backup`` lookup, hit this on a fresh machine
         and have no external existence guard of their own.
         """
+        if self._entries_cache is not None:
+            return self._entries_cache
         if not self.path.is_file():
-            return []
+            self._entries_cache = []
+            return self._entries_cache
         entries: list[dict[str, object]] = []
         for line in self.path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -440,6 +453,7 @@ class Manifest:
                 continue
             if isinstance(parsed, dict):
                 entries.append(parsed)
+        self._entries_cache = entries
         return entries
 
     def remove_symlink_entries(self, dests: set[Path]) -> None:
@@ -472,6 +486,7 @@ class Manifest:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp_path, self.path)
+            self._entries_cache = None
         except OSError:
             temp_path.unlink(missing_ok=True)
             raise
@@ -511,6 +526,7 @@ class Manifest:
             os.fsync(handle.fileno())
         if is_new:
             _fsync_dir(self.path.parent)
+        self._entries_cache = None
 
 
 def _fsync_dir(directory: Path) -> None:
@@ -1057,6 +1073,14 @@ def _install_linux_packages_one_by_one(
     _header(f"==> Installing packages ({manager})...", quiet=ctx.opts.quiet)
     if installed is None and not ctx.opts.dry_run:
         installed = epoch if epoch is not None else _capture_package_snapshot(manager)
+    tracking = ctx.departure_baseline is not None
+    # Chained forward across the loop instead of re-querying the whole
+    # package database (dpkg-query/rpm -qa) before and after every single
+    # package: each package's "after" snapshot is the next package's
+    # "before" snapshot, since nothing else mutates the package manager's
+    # state between our own sequential installs. Cuts ~2 full-database
+    # queries per package down to ~1 for a fresh multi-package install.
+    before = installed if tracking else None
     for pkg in LINUX_PACKAGES:
         if ctx.opts.dry_run:
             _preview(f"would run: {' '.join(base)} {pkg}", quiet=ctx.opts.quiet)
@@ -1067,18 +1091,10 @@ def _install_linux_packages_one_by_one(
                 quiet=ctx.opts.quiet,
             )
             continue
-        before = (
-            _capture_package_snapshot(manager)
-            if ctx.departure_baseline is not None
-            else None
-        )
         outcome = run_command([*base, pkg])
-        after = (
-            _capture_package_snapshot(manager)
-            if ctx.departure_baseline is not None
-            else None
-        )
+        after = _capture_package_snapshot(manager) if tracking else None
         _record_package_transaction(ctx, manager, [pkg], before, after, epoch)
+        before = after
         if outcome.ok:
             ctx.manifest.record_package(pkg)
         else:
@@ -1547,22 +1563,37 @@ def install_node(ctx: Context) -> None:
         ctx.reporter.skip("node", "nvm install --lts failed")
 
 
-def install_npm_harness(ctx: Context, harness: str, label: str, package: str) -> None:
-    """Install one npm-distributed harness CLI, if it was selected."""
+def install_npm_harness(
+    ctx: Context,
+    harness: str,
+    label: str,
+    package: str,
+    *,
+    carried: dict[str, str] | None = None,
+) -> dict[str, str] | None:
+    """Install one npm-distributed harness CLI, if it was selected.
+
+    Returns the npm global-package snapshot as of the end of this call (or
+    ``carried`` unchanged if nothing ran), so a caller installing more than
+    one npm-distributed harness back-to-back can pass it as ``carried`` to
+    the next call instead of re-running ``npm ls -g`` from scratch — that
+    "already installed?" probe otherwise repeats, unchanged, on every
+    single run regardless of departure-baseline tracking.
+    """
     if not ctx.has_harness(harness):
         cli_common.qprint(
             f"  {label}: skipped (not in --harness)", quiet=ctx.opts.quiet
         )
-        return
+        return carried
     if not have("npm"):
         ctx.reporter.skip(label, "npm unavailable (NVM install failed or skipped)")
-        return
+        return carried
     if ctx.opts.dry_run:
         _preview(f"would run: npm install -g {package}", quiet=ctx.opts.quiet)
-        return
-    before = (
-        _capture_package_snapshot("npm") if ctx.departure_baseline is not None else None
-    )
+        return carried
+    before = carried
+    if before is None and ctx.departure_baseline is not None:
+        before = _capture_package_snapshot("npm")
     current = before if before is not None else _capture_package_snapshot("npm")
     if current is not None and package in current:
         cli_common.qprint(
@@ -1571,7 +1602,7 @@ def install_npm_harness(ctx: Context, harness: str, label: str, package: str) ->
             ),
             quiet=ctx.opts.quiet,
         )
-        return
+        return current
 
     _header(f"==> Installing {label}...", quiet=ctx.opts.quiet)
     outcome = run_command(["npm", "install", "-g", package])
@@ -1583,6 +1614,7 @@ def install_npm_harness(ctx: Context, harness: str, label: str, package: str) ->
         ctx.manifest.record_package(package)
     else:
         ctx.reporter.skip(label, "npm install failed (registry blocked?)")
+    return after
 
 
 # ── symlink engine ────────────────────────────────────────────────────────────
@@ -5231,8 +5263,12 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
         install_linux_packages(ctx)
 
     install_node(ctx)
-    install_npm_harness(ctx, "claude", "Claude Code", "@anthropic-ai/claude-code")
-    install_npm_harness(ctx, "copilot", "Copilot CLI", "@github/copilot")
+    npm_snapshot = install_npm_harness(
+        ctx, "claude", "Claude Code", "@anthropic-ai/claude-code"
+    )
+    install_npm_harness(
+        ctx, "copilot", "Copilot CLI", "@github/copilot", carried=npm_snapshot
+    )
 
     install_symlinks(ctx, links)
     _cleanup_orphaned_links(ctx, links)
