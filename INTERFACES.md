@@ -385,7 +385,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `install_mac_packages(ctx: Context) -> None` — Bootstrap Homebrew if needed, then install the formulae and casks.
   - `install_linux_packages(ctx: Context) -> None` — Install everything the Linux/WSL branch owns: distro packages and extras.
   - `install_node(ctx: Context) -> None` — Install NVM and a Node LTS — only for the harnesses that need npm.
-  - `install_npm_harness(ctx: Context, harness: str, label: str, package: str) -> None` — Install one npm-distributed harness CLI, if it was selected.
+  - `install_npm_harness(ctx: Context, harness: str, label: str, package: str, *, carried: dict[str, str] | None = None) -> dict[str, str] | None` — Install one npm-distributed harness CLI, if it was selected.
   - `load_links(path: Path) -> list[LinkSpec]` — Parse ``links.toml`` into an ordered list of link specs.
   - `load_managed_dirs(path: Path) -> list[ManagedDirSpec]` — Parse the ``[[managed_dir]]`` rows declaring directories we own exclusively.
   - `link_applies(spec: LinkSpec, ctx: Context) -> bool` — Return whether ``spec`` should be linked for this run's machine/options.

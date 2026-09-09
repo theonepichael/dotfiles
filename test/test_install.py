@@ -1080,6 +1080,30 @@ def test_manifest_entries_and_has_backup_with_no_history_file(home):
     assert ctx.manifest.has_backup(home / ".claude" / "settings.json") is False
 
 
+def test_manifest_entries_is_memoized_until_next_mutation(home, monkeypatch):
+    ctx = make_ctx(home, harnesses=("claude",))
+    ctx.manifest.record_package("foo")
+
+    read_calls = []
+    original_read_text = Path.read_text
+
+    def counting_read_text(self, *args, **kwargs):
+        if self == ctx.manifest.path:
+            read_calls.append(1)
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting_read_text)
+
+    first = ctx.manifest.entries()
+    second = ctx.manifest.entries()
+    assert first == second
+    assert len(read_calls) == 1, "a second entries() call must reuse the cache"
+
+    ctx.manifest.record_package("bar")
+    ctx.manifest.entries()
+    assert len(read_calls) == 2, "a mutation must invalidate the cache"
+
+
 def test_reseed_backs_up_and_overwrites_drifted_file(home):
     """Eval criterion 1."""
     dest = home / ".claude" / "settings.json"
@@ -3515,6 +3539,34 @@ def test_install_linux_packages_one_by_one_records_transactions(home, monkeypatc
     ]
 
 
+def test_install_linux_packages_one_by_one_chains_snapshots_across_packages(
+    home, monkeypatch
+):
+    """Each package's "after" snapshot must be reused as the next package's
+    "before" instead of a fresh dpkg-query probe -- one probe per package
+    installed, not two."""
+    ctx = make_ctx(home)
+    ctx.departure_baseline = depart.Baseline()
+    live_versions: dict[str, str] = {}
+    probe_calls = 0
+
+    def run(cmd, **kwargs):
+        nonlocal probe_calls
+        if cmd[0] == "dpkg-query":
+            probe_calls += 1
+            output = "".join(f"{n}\t{v}\n" for n, v in live_versions.items())
+            return install.CommandResult(True, output)
+        if cmd[:3] == ["sudo", "apt-get", "install"]:
+            live_versions[cmd[-1]] = "1.0-1"
+            return install.CommandResult(True)
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "run_command", run)
+    install._install_linux_packages_one_by_one(ctx, "apt", epoch={})
+
+    assert probe_calls == len(install.LINUX_PACKAGES)
+
+
 def test_install_linux_packages_dry_run_records_no_transactions(home, monkeypatch):
     ctx = make_ctx(home, dry_run=True)
     ctx.departure_baseline = depart.Baseline()
@@ -3569,6 +3621,35 @@ def test_install_npm_harness_records_transaction(home, monkeypatch):
     assert txns[0]["manager"] == "npm"
     assert txns[0]["requested"] == ["@anthropic-ai/claude-code"]
     assert txns[0]["after"]["@anthropic-ai/claude-code"] == "1.2.3"
+
+
+def test_install_npm_harness_chains_snapshot_across_harnesses(home, monkeypatch):
+    """The second npm-distributed harness must reuse the first call's
+    "already installed?" probe instead of re-running `npm ls -g` — this
+    holds even without departure-baseline tracking, since it's the common
+    steady-state case on every run."""
+    ctx = make_ctx(home, harnesses=("claude", "copilot"))
+    live = {"@anthropic-ai/claude-code": "1.0.0", "@github/copilot": "2.0.0"}
+    probe_calls = 0
+
+    def run(cmd, **kwargs):
+        nonlocal probe_calls
+        if cmd[:2] == ["npm", "ls"]:
+            probe_calls += 1
+            deps = {n: {"version": v} for n, v in live.items()}
+            return install.CommandResult(True, json.dumps({"dependencies": deps}))
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(install, "have", lambda name: name == "npm")
+    monkeypatch.setattr(install, "run_command", run)
+    snapshot = install.install_npm_harness(
+        ctx, "claude", "Claude Code", "@anthropic-ai/claude-code"
+    )
+    install.install_npm_harness(
+        ctx, "copilot", "Copilot CLI", "@github/copilot", carried=snapshot
+    )
+
+    assert probe_calls == 1
 
 
 def test_install_ruff_uv_tool_records_transaction(home, monkeypatch):
