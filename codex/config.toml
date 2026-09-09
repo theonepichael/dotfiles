@@ -24,6 +24,9 @@ trust_level = "trusted"
 [projects."/tmp/pytest-of-yanil/pytest-264/test_live_harnesses_share_dash0/codex"]
 trust_level = "trusted"
 
+[projects."/tmp/pytest-of-yanil/pytest-265/test_live_harnesses_share_dash0/codex"]
+trust_level = "trusted"
+
 [sandbox_workspace_write]
 writable_roots = ["/home/yanil/.claude"]
 
