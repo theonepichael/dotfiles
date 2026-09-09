@@ -53,3 +53,4 @@ prefix_rule(pattern=["uv", "run", "ruff", "format", "--check", "."], decision="a
 prefix_rule(pattern=["git", "status", "--short"], decision="allow")
 prefix_rule(pattern=["git", "worktree", "add"], decision="allow")
 prefix_rule(pattern=["scripts/bootstrap-worktree.sh"], decision="allow")
+prefix_rule(pattern=["codex", "--version"], decision="allow")
