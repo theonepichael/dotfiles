@@ -34,6 +34,7 @@ import json
 import os
 import platform
 import plistlib
+import re
 import shutil
 import stat
 import subprocess
@@ -2394,6 +2395,9 @@ def _adopt_seed(
         reason = blocker(ctx, seed, dest, normalized_seed, normalized_live)
         if reason:
             reasons.append(reason)
+    home_path_reason = _adopt_home_path_reason(ctx, normalized_live)
+    if home_path_reason:
+        reasons.append(home_path_reason)
     git_reason = _adopt_git_reason(ctx, seed)
     if git_reason:
         reasons.append(git_reason)
@@ -2424,6 +2428,20 @@ def _adopt_seed(
 def _normalize_seed_text(text: str) -> str:
     """Normalize Windows CRLF text without changing other content."""
     return text.replace("\r\n", "\n")
+
+
+def _adopt_home_path_reason(ctx: Context, live_text: str) -> str | None:
+    """Return a refusal reason if text embeds an absolute path below HOME."""
+    home = str(ctx.home)
+    if not home.startswith("/"):
+        return None
+    pattern = re.compile(rf"(?<![A-Za-z0-9_./~-]){re.escape(home)}(?:/|$)")
+    if pattern.search(live_text):
+        return (
+            "live file contains an absolute path under the current home — "
+            "replace it with ~ before adopting"
+        )
+    return None
 
 
 def _adopt_git_reason(ctx: Context, seed: Path) -> str:

@@ -821,6 +821,43 @@ def test_adopt_copies_live_claude_text_without_history_or_backup(
     assert not (home / ".claude" / "settings.json.bak").exists()
 
 
+def test_adopt_refuses_current_home_path_in_live_text(
+    tmp_path, home, monkeypatch, capsys
+):
+    repo, seed = _adopt_repo(
+        tmp_path, name="settings.json", content='{"model":"repo"}\n'
+    )
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text(f'{{"hook":"{home}/.claude/hooks/check.sh"}}\n')
+    _stub_clean_git(monkeypatch)
+
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
+    _, drift = install.seed_claude_settings(ctx)
+
+    assert drift
+    assert seed.read_text() == '{"model":"repo"}\n'
+    assert "absolute path under the current home" in capsys.readouterr().out
+
+
+def test_adopt_allows_path_with_current_home_as_textual_prefix(
+    tmp_path, home, monkeypatch
+):
+    repo, seed = _adopt_repo(
+        tmp_path, name="settings.json", content='{"model":"repo"}\n'
+    )
+    dest = home / ".claude" / "settings.json"
+    dest.parent.mkdir(parents=True)
+    dest.write_text(f'{{"hook":"{home}-other/check.sh"}}\n')
+    _stub_clean_git(monkeypatch)
+
+    ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
+    _, drift = install.seed_claude_settings(ctx)
+
+    assert drift == ""
+    assert seed.read_text() == f'{{"hook":"{home}-other/check.sh"}}\n'
+
+
 def test_adopt_crlf_only_difference_is_a_noop(tmp_path, home, monkeypatch):
     repo, seed = _adopt_repo(
         tmp_path, name="settings.json", content='{"model":"same"}\n'
