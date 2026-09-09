@@ -272,6 +272,17 @@ src = "claude/global-instructions.md"
 dest = "~/.codex/AGENTS.md"
 harness = "codex"
 
+[[link]]
+src = "codex/config.toml"
+dest = "~/.codex/config.toml"
+harness = "codex"
+
+[[link]]
+src = "codex/rules/default.rules"
+dest = "~/.codex/rules/default.rules"
+harness = "codex"
+
+
 # ── watchcommit (personal machines only) ─────────────────────────────────
 # It auto-pushes to a personal remote under your personal Claude account
 # login, which has no place on work hardware.

@@ -1,0 +1,13 @@
+model = "gpt-5.6-terra"
+model_reasoning_effort = "medium"
+[projects."/home/yanil/Workspace/agent-toolkit"]
+trust_level = "trusted"
+
+[sandbox_workspace_write]
+writable_roots = ["/home/yanil/.claude"]
+
+[tui]
+theme = "catppuccin-frappe"
+
+[tui.model_availability_nux]
+gpt-6-astra = 4

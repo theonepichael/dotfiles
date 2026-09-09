@@ -1,0 +1,48 @@
+# Core toolkit & dev workflow scripts (Python)
+prefix_rule(pattern=["python3", [
+    "~/.claude/scripts/dev_status.py",
+    "/home/yanil/.claude/scripts/dev_status.py",
+    "agent-scripts/dev_status.py",
+    "~/.claude/scripts/grill.py",
+    "/home/yanil/.claude/scripts/grill.py",
+    "~/.claude/scripts/second_opinion.py",
+    "/home/yanil/.claude/scripts/second_opinion.py",
+    "~/.claude/scripts/vitals_promotion.py",
+    "/home/yanil/.claude/scripts/vitals_promotion.py",
+    "agent-scripts/gen_interfaces.py",
+    "install.py",
+]], decision="allow")
+
+# dev_status with DEVSTATUS_AGENT=1 environment variable
+prefix_rule(pattern=["DEVSTATUS_AGENT=1", "python3", [
+    "~/.claude/scripts/dev_status.py",
+    "/home/yanil/.claude/scripts/dev_status.py",
+    "agent-scripts/dev_status.py",
+]], decision="allow")
+
+prefix_rule(pattern=["env", "DEVSTATUS_AGENT=1", "python3", [
+    "~/.claude/scripts/dev_status.py",
+    "/home/yanil/.claude/scripts/dev_status.py",
+    "agent-scripts/dev_status.py",
+]], decision="allow")
+
+# UV and Python environment management
+prefix_rule(pattern=["uv", ["run", "sync", "add", "remove", "pip", "venv"]], decision="allow")
+
+# Bun and TypeScript tooling
+prefix_rule(pattern=["bun", ["test", "run", "install", "add", "remove", "format", "-e"]], decision="allow")
+
+# Git commands
+prefix_rule(pattern=["git", [
+    "status", "diff", "add", "commit", "worktree", "branch", "checkout", "log", "show", "rev-parse", "-C"
+]], decision="allow")
+
+# Navigation & local tools
+prefix_rule(pattern=["cd"], decision="allow")
+prefix_rule(pattern=["herdr", "agent", ["read", "wait", "get", "list", "explain"]], decision="allow")
+prefix_rule(pattern=["herdr", "pane", ["get", "list"]], decision="allow")
+prefix_rule(pattern=["herdr", "tab", ["list", "get"]], decision="allow")
+prefix_rule(pattern=["pi", ["--help", "--offline"]], decision="allow")
+prefix_rule(pattern=[["./scripts/build-copilot-swarm.sh", "scripts/build-copilot-swarm.sh"]], decision="allow")
+prefix_rule(pattern=[["./scripts/bootstrap-worktree.sh", "scripts/bootstrap-worktree.sh"]], decision="allow")
+
