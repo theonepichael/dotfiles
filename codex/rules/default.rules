@@ -61,3 +61,5 @@ prefix_rule(pattern=["uv", "run", "ruff", "format", "agent-scripts/dev_status_im
 prefix_rule(pattern=["herdr", "pane", "process-info", "--pane", "w2:p3G"], decision="allow")
 prefix_rule(pattern=["herdr", "pane", "wait-output", "w2:p3G", "--match", "1 passed", "--source", "recent-unwrapped", "--lines", "140", "--timeout", "60000"], decision="allow")
 prefix_rule(pattern=["herdr", "pane", "read", "w2:p3G", "--source", "recent-unwrapped", "--lines", "220"], decision="allow")
+prefix_rule(pattern=["sed", "-n", "1,120p", "/tmp/pytest-of-yanil/pytest-235/test_live_harnesses_share_dash0/home/.claude/data/backlog/items.json"], decision="allow")
+prefix_rule(pattern=["git", "diff", "--check"], decision="allow")
