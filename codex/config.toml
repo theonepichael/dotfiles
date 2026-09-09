@@ -6,6 +6,9 @@ trust_level = "trusted"
 [projects."/tmp/pytest-of-yanil/pytest-220/test_live_harness_claim_surviv0/workspace"]
 trust_level = "trusted"
 
+[projects."/tmp/pytest-of-yanil/pytest-226/test_live_harness_claim_surviv0/workspace"]
+trust_level = "trusted"
+
 [sandbox_workspace_write]
 writable_roots = ["/home/yanil/.claude"]
 
