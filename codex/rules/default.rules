@@ -48,3 +48,6 @@ prefix_rule(pattern=[["./scripts/bootstrap-worktree.sh", "scripts/bootstrap-work
 
 prefix_rule(pattern=["uv", "sync"], decision="allow")
 prefix_rule(pattern=["uv", "run", "pytest"], decision="allow")
+prefix_rule(pattern=["uv", "run", "ruff", "format", "--check", "install.py", "test/test_install.py"], decision="allow")
+prefix_rule(pattern=["uv", "run", "ruff", "format", "--check", "."], decision="allow")
+prefix_rule(pattern=["git", "status", "--short"], decision="allow")
