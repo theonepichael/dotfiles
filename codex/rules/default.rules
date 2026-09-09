@@ -63,3 +63,4 @@ prefix_rule(pattern=["herdr", "pane", "wait-output", "w2:p3G", "--match", "1 pas
 prefix_rule(pattern=["herdr", "pane", "read", "w2:p3G", "--source", "recent-unwrapped", "--lines", "220"], decision="allow")
 prefix_rule(pattern=["sed", "-n", "1,120p", "/tmp/pytest-of-yanil/pytest-235/test_live_harnesses_share_dash0/home/.claude/data/backlog/items.json"], decision="allow")
 prefix_rule(pattern=["git", "diff", "--check"], decision="allow")
+prefix_rule(pattern=["/usr/bin/zsh", "-lc", "python3 ~/.claude/scripts/second_opinion.py review /home/yanil/.claude/data/grill/atk-refresh-guidance-harness-parity-spec.md --focus-file /home/yanil/.claude/data/grill/atk-refresh-guidance-harness-parity-spec-focus.md"], decision="allow")
