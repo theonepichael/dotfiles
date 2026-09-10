@@ -38,7 +38,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`gen_core_instructions.py`](#claudescriptsgencoreinstructionspy) | gen_core_instructions.py — compose CORE_INSTRUCTIONS.md + personal-overlay.md into claude/global-instructions.md. |
 | [`gen_interfaces.py`](#claudescriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`opencode_skills_sync_activity.py`](#claudescriptsopencodeskillssyncactivitypy) | Print opencode-skills-sync's pause state and last known snapshot commit, so a session can tell whether the daemon is running and how current its mirror is -- mirrors watchcommit_activity.py's SessionStart banner role. |
-| [`settings_seed_drift_check.py`](#claudescriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo. |
+| [`settings_seed_drift_check.py`](#claudescriptssettingsseeddriftcheckpy) | CLI: detect and repair drift between the (under WSL) Windows-side VS Code ``settings.json``/``keybindings.json`` and their seeds in the dotfiles repo. |
 | [`watchcommit_activity.py`](#claudescriptswatchcommitactivitypy) | Print watchcommit's last known background pull/commit/push, so a session (or wc-status) can tell daemon-driven git state changes from manual ones instead of only seeing a clean/up-to-date working tree. |
 
 ### `claude/scripts/dev_status_sync.py`
@@ -236,7 +236,7 @@ Print opencode-skills-sync's pause state and last known snapshot commit, so a se
 
 ### `claude/scripts/settings_seed_drift_check.py`
 
-SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo.
+CLI: detect and repair drift between the (under WSL) Windows-side VS Code ``settings.json``/``keybindings.json`` and their seeds in the dotfiles repo.
 
 - Installed at: not symlinked by `links.toml`
 - Entrypoint: executable, `#!/usr/bin/env python3`
@@ -245,27 +245,17 @@ SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/
   - `--verbose/-v`
 - Subcommands:
   - `check`
-  - `fix`
   - `sync-to-seed [--dotfiles-root <DOTFILES_ROOT>]`
   - `push-vscode [--dotfiles-root <DOTFILES_ROOT>] [--yes]`
 - Filesystem constants:
   - `HOME = Path.home()`
   - `DOTFILES = Path(__file__).resolve().parents[2]`
-  - `PROFILE_MARKER = HOME / '.local' / 'state' / 'dotfiles' / 'profile'`
 - Depends on: `dotfiles_cli_common.py`
-- Exceptions:
-  - `class DriftCheckError(Exception)` — Raised when drift checking can't proceed (parse failure, not a missing file).
 - Public functions:
   - `json_key_drift(seed: dict[str, object], live: dict[str, object]) -> list[str]` — Return the top-level keys whose values differ between seed and live.
-  - `opencode_bypass_drift(seed: dict[str, object], live: dict[str, object]) -> list[str]` — Return allowlist-bypass bash patterns present live but not in the seed.
-  - `resolve_profile() -> str` — Return "work" if this machine is work-provisioned, else "personal".
-  - `settings_seed_path(root: Path | None = None) -> Path` — Return the seed settings.json path for this machine's profile, under ``root`` (default the ``DOTFILES`` module constant — resolved at call time, not bound at import, so callers that don't pass ``root`` still pick up a patched/overridden ``DOTFILES``).
-  - `opencode_seed_path(root: Path | None = None) -> Path | None` — Return the opencode.jsonc seed path under ``root``, or None on a work machine.
   - `vscode_seed_path(name: str, root: Path | None = None) -> Path` — Return the seed path for a VS Code file (``settings.json`` or ``keybindings.json``) under ``root``.
-  - `settings_drift(seed: Path, live: Path) -> list[str]` — Return the non-cosmetic settings.json keys that diverged, or [] if either file is missing.
-  - `opencode_drift(seed: Path, live: Path) -> str` — Return a drift description for opencode.jsonc non-cosmetic keys, or "".
   - `vscode_drift(seed: Path, live: Path) -> str` — Describe how a live VS Code settings.json/keybindings.json diverged from its seed, or "" if there's nothing to compare or nothing drifted.
-- Subcommand handlers: `cmd_check`, `cmd_fix`, `cmd_sync_to_seed`, `cmd_push_vscode`
+- Subcommand handlers: `cmd_check`, `cmd_sync_to_seed`, `cmd_push_vscode`
 - Tested by: `claude/scripts/test_settings_seed_drift_check.py`, `test/test_install.py`
 
 ### `claude/scripts/watchcommit_activity.py`

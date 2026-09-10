@@ -18,6 +18,17 @@ harness CLIs, flags, or behavior get an entry going forward.
   `_REPO_LOCAL_ONLY_SCRIPTS` exemption in `test/test_install.py`, and its
   no-`[[link]]`-row comment in `links.toml`.
 
+- **`settings_seed_drift_check.py` stripped to VS-Code-only.** Its
+  Claude Code/opencode drift-check/fix/sync surface (`fix` subcommand,
+  `settings_drift`/`opencode_drift`, `resolve_profile`,
+  `settings_seed_path`/`opencode_seed_path`, the permission-merge helpers,
+  the active-Claude-Code-session guard) was already unreachable in
+  production (this script is shadowed by agent-toolkit's own live copy) and
+  actively broken since the 2026-09-09 entry above deleted the seed files
+  it compared against. VS Code drift check/sync-to-seed/push-vscode are
+  unaffected — dotfiles is still the seed of truth for VS Code settings.
+  `test_settings_seed_drift_check.py` dropped the corresponding ~68 tests.
+
 ## 2026-09-09
 
 ### Removed
