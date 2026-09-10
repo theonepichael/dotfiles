@@ -11,9 +11,9 @@ opencode.jsonc are written the first time install.py runs on a machine,
 then never overwritten — because Claude Code and opencode both rewrite
 these files in place as permissions get approved live, which would replace
 a symlink with a plain file and silently detach the seed. install.py
-already has helpers (``describe_settings_drift``, ``describe_opencode_drift``,
-``opencode_bypass_drift``, ``json_key_drift``, ``_load_json_pair``) to report
-divergence — but they only run when install.py is manually re-executed.
+already has helpers (``describe_settings_drift``, ``json_key_drift``,
+``_load_json_pair``) to report divergence — but they only run when
+install.py is manually re-executed.
 Nothing runs them automatically, so a live settings.json can silently drift
 from the repo seed for days (this happened 2026-07-24 -> 2026-07-30). This
 script closes that gap: a SessionStart hook prints a one-liner per drifted
@@ -437,8 +437,8 @@ def opencode_drift(seed: Path, live: Path) -> str:
     """Return a drift description for opencode.jsonc non-cosmetic keys, or "".
 
     A SECURITY bypass (xargs/awk) outranks a plain permission-key diff and
-    is returned verbatim with the ``SECURITY:`` prefix, matching
-    install.describe_opencode_drift. Raise on a parse failure.
+    is returned verbatim with the ``SECURITY:`` prefix. Raise on a parse
+    failure.
     """
     pair = _load_json_pair(seed, live)
     if pair is None:

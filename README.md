@@ -10,8 +10,9 @@ Following the separation of the cross-harness agent toolkit into `agent-toolkit`
 - **Personal dotfiles (`dotfiles`)**: This repository owns your personal operating system configuration plus your **personal agent overlay**:
   - `claude/personal-overlay.md`: Personal workflow rules (backlog management via `dev_status.py`, worktree-first policy, proactive capture, verification standards).
   - `claude/global-instructions.md`: Composed dynamically by combining upstream core instructions with `personal-overlay.md` via `gen_core_instructions.py`.
-  - `claude/settings.json` and `opencode/opencode.jsonc`: Personal settings and permission allowlist seeds.
   - Personal daemons: `watchcommit` (automatic commit and push) and `opencode-skills-sync`.
+
+Claude Code and opencode config (`~/.claude/settings.json`, `~/.config/opencode/opencode.jsonc`) are seeded exclusively by `agent-toolkit`'s installer — this repo does not own or seed either.
 
 ---
 
@@ -49,9 +50,9 @@ chmod +x install.sh
 
 `./install.sh` is a ~20-line POSIX bootstrap: it finds Python 3.12+ on PATH and hands off to **`install.py`**, which is the actual installer. You can also run `python3 install.py --harness=...` directly; flags and behavior are identical.
 
-The symlink table lives in **`links.toml`** at the repo root. Each entry can be gated on `harness`, `platform`, `wsl`, and `profile_exclude`. Copy-once seed files (`claude/settings.json`, `opencode/opencode.jsonc`, and WSL VS Code settings) are handled directly by `install.py`.
+The symlink table lives in **`links.toml`** at the repo root. Each entry can be gated on `harness`, `platform`, `wsl`, and `profile_exclude`. Copy-once seed files (Pi's `settings.json` and WSL VS Code settings) are handled directly by `install.py`. Claude Code and opencode config are seeded by `agent-toolkit`'s installer instead — see [Dual-repo machines](#dual-repo-machines-installation-ordering).
 
-`--harness` is required on an install run: choose any combination of `claude`, `copilot`, `opencode`, `agy`, `pi`, `codex` (comma-separated). In `dotfiles`, this controls which harness personal overlays and settings seeds are wired up.
+`--harness` is required on an install run: choose any combination of `claude`, `copilot`, `opencode`, `agy`, `pi`, `codex` (comma-separated). In `dotfiles`, this controls which harness personal overlays and Pi/VS Code settings seeds are wired up.
 
 `--profile` controls machine-level concerns (`personal` by default). `--profile=work` excludes `watchcommit` and rejects `opencode`. See [Work profile](#work-profile) below.
 
@@ -84,9 +85,10 @@ Add `--dry-run` to preview any run (including `--rollback`) without writing or r
 
 ### Copy-once seeds
 
-- `claude/settings.json` (or `settings.work.json` under `--profile=work`): Seeded once to `~/.claude/settings.json`. Live drift is reported in install summaries rather than overwritten.
-- `opencode/opencode.jsonc`: Seeded once to `~/.config/opencode/opencode.jsonc` (`personal` profile only).
+- `pi/settings.json`: Seeded once to `~/.pi/agent/settings.json`.
 - VS Code `settings.json` and `keybindings.json`: Under WSL, copied to the Windows-side AppData roaming directory via the `code` CLI on PATH.
+
+Claude Code (`~/.claude/settings.json`) and opencode (`~/.config/opencode/opencode.jsonc`) config are seeded by `agent-toolkit`'s installer, not this repo's — see [Dual-repo machines](#dual-repo-machines-installation-ordering).
 
 Use `--adopt --harness=...` to pull drifted copy-once settings back into the repository.
 
@@ -96,7 +98,7 @@ Use `--adopt --harness=...` to pull drifted copy-once settings back into the rep
 1. Installs CLI packages: `tmux`, `zoxide`, `eza`, `bat`, `ripgrep`, `lsd`, `ncdu`, `tldr`, `oh-my-posh`, `neovim`, `fd`, `uv`, `ruff`.
 2. Installs NVM and Node/npm if `claude` or `copilot` is selected in `--harness`.
 3. Symlinks every applicable entry in `links.toml` (existing non-symlinks are backed up to `*.bak`).
-4. Seeds copy-once configuration files (`claude/settings.json`, `opencode/opencode.jsonc`, WSL VS Code).
+4. Seeds copy-once configuration files (Pi's `settings.json`, WSL VS Code).
 5. Bootstraps Neovim plugins (`lazy.nvim` sync) if `nvim` is >=0.11.
 
 ### macOS only
@@ -119,7 +121,6 @@ Use `--adopt --harness=...` to pull drifted copy-once settings back into the rep
 
 - **watchcommit is excluded entirely**: No binary, no service. Watchcommit auto-pushes to personal remotes and has no place on work hardware.
 - **opencode is excluded entirely**: `--profile=work --harness=opencode` is rejected at argument parsing.
-- **Claude settings**: Seeded from `claude/settings.work.json` (no auto-approval bypasses, no model pin).
 - **Profile marker**: Written to `~/.local/state/dotfiles/profile`. Subsequent runs with `--profile=personal` will refuse unless `--force` is provided.
 
 ## Failures, skips, and rollback

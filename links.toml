@@ -37,10 +37,11 @@
 # log (and the rollback that replays it in reverse) reads in this order.
 #
 # Not here, because they need more than a static mapping — see install.py:
-#   * ~/.claude/settings.json, ~/.config/opencode/opencode.jsonc, and
-#     ~/.pi/agent/settings.json are copied once with drift reporting, never
-#     symlinked (all three tools rewrite them in place, which would silently
-#     detach a symlink), and pick a profile-specific seed.
+#   * ~/.pi/agent/settings.json is copied once with drift reporting, never
+#     symlinked (Pi rewrites it in place, which would silently detach a
+#     symlink). ~/.claude/settings.json and ~/.config/opencode/opencode.jsonc
+#     are agent-toolkit's installer's job now, not dotfiles' — this repo
+#     doesn't seed or own either.
 #   * The WSL VS Code destination (Windows-side AppData), derived at run
 #     time as described above.
 

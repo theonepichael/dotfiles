@@ -3,6 +3,34 @@
 This repo's internal tooling changes are logged here. Breaking changes to
 harness CLIs, flags, or behavior get an entry going forward.
 
+## 2026-09-09
+
+### Removed
+
+- **dotfiles no longer seeds Claude Code or opencode config; agent-toolkit
+  is the sole source of truth.** Deleted `claude/settings.json`,
+  `claude/settings.work.json`, and `opencode/opencode.jsonc` (all three had
+  drifted stale against agent-toolkit's own copies, which is what actually
+  gets seeded on this machine — dotfiles' `install.py` running second in
+  `install-with-agent-toolkit.sh` was re-clobbering the correct seed with
+  its own stale one). `install.py`'s `seed_claude_settings`/
+  `seed_opencode_config` and their opencode-specific drift/adopt helpers
+  are gone; a standalone `dotfiles/install.py --harness=claude` (or
+  `opencode`) run no longer produces a configured Claude Code/opencode —
+  that requires `install-with-agent-toolkit.sh`. `claude/scripts/test_hooks_config.py`
+  (a guard against a now-nonexistent settings.json/settings.work.json) is
+  removed with it. Pi and VS Code seeding are unaffected.
+
+  `seed_hook_subset_guard.py` (a pre-commit guard hardcoded to protect the
+  two deleted Claude seed files) is **kept for now, not yet dead** — this
+  repo's `core.hooksPath` points at an absolute path in the main checkout
+  shared across every worktree, so every commit here (including this one)
+  is enforced by main's copy of `githooks/pre-commit`, which still invokes
+  it. Removing it here would fail every commit on this branch until this
+  change merges and main's own hook is updated to match — tracked as a
+  follow-up (`meta-dotfiles-seed-guard-removal-followup`) rather than
+  fixed in this commit.
+
 ## 2026-09-04
 
 ### Changed

@@ -2003,77 +2003,6 @@ def json_key_drift(seed: dict[str, object], live: dict[str, object]) -> list[str
     return sorted(k for k in set(seed) | set(live) if seed.get(k) != live.get(k))
 
 
-_BYPASS_BASH_PATTERNS = (
-    # Take an arbitrary command as their own argument (awk via
-    # ``system()``), so their presence isn't "individually risky command
-    # a profile could allow" — it defeats the allowlist entirely.
-    "xargs *",
-    "awk *",
-    "sqlite3 *",  # .shell/.system dot-commands run arbitrary shell
-    "nohup *",
-    # Broaden an otherwise-narrow, already-approved command into a wider
-    # category that can reach arbitrary code.
-    "git --no-pager *",  # matches any git subcommand, incl. commit/push
-    "uv *",  # broadens past the 4 named uv commands; `uv run` is arbitrary
-    "python3 -m *",  # any installed module, incl. ones with side effects
-    # Inline arbitrary code evaluation.
-    "node -e *",
-    "python3 -c *",
-    "python3 - *",
-    # Network-fetches and runs lifecycle hooks / arbitrary packages.
-    "npm install*",
-    "npm install",
-    "npx *",
-    # Delegates to a CLI with its own separate permission model, or the
-    # same CLI redirected/auto-approved via specific flags.
-    "opencode run*",  # --auto/--dir make this a real bypass
-    "copilot *",
-)
-
-
-def opencode_bypass_drift(
-    seed: dict[str, object], live: dict[str, object]
-) -> list[str]:
-    """Return allowlist-bypass bash patterns present live but not in the seed.
-
-    This is a curated, fixed set — not a generalized "any key live has
-    that seed doesn't" diff. A generalized version would flag a live-only
-    key that's merely narrower than, but already behaviorally covered by,
-    an existing seed glob (e.g. a one-off interactively-approved
-    ``git log --all`` against seed's ``git log*``) as false-positive
-    drift. Every pattern here instead shares one of two properties that
-    makes a legitimate interactive approval unlikely to ever collide with
-    it: it takes an arbitrary command as its own argument (``xargs``,
-    ``awk``, ``sqlite3``'s ``.shell``/``.system``, ``nohup``), or it
-    broadens an otherwise-narrow, already-approved command into a wider
-    category, evaluates code inline, fetches and runs external code, or
-    delegates to a separate CLI/permission model entirely.
-
-    This check is diff-gated (only runs when a caller already detected
-    seed≠live) and deliberately doesn't attempt full policy compliance —
-    only this bypass-shaped subset. It's also a snapshot of known bypass
-    shapes, not a taxonomy: a future bypass-shaped tool not in this tuple
-    (e.g. ``perl -e *``) isn't automatically caught here or by the seed's
-    own policy-compliance test — a policy review has to catch that, same
-    as any other undocumented addition. Full policy compliance for the
-    *seed* itself (not just this bypass subset, and unconditional on any
-    diff existing) is a separate, CI-only pytest check — see
-    ``test/test_install.py``'s ``_APPROVED_BASH_PATTERNS``.
-    """
-    seed_bash = _bash_permissions(seed)
-    live_bash = _bash_permissions(live)
-    return [k for k in _BYPASS_BASH_PATTERNS if k in live_bash and k not in seed_bash]
-
-
-def _bash_permissions(config: dict[str, object]) -> dict[str, object]:
-    """Return ``permission.bash`` from an opencode config, or ``{}``."""
-    permission = config.get("permission")
-    if not isinstance(permission, dict):
-        return {}
-    bash = permission.get("bash")
-    return bash if isinstance(bash, dict) else {}
-
-
 def _load_json_pair_text(
     seed_text: str, live_text: str
 ) -> tuple[dict[str, object], dict[str, object]] | None:
@@ -2095,29 +2024,6 @@ def _describe_settings_text(seed_text: str, live_text: str) -> str:
     pair = _load_json_pair_text(seed_text, live_text)
     if pair is None:
         return "content differs from the repo copy (unreadable or invalid JSON)"
-    return ", ".join(json_key_drift(*pair))
-
-
-def _describe_opencode_text(
-    seed_text: str, live_text: str, *, adopt: bool = False
-) -> str:
-    """Describe opencode drift without rereading either side."""
-    if seed_text == live_text:
-        return ""
-    pair = _load_json_pair_text(seed_text, live_text)
-    if pair is None:
-        return "content differs from the repo copy (unreadable or invalid JSON)"
-    bypasses = opencode_bypass_drift(*pair)
-    if bypasses:
-        action = (
-            "resolve manually before adopting"
-            if adopt
-            else "re-run with --reseed to fix"
-        )
-        return (
-            f"SECURITY: {', '.join(bypasses)} still allowed in your live "
-            f"opencode.jsonc (allowlist bypass) — {action}"
-        )
     return ", ".join(json_key_drift(*pair))
 
 
@@ -2154,23 +2060,6 @@ def describe_settings_drift(seed: Path, live: Path) -> str:
     if not seed.is_file() or not live.is_file():
         return ""
     return _describe_settings_text(
-        seed.read_text(encoding="utf-8"), live.read_text(encoding="utf-8")
-    )
-
-
-def describe_opencode_drift(seed: Path, live: Path) -> str:
-    """Describe how a live opencode.jsonc diverged from its seed.
-
-    A returned allowlist bypass outranks (and replaces) the generic key
-    list: it's a security regression, not config drift to skim past. Text
-    equality is checked before any JSON parsing, same as
-    ``describe_settings_drift`` — this is what keeps a byte-identical
-    ``opencode.jsonc`` containing a ``//`` comment from being misreported as
-    drifted just because ``json.loads`` can't parse it.
-    """
-    if not seed.is_file() or not live.is_file():
-        return ""
-    return _describe_opencode_text(
         seed.read_text(encoding="utf-8"), live.read_text(encoding="utf-8")
     )
 
@@ -2512,45 +2401,6 @@ def _adopt_file(ctx: Context, seed: Path, live_text: str, *, skip_label: str) ->
     return True
 
 
-def _opencode_adopt_blocker(
-    ctx: Context,
-    seed: Path,
-    dest: Path,
-    seed_text: str,
-    live_text: str,
-) -> str | None:
-    """Refuse live opencode parses that fail or introduce an allowlist bypass."""
-    try:
-        live_data = json.loads(live_text)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return (
-            f"live opencode file {ctx.display(dest)} is not a JSON object "
-            "(comments, trailing commas, or invalid JSON are unsupported) — "
-            "resolve it manually before adopting"
-        )
-    if not isinstance(live_data, dict):
-        return (
-            f"live opencode file {ctx.display(dest)} is not a JSON object — "
-            "resolve it manually before adopting"
-        )
-
-    seed_data: object
-    try:
-        seed_data = json.loads(seed_text)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        seed_data = {}
-    if not isinstance(seed_data, dict):
-        seed_data = {}
-
-    bypasses = opencode_bypass_drift(seed_data, live_data)
-    if not bypasses:
-        return None
-    return (
-        f"SECURITY: {', '.join(bypasses)} present in live {ctx.display(dest)} "
-        "(allowlist bypass) — resolve the security change manually before adopting"
-    )
-
-
 def _reseed_file(
     ctx: Context, seed: Path, dest: Path, *, skip_label: str, drift_desc: str
 ) -> str:
@@ -2632,37 +2482,15 @@ def _reseed_file(
     return ""
 
 
-def seed_claude_settings(ctx: Context) -> tuple[str, str]:
-    """Seed ~/.claude/settings.json, if Claude Code was selected.
-
-    Returns:
-        ``(seed filename, drift description)``; both empty when the harness
-        wasn't selected.
-    """
-    if not ctx.has_harness("claude"):
-        return "", ""
-    name = "settings.work.json" if ctx.opts.profile == "work" else "settings.json"
-    seed = ctx.dotfiles / "claude" / name
-    dest = ctx.home / ".claude" / "settings.json"
-    return name, seed_file(
-        ctx,
-        seed,
-        dest,
-        skip_label="settings.json seed",
-        drift=describe_settings_drift,
-        adopt_drift=_describe_settings_text,
-    )
-
-
 def seed_pi_settings(ctx: Context) -> tuple[str, str]:
     """Seed ~/.pi/agent/settings.json, if Pi was selected.
 
-    Structurally like Claude Code's settings.json (just a ``skills`` array,
-    no bash permission allowlist to watch for a live bypass on — that lives
-    in ``permission-gate.ts``, a plain symlink, not this seeding subsystem),
-    so this mirrors ``seed_claude_settings``'s simpler copy-once-and-report-
-    drift shape rather than ``seed_opencode_config``'s allowlist-bypass
-    detection. See ``pi/CLAUDE_CODE_PARITY.md`` §3 and §7.
+    Structurally like a plain ``skills`` array, no bash permission allowlist
+    to watch for a live bypass on — that lives in ``permission-gate.ts``, a
+    plain symlink, not this seeding subsystem — so this is a simple
+    copy-once-and-report-drift shape via ``describe_settings_drift``, no
+    allowlist-bypass detection needed. See ``pi/CLAUDE_CODE_PARITY.md`` §3
+    and §7.
 
     Returns:
         ``(seed filename, drift description)``; both empty when the harness
@@ -2680,35 +2508,6 @@ def seed_pi_settings(ctx: Context) -> tuple[str, str]:
         skip_label="pi settings.json seed",
         drift=describe_settings_drift,
         adopt_drift=_describe_settings_text,
-    )
-
-
-def seed_opencode_config(ctx: Context) -> tuple[str, str]:
-    """Seed ~/.config/opencode/opencode.jsonc, if opencode was selected.
-
-    opencode is never installed on a work machine at all — parse_args
-    rejects --profile=work combined with --harness=opencode outright — so
-    there is only one variant of this seed file.
-
-    Returns:
-        ``(seed filename, drift description)``; both empty when the harness
-        wasn't selected.
-    """
-    if not ctx.has_harness("opencode"):
-        return "", ""
-    name = "opencode.jsonc"
-    seed = ctx.dotfiles / "opencode" / name
-    dest = ctx.home / ".config" / "opencode" / "opencode.jsonc"
-    return name, seed_file(
-        ctx,
-        seed,
-        dest,
-        skip_label="opencode.jsonc seed",
-        drift=describe_opencode_drift,
-        adopt_drift=lambda seed_text, live_text: _describe_opencode_text(
-            seed_text, live_text, adopt=True
-        ),
-        adopt_blocker=_opencode_adopt_blocker,
     )
 
 
@@ -3161,10 +2960,6 @@ def _departure_owned_destinations(
     for spec in specs:
         if link_applies(spec, ctx):
             destinations.append(expand_dest(spec.dest, ctx.home))
-    if ctx.has_harness("claude"):
-        destinations.append(ctx.home / ".claude" / "settings.json")
-    if ctx.has_harness("opencode"):
-        destinations.append(ctx.home / ".config" / "opencode" / "opencode.jsonc")
     if ctx.has_harness("pi"):
         destinations.append(ctx.home / ".pi" / "agent" / "settings.json")
     return destinations
@@ -3663,8 +3458,6 @@ def _rollback_backup(
 
 def print_summary(
     ctx: Context,
-    settings: tuple[str, str],
-    opencode: tuple[str, str],
     vscode: Sequence[tuple[str, tuple[str, str]]] = (),
     pi_settings: tuple[str, str] = ("", ""),
 ) -> None:
@@ -3684,8 +3477,6 @@ def print_summary(
         print(PALETTE.ok("✓ all steps completed"))
 
     for path, (seed_name, drift) in (
-        ("~/.claude/settings.json", settings),
-        ("~/.config/opencode/opencode.jsonc", opencode),
         ("~/.pi/agent/settings.json", pi_settings),
         *vscode,
     ):
@@ -5290,8 +5081,6 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
 
     install_symlinks(ctx, links)
     _cleanup_orphaned_links(ctx, links)
-    opencode_drift = seed_opencode_config(ctx)
-    settings_drift = seed_claude_settings(ctx)
     pi_settings_drift = seed_pi_settings(ctx)
     vscode_drift = seed_vscode_settings(ctx)
 
@@ -5311,7 +5100,7 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
     if ctx.departure_baseline is not None:
         depart.save_baseline(ctx.state_dir, ctx.departure_baseline)
 
-    print_summary(ctx, settings_drift, opencode_drift, vscode_drift, pi_settings_drift)
+    print_summary(ctx, vscode_drift, pi_settings_drift)
     return 1 if ctx.reporter.skipped else 0
 
 

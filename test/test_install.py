@@ -529,244 +529,8 @@ def test_symlink_directory_source(home):
 # ── copy-once seeds and drift ─────────────────────────────────────────────────
 
 
-def test_settings_seed_copied_once_then_reports_drift(home):
-    ctx = make_ctx(home, harnesses=("claude",))
-    seed_name, drift = install.seed_claude_settings(ctx)
-
-    dest = home / ".claude" / "settings.json"
-    assert seed_name == "settings.json"
-    assert drift == ""
-    assert dest.is_file() and not dest.is_symlink()
-    assert dest.read_text() == (REPO_ROOT / "claude" / "settings.json").read_text()
-    assert kinds(ctx, "file-copied") == [{"kind": "file-copied", "dest": str(dest)}]
-
-    # Second run: the live file is edited, and must be reported, not replaced.
-    live = json.loads(dest.read_text())
-    live["model"] = "some-other-model"
-    dest.write_text(json.dumps(live))
-
-    ctx2 = make_ctx(home, harnesses=("claude",))
-    _, drift2 = install.seed_claude_settings(ctx2)
-    assert "model" in drift2
-    assert json.loads(dest.read_text())["model"] == "some-other-model"
-    # Still only run 1's copy on record — the second run reported, not rewrote.
-    assert len(kinds(ctx2, "file-copied")) == 1
-
-
-def test_work_profile_uses_the_work_seed(home):
-    ctx = make_ctx(home, harnesses=("claude",), profile="work")
-    seed_name, _ = install.seed_claude_settings(ctx)
-    assert seed_name == "settings.work.json"
-    assert (home / ".claude" / "settings.json").read_text() == (
-        REPO_ROOT / "claude" / "settings.work.json"
-    ).read_text()
-
-
-def test_settings_seed_skipped_when_claude_not_selected(home):
-    ctx = make_ctx(home, harnesses=("opencode",))
-    assert install.seed_claude_settings(ctx) == ("", "")
-    assert not (home / ".claude" / "settings.json").exists()
-
-
-def test_opencode_seed_has_no_work_variant(home):
-    """opencode is excluded from --profile=work at parse_args (see the CLI
-    validation test) — this documents that seed_opencode_config itself has
-    no separate work variant to accidentally seed either, even if a
-    work-profile opencode Context were ever constructed directly."""
-    personal = make_ctx(home, harnesses=("opencode",))
-    name, drift = install.seed_opencode_config(personal)
-    dest = home / ".config" / "opencode" / "opencode.jsonc"
-    assert (name, drift) == ("opencode.jsonc", "")
-    assert dest.read_text() == (REPO_ROOT / "opencode" / "opencode.jsonc").read_text()
-
-    other_home = home.parent / "home2"
-    other_home.mkdir()
-    work = make_ctx(other_home, harnesses=("opencode",), profile="work")
-    name, _ = install.seed_opencode_config(work)
-    assert name == "opencode.jsonc"
-
-
-def test_opencode_bypass_check_fires_specifically(home):
-    """xargs/awk reappearing live is a SECURITY line, not generic drift."""
-    ctx = make_ctx(home, harnesses=("opencode",))
-    install.seed_opencode_config(ctx)
-
-    dest = home / ".config" / "opencode" / "opencode.jsonc"
-    live = json.loads(dest.read_text())
-    live["permission"]["bash"]["xargs *"] = "allow"
-    live["permission"]["bash"]["awk *"] = "allow"
-    dest.write_text(json.dumps(live))
-
-    _, drift = install.seed_opencode_config(make_ctx(home, harnesses=("opencode",)))
-    assert drift.startswith("SECURITY: xargs *, awk *")
-    assert "allowlist bypass" in drift
-
-
-def test_opencode_generic_drift_when_no_bypass(home):
-    ctx = make_ctx(home, harnesses=("opencode",))
-    install.seed_opencode_config(ctx)
-
-    dest = home / ".config" / "opencode" / "opencode.jsonc"
-    live = json.loads(dest.read_text())
-    live["theme"] = "custom"
-    dest.write_text(json.dumps(live))
-
-    _, drift = install.seed_opencode_config(make_ctx(home, harnesses=("opencode",)))
-    assert drift == "theme"
-
-
 def test_drift_helpers_on_raw_dicts():
     assert install.json_key_drift({"a": 1, "b": 2}, {"a": 1, "b": 3}) == ["b"]
-    assert install.opencode_bypass_drift(
-        {"permission": {"bash": {}}},
-        {"permission": {"bash": {"awk *": "allow"}}},
-    ) == ["awk *"]
-    assert install.opencode_bypass_drift({}, {}) == []
-
-
-def test_opencode_bypass_drift_covers_all_extended_patterns():
-    """Each of the 13 newly-classified patterns triggers, not just xargs/awk."""
-    new_patterns = [
-        "git --no-pager *",
-        "uv *",
-        "node -e *",
-        "python3 -c *",
-        "python3 -m *",
-        "python3 - *",
-        "npm install*",
-        "npm install",
-        "npx *",
-        "sqlite3 *",
-        "opencode run*",
-        "copilot *",
-        "nohup *",
-    ]
-    for pattern in new_patterns:
-        result = install.opencode_bypass_drift(
-            {"permission": {"bash": {}}},
-            {"permission": {"bash": {pattern: "allow"}}},
-        )
-        assert result == [pattern], f"{pattern!r} should trigger bypass drift"
-
-
-def test_opencode_bypass_drift_does_not_catch_unnamed_patterns():
-    """The curated set is a snapshot, not a generalized diff — an unnamed
-    bypass-shaped pattern (perl -e *, not one of the 15) is not flagged.
-    Full-policy compliance is the pytest allowlist-equality test's job."""
-    assert (
-        install.opencode_bypass_drift(
-            {"permission": {"bash": {}}},
-            {"permission": {"bash": {"perl -e *": "allow"}}},
-        )
-        == []
-    )
-
-
-# ── seed policy compliance (allowlist equality) ─────────────────────────────
-
-# Hand-authored from this audit's classification (see
-# ~/.claude/data/grill/meta-opencode-seed-bypass-audit-spec.md) — NOT
-# derived at runtime from the seed file, since that would make the
-# equality assertion below vacuous. Any future legitimate
-# permission.bash change (new script, new KEEP) must update this
-# literal in the same commit, or the test below goes red.
-#
-# Three members are known, frozen bypass-shaped gaps, deliberately left
-# out of this audit's scope (they predate it): `find *` (-delete/-exec
-# run arbitrary commands), `sed -n *` (GNU sed's `e` command executes
-# shell), and `env` (`env FOO=bar <command>` runs an arbitrary trailing
-# command) — same shape as xargs/awk, just not touched here.
-_APPROVED_BASH_PATTERNS = frozenset(
-    {
-        # 5 named shared workflow scripts
-        "python3 ~/.claude/scripts/dev_status.py *",
-        "python3 ~/.claude/scripts/grill.py *",
-        "python3 ~/.claude/scripts/second_opinion.py *",
-        "python3 ~/.claude/scripts/settings_seed_drift_check.py *",
-        "python3 ~/.claude/scripts/dotfiles_sync_check.py *",
-        # read-only git inspection (6 forms x plain/-C *)
-        "git log*",
-        "git status*",
-        "git diff*",
-        "git show*",
-        "git ls-files*",
-        "git check-ignore*",
-        "git -C * log*",
-        "git -C * status*",
-        "git -C * diff*",
-        "git -C * show*",
-        "git -C * ls-files*",
-        "git -C * check-ignore*",
-        # 4 named uv commands
-        "uv sync*",
-        "uv run pytest*",
-        "uv run ruff check*",
-        "uv run ruff format*",
-        # pre-existing generic read-only-utility tier (never documented
-        # in README before this audit)
-        "ls*",
-        "pwd",
-        "which *",
-        "head *",
-        "head",
-        "tail *",
-        "tail",
-        "wc *",
-        "wc",
-        "sort *",
-        "sort",
-        "uniq *",
-        "uniq",
-        "grep *",
-        "rg *",
-        "find *",
-        "file *",
-        "stat *",
-        "du *",
-        "df *",
-        "date*",
-        "whoami*",
-        "env",
-        "printenv*",
-        "cat *",
-        "cat",
-        "sed -n *",
-        "strings *",
-        "readlink *",
-        "jq *",
-        "diff *",
-        "diff",
-        "echo *",
-        "echo",
-        "systemctl status*",
-        "systemctl is-active*",
-        "systemctl is-enabled*",
-        # newly-recognized read-only system/process inspection
-        "lsof *",
-        "ps *",
-        "pgrep *",
-        "ss *",
-    }
-)
-
-
-def test_seed_permission_bash_matches_approved_patterns():
-    """The repo seed's permission.bash allow-set equals the documented
-    policy exactly — this is the unconditional guard against e2363f73's
-    failure mode (a bad rule ported straight into the seed), since it
-    doesn't depend on any seed/live diff existing."""
-    seed = json.loads((REPO_ROOT / "opencode" / "opencode.jsonc").read_text())
-    bash = seed["permission"]["bash"]
-    allow_keys = {k for k, v in bash.items() if v == "allow"}
-    assert allow_keys == _APPROVED_BASH_PATTERNS
-
-
-def test_seed_permission_bash_catch_all_is_ask():
-    """Locks the catch-all's value explicitly — a regression to "deny"
-    would pass the equality test above silently (it's excluded from the
-    literal either way), so this pins it directly."""
-    seed = json.loads((REPO_ROOT / "opencode" / "opencode.jsonc").read_text())
-    assert seed["permission"]["bash"]["*"] == "ask"
 
 
 # ── --reseed ─────────────────────────────────────────────────────────────────
@@ -799,6 +563,32 @@ def _adopt_repo(tmp_path, *, name, content):
     return repo, seed
 
 
+def _reseed_repo_seed(home, content='{"model": "seed-value"}\n'):
+    """A throwaway seed file for exercising seed_file's generic reseed/backup
+    machinery directly, decoupled from any specific harness's wrapper (the
+    function these tests used to route through, seed_claude_settings, no
+    longer exists -- this is the same primitive seed_vscode_settings/
+    seed_pi_settings still call)."""
+    seed = home.parent / "seed" / "settings.json"
+    seed.parent.mkdir(parents=True, exist_ok=True)
+    seed.write_text(content)
+    return seed
+
+
+def _seed_claude(ctx, seed, dest):
+    """Call the generic seed_file primitive the way seed_claude_settings used
+    to, for tests that only ever used it as a convenient vehicle for
+    exercising seed_file's own reseed/backup/adopt behavior."""
+    return install.seed_file(
+        ctx,
+        seed,
+        dest,
+        skip_label="settings.json seed",
+        drift=install.describe_settings_drift,
+        adopt_drift=install._describe_settings_text,
+    )
+
+
 def test_adopt_copies_live_claude_text_without_history_or_backup(
     tmp_path, home, monkeypatch
 ):
@@ -812,7 +602,7 @@ def test_adopt_copies_live_claude_text_without_history_or_backup(
     _stub_clean_git(monkeypatch)
 
     ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
-    _, drift = install.seed_claude_settings(ctx)
+    drift = _seed_claude(ctx, seed, dest)
 
     assert drift == ""
     assert seed.read_bytes() == b'{"model":"live"}\n'
@@ -833,7 +623,7 @@ def test_adopt_refuses_current_home_path_in_live_text(
     _stub_clean_git(monkeypatch)
 
     ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
-    _, drift = install.seed_claude_settings(ctx)
+    drift = _seed_claude(ctx, seed, dest)
 
     assert drift
     assert seed.read_text() == '{"model":"repo"}\n'
@@ -852,7 +642,7 @@ def test_adopt_allows_path_with_current_home_as_textual_prefix(
     _stub_clean_git(monkeypatch)
 
     ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
-    _, drift = install.seed_claude_settings(ctx)
+    drift = _seed_claude(ctx, seed, dest)
 
     assert drift == ""
     assert seed.read_text() == f'{{"hook":"{home}-other/check.sh"}}\n'
@@ -868,7 +658,7 @@ def test_adopt_crlf_only_difference_is_a_noop(tmp_path, home, monkeypatch):
     _stub_clean_git(monkeypatch)
 
     ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
-    _, drift = install.seed_claude_settings(ctx)
+    drift = _seed_claude(ctx, seed, dest)
 
     assert drift == ""
     assert seed.read_text() == '{"model":"same"}\n'
@@ -899,36 +689,16 @@ def test_adopt_copies_both_vscode_files_when_wsl_selected(tmp_path, home, monkey
     assert not ctx.manifest.path.exists()
 
 
-def test_adopt_refuses_malformed_live_opencode_with_live_path(
-    tmp_path, home, monkeypatch, capsys
-):
-    repo, seed = _adopt_repo(tmp_path, name="unused", content="unused\n")
-    seed = repo / "opencode" / "opencode.jsonc"
-    seed.parent.mkdir()
-    seed.write_text('{"theme":"repo"}\n')
-    dest = home / ".config" / "opencode" / "opencode.jsonc"
-    dest.parent.mkdir(parents=True)
-    dest.write_text('{"theme":}\n')
-    _stub_clean_git(monkeypatch)
-
-    ctx = make_ctx(home, harnesses=("opencode",), adopt=True, dotfiles=repo)
-    _, drift = install.seed_opencode_config(ctx)
-    out = capsys.readouterr().out
-
-    assert drift != ""
-    assert "live opencode file ~/.config/opencode/opencode.jsonc" in out
-    assert seed.read_text() == '{"theme":"repo"}\n'
-
-
 def test_adopt_missing_live_file_is_a_silent_noop(tmp_path, home, monkeypatch):
     repo, seed = _adopt_repo(
         tmp_path, name="settings.json", content='{"model":"repo"}\n'
     )
     _stub_clean_git(monkeypatch)
 
+    dest = home / ".claude" / "settings.json"
     ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
-    assert install.seed_claude_settings(ctx) == ("settings.json", "")
-    assert not (home / ".claude" / "settings.json").exists()
+    assert _seed_claude(ctx, seed, dest) == ""
+    assert not dest.exists()
     assert not ctx.reporter.skipped
     assert seed.read_text() == '{"model":"repo"}\n'
 
@@ -943,7 +713,7 @@ def test_adopt_dry_run_does_not_change_seed(tmp_path, home, monkeypatch, capsys)
     _stub_clean_git(monkeypatch)
 
     ctx = make_ctx(home, harnesses=("claude",), adopt=True, dry_run=True, dotfiles=repo)
-    _, drift = install.seed_claude_settings(ctx)
+    drift = _seed_claude(ctx, seed, dest)
 
     assert drift == ""
     assert seed.read_text() == '{"model":"repo"}\n'
@@ -961,7 +731,7 @@ def test_adopt_refuses_dirty_repo_seed(tmp_path, home, monkeypatch, capsys):
     _stub_clean_git(monkeypatch, status=" M claude/settings.json\n")
 
     ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
-    _, drift = install.seed_claude_settings(ctx)
+    drift = _seed_claude(ctx, seed, dest)
 
     assert drift == "model"
     assert seed.read_text() == '{"model":"repo"}\n'
@@ -983,7 +753,7 @@ def test_adopt_refuses_untracked_repo_seed(tmp_path, home, monkeypatch, capsys):
 
     monkeypatch.setattr(install, "run_command", _untracked)
     ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
-    _, drift = install.seed_claude_settings(ctx)
+    drift = _seed_claude(ctx, seed, dest)
 
     assert drift == "model"
     assert seed.read_text() == '{"model":"repo"}\n'
@@ -1005,85 +775,24 @@ def test_adopt_refuses_symlinked_repo_seed_without_replacing_link(
     dest.write_text('{"model":"live"}\n')
 
     ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
-    _, drift = install.seed_claude_settings(ctx)
+    drift = _seed_claude(ctx, seed, dest)
 
     assert drift
     assert seed.is_symlink()
     assert "repo/claude/settings.json" in capsys.readouterr().out
 
 
-def test_adopt_opencode_blocks_live_bypass(tmp_path, home, monkeypatch, capsys):
-    seed_text = '{"permission":{"bash":{}}}\n'
-    repo, seed = _adopt_repo(tmp_path, name="unused", content="unused\n")
-    seed = repo / "opencode" / "opencode.jsonc"
-    seed.parent.mkdir()
-    seed.write_text(seed_text)
-    dest = home / ".config" / "opencode" / "opencode.jsonc"
-    dest.parent.mkdir(parents=True)
-    dest.write_text('{"permission":{"bash":{"xargs *":"allow"}}}\n')
-    _stub_clean_git(monkeypatch)
-
-    ctx = make_ctx(home, harnesses=("opencode",), adopt=True, dotfiles=repo)
-    _, drift = install.seed_opencode_config(ctx)
-    out = capsys.readouterr().out
-
-    assert drift.startswith("SECURITY: xargs *")
-    assert "SECURITY" in out
-    assert "live ~/.config/opencode/opencode.jsonc" in out
-    assert seed.read_text() == seed_text
-
-
-def test_adopt_opencode_repairs_malformed_repo_seed(tmp_path, home, monkeypatch):
-    repo, seed = _adopt_repo(tmp_path, name="unused", content="unused\n")
-    seed = repo / "opencode" / "opencode.jsonc"
-    seed.parent.mkdir()
-    seed.write_text("{not json\n")
-    dest = home / ".config" / "opencode" / "opencode.jsonc"
-    dest.parent.mkdir(parents=True)
-    dest.write_text('{"theme":"custom"}\n')
-    _stub_clean_git(monkeypatch)
-
-    ctx = make_ctx(home, harnesses=("opencode",), adopt=True, dotfiles=repo)
-    _, drift = install.seed_opencode_config(ctx)
-
-    assert drift == ""
-    assert seed.read_text() == '{"theme":"custom"}\n'
-
-
-def test_adopt_opencode_writes_the_validated_snapshot(tmp_path, home, monkeypatch):
-    repo, seed = _adopt_repo(tmp_path, name="unused", content="unused\n")
-    seed = repo / "opencode" / "opencode.jsonc"
-    seed.parent.mkdir()
-    seed.write_text('{"theme":"repo"}\n')
-    dest = home / ".config" / "opencode" / "opencode.jsonc"
-    dest.parent.mkdir(parents=True)
-    original = '{"theme":"validated"}\n'
-    dest.write_text(original)
-    _stub_clean_git(monkeypatch)
-    blocker = install._opencode_adopt_blocker
-
-    def mutate_after_validation(ctx, seed_path, dest_path, seed_text, live_text):
-        result = blocker(ctx, seed_path, dest_path, seed_text, live_text)
-        dest_path.write_text('{"theme":"changed-after-check"}\n')
-        return result
-
-    monkeypatch.setattr(install, "_opencode_adopt_blocker", mutate_after_validation)
-    ctx = make_ctx(home, harnesses=("opencode",), adopt=True, dotfiles=repo)
-    _, drift = install.seed_opencode_config(ctx)
-
-    assert drift == ""
-    assert seed.read_text() == original
-
-
 def test_adopt_empty_live_file_is_reported(tmp_path, home, monkeypatch, capsys):
-    repo, _ = _adopt_repo(tmp_path, name="settings.json", content='{"model":"repo"}\n')
+    repo, seed = _adopt_repo(
+        tmp_path, name="settings.json", content='{"model":"repo"}\n'
+    )
     dest = home / ".claude" / "settings.json"
     dest.parent.mkdir(parents=True)
     dest.write_text("")
     _stub_clean_git(monkeypatch)
 
     ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
-    _, drift = install.seed_claude_settings(ctx)
+    drift = _seed_claude(ctx, seed, dest)
 
     assert drift != ""
     assert "empty" in capsys.readouterr().out
@@ -1101,7 +810,7 @@ def test_adopt_atomic_failure_preserves_seed(tmp_path, home, monkeypatch, capsys
     monkeypatch.setattr(install.os, "replace", _raise_oserror)
 
     ctx = make_ctx(home, harnesses=("claude",), adopt=True, dotfiles=repo)
-    _, drift = install.seed_claude_settings(ctx)
+    drift = _seed_claude(ctx, seed, dest)
 
     assert drift == "model"
     assert seed.read_text() == '{"model":"repo"}\n'
@@ -1143,19 +852,20 @@ def test_manifest_entries_is_memoized_until_next_mutation(home, monkeypatch):
 
 def test_reseed_backs_up_and_overwrites_drifted_file(home):
     """Eval criterion 1."""
+    seed = _reseed_repo_seed(home)
     dest = home / ".claude" / "settings.json"
     dest.parent.mkdir(parents=True)
-    live = json.loads((REPO_ROOT / "claude" / "settings.json").read_text())
+    live = json.loads(seed.read_text())
     live["model"] = "drifted-value"
     dest.write_text(json.dumps(live))
 
     ctx = make_ctx(home, harnesses=("claude",), reseed=True)
-    _, drift = install.seed_claude_settings(ctx)
+    drift = _seed_claude(ctx, seed, dest)
 
     backup = home / ".claude" / "settings.json.bak"
     assert drift == ""
     assert json.loads(backup.read_text())["model"] == "drifted-value"
-    assert dest.read_text() == (REPO_ROOT / "claude" / "settings.json").read_text()
+    assert dest.read_text() == seed.read_text()
     assert kinds(ctx, "file-backed-up") == [
         {"kind": "file-backed-up", "dest": str(dest), "backup": str(backup)}
     ]
@@ -1164,10 +874,11 @@ def test_reseed_backs_up_and_overwrites_drifted_file(home):
 
 def test_reseed_when_dest_missing_is_a_plain_copy(home):
     """Eval criterion 2: identical to today's behavior, no new code path."""
-    ctx = make_ctx(home, harnesses=("claude",), reseed=True)
-    _, drift = install.seed_claude_settings(ctx)
-
+    seed = _reseed_repo_seed(home)
     dest = home / ".claude" / "settings.json"
+    ctx = make_ctx(home, harnesses=("claude",), reseed=True)
+    drift = _seed_claude(ctx, seed, dest)
+
     assert drift == ""
     assert dest.is_file()
     assert not (home / ".claude" / "settings.json.bak").exists()
@@ -1177,11 +888,11 @@ def test_reseed_when_dest_missing_is_a_plain_copy(home):
 
 def test_reseed_noop_when_drift_is_empty(home):
     """Eval criterion 3: real text drift but no *value* drift is still a no-op."""
-    ctx = make_ctx(home, harnesses=("claude",))
-    install.seed_claude_settings(ctx)
-
+    seed_path = _reseed_repo_seed(home)
     dest = home / ".claude" / "settings.json"
-    seed_path = REPO_ROOT / "claude" / "settings.json"
+    ctx = make_ctx(home, harnesses=("claude",))
+    _seed_claude(ctx, seed_path, dest)
+
     values = json.loads(seed_path.read_text())
     reformatted = json.dumps(values, indent=4, sort_keys=True)
     dest.write_text(reformatted)
@@ -1189,7 +900,7 @@ def test_reseed_noop_when_drift_is_empty(home):
     assert install.describe_settings_drift(seed_path, dest) == ""  # no value drift
 
     reseed_ctx = make_ctx(home, harnesses=("claude",), reseed=True)
-    _, drift = install.seed_claude_settings(reseed_ctx)
+    drift = _seed_claude(reseed_ctx, seed_path, dest)
 
     assert drift == ""
     assert not (home / ".claude" / "settings.json.bak").exists()
@@ -1200,13 +911,14 @@ def test_reseed_noop_when_drift_is_empty(home):
 
 def test_reseed_dry_run_previews_fresh_backup_and_changes_nothing(home, capsys):
     """Eval criterion 4, fresh-backup variant."""
+    seed = _reseed_repo_seed(home)
     dest = home / ".claude" / "settings.json"
     dest.parent.mkdir(parents=True)
     dest.write_text(json.dumps({"model": "drifted-value"}))
     before = dest.read_text()
 
     ctx = make_ctx(home, harnesses=("claude",), reseed=True, dry_run=True)
-    _, drift = install.seed_claude_settings(ctx)
+    drift = _seed_claude(ctx, seed, dest)
     out = capsys.readouterr().out
 
     assert drift == ""
@@ -1219,6 +931,7 @@ def test_reseed_dry_run_previews_fresh_backup_and_changes_nothing(home, capsys):
 
 def test_reseed_dry_run_previews_already_backed_up(home, capsys):
     """Eval criterion 4, already-backed-up variant."""
+    seed = _reseed_repo_seed(home)
     dest = home / ".claude" / "settings.json"
     dest.parent.mkdir(parents=True)
     backup = home / ".claude" / "settings.json.bak"
@@ -1227,7 +940,7 @@ def test_reseed_dry_run_previews_already_backed_up(home, capsys):
     make_ctx(home, harnesses=("claude",)).manifest.record_backup(dest, backup)
 
     ctx = make_ctx(home, harnesses=("claude",), reseed=True, dry_run=True)
-    _, drift = install.seed_claude_settings(ctx)
+    drift = _seed_claude(ctx, seed, dest)
     out = capsys.readouterr().out
 
     assert drift == ""
@@ -1238,6 +951,7 @@ def test_reseed_dry_run_previews_already_backed_up(home, capsys):
 
 def test_reseed_dry_run_previews_foreign_backup_blocks_it(home, capsys):
     """Eval criterion 4, foreign-backup-blocks-it variant."""
+    seed = _reseed_repo_seed(home)
     dest = home / ".claude" / "settings.json"
     dest.parent.mkdir(parents=True)
     backup = home / ".claude" / "settings.json.bak"
@@ -1245,7 +959,7 @@ def test_reseed_dry_run_previews_foreign_backup_blocks_it(home, capsys):
     backup.write_text("foreign\n")
 
     ctx = make_ctx(home, harnesses=("claude",), reseed=True, dry_run=True)
-    _, drift = install.seed_claude_settings(ctx)
+    drift = _seed_claude(ctx, seed, dest)
     out = capsys.readouterr().out
 
     assert drift != ""
@@ -1257,6 +971,7 @@ def test_reseed_dry_run_previews_foreign_backup_blocks_it(home, capsys):
 
 def test_reseed_foreign_unrecorded_backup_blocks_reseed(home, capsys):
     """Eval criterion 9 (real run, not dry-run)."""
+    seed = _reseed_repo_seed(home)
     dest = home / ".claude" / "settings.json"
     dest.parent.mkdir(parents=True)
     backup = home / ".claude" / "settings.json.bak"
@@ -1264,7 +979,7 @@ def test_reseed_foreign_unrecorded_backup_blocks_reseed(home, capsys):
     backup.write_text("foreign\n")
 
     ctx = make_ctx(home, harnesses=("claude",), reseed=True)
-    _, drift = install.seed_claude_settings(ctx)
+    drift = _seed_claude(ctx, seed, dest)
     out = capsys.readouterr().out
 
     assert drift != ""
@@ -1278,15 +993,16 @@ def test_reseed_foreign_unrecorded_backup_blocks_reseed(home, capsys):
 
 def test_reseed_backup_move_failure_is_skipped_not_raised(home, monkeypatch, capsys):
     """Eval criterion 12: a move failure never falls through to a copy attempt."""
+    seed = _reseed_repo_seed(home)
     dest = home / ".claude" / "settings.json"
     dest.parent.mkdir(parents=True)
-    live = json.loads((REPO_ROOT / "claude" / "settings.json").read_text())
+    live = json.loads(seed.read_text())
     live["model"] = "drifted-value"
     dest.write_text(json.dumps(live))
     monkeypatch.setattr(install.shutil, "move", _raise_oserror)
 
     ctx = make_ctx(home, harnesses=("claude",), reseed=True)
-    _, drift = install.seed_claude_settings(ctx)
+    drift = _seed_claude(ctx, seed, dest)
     out = capsys.readouterr().out
 
     assert drift == ""
@@ -1301,15 +1017,16 @@ def test_reseed_copy_failure_restores_dest_from_backup(home, monkeypatch, capsys
     """Eval criterion 12: a copy failure after a successful move restores
     dest from backup, rather than leaving the live application with no
     config file at all."""
+    seed = _reseed_repo_seed(home)
     dest = home / ".claude" / "settings.json"
     dest.parent.mkdir(parents=True)
-    live = json.loads((REPO_ROOT / "claude" / "settings.json").read_text())
+    live = json.loads(seed.read_text())
     live["model"] = "drifted-value"
     dest.write_text(json.dumps(live))
     monkeypatch.setattr(install.shutil, "copy", _raise_oserror)
 
     ctx = make_ctx(home, harnesses=("claude",), reseed=True)
-    _, drift = install.seed_claude_settings(ctx)
+    drift = _seed_claude(ctx, seed, dest)
     out = capsys.readouterr().out
 
     assert drift == ""
@@ -1326,42 +1043,44 @@ def test_reseed_copy_failure_restores_dest_from_backup(home, monkeypatch, capsys
 def test_reseed_recorded_backup_deleted_from_disk_takes_fresh_backup(home):
     """Eval criterion 15: a recorded-but-deleted .bak is treated as state 1,
     not silently skipped."""
+    seed = _reseed_repo_seed(home)
     dest = home / ".claude" / "settings.json"
     dest.parent.mkdir(parents=True)
     stale_backup = home / ".claude" / "settings.json.bak"
-    live = json.loads((REPO_ROOT / "claude" / "settings.json").read_text())
+    live = json.loads(seed.read_text())
     live["model"] = "drifted-value"
     dest.write_text(json.dumps(live))
     # A backup was recorded once, but the .bak file itself no longer exists.
     make_ctx(home, harnesses=("claude",)).manifest.record_backup(dest, stale_backup)
 
     ctx = make_ctx(home, harnesses=("claude",), reseed=True)
-    _, drift = install.seed_claude_settings(ctx)
+    drift = _seed_claude(ctx, seed, dest)
 
     assert drift == ""
     assert json.loads(stale_backup.read_text())["model"] == "drifted-value"
-    assert dest.read_text() == (REPO_ROOT / "claude" / "settings.json").read_text()
+    assert dest.read_text() == seed.read_text()
     assert len(kinds(ctx, "file-backed-up")) == 2
     assert len(kinds(ctx, "file-copied")) == 1
 
 
 def test_two_consecutive_reseeds_then_rollback_restores_true_original(home):
     """Eval criterion 7."""
+    seed = _reseed_repo_seed(home)
     dest = home / ".claude" / "settings.json"
     dest.parent.mkdir(parents=True)
     dest.write_text(json.dumps({"model": "true-original"}))
 
     ctx1 = make_ctx(home, harnesses=("claude",), reseed=True)
-    install.seed_claude_settings(ctx1)
-    assert dest.read_text() == (REPO_ROOT / "claude" / "settings.json").read_text()
+    _seed_claude(ctx1, seed, dest)
+    assert dest.read_text() == seed.read_text()
 
     live = json.loads(dest.read_text())
     live["model"] = "intermediate-drift"
     dest.write_text(json.dumps(live))
 
     ctx2 = make_ctx(home, harnesses=("claude",), reseed=True)
-    install.seed_claude_settings(ctx2)
-    assert dest.read_text() == (REPO_ROOT / "claude" / "settings.json").read_text()
+    _seed_claude(ctx2, seed, dest)
+    assert dest.read_text() == seed.read_text()
 
     assert len(kinds(ctx2, "file-backed-up")) == 1
     assert len(kinds(ctx2, "file-copied")) == 2
@@ -1372,20 +1091,21 @@ def test_two_consecutive_reseeds_then_rollback_restores_true_original(home):
 
 def test_three_consecutive_reseeds_then_rollback_restores_true_original(home):
     """Eval criterion 8: the invariant generalizes beyond the two-run case."""
+    seed = _reseed_repo_seed(home)
     dest = home / ".claude" / "settings.json"
     dest.parent.mkdir(parents=True)
     dest.write_text(json.dumps({"model": "true-original"}))
 
     for i in range(3):
         ctx = make_ctx(home, harnesses=("claude",), reseed=True)
-        install.seed_claude_settings(ctx)
-        assert dest.read_text() == (REPO_ROOT / "claude" / "settings.json").read_text()
+        _seed_claude(ctx, seed, dest)
+        assert dest.read_text() == seed.read_text()
         live = json.loads(dest.read_text())
         live["model"] = f"intermediate-drift-{i}"
         dest.write_text(json.dumps(live))
 
     final_ctx = make_ctx(home, harnesses=("claude",), reseed=True)
-    install.seed_claude_settings(final_ctx)
+    _seed_claude(final_ctx, seed, dest)
     assert len(kinds(final_ctx, "file-backed-up")) == 1
     assert len(kinds(final_ctx, "file-copied")) == 4
 
@@ -1400,10 +1120,11 @@ def test_bootstrap_then_single_reseed_then_rollback_restores_true_original(home)
     test for the do_rollback/_rollback_copy double-delete fix: without
     ``restored_dests``, the original bootstrap's file-copied entry deletes
     the just-restored true original a second time."""
+    seed = _reseed_repo_seed(home)
     dest = home / ".claude" / "settings.json"
 
     bootstrap_ctx = make_ctx(home, harnesses=("claude",))
-    install.seed_claude_settings(bootstrap_ctx)
+    _seed_claude(bootstrap_ctx, seed, dest)
     assert kinds(bootstrap_ctx, "file-copied") == [
         {"kind": "file-copied", "dest": str(dest)}
     ]
@@ -1414,8 +1135,8 @@ def test_bootstrap_then_single_reseed_then_rollback_restores_true_original(home)
     true_original_content = dest.read_text()
 
     reseed_ctx = make_ctx(home, harnesses=("claude",), reseed=True)
-    install.seed_claude_settings(reseed_ctx)
-    assert dest.read_text() == (REPO_ROOT / "claude" / "settings.json").read_text()
+    _seed_claude(reseed_ctx, seed, dest)
+    assert dest.read_text() == seed.read_text()
     assert len(kinds(reseed_ctx, "file-copied")) == 2
     assert len(kinds(reseed_ctx, "file-backed-up")) == 1
 
@@ -1589,28 +1310,6 @@ def test_describe_settings_drift_corrupted_json_now_reports_non_empty(tmp_path):
     assert "unreadable or invalid JSON" in drift
 
 
-def test_describe_opencode_drift_corrupted_json_now_reports_non_empty(tmp_path):
-    seed = tmp_path / "seed.json"
-    live = tmp_path / "live.json"
-    seed.write_text(json.dumps({"a": 1}))
-    live.write_text("{not valid json")
-    drift = install.describe_opencode_drift(seed, live)
-    assert drift != ""
-    assert "unreadable or invalid JSON" in drift
-
-
-def test_describe_opencode_drift_identical_jsonc_with_comment_is_no_drift(tmp_path):
-    """Eval criterion 11: the text-equality check must fire before JSON
-    parsing, so a byte-identical commented JSONC file is never misreported
-    as corrupted/drifted just because json.loads can't parse the comment."""
-    seed = tmp_path / "seed.jsonc"
-    live = tmp_path / "live.jsonc"
-    content = '// a comment\n{"a": 1}'
-    seed.write_text(content)
-    live.write_text(content)
-    assert install.describe_opencode_drift(seed, live) == ""
-
-
 def test_describe_settings_drift_identical_is_no_drift(tmp_path):
     seed = tmp_path / "seed.json"
     live = tmp_path / "live.json"
@@ -1623,24 +1322,28 @@ def test_describe_settings_drift_identical_is_no_drift(tmp_path):
 
 
 def test_history_accumulates_across_runs(home, links, offline_install):
+    # opencode wires nothing dotfiles-owned any more (that's agent-toolkit's
+    # domain now) -- copilot is "run B" instead, so this still proves a
+    # second run's dest lands in history alongside run A's.
     ctx_a = make_ctx(home, harnesses=("claude",))
     install.run_install(ctx_a, links)
-    ctx_b = make_ctx(home, harnesses=("opencode",))
+    ctx_b = make_ctx(home, harnesses=("copilot",))
     install.run_install(ctx_b, links)
 
     entries = history(ctx_b)
     assert sum(1 for e in entries if e["kind"] == "run") == 2
     dests = {e.get("dest") for e in entries}
     assert str(home / ".claude" / "CLAUDE.md") in dests
-    assert str(home / ".config" / "opencode" / "opencode.jsonc") in dests
+    assert str(home / ".copilot" / "copilot-instructions.md") in dests
 
 
 def test_rollback_undoes_every_past_run(home, links, offline_install):
+    # Same copilot-as-run-B substitution as test_history_accumulates_across_runs.
     install.run_install(make_ctx(home, harnesses=("claude",)), links)
-    install.run_install(make_ctx(home, harnesses=("opencode",)), links)
+    install.run_install(make_ctx(home, harnesses=("copilot",)), links)
 
     assert (home / ".claude" / "CLAUDE.md").is_symlink()
-    assert (home / ".config" / "opencode" / "opencode.jsonc").is_file()
+    assert (home / ".copilot" / "copilot-instructions.md").is_symlink()
 
     rollback = make_ctx(home)
     assert install.do_rollback(rollback) == 0
@@ -1648,7 +1351,7 @@ def test_rollback_undoes_every_past_run(home, links, offline_install):
     # Run A's files, not just run B's.
     assert not (home / ".claude" / "CLAUDE.md").exists()
     assert not (home / ".vimrc").exists()
-    assert not (home / ".config" / "opencode" / "opencode.jsonc").exists()
+    assert not (home / ".copilot" / "copilot-instructions.md").exists()
     assert not rollback.manifest.path.exists()
 
 
@@ -2690,24 +2393,22 @@ def test_capture_departure_baseline_captures_ancestor_directories(home, links):
     }
 
 
-def test_capture_departure_baseline_captures_seed_destination_when_harness_selected(
-    home, links
-):
-    ctx = make_ctx(home, harnesses=("claude",))
-    install.capture_departure_baseline(ctx, links)
-    baseline = depart.load_baseline(ctx.state_dir)
-    dest = home / ".claude" / "settings.json"
-    assert baseline.value_for(depart.file_key(dest)) is not None
-
-
-def test_capture_departure_baseline_skips_seed_destination_when_harness_not_selected(
-    home, links
-):
-    ctx = make_ctx(home, harnesses=("opencode",))
-    install.capture_departure_baseline(ctx, links)
-    baseline = depart.load_baseline(ctx.state_dir)
-    dest = home / ".claude" / "settings.json"
-    assert baseline.value_for(depart.file_key(dest)) is None
+def test_capture_departure_baseline_never_captures_claude_settings(home, links):
+    """dotfiles no longer owns ~/.claude/settings.json (agent-toolkit's
+    domain now) -- the departure baseline never tracks it, regardless of
+    harness selection. Supersedes two separate captures/skips tests that
+    used to document a real contrast here; there's no "captures" case left."""
+    for i, harnesses in enumerate((("claude",), ("opencode",))):
+        # A fresh home per case -- capture_departure_baseline loads any
+        # existing baseline first, so reusing one home/state_dir across
+        # cases would build on prior state instead of two clean captures.
+        case_home = home.parent / f"home{i}"
+        case_home.mkdir()
+        ctx = make_ctx(case_home, harnesses=harnesses)
+        install.capture_departure_baseline(ctx, links)
+        baseline = depart.load_baseline(ctx.state_dir)
+        dest = case_home / ".claude" / "settings.json"
+        assert baseline.value_for(depart.file_key(dest)) is None
 
 
 def test_capture_departure_baseline_captures_vscode_files_when_discoverable(
@@ -2799,8 +2500,10 @@ def test_preflight_sees_harness_gated_files_despite_depart_having_no_harness(
     must never re-derive "applicable" links.toml destinations from that empty
     selection — every fast test happened to capture and recapture with the
     same harness, so this was invisible until a real Ubuntu container showed
-    every claude-harness-gated file (~/.claude/CLAUDE.md, its commands,
-    settings.json) silently falling out of the preflight report entirely."""
+    every claude-harness-gated file (~/.claude/CLAUDE.md, its commands)
+    silently falling out of the preflight report entirely. settings.json is
+    no longer part of this report at all -- dotfiles doesn't own that
+    destination any more (agent-toolkit's domain now)."""
     ctx = make_ctx(home, harnesses=("claude",))
     install.run_install(ctx, links)
 
@@ -2810,14 +2513,10 @@ def test_preflight_sees_harness_gated_files_despite_depart_having_no_harness(
 
     report = install.build_preflight_report(depart_ctx)
     claude_md_key = depart.symlink_key(home / ".claude" / "CLAUDE.md")
-    settings_key = depart.file_key(home / ".claude" / "settings.json")
 
     assert claude_md_key in report
     assert report[claude_md_key].bucket == "owned"
     assert report[claude_md_key].action == "remove"
-    assert settings_key in report
-    assert report[settings_key].bucket == "owned"
-    assert report[settings_key].action == "remove"
 
 
 # ── build_preflight_report: the two named restore reclassifications ────────

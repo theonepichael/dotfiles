@@ -112,8 +112,7 @@ check "manifest recorded profile=personal" manifest_has run profile=personal
 check "$HOME/.vimrc symlinks into repo" bash -c '[[ "$(readlink -f ~/.vimrc)" == "'"$DOTFILES"'/vim/.vimrc" ]]'
 check "$HOME/.zshrc symlinks into repo" bash -c '[[ "$(readlink -f ~/.zshrc)" == "'"$DOTFILES"'/zsh/.zshrc" ]]'
 check "$HOME/.claude/CLAUDE.md symlinks into repo" bash -c '[[ "$(readlink -f ~/.claude/CLAUDE.md)" == "'"$DOTFILES"'/claude/global-instructions.md" ]]'
-check "$HOME/.claude/settings.json copied (not symlinked)" bash -c '[[ -f ~/.claude/settings.json && ! -L ~/.claude/settings.json ]]'
-check "$HOME/.claude/settings.json matches personal seed" diff -q ~/.claude/settings.json "$DOTFILES/claude/settings.json"
+check "$HOME/.claude/settings.json NOT seeded by dotfiles (agent-toolkit's domain)" bash -c '[[ ! -e ~/.claude/settings.json ]]'
 check "watchcommit symlinked on personal profile" bash -c '[[ -L ~/.local/bin/watchcommit ]]'
 check "watchcommit systemd unit symlinked on personal profile" bash -c '[[ -L ~/.config/systemd/user/watchcommit.service ]]'
 check "no profile marker written on personal run" bash -c '[[ ! -f "'"$MARKER"'" ]]'
@@ -154,7 +153,6 @@ echo "=== 2. Rollback undoes the personal install ==="
 cat /tmp/rollback.out
 check "manifest removed after rollback" bash -c '[[ ! -f "'"$MANIFEST"'" ]]'
 check "$HOME/.vimrc symlink removed" bash -c '[[ ! -e ~/.vimrc ]]'
-check "$HOME/.claude/settings.json removed" bash -c '[[ ! -e ~/.claude/settings.json ]]'
 check "watchcommit symlink removed" bash -c '[[ ! -e ~/.local/bin/watchcommit ]]'
 check "watchcommit systemd unit symlink removed" bash -c '[[ ! -e ~/.config/systemd/user/watchcommit.service ]]'
 check "Nerd Font NOT removed by rollback (packages aren't rolled back)" bash -c \
@@ -177,13 +175,13 @@ check "backup file cleaned up after restore" bash -c '[[ ! -e ~/.vimrc.bak ]]'
 rm -f ~/.vimrc
 
 echo ""
-echo "=== 4. Work profile + Claude harness: exclusions + settings seed ==="
+echo "=== 4. Work profile + Claude harness: exclusions ==="
 ./install.sh --profile=work --harness=claude >/tmp/work.out 2>&1
 cat /tmp/work.out
 check "profile marker written as 'work'" bash -c '[[ "$(cat "'"$MARKER"'")" == "work" ]]'
 check "watchcommit excluded on work profile" bash -c '[[ ! -e ~/.local/bin/watchcommit ]]'
 check "watchcommit systemd unit excluded on work profile" bash -c '[[ ! -e ~/.config/systemd/user/watchcommit.service ]]'
-check "$HOME/.claude/settings.json matches WORK seed" diff -q ~/.claude/settings.json "$DOTFILES/claude/settings.work.json"
+check "$HOME/.claude/settings.json NOT seeded by dotfiles on work profile either (agent-toolkit's domain)" bash -c '[[ ! -e ~/.claude/settings.json ]]'
 check "Claude Code IS installed despite work profile (profile never restricts harness choice)" \
   bash -c '[[ -L ~/.claude/CLAUDE.md ]]'
 
@@ -205,7 +203,6 @@ check "--force run does not get blocked" bash -c "[[ $force_code -eq 0 || $force
 check "--force run records profile=personal" manifest_has run profile=personal
 check "work marker is NOT reset by a forced personal run (next plain run is still blocked)" \
   bash -c '[[ "$(cat "'"$MARKER"'")" == "work" ]]'
-check "settings.json drift reported instead of silently overwritten" grep -q "drifted" /tmp/force.out
 
 # Clean slate for the harness-focused scenarios below.
 ./install.sh --rollback >/tmp/rollback3.out 2>&1
@@ -279,7 +276,7 @@ check "Pi NOT wired" bash -c '[[ ! -e ~/.pi/agent/settings.json ]]'
 ./install.sh --harness=claude,opencode >/tmp/harness-both.out 2>&1
 cat /tmp/harness-both.out
 check "Claude Code wired (combo)" bash -c '[[ -L ~/.claude/CLAUDE.md ]]'
-check "opencode wired (combo)" bash -c '[[ -f ~/.config/opencode/opencode.jsonc ]]'
+check "opencode.jsonc NOT wired by dotfiles even when selected (agent-toolkit's domain)" bash -c '[[ ! -e ~/.config/opencode/opencode.jsonc ]]'
 check "Copilot still NOT wired (combo omits it)" bash -c '[[ ! -e ~/.copilot/copilot-instructions.md ]]'
 check "repeated --harness flags accumulate, not overwrite" \
   bash -c 'true' # exercised directly below with a second invocation
@@ -330,16 +327,10 @@ check "pi dev-status-tool extension NOT wired by dotfiles (agent-toolkit's domai
 check "pi AGENTS.md symlink removed by rollback" bash -c '[[ ! -e ~/.pi/agent/AGENTS.md ]]'
 
 echo ""
-echo "=== 10. opencode.jsonc: personal-only permission seeding ==="
+echo "=== 10. opencode: dotfiles wires nothing (agent-toolkit's domain) ==="
 ./install.sh --harness=opencode >/tmp/oc-personal.out 2>&1
 cat /tmp/oc-personal.out
-check "opencode.jsonc seeded from personal file" diff -q ~/.config/opencode/opencode.jsonc "$DOTFILES/opencode/opencode.jsonc"
-check "personal opencode.jsonc has no xargs (allowlist bypass removed everywhere)" \
-  bash -c '! grep -q "xargs" ~/.config/opencode/opencode.jsonc'
-check "personal opencode.jsonc has no awk (allowlist bypass removed everywhere)" \
-  bash -c '! grep -q "\"awk \*\"" ~/.config/opencode/opencode.jsonc'
-check "personal opencode.jsonc does not allow curl (network calls need approval)" \
-  bash -c '! grep -q "\"curl \*\"" ~/.config/opencode/opencode.jsonc'
+check "opencode.jsonc NOT seeded by dotfiles (agent-toolkit's domain)" bash -c '[[ ! -e ~/.config/opencode/opencode.jsonc ]]'
 # backlog-item port wiring moved to agent-toolkit entirely (links.toml
 # dropped these rows in 89a9b9f) -- assert dotfiles' installer doesn't
 # reclaim them. Explicit checks matter here: install.sh exits 0 OR 1
@@ -381,9 +372,12 @@ rm -f "$MARKER"
 cat /tmp/multi-run-a.out
 check "run A: Claude Code wired" bash -c '[[ -L ~/.claude/CLAUDE.md ]]'
 
-./install.sh --harness=opencode >/tmp/multi-run-b.out 2>&1
+# "run B" uses copilot, not opencode -- opencode wires nothing dotfiles-owned
+# any more (agent-toolkit's domain now), so it can't stand in for a second
+# run's dest here.
+./install.sh --harness=copilot >/tmp/multi-run-b.out 2>&1
 cat /tmp/multi-run-b.out
-check "run B: opencode wired" bash -c '[[ -f ~/.config/opencode/opencode.jsonc ]]'
+check "run B: copilot wired" bash -c '[[ -L ~/.copilot/copilot-instructions.md ]]'
 check "history.jsonl recorded both runs (2 run markers, not overwritten by run B)" \
   manifest_run_count 2
 check "history.jsonl still holds run A's claude symlink record after run B" \
@@ -393,8 +387,8 @@ check "history.jsonl still holds run A's claude symlink record after run B" \
 cat /tmp/rollback-multi.out
 check "single rollback removes run A's files too (Claude), not just run B's" \
   bash -c '[[ ! -e ~/.claude/CLAUDE.md ]]'
-check "single rollback removes run B's files (opencode)" \
-  bash -c '[[ ! -e ~/.config/opencode/opencode.jsonc ]]'
+check "single rollback removes run B's files (copilot)" \
+  bash -c '[[ ! -e ~/.copilot/copilot-instructions.md ]]'
 check "history.jsonl cleared after a full rollback" bash -c '[[ ! -f "'"$MANIFEST"'" ]]'
 
 echo ""
@@ -585,7 +579,6 @@ check "depart's unresolved items are the two systemd service keys" bash -c \
    grep -A2 "unresolved (2):" /tmp/depart-real.out | grep -q "service:systemd/opencode-skills-sync"'
 check "depart removed the vimrc symlink" bash -c '[[ ! -e ~/.vimrc ]]'
 check "depart removed the zshrc symlink" bash -c '[[ ! -e ~/.zshrc ]]'
-check "depart removed the claude settings.json copy" bash -c '[[ ! -e ~/.claude/settings.json ]]'
 check "depart removed the watchcommit shim symlink" bash -c '[[ ! -e ~/.local/bin/watchcommit ]]'
 check "pre-existing Nerd Font directory survives (preserved, not owned — it predates this install)" \
   bash -c '[[ -e ~/.local/share/fonts/JetBrainsMonoNerdFont ]]'
