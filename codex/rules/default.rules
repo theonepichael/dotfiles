@@ -72,3 +72,6 @@ prefix_rule(pattern=["/usr/bin/zsh", "-lc", "python3 ~/.claude/scripts/second_op
 prefix_rule(pattern=["/usr/bin/zsh", "-lc", "python3 ~/.claude/scripts/second_opinion.py review /home/yanil/.claude/data/grill/atk-serial-queue-runner-spec.md --focus-file /home/yanil/.claude/data/grill/atk-serial-queue-runner-spec-focus.md --backend agy --model-index 1"], decision="allow")
 prefix_rule(pattern=["/usr/bin/zsh", "-lc", "python3 ~/.claude/scripts/second_opinion.py review /home/yanil/.claude/data/grill/atk-serial-queue-runner-spec.md --focus-file /home/yanil/.claude/data/grill/atk-serial-queue-runner-spec-focus.md --backend agy --model-index 2"], decision="allow")
 prefix_rule(pattern=["uv", "run", "ruff"], decision="allow")
+prefix_rule(pattern=["bun", "run", "format"], decision="allow")
+prefix_rule(pattern=["python3", "agent-scripts/gen_skills.py"], decision="allow")
+prefix_rule(pattern=["scripts/build-copilot-swarm.sh"], decision="allow")
