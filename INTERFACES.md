@@ -330,6 +330,8 @@ are copy-once seeds for exactly that reason.
 
 | Source | Installed at |
 | --- | --- |
+| `claude/AGENTS.md` | not symlinked by `links.toml` |
+| `claude/CLAUDE.md` | not symlinked by `links.toml` |
 | `claude/CORE_INSTRUCTIONS.md` | not symlinked by `links.toml` |
 | `claude/global-instructions.md` | `~/.claude/CLAUDE.md` (claude), `~/.copilot/copilot-instructions.md` (copilot), `~/.gemini/GEMINI.md` (agy), `~/.pi/agent/AGENTS.md` (pi), `~/.codex/AGENTS.md` (codex) |
 | `claude/output-styles/PlainEngineer.md` | `~/.claude/output-styles/PlainEngineer.md` (claude) |

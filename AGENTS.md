@@ -38,8 +38,13 @@ not the rules themselves; the mechanics stay in the directory file.
 - **`test/`** — every test runs under a sandboxed `HOME` with real
   subprocess calls and production-path writes blocked. Read
   `test/AGENTS.md` before writing one.
+- **`claude/`** — personal policy composition and instruction overlay
+  sources (`CORE_INSTRUCTIONS.md` is pulled from agent-toolkit;
+  `global-instructions.md` is generated). See `claude/AGENTS.md`.
 - **`claude/scripts/`** — standard library only, and the module docstrings
   are generated source, not commentary. See `claude/scripts/AGENTS.md`.
+- **`scripts/`** — repo-maintenance entrypoints, not harness-runtime code.
+  See `scripts/AGENTS.md`.
 
 ## The `AGENTS.md` + `CLAUDE.md` convention
 
