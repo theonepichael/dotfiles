@@ -567,8 +567,8 @@ def _reseed_repo_seed(home, content='{"model": "seed-value"}\n'):
     """A throwaway seed file for exercising seed_file's generic reseed/backup
     machinery directly, decoupled from any specific harness's wrapper (the
     function these tests used to route through, seed_claude_settings, no
-    longer exists -- this is the same primitive seed_vscode_settings/
-    seed_pi_settings still call)."""
+    longer exists -- this is the same primitive seed_vscode_settings still
+    calls)."""
     seed = home.parent / "seed" / "settings.json"
     seed.parent.mkdir(parents=True, exist_ok=True)
     seed.write_text(content)

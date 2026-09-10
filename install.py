@@ -2482,35 +2482,6 @@ def _reseed_file(
     return ""
 
 
-def seed_pi_settings(ctx: Context) -> tuple[str, str]:
-    """Seed ~/.pi/agent/settings.json, if Pi was selected.
-
-    Structurally like a plain ``skills`` array, no bash permission allowlist
-    to watch for a live bypass on — that lives in ``permission-gate.ts``, a
-    plain symlink, not this seeding subsystem — so this is a simple
-    copy-once-and-report-drift shape via ``describe_settings_drift``, no
-    allowlist-bypass detection needed. See ``pi/CLAUDE_CODE_PARITY.md`` §3
-    and §7.
-
-    Returns:
-        ``(seed filename, drift description)``; both empty when the harness
-        wasn't selected.
-    """
-    if not ctx.has_harness("pi"):
-        return "", ""
-    name = "settings.json"
-    seed = ctx.dotfiles / "pi" / name
-    dest = ctx.home / ".pi" / "agent" / "settings.json"
-    return name, seed_file(
-        ctx,
-        seed,
-        dest,
-        skip_label="pi settings.json seed",
-        drift=describe_settings_drift,
-        adopt_drift=_describe_settings_text,
-    )
-
-
 # ── services ──────────────────────────────────────────────────────────────────
 
 
@@ -2960,8 +2931,6 @@ def _departure_owned_destinations(
     for spec in specs:
         if link_applies(spec, ctx):
             destinations.append(expand_dest(spec.dest, ctx.home))
-    if ctx.has_harness("pi"):
-        destinations.append(ctx.home / ".pi" / "agent" / "settings.json")
     return destinations
 
 
@@ -3459,7 +3428,6 @@ def _rollback_backup(
 def print_summary(
     ctx: Context,
     vscode: Sequence[tuple[str, tuple[str, str]]] = (),
-    pi_settings: tuple[str, str] = ("", ""),
 ) -> None:
     """Print the loud end-of-run summary: skips, drift, and next steps."""
     dry = ctx.opts.dry_run
@@ -3476,10 +3444,7 @@ def print_summary(
     else:
         print(PALETTE.ok("✓ all steps completed"))
 
-    for path, (seed_name, drift) in (
-        ("~/.pi/agent/settings.json", pi_settings),
-        *vscode,
-    ):
+    for path, (seed_name, drift) in vscode:
         if drift:
             print(PALETTE.warn(f"⚠ {path} drifted from {seed_name}: {drift}"))
             if ctx.opts.adopt:
@@ -5081,7 +5046,6 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
 
     install_symlinks(ctx, links)
     _cleanup_orphaned_links(ctx, links)
-    pi_settings_drift = seed_pi_settings(ctx)
     vscode_drift = seed_vscode_settings(ctx)
 
     if ctx.is_mac:
@@ -5100,7 +5064,7 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
     if ctx.departure_baseline is not None:
         depart.save_baseline(ctx.state_dir, ctx.departure_baseline)
 
-    print_summary(ctx, vscode_drift, pi_settings_drift)
+    print_summary(ctx, vscode_drift)
     return 1 if ctx.reporter.skipped else 0
 
 
