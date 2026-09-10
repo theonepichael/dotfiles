@@ -1,5 +1,5 @@
-model = "gpt-5.6-sol"
-model_reasoning_effort = "high"
+model = "gpt-5.6-luna"
+model_reasoning_effort = "medium"
 [projects."/home/yanil/Workspace/agent-toolkit"]
 trust_level = "trusted"
 
@@ -28,6 +28,9 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [projects."/tmp/claude-1000/-home-yanil-Workspace-agent-toolkit/df8b7a12-2d0c-4e3e-b76e-4bee9137433b/scratchpad/herdr-claim-live/codex"]
+trust_level = "trusted"
+
+[projects."/home/yanil"]
 trust_level = "trusted"
 
 [sandbox_workspace_write]
