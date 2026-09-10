@@ -39,6 +39,7 @@ House style for these interfaces is in `STYLE.md`.
 | [`gen_interfaces.py`](#claudescriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`opencode_skills_sync_activity.py`](#claudescriptsopencodeskillssyncactivitypy) | Print opencode-skills-sync's pause state and last known snapshot commit, so a session can tell whether the daemon is running and how current its mirror is -- mirrors watchcommit_activity.py's SessionStart banner role. |
 | [`settings_seed_drift_check.py`](#claudescriptssettingsseeddriftcheckpy) | CLI: detect and repair drift between the (under WSL) Windows-side VS Code ``settings.json``/``keybindings.json`` and their seeds in the dotfiles repo. |
+| [`sync_from_agent_toolkit.py`](#claudescriptssyncfromagenttoolkitpy) | sync_from_agent_toolkit.py — keep claude/CORE_INSTRUCTIONS.md current with agent-toolkit. |
 | [`watchcommit_activity.py`](#claudescriptswatchcommitactivitypy) | Print watchcommit's last known background pull/commit/push, so a session (or wc-status) can tell daemon-driven git state changes from manual ones instead of only seeing a clean/up-to-date working tree. |
 
 ### `claude/scripts/dev_status_sync.py`
@@ -257,6 +258,40 @@ CLI: detect and repair drift between the (under WSL) Windows-side VS Code ``sett
   - `vscode_drift(seed: Path, live: Path) -> str` — Describe how a live VS Code settings.json/keybindings.json diverged from its seed, or "" if there's nothing to compare or nothing drifted.
 - Subcommand handlers: `cmd_check`, `cmd_sync_to_seed`, `cmd_push_vscode`
 - Tested by: `claude/scripts/test_settings_seed_drift_check.py`, `test/test_install.py`
+
+### `claude/scripts/sync_from_agent_toolkit.py`
+
+sync_from_agent_toolkit.py — keep claude/CORE_INSTRUCTIONS.md current with agent-toolkit.
+
+- Installed at: not symlinked by `links.toml`
+- Entrypoint: executable, `#!/usr/bin/env python3`
+- CLI (`argparse`): keep claude/CORE_INSTRUCTIONS.md current with agent-toolkit@HEAD (the one permanent post-flip upstream relationship); see the module docstring for the full contract
+  - `--apply` — apply the sync (default: report/diff only)
+  - `--check` — exit 1 if the working tree has drifted from a fresh pull, without writing anything
+  - `--agent-toolkit-path` — path to the agent-toolkit checkout (default: ~/Workspace/agent-toolkit)
+  - `--quiet/-q`
+  - `--verbose/-v`
+- Filesystem constants:
+  - `REPO_ROOT = Path(__file__).resolve().parents[2]`
+  - `DEFAULT_AGENT_TOOLKIT_PATH = Path.home() / 'Workspace' / 'agent-toolkit'`
+- Explicit exit codes: `0`, `1`
+- Depends on: `dotfiles_cli_common.py`
+- Exceptions:
+  - `class PullError(Exception)` — Raised when a fresh pull from agent-toolkit@HEAD can't be resolved.
+- Public functions:
+  - `state_path(repo_root: Path) -> Path` — Return the path to the committed sync-state marker.
+  - `load_state(repo_root: Path) -> dict[str, object] | None` — Load the sync-state marker, or None if absent or corrupt.
+  - `write_state(repo_root: Path, *, agent_toolkit_sha: str) -> None` — Record provenance for a successful content sync.
+  - `run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]` — Run a git command in ``repo``, capturing output as text.
+  - `resolve_head(repo: Path) -> str` — Return the current HEAD commit of ``repo``.
+  - `path_exists_at(repo: Path, ref: str, path: str) -> bool` — Return whether ``path`` exists in ``repo`` at ``ref``.
+  - `read_at(repo: Path, ref: str, path: str) -> bytes` — Return the raw bytes of ``path`` in ``repo`` at ``ref``.
+  - `last_commit_touching(repo: Path, ref: str, path: str) -> str` — The sha of the last commit in ``repo`` (at ``ref``) touching ``path``.
+  - `git_add(repo_root: Path, paths: list[str]) -> None` — Stage the given repo-relative paths.
+  - `apply_transform(text: str) -> tuple[str, int]` — Apply the registered transform; return (new text, substitution count).
+  - `pull_transformed(agent_toolkit_path: Path) -> tuple[str, int, str]` — Resolve agent-toolkit@HEAD's contract file, transformed.
+  - `build_parser() -> argparse.ArgumentParser` — Build the argument parser.
+- Tested by: `claude/scripts/test_sync_from_agent_toolkit.py`
 
 ### `claude/scripts/watchcommit_activity.py`
 

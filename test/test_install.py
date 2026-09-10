@@ -311,18 +311,27 @@ def test_links_table_parses_and_sources_exist(links):
         assert spec.dest.startswith("~/")
 
 
-# 2026-09-07 (meta-agent-toolkit-wrapper-enforcement): these are install.py's
-# own repo-relative dependencies -- it imports them from its own checkout,
-# never via the live ~/.claude/scripts/ symlink -- but agent-toolkit is
-# their permanent live-symlink owner per managed-dir-resolution, so they
+# 2026-09-07 (meta-agent-toolkit-wrapper-enforcement): dotfiles_cli_common.py,
+# gen_interfaces.py, and settings_seed_drift_check.py are install.py's own
+# repo-relative dependencies -- it imports them from its own checkout, never
+# via the live ~/.claude/scripts/ symlink -- but agent-toolkit is their
+# permanent live-symlink owner per managed-dir-resolution, so they
 # intentionally have no links.toml row here anymore. See links.toml's own
 # comment and test_link_ownership_boundary.py, which guards the live-symlink
 # side of this split.
+#
+# 2026-09-10: sync_from_agent_toolkit.py is a different case -- a
+# repo-maintenance entrypoint with no counterpart anywhere else (agent-toolkit
+# has no file of this name, and shouldn't). Run only repo-relative
+# (`python3 claude/scripts/sync_from_agent_toolkit.py`) by whoever maintains
+# this repo, same as agent-toolkit's own scripts/ dir convention for its
+# (now-deleted) mirror-image tool.
 _REPO_LOCAL_ONLY_SCRIPTS = frozenset(
     {
         "dotfiles_cli_common.py",
         "gen_interfaces.py",
         "settings_seed_drift_check.py",
+        "sync_from_agent_toolkit.py",
     }
 )
 

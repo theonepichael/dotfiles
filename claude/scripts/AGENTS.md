@@ -15,6 +15,17 @@ actually calls through `~/.claude/scripts/` (`dev_status.py`, `grill.py`,
 easy to get wrong here; general conventions are in the repo root's
 `AGENTS.md` and `STYLE.md`.
 
+## `claude/CORE_INSTRUCTIONS.md` is pulled, not hand-edited
+
+Since the 2026-09-10 zero-coupling flip, `CORE_INSTRUCTIONS.md` is authored
+in agent-toolkit and pulled into this repo by `sync_from_agent_toolkit.py`
+(`--check` for the drift-guard exit code, `--apply` to write). Hand-editing
+this repo's copy directly will get silently overwritten by the next
+`--apply`, or flagged as drift by `--check` — edit it in agent-toolkit
+instead. `gen_core_instructions.py` runs separately and composes it with
+`personal-overlay.md` into `global-instructions.md` regardless of which
+repo authors the upstream half.
+
 ## Standard library only
 
 No runtime third-party imports, ever. These tools have to run on a machine

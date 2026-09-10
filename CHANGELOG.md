@@ -5,6 +5,17 @@ harness CLIs, flags, or behavior get an entry going forward.
 
 ## 2026-09-10
 
+### Added
+
+- **`sync_from_agent_toolkit.py`** — pulls `claude/CORE_INSTRUCTIONS.md` from
+  agent-toolkit@HEAD (the direction flipped: agent-toolkit now authors it
+  directly, with zero dependency on this repo; this repo pulls from there
+  instead of the other way around). Mirrors agent-toolkit's deleted
+  `sync_from_dotfiles.py` in reverse — same TRANSFORM/report/`--apply` shape,
+  plus a new `--check` drift-guard mode (exit 1 if the working tree doesn't
+  match a fresh pull). No generator sweep on this side —
+  `gen_core_instructions.py` already runs separately and unconditionally.
+
 ### Removed
 
 - **`seed_hook_subset_guard.py` removed** — the 2026-09-09 entry below kept
