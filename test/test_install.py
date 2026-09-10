@@ -311,26 +311,18 @@ def test_links_table_parses_and_sources_exist(links):
         assert spec.dest.startswith("~/")
 
 
-# 2026-09-07 (meta-agent-toolkit-wrapper-enforcement): these three are
-# install.py's own repo-relative dependencies -- it imports them from its
-# own checkout, never via the live ~/.claude/scripts/ symlink -- but
-# agent-toolkit is their permanent live-symlink owner per
-# managed-dir-resolution, so they intentionally have no links.toml row here
-# anymore. See links.toml's own comment and test_link_ownership_boundary.py,
-# which guards the live-symlink side of this split.
+# 2026-09-07 (meta-agent-toolkit-wrapper-enforcement): these are install.py's
+# own repo-relative dependencies -- it imports them from its own checkout,
+# never via the live ~/.claude/scripts/ symlink -- but agent-toolkit is
+# their permanent live-symlink owner per managed-dir-resolution, so they
+# intentionally have no links.toml row here anymore. See links.toml's own
+# comment and test_link_ownership_boundary.py, which guards the live-symlink
+# side of this split.
 _REPO_LOCAL_ONLY_SCRIPTS = frozenset(
     {
         "dotfiles_cli_common.py",
         "gen_interfaces.py",
         "settings_seed_drift_check.py",
-        # 2026-09-07 (meta-seed-guard-dotfiles): seed_hook_subset_guard.py is
-        # invoked repo-relative by githooks/pre-commit, never via the live
-        # symlink, and agent-toolkit is the live-symlink owner of
-        # ~/.claude/scripts/seed_hook_subset_guard.py -- a dotfiles [[link]]
-        # row for the same dest would trip
-        # test_link_ownership_boundary.py::test_no_unsanctioned_overlap
-        # (dotfiles' installer runs second and would silently reclaim it).
-        "seed_hook_subset_guard.py",
     }
 )
 

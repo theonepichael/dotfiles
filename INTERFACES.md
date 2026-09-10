@@ -38,7 +38,6 @@ House style for these interfaces is in `STYLE.md`.
 | [`gen_core_instructions.py`](#claudescriptsgencoreinstructionspy) | gen_core_instructions.py — compose CORE_INSTRUCTIONS.md + personal-overlay.md into claude/global-instructions.md. |
 | [`gen_interfaces.py`](#claudescriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`opencode_skills_sync_activity.py`](#claudescriptsopencodeskillssyncactivitypy) | Print opencode-skills-sync's pause state and last known snapshot commit, so a session can tell whether the daemon is running and how current its mirror is -- mirrors watchcommit_activity.py's SessionStart banner role. |
-| [`seed_hook_subset_guard.py`](#claudescriptsseedhooksubsetguardpy) | seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart hook groups. |
 | [`settings_seed_drift_check.py`](#claudescriptssettingsseeddriftcheckpy) | SessionStart hook + CLI: detect (and optionally fix) drift between the live ``~/.claude/settings.json`` / ``~/.config/opencode/opencode.jsonc`` / (under WSL) the Windows-side VS Code ``settings.json`` and ``keybindings.json`` and their seeds in the dotfiles repo. |
 | [`watchcommit_activity.py`](#claudescriptswatchcommitactivitypy) | Print watchcommit's last known background pull/commit/push, so a session (or wc-status) can tell daemon-driven git state changes from manual ones instead of only seeing a clean/up-to-date working tree. |
 
@@ -234,18 +233,6 @@ Print opencode-skills-sync's pause state and last known snapshot commit, so a se
 - Public functions:
   - `report(dest_worktree: Path) -> str`
 - Tested by: `claude/scripts/test_opencode_skills_sync_activity.py`
-
-### `claude/scripts/seed_hook_subset_guard.py`
-
-seed_hook_subset_guard.py — refuse a commit that drops a seed's SessionStart hook groups.
-
-- Installed at: not symlinked by `links.toml`
-- Entrypoint: not executable, `#!/usr/bin/env python3`
-- CLI (`argparse`): refuse a commit that drops a seed's SessionStart hook groups
-  - `--repo-root` — repository root (default: git's toplevel of the cwd)
-- Public functions:
-  - `check_path(repo_root: Path, path: str) -> tuple[str | None, str | None]` — Return ``(failure_message, skip_note)`` for one seed path — exactly one is non-None.
-- Tested by: `test/test_seed_hook_subset_guard.py`
 
 ### `claude/scripts/settings_seed_drift_check.py`
 

@@ -3,6 +3,21 @@
 This repo's internal tooling changes are logged here. Breaking changes to
 harness CLIs, flags, or behavior get an entry going forward.
 
+## 2026-09-10
+
+### Removed
+
+- **`seed_hook_subset_guard.py` removed** — the 2026-09-09 entry below kept
+  it around because this repo's `core.hooksPath` pointed at an absolute path
+  in the main checkout, so every worktree's commit ran main's stale copy of
+  `githooks/pre-commit`, which still invoked the guard against the already-
+  deleted `claude/settings.json`/`claude/settings.work.json`. `core.hooksPath`
+  is now a relative path (`githooks`), resolved per-worktree, so this branch's
+  own `githooks/pre-commit` — with the guard invocation already dropped — is
+  what runs. Also removed: `test/test_seed_hook_subset_guard.py`, its
+  `_REPO_LOCAL_ONLY_SCRIPTS` exemption in `test/test_install.py`, and its
+  no-`[[link]]`-row comment in `links.toml`.
+
 ## 2026-09-09
 
 ### Removed
