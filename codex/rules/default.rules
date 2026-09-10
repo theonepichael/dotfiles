@@ -67,3 +67,4 @@ prefix_rule(pattern=["/usr/bin/zsh", "-lc", "python3 ~/.claude/scripts/second_op
 prefix_rule(pattern=["python3", "agent-scripts/gen_interfaces.py"], decision="allow")
 prefix_rule(pattern=["git", "-C", "/home/yanil/Workspace/agent-toolkit", "worktree", "add"], decision="allow")
 prefix_rule(pattern=["bun", "test"], decision="allow")
+prefix_rule(pattern=["/usr/bin/zsh", "-lc", "python3 ~/.claude/scripts/second_opinion.py review /home/yanil/.claude/data/grill/atk-serial-queue-runner-spec.md --focus-file /home/yanil/.claude/data/grill/atk-serial-queue-runner-spec-focus.md --backend pi --model-index 0"], decision="allow")
