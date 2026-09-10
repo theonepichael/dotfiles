@@ -1344,5 +1344,99 @@ class GeneratedDocumentTests(unittest.TestCase):
         )
 
 
+class EmptyCommandSurfaceTests(unittest.TestCase):
+    """Sections 2, 5, and 6 are omitted whole when they have no content."""
+
+    FOO_SCRIPT = '''\
+        #!/usr/bin/env python3
+        """foo.py — test fixture."""
+
+        def main() -> None:
+            print("bar")
+
+        if __name__ == "__main__":
+            main()
+        '''
+
+    FOO_CLI = '''\
+        #!/usr/bin/env python3
+        """foo.py — test fixture."""
+        import argparse
+
+        def main() -> None:
+            parser = argparse.ArgumentParser(prog="foo")
+            sub = parser.add_subparsers(dest="command")
+            sub.add_parser("run")
+
+        if __name__ == "__main__":
+            main()
+        '''
+
+    def _write_repo(
+        self,
+        root: Path,
+        docs: list[tuple[str, str]],
+        script: str = FOO_SCRIPT,
+    ) -> None:
+        scripts = root / gi.SCRIPTS_DIR
+        scripts.mkdir(parents=True)
+        (scripts / "foo.py").write_text(textwrap.dedent(script), encoding="utf-8")
+        for harness in ("claude", "copilot", "opencode", "agy"):
+            if not (root / harness).is_dir():
+                (root / harness).mkdir()
+        for relpath, text in docs:
+            path = root / relpath
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+
+    @pytest.mark.allow_real_subprocess
+    def test_no_command_docs_omits_sections_2_5_and_6(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_repo(root, [])
+            document = gi.build_document(root)
+            self.assertNotIn("## 2. Skill and command surface", document)
+            self.assertNotIn("## 5. Skill/command doc contract coverage", document)
+            self.assertNotIn("## 6. Skill cross-reference graph", document)
+
+    @pytest.mark.allow_real_subprocess
+    def test_no_command_docs_keeps_surviving_section_numbers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_repo(root, [])
+            document = gi.build_document(root)
+            self.assertIn("## 1. Shared scripts", document)
+            self.assertIn("## 3. Other harness assets", document)
+
+    @pytest.mark.allow_real_subprocess
+    def test_command_docs_present_when_claude_commands_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # a CLI-bearing script plus a doc invoking it keeps section 5 live
+            self._write_repo(
+                root,
+                [("claude/commands/foo.md", "Run `foo.py run`.\n")],
+                script=self.FOO_CLI,
+            )
+            document = gi.build_document(root)
+            self.assertIn("## 2. Skill and command surface", document)
+            self.assertIn("## 5. Skill/command doc contract coverage", document)
+            self.assertIn("## 6. Skill cross-reference graph", document)
+
+    @pytest.mark.allow_real_subprocess
+    def test_only_other_harness_docs_keeps_section_5_but_omits_2_and_6(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_repo(
+                root,
+                [("opencode/skills/foo/SKILL.md", "Run `foo.py run`.\n")],
+                script=self.FOO_CLI,
+            )
+            document = gi.build_document(root)
+            self.assertIn("## 5. Skill/command doc contract coverage", document)
+            self.assertNotIn("## 2. Skill and command surface", document)
+            self.assertNotIn("## 6. Skill cross-reference graph", document)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

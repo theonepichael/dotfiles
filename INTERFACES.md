@@ -308,18 +308,6 @@ Print watchcommit's last known background pull/commit/push, so a session (or wc-
 
 ---
 
-## 2. Skill and command surface
-
-Each harness gets a port of the same skill surface. Presence below is
-the file existing in the repo; the description is the canonical
-`claude/commands/` frontmatter.
-
-| Skill | claude | copilot | opencode | agy | pi |
-| --- | --- | --- | --- | --- | --- |
-
-
----
-
 ## 3. Other harness assets
 
 Everything under the harness directories that is neither a shared script
@@ -523,28 +511,3 @@ Pristine-state departure mode: baseline capture and ownership tracking.
   - `build_gitconfig_record(value: str | None) -> dict[str, object]` — Build a ``gitconfig:`` record from an already-read global config value.
   - `classify_gitconfig(recorded: dict[str, object] | None, live: dict[str, object], managed_value: str) -> Classification` — Classify a single global git config key this installer manages.
 - Tested by: `test/test_depart.py`, `test/test_depart_transactions.py`, `test/test_install.py`
-
----
-
-## 5. Skill/command doc contract coverage
-
-For each backing script below, every skill/command doc that shows an
-example of running it, and whether that example's subcommand and
-flags still match the script's real CLI contract. A doc with no shown
-invocation of a given script is not listed. `--check` exits `3` (not
-`1`) when this section would change, since the fix is editing the
-named doc, not regenerating this file.
-
----
-
-## 6. Skill cross-reference graph
-
-Built by scanning each `claude/commands/*.md` skill's own text for
-whole-word mentions of the other skills' names (frontmatter
-description included). This regenerates with the rest of the file,
-so it cannot silently drift the way hand-written relationship notes
-could — if a skill stops mentioning another, or starts mentioning a
-new one, `--check` catches it the same as any other stale content.
-
-| Skill | Mentions |
-| --- | --- |

@@ -17,6 +17,12 @@ scripts manage live state under ``~/.claude`` and ``~/.local/state``;
 importing or running them to document them would be a side effect of
 building a doc.
 
+When a generated section has no content in the current repo — sections 2 and 6
+need at least one ``claude/commands/*.md`` doc, section 5 needs at least one
+skill/command doc invoking a script — it is omitted whole rather than rendered
+as an empty table. Surviving sections keep their numbers stable: a repo with
+no skill docs still renders sections 1, 3, and 4 under 1, 3, and 4.
+
 The one subprocess this module does run is ``git ls-files``, to restrict the
 asset table to tracked files — read-only, and not one of the scripts being
 documented. See :func:`tracked_files` for why that filter is load-bearing.
@@ -1835,8 +1841,10 @@ def build_document_and_drift(
     lines.append("")
     for module in modules:
         lines += render_module(module)
-    lines += ["---", "", "## 2. Skill and command surface", ""]
-    lines += render_command_matrix(repo_root, links)
+    command_docs = any((repo_root / "claude" / "commands").glob("*.md"))
+    if command_docs:
+        lines += ["---", "", "## 2. Skill and command surface", ""]
+        lines += render_command_matrix(repo_root, links)
     lines += ["---", "", "## 3. Other harness assets", ""]
     lines += render_assets(repo_root, links, tracked_files(repo_root))
 
@@ -1862,10 +1870,12 @@ def build_document_and_drift(
 
     problems, coverage = check_doc_drift(repo_root, modules)
     fingerprint_problems = check_contract_fingerprints(repo_root, modules, coverage)
-    lines += ["---", "", "## 5. Skill/command doc contract coverage", ""]
-    lines += render_doc_drift_section(coverage)
-    lines += ["---", "", "## 6. Skill cross-reference graph", ""]
-    lines += render_skill_graph_section(repo_root)
+    if coverage:
+        lines += ["---", "", "## 5. Skill/command doc contract coverage", ""]
+        lines += render_doc_drift_section(coverage)
+    if command_docs:
+        lines += ["---", "", "## 6. Skill cross-reference graph", ""]
+        lines += render_skill_graph_section(repo_root)
     return "\n".join(lines).rstrip("\n") + "\n", problems, fingerprint_problems
 
 
