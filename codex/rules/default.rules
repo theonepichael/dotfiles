@@ -96,3 +96,4 @@ prefix_rule(pattern=["herdr", "agent", "start", "modelpicker", "--kind", "pi", "
 prefix_rule(pattern=["herdr", "agent", "prompt", "modelpicker", "/models", "--wait", "--timeout", "120000"], decision="allow")
 prefix_rule(pattern=["herdr", "agent", "send-keys", "modelpicker", "up", "up", "up", "up", "up", "up", "up", "up", "up", "up", "up", "up", "up", "up", "up", "up"], decision="allow")
 prefix_rule(pattern=["herdr", "agent", "send-keys", "modelpicker", "down", "down", "down", "down", "down", "down", "down", "down", "down", "down", "down", "down"], decision="allow")
+prefix_rule(pattern=["herdr", "agent", "send-keys", "modelpicker", "down", "down", "down", "down", "down"], decision="allow")
