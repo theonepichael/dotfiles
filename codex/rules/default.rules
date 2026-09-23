@@ -94,3 +94,5 @@ prefix_rule(pattern=["/usr/bin/zsh", "-lc", "herdr pane layout --pane \"$HERDR_P
 prefix_rule(pattern=["herdr", "pane", "split", "--current", "--direction", "down", "--cwd", "/home/yanil/Workspace/agent-toolkit-atk-opencode-critique-timeouts", "--no-focus"], decision="allow")
 prefix_rule(pattern=["herdr", "agent", "start", "modelpicker", "--kind", "pi", "--pane", "w2:p77"], decision="allow")
 prefix_rule(pattern=["herdr", "agent", "prompt", "modelpicker", "/models", "--wait", "--timeout", "120000"], decision="allow")
+prefix_rule(pattern=["herdr", "agent", "send-keys", "modelpicker", "up", "up", "up", "up", "up", "up", "up", "up", "up", "up", "up", "up", "up", "up", "up", "up"], decision="allow")
+prefix_rule(pattern=["herdr", "agent", "send-keys", "modelpicker", "down", "down", "down", "down", "down", "down", "down", "down", "down", "down", "down", "down"], decision="allow")
