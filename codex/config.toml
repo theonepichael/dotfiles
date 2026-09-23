@@ -1,6 +1,6 @@
 notify = ["python3", "/home/yanil/.claude/scripts/notify.py"]
-model = "gpt-5.6-sol"
-model_reasoning_effort = "high"
+model = "gpt-6-sol"
+model_reasoning_effort = "medium"
 [projects."/home/yanil/Workspace/agent-toolkit"]
 trust_level = "trusted"
 
