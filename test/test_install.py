@@ -124,7 +124,6 @@ def offline_install(monkeypatch):
     for name in (
         "install_mac_packages",
         "install_linux_packages",
-        "install_node",
         "capture_service_baseline",
         "enable_managed_services",
         "capture_git_hooks_path_baseline",
@@ -136,7 +135,6 @@ def offline_install(monkeypatch):
         "bootstrap_neovim",
     ):
         monkeypatch.setattr(install, name, lambda *a, **k: None)
-    monkeypatch.setattr(install, "install_npm_harness", lambda *a, **k: None)
 
 
 @pytest.fixture
@@ -1336,6 +1334,44 @@ def test_history_accumulates_across_runs(home, links, offline_install):
     dests = {e.get("dest") for e in entries}
     assert str(home / ".claude" / "CLAUDE.md") in dests
     assert str(home / ".copilot" / "copilot-instructions.md") in dests
+
+
+def test_run_install_never_provisions_node_or_npm_for_harnesses(
+    home, links, offline_install, monkeypatch
+):
+    """A native claude/copilot on PATH with an empty npm snapshot must never
+    trigger node/npm provisioning during a full install run.
+
+    Regression: install.py used to run NVM setup (curl | bash, nvm install
+    --lts) and `npm install -g @anthropic-ai/claude-code` / `@github/copilot`
+    whenever a selected harness was absent from npm's global tree —
+    reinstalling over a native (non-npm) install and, on a system npm
+    without a user prefix, dying with EACCES mislabeled as a registry
+    problem. That provisioning layer is gone: no harness selection may make
+    the installer shell out to npm or nvm again.
+    """
+    calls: list[object] = []
+
+    def record(cmd, **kwargs):
+        calls.append(cmd)
+        if isinstance(cmd, list) and cmd[:2] == ["npm", "ls"]:
+            return install.CommandResult(True, "{}")  # empty npm snapshot
+        return install.CommandResult(True, "")
+
+    monkeypatch.setattr(install, "run_command", record)
+    # claude is a native (non-npm) install and system npm is on PATH — the
+    # exact conditions under which the old layer reinstalled over it.
+    monkeypatch.setattr(install, "have", lambda name: True)
+
+    ctx = make_ctx(home, harnesses=("claude", "copilot"))
+    ctx.departure_baseline = depart.Baseline()
+    install.run_install(ctx, links)
+
+    for cmd in calls:
+        text = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+        assert "npm" not in text.lower() and "nvm" not in text.lower(), (
+            f"installer shelled out to node/npm provisioning: {cmd!r}"
+        )
 
 
 def test_rollback_undoes_every_past_run(home, links, offline_install):
@@ -3333,62 +3369,6 @@ def test_install_linux_packages_no_departure_baseline_skips_probes(home, monkeyp
     install._install_linux_packages_one_by_one(ctx, "apt", epoch=None)
 
 
-def test_install_npm_harness_records_transaction(home, monkeypatch):
-    ctx = make_ctx(home, harnesses=("claude",))
-    ctx.departure_baseline = depart.Baseline()
-    live = {"npm": "10.0.0"}
-
-    def run(cmd, **kwargs):
-        if cmd[:2] == ["npm", "ls"]:
-            deps = {n: {"version": v} for n, v in live.items()}
-            return install.CommandResult(True, json.dumps({"dependencies": deps}))
-        if cmd[:3] == ["npm", "install", "-g"]:
-            live[cmd[3]] = "1.2.3"
-            return install.CommandResult(True)
-        raise AssertionError(f"unexpected command: {cmd!r}")
-
-    monkeypatch.setattr(install, "have", lambda name: name == "npm")
-    monkeypatch.setattr(install, "run_command", run)
-    install.install_npm_harness(
-        ctx, "claude", "Claude Code", "@anthropic-ai/claude-code"
-    )
-
-    txns = ctx.departure_baseline.transactions
-    assert len(txns) == 1
-    assert txns[0]["manager"] == "npm"
-    assert txns[0]["requested"] == ["@anthropic-ai/claude-code"]
-    assert txns[0]["after"]["@anthropic-ai/claude-code"] == "1.2.3"
-
-
-def test_install_npm_harness_chains_snapshot_across_harnesses(home, monkeypatch):
-    """The second npm-distributed harness must reuse the first call's
-    "already installed?" probe instead of re-running `npm ls -g` — this
-    holds even without departure-baseline tracking, since it's the common
-    steady-state case on every run."""
-    ctx = make_ctx(home, harnesses=("claude", "copilot"))
-    live = {"@anthropic-ai/claude-code": "1.0.0", "@github/copilot": "2.0.0"}
-    probe_calls = 0
-
-    def run(cmd, **kwargs):
-        nonlocal probe_calls
-        if cmd[:2] == ["npm", "ls"]:
-            probe_calls += 1
-            deps = {n: {"version": v} for n, v in live.items()}
-            return install.CommandResult(True, json.dumps({"dependencies": deps}))
-        raise AssertionError(f"unexpected command: {cmd!r}")
-
-    monkeypatch.setattr(install, "have", lambda name: name == "npm")
-    monkeypatch.setattr(install, "run_command", run)
-    snapshot = install.install_npm_harness(
-        ctx, "claude", "Claude Code", "@anthropic-ai/claude-code"
-    )
-    install.install_npm_harness(
-        ctx, "copilot", "Copilot CLI", "@github/copilot", carried=snapshot
-    )
-
-    assert probe_calls == 1
-
-
 def test_install_ruff_uv_tool_records_transaction(home, monkeypatch):
     ctx = make_ctx(home)
     ctx.departure_baseline = depart.Baseline()
@@ -3531,38 +3511,6 @@ def test_install_ruff_uv_tool_skips_when_already_installed(home, monkeypatch):
     install._install_ruff_uv_tool(ctx)
 
     assert calls == [["uv", "tool", "list"]]
-    assert ctx.departure_baseline.transactions == []
-    assert kinds(ctx, "package-installed") == []
-
-
-def test_install_npm_harness_skips_when_already_installed(home, monkeypatch):
-    ctx = make_ctx(home, harnesses=("claude",))
-    ctx.departure_baseline = depart.Baseline()
-    calls: list[list[str]] = []
-
-    def run(cmd, **kwargs):
-        calls.append(list(cmd))
-        if cmd[:2] == ["npm", "ls"]:
-            return install.CommandResult(
-                True,
-                json.dumps(
-                    {
-                        "dependencies": {
-                            "@anthropic-ai/claude-code": {"version": "1.2.3"}
-                        }
-                    }
-                ),
-            )
-        raise AssertionError(f"unexpected command: {cmd!r}")
-
-    monkeypatch.setattr(install, "have", lambda name: name == "npm")
-    monkeypatch.setattr(install, "run_command", run)
-    install.install_npm_harness(
-        ctx, "claude", "Claude Code", "@anthropic-ai/claude-code"
-    )
-
-    assert len(calls) == 1
-    assert calls[0][:2] == ["npm", "ls"]
     assert ctx.departure_baseline.transactions == []
     assert kinds(ctx, "package-installed") == []
 
@@ -3984,7 +3932,6 @@ def test_depart_disables_both_managed_services_and_restores_linger(
     for name in (
         "install_mac_packages",
         "install_linux_packages",
-        "install_node",
         "load_watchcommit_agent",
         "import_rectangle_prefs",
         "set_caps_lock_to_escape",
@@ -3994,7 +3941,6 @@ def test_depart_disables_both_managed_services_and_restores_linger(
         "install_global_git_hooks_path",
     ):
         monkeypatch.setattr(install, name, lambda *a, **k: None)
-    monkeypatch.setattr(install, "install_npm_harness", lambda *a, **k: None)
 
     live = _fresh_managed_services_live()
     monkeypatch.setattr(install, "run_command", _watchcommit_run_command(live))
@@ -4035,7 +3981,6 @@ def test_depart_preserves_linger_when_other_units_depend_on_it(
     for name in (
         "install_mac_packages",
         "install_linux_packages",
-        "install_node",
         "load_watchcommit_agent",
         "import_rectangle_prefs",
         "set_caps_lock_to_escape",
@@ -4045,7 +3990,6 @@ def test_depart_preserves_linger_when_other_units_depend_on_it(
         "install_global_git_hooks_path",
     ):
         monkeypatch.setattr(install, name, lambda *a, **k: None)
-    monkeypatch.setattr(install, "install_npm_harness", lambda *a, **k: None)
 
     live = _fresh_managed_services_live()
     run = _watchcommit_run_command(
@@ -4099,7 +4043,6 @@ def test_reconcile_linger_self_heals_on_a_later_depart_after_a_transient_failure
     for name in (
         "install_mac_packages",
         "install_linux_packages",
-        "install_node",
         "load_watchcommit_agent",
         "import_rectangle_prefs",
         "set_caps_lock_to_escape",
@@ -4109,7 +4052,6 @@ def test_reconcile_linger_self_heals_on_a_later_depart_after_a_transient_failure
         "install_global_git_hooks_path",
     ):
         monkeypatch.setattr(install, name, lambda *a, **k: None)
-    monkeypatch.setattr(install, "install_npm_harness", lambda *a, **k: None)
 
     live = _fresh_managed_services_live()
     base_run = _watchcommit_run_command(live)

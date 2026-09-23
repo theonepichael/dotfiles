@@ -1502,122 +1502,6 @@ def install_linux_packages(ctx: Context) -> None:
     _install_nerd_font(ctx)
 
 
-# ── packages: Node-based harnesses ────────────────────────────────────────────
-
-
-def _activate_nvm_node(ctx: Context) -> None:
-    """Put the newest nvm-installed node on PATH for the rest of this process.
-
-    ``nvm`` is a shell function, so unlike the shell version this process
-    can't ``source nvm.sh`` and have ``npm`` appear on PATH — the installed
-    node's bin directory is added explicitly instead.
-    """
-    versions = ctx.home / ".nvm" / "versions" / "node"
-    if not versions.is_dir():
-        return
-    candidates = sorted(p for p in versions.iterdir() if (p / "bin").is_dir())
-    if candidates:
-        _prepend_path(candidates[-1] / "bin")
-
-
-def install_node(ctx: Context) -> None:
-    """Install NVM and a Node LTS — only for the harnesses that need npm.
-
-    opencode and agy both manage their own runtime externally (agy is a
-    standalone Go binary, not an npm package), so nothing here runs when
-    they're the only selection.
-    """
-    if not (ctx.has_harness("claude") or ctx.has_harness("copilot")):
-        return
-
-    if not (ctx.home / ".nvm").is_dir():
-        if ctx.opts.dry_run:
-            _preview(
-                "would install NVM (curl nvm-sh/nvm install.sh | bash)",
-                quiet=ctx.opts.quiet,
-            )
-        else:
-            _header("==> Installing NVM...", quiet=ctx.opts.quiet)
-            if not run_command(
-                "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/HEAD/"
-                "install.sh | bash",
-                shell=True,
-            ).ok:
-                ctx.reporter.skip("NVM", "installer failed (network blocked?)")
-
-    if have("npm"):
-        return
-
-    _activate_nvm_node(ctx)
-    if have("npm"):
-        return
-
-    nvm_sh = ctx.home / ".nvm" / "nvm.sh"
-    if not nvm_sh.is_file():
-        return
-    if ctx.opts.dry_run:
-        _preview("would run: nvm install --lts", quiet=ctx.opts.quiet)
-        return
-    if run_command(f'. "{nvm_sh}" && nvm install --lts', shell=True).ok:
-        _activate_nvm_node(ctx)
-    else:
-        ctx.reporter.skip("node", "nvm install --lts failed")
-
-
-def install_npm_harness(
-    ctx: Context,
-    harness: str,
-    label: str,
-    package: str,
-    *,
-    carried: dict[str, str] | None = None,
-) -> dict[str, str] | None:
-    """Install one npm-distributed harness CLI, if it was selected.
-
-    Returns the npm global-package snapshot as of the end of this call (or
-    ``carried`` unchanged if nothing ran), so a caller installing more than
-    one npm-distributed harness back-to-back can pass it as ``carried`` to
-    the next call instead of re-running ``npm ls -g`` from scratch — that
-    "already installed?" probe otherwise repeats, unchanged, on every
-    single run regardless of departure-baseline tracking.
-    """
-    if not ctx.has_harness(harness):
-        cli_common.qprint(
-            f"  {label}: skipped (not in --harness)", quiet=ctx.opts.quiet
-        )
-        return carried
-    if not have("npm"):
-        ctx.reporter.skip(label, "npm unavailable (NVM install failed or skipped)")
-        return carried
-    if ctx.opts.dry_run:
-        _preview(f"would run: npm install -g {package}", quiet=ctx.opts.quiet)
-        return carried
-    before = carried
-    if before is None and ctx.departure_baseline is not None:
-        before = _capture_package_snapshot("npm")
-    current = before if before is not None else _capture_package_snapshot("npm")
-    if current is not None and package in current:
-        cli_common.qprint(
-            PALETTE.dim(
-                f"  {label}: already installed ({package} v{current[package]})"
-            ),
-            quiet=ctx.opts.quiet,
-        )
-        return current
-
-    _header(f"==> Installing {label}...", quiet=ctx.opts.quiet)
-    outcome = run_command(["npm", "install", "-g", package])
-    after = (
-        _capture_package_snapshot("npm") if ctx.departure_baseline is not None else None
-    )
-    _record_package_transaction(ctx, "npm", [package], before, after, epoch=None)
-    if outcome.ok:
-        ctx.manifest.record_package(package)
-    else:
-        ctx.reporter.skip(label, "npm install failed (registry blocked?)")
-    return after
-
-
 # ── symlink engine ────────────────────────────────────────────────────────────
 
 
@@ -2942,7 +2826,7 @@ def capture_departure_baseline(ctx: Context, specs: Sequence[LinkSpec]) -> None:
     dry-run install writes no ``baseline.json`` and creates no immutable
     first layer). Must run before ``install_linux_packages`` — ``_install_uv``
     and the oh-my-posh installer both run inside it, earlier than
-    ``install_node``/NVM, and can mutate rc files themselves.
+    those steps, and can mutate rc files themselves.
     """
     if not ctx.is_linux or ctx.opts.dry_run:
         return
@@ -5035,14 +4919,6 @@ def run_install(ctx: Context, specs: Sequence[LinkSpec]) -> int:
         install_mac_packages(ctx)
     elif ctx.is_linux:
         install_linux_packages(ctx)
-
-    install_node(ctx)
-    npm_snapshot = install_npm_harness(
-        ctx, "claude", "Claude Code", "@anthropic-ai/claude-code"
-    )
-    install_npm_harness(
-        ctx, "copilot", "Copilot CLI", "@github/copilot", carried=npm_snapshot
-    )
 
     install_symlinks(ctx, links)
     _cleanup_orphaned_links(ctx, links)
