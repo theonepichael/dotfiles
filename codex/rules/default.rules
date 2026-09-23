@@ -83,3 +83,4 @@ prefix_rule(pattern=["python3", "/tmp/atk-record-safeguard-plan.py"], decision="
 prefix_rule(pattern=["/usr/bin/zsh", "-lc", "SECOND_OPINION_OPENCODE_MODEL_POOL=opencode-go/qwen3.8-flash,opencode-go/minimax-m3,opencode-go/kimi-k2.7-code python3 agent-scripts/second_opinion.py review /home/yanil/.claude/data/grill/atk-review-requires-committed-work-spec.md --dir /home/yanil/Workspace/agent-toolkit-atk-review-requires-committed-work --backend opencode --model-index 0 --focus-file /home/yanil/.claude/data/grill/atk-review-requires-committed-work-spec-focus.md > /tmp/atk-safeguard-review-1-retry.log 2>&1"], decision="allow")
 prefix_rule(pattern=["python3", "/home/yanil/.claude/scripts/dev_status.py"], decision="allow")
 prefix_rule(pattern=["/usr/bin/zsh", "-lc", "DEVSTATUS_AGENT=1 python3 /home/yanil/.claude/scripts/dev_status.py start atk-opencode-critique-timeouts"], decision="allow")
+prefix_rule(pattern=["opencode", "models"], decision="allow")
