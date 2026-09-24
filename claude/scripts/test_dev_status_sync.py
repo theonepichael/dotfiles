@@ -45,8 +45,13 @@ if not (_AGENT_TOOLKIT_SCRIPTS / "dev_status.py").is_file():
     )
 sys.path.insert(0, str(_AGENT_TOOLKIT_SCRIPTS))
 
+import agent_toolkit_paths
 import dev_status
 import dev_status_sync as sync
+import test_layouts
+
+if not hasattr(dev_status, "_content_hash"):
+    dev_status._content_hash = sync._content_hash
 
 
 def make_item(
@@ -99,7 +104,8 @@ class SyncTestCase(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        self.data_dir = Path(self.tmpdir) / "backlog"
+        test_layouts.activate_sandbox_home(Path(self.tmpdir), self.addCleanup)
+        self.data_dir = agent_toolkit_paths.path_for("work-items")
         self.items_file = self.data_dir / "items.json"
         self.pending_file = self.data_dir / "pending_items.json"
         self.meta_file = self.data_dir / "_meta.json"
@@ -110,14 +116,6 @@ class SyncTestCase(unittest.TestCase):
         self.runs_file = self.data_dir / "runs.jsonl"
         self.machine_id_file = self.data_dir / "_machine_id"
         self._patches = [
-            patch.object(dev_status, "DATA_DIR", self.data_dir),
-            patch.object(dev_status, "ITEMS_FILE", self.items_file),
-            patch.object(dev_status, "PENDING_FILE", self.pending_file),
-            patch.object(dev_status, "META_FILE", self.meta_file),
-            patch.object(dev_status, "LOCK_FILE", self.lock_file),
-            patch.object(dev_status, "JOURNAL_FILE", self.journal_file),
-            patch.object(dev_status, "RUNS_FILE", self.runs_file),
-            patch.object(dev_status, "MACHINE_ID_FILE", self.machine_id_file),
             patch.object(sync, "SYNC_BASE_FILE", self.sync_base_file),
             patch.object(sync, "CONFLICT_LOG_FILE", self.conflict_log_file),
         ]
@@ -127,7 +125,7 @@ class SyncTestCase(unittest.TestCase):
     def tearDown(self):
         for p in self._patches:
             p.stop()
-        shutil.rmtree(self.tmpdir)
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
 
 
 # ── equality / canonicalization / winner selection ────────────────────────────

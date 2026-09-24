@@ -214,12 +214,21 @@ def _append_conflict_log(conflicts: list[dict[str, object]]) -> None:
 # ── path mapping (related_files across yanil/theon home dirs) ─────────────────
 
 
+def _content_hash(item: dev_status.BacklogItem) -> str:
+    func = getattr(dev_status, "_content_hash", None)
+    if func is not None and func is not _content_hash:
+        return func(item)
+    import dev_status_mutation
+
+    return dev_status_mutation._content_hash(item)
+
+
 def rewrite_related_files_paths(
     item: dict[str, object], from_home: str, to_home: str
 ) -> dict[str, object]:
     """Rewrite a leading ``from_home`` prefix on ``related_files.path`` entries.
 
-    Recomputes ``review_content_hash`` (via ``dev_status._content_hash``)
+    Recomputes ``review_content_hash`` (via ``_content_hash``)
     whenever a rewrite actually changes ``related_files``, since that field
     feeds the hash and a stale hash would break ``approve``/``reject``.
     Narrow prefix substitution only — not a general path-portability system;
@@ -250,7 +259,7 @@ def rewrite_related_files_paths(
     new_item = dict(item)
     new_item["related_files"] = new_rf
     if "review_content_hash" in new_item:
-        new_item["review_content_hash"] = dev_status._content_hash(
+        new_item["review_content_hash"] = _content_hash(
             cast(dev_status.BacklogItem, new_item)
         )
     return new_item
