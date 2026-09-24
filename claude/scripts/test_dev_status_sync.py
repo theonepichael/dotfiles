@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import textwrap
 import tempfile
 import unittest
 from pathlib import Path
@@ -651,8 +652,104 @@ class LocalCommitTests(SyncTestCase):
         )
         self.assertFalse(self.journal_file.exists())
 
+    @pytest.mark.allow_real_subprocess
+    def test_local_commit_under_local_lock_does_not_self_deadlock(self):
+        """local_commit completes while local_lock is held, in a subprocess.
 
-# ── framed JSON (stdout/stdin sentinel markers) ────────────────────────────────
+        Regression: local_commit nested dev_status.backlog_lock() around the
+        runs and journal writes. Every caller already holds local_lock on the
+        SAME lock file (dev_status.LOCK_FILE), and flock is per-open-file-
+        description, so the nested acquisition opened the file on a fresh fd
+        and blocked forever against the caller's own outer lock — prod hung
+        silently at the merge step with nothing written.
+
+        Runs in a subprocess with a timeout: a deadlocked in-process thread
+        cannot be killed, and its permanently-held flock would poison every
+        later local_lock acquisition in the shared sandbox.
+        """
+        script = Path(self.tmpdir) / "deadlock_probe.py"
+        script.write_text(
+            textwrap.dedent(
+                """
+                import sys
+                sys.path.insert(0, sys.argv[1])  # agent-toolkit agent-scripts
+                sys.path.insert(0, sys.argv[2])  # dotfiles claude/scripts
+                import dev_status
+                import dev_status_sync as sync
+                dev_status._content_hash = sync._content_hash
+
+                def item(slug, status):
+                    return {
+                        "id": slug,
+                        "created": "2026-01-01",
+                        "updated": "2026-01-01",
+                        "status": status,
+                        "summary": f"Summary of {slug}",
+                        "category": "feature",
+                        "blocked_by": [],
+                        "related_files": [],
+                        "context": "",
+                        "next_steps": "",
+                    }
+
+                dev_status.save_items([item("foo-bar", "open")])
+                result = sync.SyncComputation(
+                    merged_items=[item("foo-bar", "done")],
+                    merged_pending=[],
+                    merged_runs=[{"run_id": "r1", "item": "foo-bar"}],
+                    conflicts=[],
+                    needs_local_items_write=True,
+                    needs_local_pending_write=False,
+                    needs_local_runs_write=True,
+                    needs_remote_items_write=False,
+                    needs_remote_pending_write=False,
+                    needs_remote_runs_write=False,
+                )
+                with sync.local_lock(10.0):
+                    rev = sync.local_commit(
+                        {"items": 2, "pending_items": 1},
+                        result,
+                        [item("foo-bar", "open")],
+                        [],
+                        None,
+                        None,
+                        "fedora",
+                    )
+                print(f"REV={rev}")
+                """
+            )
+        )
+        try:
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    str(_AGENT_TOOLKIT_SCRIPTS),
+                    str(Path(__file__).parent),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env=os.environ,
+            )
+        except subprocess.TimeoutExpired as e:
+            self.fail(
+                "local_commit self-deadlocked under local_lock (nested "
+                f"backlog_lock against the caller's own flock). stdout:\n{e.stdout}\n"
+                f"stderr:\n{e.stderr}"
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("REV=1", proc.stdout)
+        self.assertEqual(
+            [
+                json.loads(line)["run_id"]
+                for line in self.runs_file.read_text().splitlines()
+            ],
+            ["r1"],
+        )
+
+
+# ── framed JSON (stdout/stdin sentinel markers) ──────────────────────────────────────
 
 
 class FramedJsonTests(unittest.TestCase):

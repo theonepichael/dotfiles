@@ -1291,10 +1291,12 @@ def local_commit(
     The journal event is a local discontinuity marker, not journal syncing
     (v1 stays machine-local) — it tells the recap's prose a merge happened
     so it leans on the current bucket summaries instead of assuming a
-    continuous local narrative. ``local_lock`` (held by every caller of this
-    function) doesn't protect ``journal.jsonl`` against a concurrent
-    *local* ``dev_status.py`` append, so this briefly takes
-    ``dev_status.backlog_lock()`` itself, same as any other journal writer.
+    continuous local narrative. No lock is taken here: every caller holds
+    ``local_lock``, which is the same exclusive ``flock`` every local
+    ``dev_status.py`` writer takes, so concurrent appends cannot interleave.
+    Do NOT nest ``dev_status.backlog_lock()`` here — it opens this file on a
+    fresh fd, and since ``flock`` is per-open-file-description the process
+    would block forever against its own outer lock.
     """
     if result.needs_local_items_write:
         dev_status._backup_before_bulk_delete(dev_status.ITEMS_FILE)
@@ -1308,13 +1310,14 @@ def local_commit(
             cast(list[dev_status.PendingItem], result.merged_pending)
         )
     # Runs union has no rev/backup semantics — an append-only sidecar whose
-    # merge can only add rows. Written under a brief backlog_lock (same
-    # guard the run/appends use) so a concurrent local run can't interleave.
+    # merge can only add rows. local_lock (held by the caller) is the same
+    # exclusive flock every local dev_status.py writer takes, so a
+    # concurrent local run can't interleave. Do NOT nest
+    # dev_status.backlog_lock() here: it opens this file on a fresh fd, and
+    # since flock is per-open-file-description the process would block
+    # forever against its own outer lock.
     if result.needs_local_runs_write:
-        with dev_status.backlog_lock():
-            dev_status.write_runs_file(
-                cast(list[dev_status.RunRecord], result.merged_runs)
-            )
+        dev_status.write_runs_file(cast(list[dev_status.RunRecord], result.merged_runs))
 
     if result.conflicts:
         _append_conflict_log(result.conflicts)
@@ -1329,12 +1332,11 @@ def local_commit(
         return None
 
     new_rev = dev_status.bump_rev()
-    with dev_status.backlog_lock():
-        dev_status.append_journal_event(
-            dev_status._journal_entry(
-                "sync", "sync", new_rev, summary=f"merged state from {host or 'remote'}"
-            )
+    dev_status.append_journal_event(
+        dev_status._journal_entry(
+            "sync", "sync", new_rev, summary=f"merged state from {host or 'remote'}"
         )
+    )
     return new_rev
 
 
