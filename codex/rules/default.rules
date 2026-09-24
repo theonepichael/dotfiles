@@ -107,3 +107,4 @@ prefix_rule(pattern=["python3", "/home/yanil/.claude/scripts/second_opinion.py"]
 prefix_rule(pattern=["uv", "run", "ruff", "check", "agent-scripts/guard_rails.py"], decision="allow")
 prefix_rule(pattern=["git", "commit", "-m", "fix(guard): handle non-string hook payload fields"], decision="allow")
 prefix_rule(pattern=["git", "rebase"], decision="allow")
+prefix_rule(pattern=["git", "add"], decision="allow")
