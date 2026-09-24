@@ -26,6 +26,15 @@ Flags
   --verbose, -v  emit extra diagnostic messages to stderr
   sync --no-artifacts     skip grill/ artifact transfer (metadata-only sync)
   sync --dry-run          report only; print the would-transfer artifact set
+  state                   print this machine's migration/layout state (framed JSON)
+
+Migration safety: a sync refuses while either machine is mid-way through a
+toolkit-home migration (its migration lock is held exclusively, or a
+migration journal is unfinished or unreadable), or when the two machines are
+on different toolkit layouts. A committed migration awaiting finalize is
+allowed. Each side holds the migration lock shared for the duration of its
+own work, and the desktop re-reads the remote's state just before its local
+commit.
 
 Requires Python 3.12+.
 """
@@ -43,18 +52,53 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import cast
 
-sys.path.insert(0, str(Path(__file__).parent))
-import dev_status
-import dotfiles_cli_common as cli_common
+# The toolkit modules this script imports live beside it in ~/.claude/scripts
+# today and in ~/.agent-toolkit/scripts once the toolkit-home migration lands.
+_REQUIRED_TOOLKIT_MODULES = (
+    "dev_status",
+    "dev_status_mutation",
+    "agent_toolkit_paths",
+    "migration_lock",
+)
 
-PROTOCOL_VERSION = 2
+
+def toolkit_scripts_dir(candidates: Sequence[Path] | None = None) -> Path | None:
+    """The toolkit checkout directory to import ``dev_status`` and friends from.
+
+    Tries each install directory in order (``~/.agent-toolkit/scripts``, then
+    ``~/.claude/scripts``) and accepts the first one where every required
+    module is present and all of them resolve into one directory -- a
+    half-updated install is skipped rather than mixed. Returns that resolved
+    directory, or None when no candidate qualifies.
+    """
+    if candidates is None:
+        home = Path.home()
+        candidates = (home / ".agent-toolkit" / "scripts", home / ".claude" / "scripts")
+    for directory in candidates:
+        modules = [directory / f"{name}.py" for name in _REQUIRED_TOOLKIT_MODULES]
+        if not all(m.is_file() for m in modules):
+            continue
+        parents = {m.resolve().parent for m in modules}
+        if len(parents) == 1:
+            return parents.pop()
+    return None
+
+
+_TOOLKIT_DIR = toolkit_scripts_dir()
+sys.path.insert(0, str(_TOOLKIT_DIR or Path(__file__).parent))
+import agent_toolkit_paths  # noqa: E402
+import dev_status  # noqa: E402
+import dotfiles_cli_common as cli_common  # noqa: E402
+import migration_lock  # noqa: E402
+
+PROTOCOL_VERSION = 3
 
 # The one directory this feature ever touches: the grill/ tree under a home
 # prefix (e.g. /home/yanil/.claude/data/grill). Every artifact-collection and
@@ -90,6 +134,219 @@ class SyncFatalError(Exception):
 
 class SyncRetryableError(Exception):
     """A retryable sync condition (stale rev, lock timeout, SSH hiccup). Exit code 2."""
+
+
+# ── migration safety ──────────────────────────────────────────────────────────
+
+MIGRATION_LOCK_SITE = "dev-status-sync"
+MIGRATION_TERMINAL_EVENTS = frozenset({"end", "abandoned"})
+_MIGRATION_JOURNALS = ("journal.jsonl", "rollback.jsonl", "finalize.jsonl")
+_UNSAFE_MIGRATION_STATES = frozenset({"in-flight", "unknown"})
+
+
+class JournalCorruptError(Exception):
+    """A migration journal has a malformed line before its last one."""
+
+
+def _parse_journal_line(line: bytes) -> dict[str, object] | None:
+    if not line.strip():
+        return None
+    try:
+        parsed = json.loads(line.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def read_journal(path: Path) -> list[dict[str, object]] | None:
+    """Valid records of one migration journal, or None if the file is absent.
+
+    Mirrors the migrator's own reader: a malformed final line is a torn write
+    and is skipped; a malformed earlier line raises :class:`JournalCorruptError`.
+    """
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    records: list[dict[str, object]] = []
+    lines = raw.split(b"\n")
+    complete, tail = lines[:-1], lines[-1]
+    for index, line in enumerate(complete):
+        record = _parse_journal_line(line)
+        if record is None:
+            if index == len(complete) - 1 and not tail:
+                return records
+            raise JournalCorruptError(f"{path}: malformed journal line {index + 1}")
+        records.append(record)
+    if tail:
+        record = _parse_journal_line(tail)
+        if record is not None:
+            records.append(record)
+    return records
+
+
+def _journal_outcome(records: list[dict[str, object]] | None) -> str | None:
+    """The ``end`` outcome of a finished journal, else None."""
+    if not records or records[-1].get("event") != "end":
+        return None
+    detail = records[-1].get("detail")
+    return str(detail.get("outcome")) if isinstance(detail, dict) else None
+
+
+def installer_state_dir() -> Path:
+    """Where the migrator keeps its journals (it ignores XDG_STATE_HOME)."""
+    return Path.home() / ".local" / "state" / "agent-toolkit"
+
+
+def migration_status(installer_state: Path) -> tuple[str, str]:
+    """Classify this machine's toolkit-home migrations as ``(state, detail)``.
+
+    ``state`` is ``"in-flight"`` when any migration's main journal is missing,
+    empty or unfinished, or a rollback/finalize journal exists but is
+    unfinished; ``"committed-unfinalized"`` when a committed migration awaits
+    finalize (allowed: the rollout syncs on the new layout before finalizing);
+    ``"unknown"`` when a journal cannot be read; otherwise ``"idle"``.
+    """
+    root = installer_state / "migrations"
+    if not root.is_dir():
+        return ("idle", "")
+    awaiting: list[str] = []
+    try:
+        directories = sorted(
+            p for p in root.iterdir() if p.is_dir() and not p.is_symlink()
+        )
+        for directory in directories:
+            journals = {
+                name: read_journal(directory / name) for name in _MIGRATION_JOURNALS
+            }
+            for name, records in journals.items():
+                if records is None and name != "journal.jsonl":
+                    continue
+                if (
+                    not records
+                    or records[-1].get("event") not in MIGRATION_TERMINAL_EVENTS
+                ):
+                    return (
+                        "in-flight",
+                        f"migration {directory.name}: {name} is unfinished",
+                    )
+            if (
+                _journal_outcome(journals["journal.jsonl"]) == "committed"
+                and _journal_outcome(journals["finalize.jsonl"]) != "finalized"
+                and _journal_outcome(journals["rollback.jsonl"]) != "rolled-back"
+            ):
+                awaiting.append(directory.name)
+    except (JournalCorruptError, OSError) as exc:
+        return ("unknown", str(exc))
+    if awaiting:
+        return ("committed-unfinalized", ", ".join(awaiting))
+    return ("idle", "")
+
+
+def migration_lock_held_exclusively() -> bool | None:
+    """Whether a migration holds this machine's migration lock right now.
+
+    A non-blocking *shared* flock on a separate descriptor: it never conflicts
+    with this process's own shared scope, only with an exclusive holder.
+    None when the lock file cannot be checked.
+    """
+    try:
+        fd = os.open(migration_lock.lock_path(), os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    except OSError:
+        return None
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
+def _current_layout() -> str:
+    try:
+        return str(agent_toolkit_paths.current_layout())
+    except (agent_toolkit_paths.LayoutError, OSError, ValueError):
+        return "unknown"
+
+
+def machine_state() -> dict[str, str]:
+    """This machine's layout, migration state and resolved grill root."""
+    layout = _current_layout()
+    decisions_root = ""
+    if layout != "unknown":
+        try:
+            decisions_root = os.path.abspath(agent_toolkit_paths.path_for("decisions"))
+        except (agent_toolkit_paths.LayoutError, OSError, ValueError):
+            layout = "unknown"
+    held = migration_lock_held_exclusively()
+    if held is None:
+        migration, detail = "unknown", "the migration lock could not be checked"
+    elif held:
+        migration, detail = "in-flight", "the migration lock is held exclusively"
+    else:
+        migration, detail = migration_status(installer_state_dir())
+    return {
+        "layout": layout,
+        "migration": migration,
+        "decisions_root": decisions_root,
+        "detail": detail,
+    }
+
+
+def refuse_unsafe_states(local: dict[str, str], remote: object, host: str) -> None:
+    """Raise SyncFatalError unless both machines are safe to sync together."""
+    if not isinstance(remote, dict):
+        raise SyncFatalError(
+            f"{host} sent no machine state -- redeploy dev_status_sync.py there"
+        )
+    for side, state in (("this machine", local), (host, remote)):
+        if state.get("migration") in _UNSAFE_MIGRATION_STATES:
+            raise SyncFatalError(
+                f"{side} is mid-migration (state {state.get('migration')}: "
+                f"{state.get('detail')}) -- refusing to sync; retry once it finishes"
+            )
+        if state.get("layout") in (None, "unknown"):
+            raise SyncFatalError(
+                f"{side} has an unknown toolkit layout -- refusing to sync"
+            )
+    if local.get("layout") != remote.get("layout"):
+        raise SyncFatalError(
+            f"layout mismatch: this machine is {local.get('layout')}, {host} is "
+            f"{remote.get('layout')} -- both machines must be on the same layout"
+        )
+
+
+_LAYOUT_AT_IMPORT = _current_layout()
+
+
+@contextmanager
+def migration_guard() -> Iterator[dict[str, str]]:
+    """Hold the migration lock shared and yield this machine's state under it.
+
+    Refuses when a migration holds the lock, and when the layout has changed
+    since this process started (the store paths ``dev_status`` computed at
+    import would then point at the old layout).
+    """
+    try:
+        with migration_lock.shared(MIGRATION_LOCK_SITE, quiet=True):
+            state = machine_state()
+            if state["layout"] != _LAYOUT_AT_IMPORT:
+                raise SyncFatalError(
+                    f"toolkit layout changed from {_LAYOUT_AT_IMPORT} to "
+                    f"{state['layout']} since this process started -- rerun"
+                )
+            yield state
+    except migration_lock.MigrationLockBusy as exc:
+        raise SyncFatalError(
+            f"a toolkit-home migration is running on this machine: {exc}"
+        ) from exc
 
 
 # ── local lock (can't reuse dev_status.backlog_lock — needs a timeout) ────────
@@ -224,7 +481,10 @@ def _content_hash(item: dev_status.BacklogItem) -> str:
 
 
 def rewrite_related_files_paths(
-    item: dict[str, object], from_home: str, to_home: str
+    item: dict[str, object],
+    from_home: str,
+    to_home: str,
+    root_map: tuple[str, str] | None = None,
 ) -> dict[str, object]:
     """Rewrite a leading ``from_home`` prefix on ``related_files.path`` entries.
 
@@ -234,22 +494,31 @@ def rewrite_related_files_paths(
     Narrow prefix substitution only — not a general path-portability system;
     a path already in ``to_home`` form, or with no ``/home/<user>/`` prefix
     at all (``/mnt/c/...``, ``/tmp/...``), passes through untouched.
+
+    ``root_map`` is ``(from_grill_root, to_grill_root)``: a path under the
+    source machine's grill root is re-rooted onto the destination's grill
+    root first, since the two roots need not sit at the same home-relative
+    path (and a root under ``/home/...`` would otherwise match the home rule).
     """
     rf = item.get("related_files")
     if not rf or not isinstance(rf, list):
         return item
-    prefix = from_home.rstrip("/") + "/"
+    rules = [(from_home.rstrip("/"), to_home.rstrip("/"))]
+    if root_map is not None:
+        rules.insert(0, (root_map[0].rstrip("/"), root_map[1].rstrip("/")))
     changed = False
     new_rf: list[object] = []
     for entry in rf:
         path = entry.get("path") if isinstance(entry, dict) else None
-        if (
-            isinstance(entry, dict)
-            and isinstance(path, str)
-            and path.startswith(prefix)
-        ):
-            new_entry = dict(entry)
-            new_entry["path"] = to_home.rstrip("/") + path[len(from_home.rstrip("/")) :]
+        rewritten = None
+        if isinstance(entry, dict) and isinstance(path, str):
+            for src, dst in rules:
+                if path.startswith(src + "/"):
+                    rewritten = dst + path[len(src) :]
+                    break
+        if rewritten is not None and rewritten != path:
+            new_entry = dict(cast(dict[str, object], entry))
+            new_entry["path"] = rewritten
             new_rf.append(new_entry)
             changed = True
         else:
@@ -266,13 +535,26 @@ def rewrite_related_files_paths(
 
 
 def rewrite_paths_list(
-    items: list[dict[str, object]], from_home: str, to_home: str
+    items: list[dict[str, object]],
+    from_home: str,
+    to_home: str,
+    root_map: tuple[str, str] | None = None,
 ) -> list[dict[str, object]]:
     """Apply :func:`rewrite_related_files_paths` across a whole store."""
-    return [rewrite_related_files_paths(it, from_home, to_home) for it in items]
+    return [
+        rewrite_related_files_paths(it, from_home, to_home, root_map) for it in items
+    ]
 
 
 # ── artifact transfer (~/.claude/data/grill/ files referenced by related_files) ──
+
+
+def grill_root_for(home: str, grill_root: str | None = None) -> str:
+    """The grill directory to use: ``grill_root`` when given, else the legacy
+    ``{home}/.claude/data/grill``."""
+    if grill_root:
+        return grill_root.rstrip("/")
+    return f"{home.rstrip('/')}/{GRILL_SUBPATH}"
 
 
 def _warn(msg: str) -> None:
@@ -296,7 +578,9 @@ def _related_paths(item: object) -> list[str]:
     return out
 
 
-def collect_artifact_paths(items: list[dict[str, object]], home: str) -> list[Path]:
+def collect_artifact_paths(
+    items: list[dict[str, object]], home: str, grill_root: str | None = None
+) -> list[Path]:
     """Return distinct, sorted artifact paths to transfer for ``items``.
 
     Only ``related_files[]`` paths under ``{home}/.claude/data/grill/`` are
@@ -314,7 +598,7 @@ def collect_artifact_paths(items: list[dict[str, object]], home: str) -> list[Pa
     seen: set[str] = set()
     for item in items:
         for p in _related_paths(item):
-            kind, _ = _grill_classify(p, home)
+            kind, _ = _grill_classify(p, home, grill_root)
             if kind == "out":
                 continue  # out of scope (project source, dotfiles, etc.)
             if kind == "escape":
@@ -330,7 +614,9 @@ def collect_artifact_paths(items: list[dict[str, object]], home: str) -> list[Pa
     return sorted(out, key=lambda x: str(x))
 
 
-def _grill_classify(path_str: str, home: str) -> tuple[str, str | None]:
+def _grill_classify(
+    path_str: str, home: str, grill_root: str | None = None
+) -> tuple[str, str | None]:
     """Classify a ``related_files`` path against the grill scope.
 
     Returns ``(kind, warning)`` where ``kind`` is one of:
@@ -346,17 +632,17 @@ def _grill_classify(path_str: str, home: str) -> tuple[str, str | None]:
     ``home`` here is the *local* home; ``merged`` is always in local form by
     the time this runs (see ``cmd_sync``), so the prefix check is form-correct.
     """
-    grill_prefix = f"{home.rstrip('/')}/{GRILL_SUBPATH}/"
-    if not path_str.startswith(grill_prefix):
+    root = grill_root_for(home, grill_root)
+    if not path_str.startswith(root + "/"):
         return ("out", None)
     path = Path(path_str)
     if path.is_symlink():
         return ("escape", f"skipping symlinked related_files path: {path_str}")
     resolved = path.resolve()
-    grill_root = Path(home, GRILL_SUBPATH).resolve()
-    if resolved == grill_root:
+    resolved_root = Path(root).resolve()
+    if resolved == resolved_root:
         return ("escape", f"skipping grill-dirself related_files path: {path_str}")
-    if grill_root not in resolved.parents:
+    if resolved_root not in resolved.parents:
         return (
             "escape",
             f"skipping related_files path escaping grill dir: {path_str}",
@@ -388,9 +674,9 @@ def remote_has_rsync(host: str, ssh_timeout: float) -> bool:
     return proc.returncode == 0
 
 
-def _rel_for_home(path: Path, home: str) -> str:
-    """Relative path of ``path`` under ``home`` (for the rsync ``/./`` anchor)."""
-    return str(path.resolve().relative_to(Path(home).resolve()))
+def _rel_for_root(path: Path, root: str) -> str:
+    """Relative path of ``path`` under ``root`` (for the rsync ``/./`` anchor)."""
+    return str(path.resolve().relative_to(Path(root).resolve()))
 
 
 def _rsync_argv(srcs: list[str], dest: str, rsync_io_timeout: float) -> list[str]:
@@ -398,6 +684,7 @@ def _rsync_argv(srcs: list[str], dest: str, rsync_io_timeout: float) -> list[str
     return [
         "rsync",
         "-rptDuR",
+        "--mkpath",
         "-e",
         _RSH,
         "--timeout",
@@ -435,6 +722,8 @@ def push_artifacts(
     *,
     quiet: bool,
     dry_run: bool,
+    local_root: str | None = None,
+    remote_root: str | None = None,
 ) -> tuple[int, int]:
     """Push local ``grill/`` artifacts to ``host``. Returns (attempted, failed).
 
@@ -442,7 +731,9 @@ def push_artifacts(
     user-requested graceful case). Empty set short-circuits with ``(0, 0)``
     and no rsync call. A non-zero rsync is fatal.
     """
-    paths = collect_artifact_paths(items, local_home)
+    lroot = grill_root_for(local_home, local_root)
+    rroot = grill_root_for(remote_home, remote_root)
+    paths = collect_artifact_paths(items, local_home, lroot)
     existing: list[Path] = []
     for p in paths:
         if p.exists():
@@ -452,9 +743,9 @@ def push_artifacts(
     attempted = len(existing)
     if attempted == 0:
         return (0, 0)
-    rels = sorted({_rel_for_home(p, local_home) for p in existing})
-    srcs = [f"{local_home}/./{rel}" for rel in rels]
-    dest = f"{host}:{remote_home}/"
+    rels = sorted({_rel_for_root(p, lroot) for p in existing})
+    srcs = [f"{lroot}/./{rel}" for rel in rels]
+    dest = f"{host}:{rroot}/"
     argv = _rsync_argv(srcs, dest, rsync_io_timeout)
     if dry_run:
         cli_common.qprint("would rsync (push):", quiet=quiet)
@@ -474,6 +765,8 @@ def pull_artifacts(
     *,
     quiet: bool,
     dry_run: bool,
+    local_root: str | None = None,
+    remote_root: str | None = None,
 ) -> tuple[int, int]:
     """Pull ``grill/`` artifacts from ``host`` to local. Returns (attempted, failed).
 
@@ -481,13 +774,15 @@ def pull_artifacts(
     existence pre-filter — a missing remote source surfaces as a non-zero
     rsync and correctly aborts rather than committing a broken reference.
     """
-    paths = collect_artifact_paths(items, local_home)
+    lroot = grill_root_for(local_home, local_root)
+    rroot = grill_root_for(remote_home, remote_root)
+    paths = collect_artifact_paths(items, local_home, lroot)
     attempted = len(paths)
     if attempted == 0:
         return (0, 0)
-    rels = sorted({_rel_for_home(p, local_home) for p in paths})
-    srcs = [f"{host}:{remote_home}/./{rel}" for rel in rels]
-    dest = f"{local_home}/"
+    rels = sorted({_rel_for_root(p, lroot) for p in paths})
+    srcs = [f"{host}:{rroot}/./{rel}" for rel in rels]
+    dest = f"{lroot}/"
     argv = _rsync_argv(srcs, dest, rsync_io_timeout)
     if dry_run:
         cli_common.qprint("would rsync (pull):", quiet=quiet)
@@ -497,7 +792,9 @@ def pull_artifacts(
     return (attempted, 0)
 
 
-def assert_artifact_contract(merged: list[dict[str, object]], local_home: str) -> None:
+def assert_artifact_contract(
+    merged: list[dict[str, object]], local_home: str, grill_root: str | None = None
+) -> None:
     """Guard the path-form contract: merged is in *local* form.
 
     If the merged store references any local-form ``grill/`` path,
@@ -509,20 +806,20 @@ def assert_artifact_contract(merged: list[dict[str, object]], local_home: str) -
     # grill and isn't a symlink/self). Escape paths are excluded by design and
     # warned via warn_nonlocal_related_paths — they must not trip this guard.
     has_in_scope = any(
-        _grill_classify(str(p), local_home)[0] == "include"
+        _grill_classify(str(p), local_home, grill_root)[0] == "include"
         for item in merged
         for p in _related_paths(item)
     )
     if not has_in_scope:
         return
-    assert collect_artifact_paths(merged, local_home), (
+    assert collect_artifact_paths(merged, local_home, grill_root), (
         "artifact contract broken: merged references local-form grill paths "
         f"but collect_artifact_paths returned empty (home={local_home!r})"
     )
 
 
 def warn_nonlocal_related_paths(
-    items: list[dict[str, object]], local_home: str
+    items: list[dict[str, object]], local_home: str, grill_root: str | None = None
 ) -> None:
     """Warn once if a merged ``grill/`` path was excluded by the resolve guard.
 
@@ -530,11 +827,11 @@ def warn_nonlocal_related_paths(
     symlink) or are the directory itself — never for ordinary project-source
     ``related_files`` entries, which are correctly out of scope.
     """
-    grill_prefix = f"{local_home.rstrip('/')}/{GRILL_SUBPATH}/"
+    grill_prefix = grill_root_for(local_home, grill_root) + "/"
     seen_warnings: set[str] = set()
     for item in items:
         for p in _related_paths(item):
-            _, warning = _grill_classify(str(p), local_home)
+            _, warning = _grill_classify(str(p), local_home, grill_root)
             if warning and warning not in seen_warnings:
                 seen_warnings.add(warning)
                 _warn(warning)
@@ -552,26 +849,24 @@ def artifact_preview(
     host: str,
     *,
     quiet: bool,
+    local_root: str | None = None,
+    remote_root: str | None = None,
 ) -> None:
     """Print the would-transfer artifact set (no network I/O)."""
-    collected = collect_artifact_paths(merged, local_home)
+    lroot = grill_root_for(local_home, local_root)
+    rroot = grill_root_for(remote_home, remote_root)
+    collected = collect_artifact_paths(merged, local_home, lroot)
     if not collected:
-        cli_common.qprint(
-            "artifacts: none (no ~/.claude/data/grill/ related_files)", quiet=quiet
-        )
+        cli_common.qprint(f"artifacts: none (no {lroot}/ related_files)", quiet=quiet)
         return
-    rels = sorted({_rel_for_home(p, local_home) for p in collected})
+    rels = sorted({_rel_for_root(p, lroot) for p in collected})
     cli_common.qprint(
-        f"artifacts ({len(collected)} file(s) under ~/.claude/data/grill/):",
+        f"artifacts ({len(collected)} file(s) under {lroot}/):",
         quiet=quiet,
     )
     for rel in rels:
-        cli_common.qprint(
-            f"  push  {local_home}/./{rel} -> {host}:{remote_home}/", quiet=quiet
-        )
-        cli_common.qprint(
-            f"  pull  {host}:{remote_home}/./{rel} -> {local_home}/", quiet=quiet
-        )
+        cli_common.qprint(f"  push  {lroot}/./{rel} -> {host}:{rroot}/", quiet=quiet)
+        cli_common.qprint(f"  pull  {host}:{rroot}/./{rel} -> {lroot}/", quiet=quiet)
 
 
 # ── 3-way merge algorithm ──────────────────────────────────────────────────────
@@ -1151,6 +1446,20 @@ def ssh_export(host: str, remote_script: str, ssh_timeout: float) -> dict[str, o
     return _extract_framed_json(stdout.decode("utf-8", errors="replace"))
 
 
+def ssh_state(host: str, remote_script: str, ssh_timeout: float) -> dict[str, object]:
+    """The remote machine's current migration/layout state (see ``state``)."""
+    payload = _extract_framed_json(
+        ssh_run(host, remote_script, ["state"], ssh_timeout).decode(
+            "utf-8", errors="replace"
+        )
+    )
+    _check_protocol_version(payload)
+    state = payload.get("machine_state")
+    if not isinstance(state, dict):
+        raise SyncFatalError(f"{host} returned no machine state")
+    return cast(dict[str, object], state)
+
+
 def ssh_import(
     host: str,
     remote_script: str,
@@ -1160,9 +1469,11 @@ def ssh_import(
     runs: list[dict[str, object]],
     schema: dict[str, object],
     if_rev: int,
+    expected_remote_state: dict[str, object] | None = None,
 ) -> None:
     payload = {
         "protocol_version": PROTOCOL_VERSION,
+        "expected_remote_state": expected_remote_state,
         "schema_version": schema,
         "items": items,
         "pending_items": pending,
@@ -1283,18 +1594,20 @@ def print_diff(
 
 def cmd_export(args: argparse.Namespace) -> None:
     """``export``: dump this machine's local store+rev as one framed JSON blob."""
-    with local_lock(args.lock_timeout):
+    with migration_guard() as state, local_lock(args.lock_timeout):
         items, items_schema = _read_store_file(dev_status.ITEMS_FILE)
         pending, pending_schema = _read_store_file(dev_status.PENDING_FILE)
         rev = dev_status.load_rev()
+        runs = dev_status.load_runs()
 
     payload = {
         "protocol_version": PROTOCOL_VERSION,
+        "machine_state": state,
         "rev": rev,
         "schema_version": {"items": items_schema, "pending_items": pending_schema},
         "items": items,
         "pending_items": pending,
-        "runs": dev_status.load_runs(),
+        "runs": runs,
     }
     nonce = secrets.token_hex(8)
     print(f"==={_FRAME_MARK}_START:{nonce}===")
@@ -1308,7 +1621,17 @@ def cmd_import(args: argparse.Namespace) -> None:
     payload = _extract_framed_json(raw_stdin)
     _check_protocol_version(payload)
 
-    with local_lock(args.lock_timeout):
+    with migration_guard() as state, local_lock(args.lock_timeout):
+        expected = payload.get("expected_remote_state")
+        if (
+            state["migration"] in _UNSAFE_MIGRATION_STATES
+            or not isinstance(expected, dict)
+            or any(state[k] != expected.get(k) for k in ("layout", "decisions_root"))
+        ):
+            raise SyncFatalError(
+                "refusing import: this machine's migration/layout state changed "
+                f"since export (expected {expected}, now {state})"
+            )
         _, local_items_schema = _read_store_file(dev_status.ITEMS_FILE)
         _, local_pending_schema = _read_store_file(dev_status.PENDING_FILE)
         local_schema = {
@@ -1346,6 +1669,16 @@ def cmd_import(args: argparse.Namespace) -> None:
     cli_common.vprint(
         f"[import] wrote rev {new_rev}", verbose=getattr(args, "verbose", False)
     )
+
+
+def cmd_state(args: argparse.Namespace) -> None:
+    """``state``: print this machine's migration/layout state as framed JSON."""
+    with migration_guard() as state:
+        payload = {"protocol_version": PROTOCOL_VERSION, "machine_state": state}
+    nonce = secrets.token_hex(8)
+    print(f"==={_FRAME_MARK}_START:{nonce}===")
+    print(json.dumps(payload))
+    print(f"==={_FRAME_MARK}_END:{nonce}===")
 
 
 def cmd_status(args: argparse.Namespace) -> None:
@@ -1411,7 +1744,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
         else args.ssh_timeout
     )
 
-    with local_lock(args.lock_timeout):
+    with migration_guard() as local_state, local_lock(args.lock_timeout):
         local_items_raw, local_items_schema = _read_store_file(dev_status.ITEMS_FILE)
         local_pending_raw, local_pending_schema = _read_store_file(
             dev_status.PENDING_FILE
@@ -1426,6 +1759,9 @@ def cmd_sync(args: argparse.Namespace) -> None:
         attempt = 0
         result: SyncComputation | None = None
         remote_payload: dict[str, object] | None = None
+        remote_state: dict[str, object] = {}
+        local_root = local_state["decisions_root"]
+        remote_root = ""
         push_count = 0
         pull_count = 0
         while True:
@@ -1435,6 +1771,13 @@ def cmd_sync(args: argparse.Namespace) -> None:
                     args.host, args.remote_script, args.ssh_timeout
                 )
                 _check_protocol_version(remote_payload)
+                refuse_unsafe_states(
+                    local_state, remote_payload.get("machine_state"), args.host
+                )
+                remote_state = cast(dict[str, object], remote_payload["machine_state"])
+                remote_root = str(remote_state.get("decisions_root") or "")
+                inbound_roots = (remote_root, local_root) if remote_root else None
+                outbound_roots = (local_root, remote_root) if remote_root else None
                 remote_schema = cast(
                     dict[str, object], remote_payload["schema_version"]
                 )
@@ -1444,11 +1787,13 @@ def cmd_sync(args: argparse.Namespace) -> None:
                     cast(list[dict[str, object]], remote_payload["items"]),
                     remote_home,
                     local_home,
+                    inbound_roots,
                 )
                 remote_pending = rewrite_paths_list(
                     cast(list[dict[str, object]], remote_payload["pending_items"]),
                     remote_home,
                     local_home,
+                    inbound_roots,
                 )
 
                 result = compute_sync(
@@ -1465,6 +1810,12 @@ def cmd_sync(args: argparse.Namespace) -> None:
                 )
 
                 if args.dry_run:
+                    cli_common.qprint(
+                        f"machine state: this machine {local_state['layout']}/"
+                        f"{local_state['migration']}, {args.host} "
+                        f"{remote_state.get('layout')}/{remote_state.get('migration')}",
+                        quiet=getattr(args, "quiet", False),
+                    )
                     print_diff(
                         result,
                         local_items_raw,
@@ -1483,19 +1834,21 @@ def cmd_sync(args: argparse.Namespace) -> None:
                             remote_home,
                             args.host,
                             quiet=getattr(args, "quiet", False),
+                            local_root=local_root,
+                            remote_root=remote_root or None,
                         )
                     return
 
                 # Artifact path-form contract (regression guard) + escape warning.
-                assert_artifact_contract(result.merged_items, local_home)
-                warn_nonlocal_related_paths(result.merged_items, local_home)
+                assert_artifact_contract(result.merged_items, local_home, local_root)
+                warn_nonlocal_related_paths(result.merged_items, local_home, local_root)
 
                 # Artifact transfer is decoupled from the JSON-dirty gate: it runs
                 # whenever there are collectable grill paths and --no-artifacts is
                 # unset. Push FIRST — if it fails, abort before ssh_import so the
                 # remote metadata never references an absent file.
                 if not args.no_artifacts and collect_artifact_paths(
-                    result.merged_items, local_home
+                    result.merged_items, local_home, local_root
                 ):
                     if shutil.which("rsync") is None or not remote_has_rsync(
                         args.host, args.ssh_timeout
@@ -1514,6 +1867,8 @@ def cmd_sync(args: argparse.Namespace) -> None:
                         rsync_io_timeout,
                         quiet=getattr(args, "quiet", False),
                         dry_run=False,
+                        local_root=local_root,
+                        remote_root=remote_root or None,
                     )
                     push_count = push_attempted
 
@@ -1523,10 +1878,10 @@ def cmd_sync(args: argparse.Namespace) -> None:
                     or result.needs_remote_runs_write
                 ):
                     outbound_items = rewrite_paths_list(
-                        result.merged_items, local_home, remote_home
+                        result.merged_items, local_home, remote_home, outbound_roots
                     )
                     outbound_pending = rewrite_paths_list(
-                        result.merged_pending, local_home, remote_home
+                        result.merged_pending, local_home, remote_home, outbound_roots
                     )
                     ssh_import(
                         args.host,
@@ -1537,12 +1892,16 @@ def cmd_sync(args: argparse.Namespace) -> None:
                         result.merged_runs,
                         remote_schema,
                         cast(int, remote_payload["rev"]),
+                        {
+                            "layout": remote_state.get("layout"),
+                            "decisions_root": remote_state.get("decisions_root"),
+                        },
                     )
 
                 # Pull (remote -> local) so remote-created/edited files exist
                 # before the local metadata commit.
                 if not args.no_artifacts and collect_artifact_paths(
-                    result.merged_items, local_home
+                    result.merged_items, local_home, local_root
                 ):
                     pull_attempted, _ = pull_artifacts(
                         args.host,
@@ -1553,6 +1912,8 @@ def cmd_sync(args: argparse.Namespace) -> None:
                         rsync_io_timeout,
                         quiet=getattr(args, "quiet", False),
                         dry_run=False,
+                        local_root=local_root,
+                        remote_root=remote_root or None,
                     )
                     pull_count = pull_attempted
 
@@ -1571,6 +1932,20 @@ def cmd_sync(args: argparse.Namespace) -> None:
                 continue
 
         assert result is not None and remote_payload is not None
+        # The remote held its migration lock only inside each SSH call, so
+        # re-read its state before committing locally: a migration that ran
+        # since export (during artifact transfer, or with no import needed)
+        # must not be committed over. A migration starting after this read
+        # and before the commit below is an accepted residual window.
+        final_remote = ssh_state(args.host, args.remote_script, args.ssh_timeout)
+        if final_remote.get("migration") in _UNSAFE_MIGRATION_STATES or any(
+            final_remote.get(k) != remote_state.get(k)
+            for k in ("layout", "decisions_root")
+        ):
+            raise SyncFatalError(
+                f"{args.host}'s migration/layout state changed during the sync "
+                f"(was {remote_state}, now {final_remote}) -- not committing locally"
+            )
         new_rev = local_commit(
             local_schema,
             result,
@@ -1602,6 +1977,8 @@ def cmd_sync(args: argparse.Namespace) -> None:
                 remote_home,
                 args.host,
                 quiet=getattr(args, "quiet", False),
+                local_root=local_root,
+                remote_root=remote_root or None,
             )
 
 
@@ -1687,6 +2064,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_import.add_argument("--if-rev", type=int, required=True, metavar="<N>")
     p_import.set_defaults(func=cmd_import)
+
+    p_state = sub.add_parser(
+        "state",
+        help="internal: print this machine's migration/layout state as JSON",
+        parents=[verbosity_parent],
+    )
+    p_state.set_defaults(func=cmd_state)
 
     return parser
 

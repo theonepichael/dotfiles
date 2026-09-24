@@ -54,6 +54,12 @@ if not hasattr(dev_status, "_content_hash"):
     dev_status._content_hash = sync._content_hash
 
 
+def _expected_state():
+    """The expected_remote_state an import payload carries: the sandbox's own."""
+    state = sync.machine_state()
+    return {"layout": state["layout"], "decisions_root": state["decisions_root"]}
+
+
 def make_item(
     slug,
     status="open",
@@ -118,6 +124,9 @@ class SyncTestCase(unittest.TestCase):
         self._patches = [
             patch.object(sync, "SYNC_BASE_FILE", self.sync_base_file),
             patch.object(sync, "CONFLICT_LOG_FILE", self.conflict_log_file),
+            # sync re-reads the remote's state over SSH before committing; in
+            # tests the "remote" shares this sandbox, so report its own state.
+            patch.object(sync, "ssh_state", lambda *a, **k: sync.machine_state()),
         ]
         for p in self._patches:
             p.start()
@@ -770,7 +779,11 @@ class ExportImportTests(SyncTestCase):
         self.assertEqual(exported["rev"], 0)
 
         # Modify the exported payload and import it back with a matching --if-rev.
+        # The desktop echoes the state it saw at export back to the import.
         exported["items"][0]["status"] = "done"
+        exported["expected_remote_state"] = {
+            k: exported["machine_state"][k] for k in ("layout", "decisions_root")
+        }
         nonce = "deadbeef"
         framed = (
             f"==={sync._FRAME_MARK}_START:{nonce}===\n"
@@ -790,6 +803,7 @@ class ExportImportTests(SyncTestCase):
         dev_status.save_pending([])
         payload = {
             "protocol_version": sync.PROTOCOL_VERSION,
+            "expected_remote_state": _expected_state(),
             "schema_version": {"items": 2, "pending_items": 1},
             "items": [make_item("foo-bar", status="done")],
             "pending_items": [],
@@ -864,6 +878,7 @@ class RunsSyncTests(SyncTestCase):
         self._seed_run(run_id="local-one")
         payload = {
             "protocol_version": sync.PROTOCOL_VERSION,
+            "expected_remote_state": _expected_state(),
             "schema_version": {"items": 2, "pending_items": 1},
             "items": [],
             "pending_items": [],
@@ -896,6 +911,7 @@ class RunsSyncTests(SyncTestCase):
         self._seed_run(run_id="local-one")
         payload = {
             "protocol_version": sync.PROTOCOL_VERSION,
+            "expected_remote_state": _expected_state(),
             "schema_version": {"items": 2, "pending_items": 1},
             "items": [],
             "pending_items": [],
@@ -1132,7 +1148,8 @@ class ArtifactTransferTests(unittest.TestCase):
         argv = run.call_args[0][0]
         self.assertIn("-rptDuR", argv)  # -u is folded into the combined flag
         self.assertTrue(any(a.startswith("fedora:") for a in argv))
-        self.assertIn(str(self.home) + "/", argv)
+        self.assertIn(str(self.home) + "/.claude/data/grill/", argv)
+        self.assertIn("--mkpath", argv)
 
     def test_dry_run_no_rsync(self):
         with patch("subprocess.run") as run:
@@ -1234,12 +1251,30 @@ class ArtifactTransferTests(unittest.TestCase):
 
 
 class ArtifactSyncIntegrationTests(SyncTestCase):
+    @staticmethod
+    def _state(home):
+        return {
+            "layout": "legacy",
+            "migration": "idle",
+            "decisions_root": f"{home}/.claude/data/grill",
+            "detail": "",
+        }
+
     def _home_paths(self):
         local_home = self.data_dir.parent / "localhome"
         remote_home = self.data_dir.parent / "remotehome"
         grill = local_home / ".claude" / "data" / "grill"
         grill.mkdir(parents=True)
         (grill / "spec.md").write_text("spec")
+        # These tests use stand-in homes rather than the sandbox HOME, so the
+        # state each side reports must name the stand-in grill roots.
+        self._remote_state = self._state(remote_home)
+        for p in (
+            patch.object(sync, "machine_state", lambda: self._state(local_home)),
+            patch.object(sync, "ssh_state", lambda *a, **k: self._remote_state),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
         return str(local_home), str(remote_home), str(grill / "spec.md")
 
     def _args(self, **kw):
@@ -1265,6 +1300,8 @@ class ArtifactSyncIntegrationTests(SyncTestCase):
     def _payload(self, items, pending=None, rev=0):
         return {
             "protocol_version": sync.PROTOCOL_VERSION,
+            "machine_state": getattr(self, "_remote_state", None)
+            or sync.machine_state(),
             "schema_version": {"items": 2, "pending_items": 1},
             "items": items,
             "pending_items": pending or [],
@@ -1442,7 +1479,7 @@ class ArtifactPreviewTests(unittest.TestCase):
             sync.artifact_preview(merged, str(self.home), "/R", "fedora", quiet=False)
         out = buf.getvalue()
         self.assertIn("artifacts (1 file", out)
-        self.assertIn(str(self.home) + "/./.claude/data/grill/spec.md", out)
+        self.assertIn(str(self.home) + "/.claude/data/grill/./spec.md", out)
 
     def test_preview_none_when_no_grill_paths(self):
         import io

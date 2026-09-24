@@ -67,27 +67,38 @@ dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending st
   - `export` — internal: dump local store+rev as JSON
   - `import --if-rev <N>` — internal: write a merged store from stdin
     - `--if-rev` (required)
+  - `state` — internal: print this machine's migration/layout state as JSON
 - Environment: `LOGNAME`, `USER`
 - Explicit exit codes: `1`, `2`
 - Depends on: `dotfiles_cli_common.py`
 - Exceptions:
   - `class SyncFatalError(Exception)` — A non-retryable sync failure.
   - `class SyncRetryableError(Exception)` — A retryable sync condition (stale rev, lock timeout, SSH hiccup).
+  - `class JournalCorruptError(Exception)` — A migration journal has a malformed line before its last one.
 - Public classes:
   - `class SyncComputation`
 - Public functions:
+  - `toolkit_scripts_dir(candidates: Sequence[Path] | None = None) -> Path | None` — The toolkit checkout directory to import ``dev_status`` and friends from.
+  - `read_journal(path: Path) -> list[dict[str, object]] | None` — Valid records of one migration journal, or None if the file is absent.
+  - `installer_state_dir() -> Path` — Where the migrator keeps its journals (it ignores XDG_STATE_HOME).
+  - `migration_status(installer_state: Path) -> tuple[str, str]` — Classify this machine's toolkit-home migrations as ``(state, detail)``.
+  - `migration_lock_held_exclusively() -> bool | None` — Whether a migration holds this machine's migration lock right now.
+  - `machine_state() -> dict[str, str]` — This machine's layout, migration state and resolved grill root.
+  - `refuse_unsafe_states(local: dict[str, str], remote: object, host: str) -> None` — Raise SyncFatalError unless both machines are safe to sync together.
+  - `migration_guard() -> Iterator[dict[str, str]]` — Hold the migration lock shared and yield this machine's state under it.
   - `local_lock(timeout: float) -> Iterator[None]` — Hold this machine's exclusive backlog lock, polling with a deadline.
   - `load_sync_base(local_schema: dict[str, object]) -> tuple[list[dict[str, object]] | None, list[dict[str, object]] | None]` — Load ``_sync-base.json``, per-store, treating a schema-stale store as absent.
   - `save_sync_base(local_schema: dict[str, object], items: list[dict[str, object]], pending: list[dict[str, object]]) -> None` — Atomically persist the post-sync state as the new base snapshot.
-  - `rewrite_related_files_paths(item: dict[str, object], from_home: str, to_home: str) -> dict[str, object]` — Rewrite a leading ``from_home`` prefix on ``related_files.path`` entries.
-  - `rewrite_paths_list(items: list[dict[str, object]], from_home: str, to_home: str) -> list[dict[str, object]]` — Apply :func:`rewrite_related_files_paths` across a whole store.
-  - `collect_artifact_paths(items: list[dict[str, object]], home: str) -> list[Path]` — Return distinct, sorted artifact paths to transfer for ``items``.
+  - `rewrite_related_files_paths(item: dict[str, object], from_home: str, to_home: str, root_map: tuple[str, str] | None = None) -> dict[str, object]` — Rewrite a leading ``from_home`` prefix on ``related_files.path`` entries.
+  - `rewrite_paths_list(items: list[dict[str, object]], from_home: str, to_home: str, root_map: tuple[str, str] | None = None) -> list[dict[str, object]]` — Apply :func:`rewrite_related_files_paths` across a whole store.
+  - `grill_root_for(home: str, grill_root: str | None = None) -> str` — The grill directory to use: ``grill_root`` when given, else the legacy ``{home}/.claude/data/grill``.
+  - `collect_artifact_paths(items: list[dict[str, object]], home: str, grill_root: str | None = None) -> list[Path]` — Return distinct, sorted artifact paths to transfer for ``items``.
   - `remote_has_rsync(host: str, ssh_timeout: float) -> bool` — Preflight: is ``rsync`` available on the remote over SSH?
-  - `push_artifacts(host: str, items: list[dict[str, object]], local_home: str, remote_home: str, ssh_timeout: float, rsync_io_timeout: float, *, quiet: bool, dry_run: bool) -> tuple[int, int]` — Push local ``grill/`` artifacts to ``host``.
-  - `pull_artifacts(host: str, items: list[dict[str, object]], local_home: str, remote_home: str, ssh_timeout: float, rsync_io_timeout: float, *, quiet: bool, dry_run: bool) -> tuple[int, int]` — Pull ``grill/`` artifacts from ``host`` to local.
-  - `assert_artifact_contract(merged: list[dict[str, object]], local_home: str) -> None` — Guard the path-form contract: merged is in *local* form.
-  - `warn_nonlocal_related_paths(items: list[dict[str, object]], local_home: str) -> None` — Warn once if a merged ``grill/`` path was excluded by the resolve guard.
-  - `artifact_preview(merged: list[dict[str, object]], local_home: str, remote_home: str, host: str, *, quiet: bool) -> None` — Print the would-transfer artifact set (no network I/O).
+  - `push_artifacts(host: str, items: list[dict[str, object]], local_home: str, remote_home: str, ssh_timeout: float, rsync_io_timeout: float, *, quiet: bool, dry_run: bool, local_root: str | None = None, remote_root: str | None = None) -> tuple[int, int]` — Push local ``grill/`` artifacts to ``host``.
+  - `pull_artifacts(host: str, items: list[dict[str, object]], local_home: str, remote_home: str, ssh_timeout: float, rsync_io_timeout: float, *, quiet: bool, dry_run: bool, local_root: str | None = None, remote_root: str | None = None) -> tuple[int, int]` — Pull ``grill/`` artifacts from ``host`` to local.
+  - `assert_artifact_contract(merged: list[dict[str, object]], local_home: str, grill_root: str | None = None) -> None` — Guard the path-form contract: merged is in *local* form.
+  - `warn_nonlocal_related_paths(items: list[dict[str, object]], local_home: str, grill_root: str | None = None) -> None` — Warn once if a merged ``grill/`` path was excluded by the resolve guard.
+  - `artifact_preview(merged: list[dict[str, object]], local_home: str, remote_home: str, host: str, *, quiet: bool, local_root: str | None = None, remote_root: str | None = None) -> None` — Print the would-transfer artifact set (no network I/O).
   - `merge_item(item_id: str, base_item: dict[str, object] | None, local_item: dict[str, object] | None, remote_item: dict[str, object] | None, store: str) -> tuple[dict[str, object] | None, dict[str, object] | None]` — Run the per-item 3-way merge (cases 0-6 of the plan).
   - `merge_store(base_list: list[dict[str, object]] | None, local_list: list[dict[str, object]], remote_list: list[dict[str, object]], store: str) -> tuple[list[dict[str, object]], list[dict[str, object]]]` — Merge one store (items.json or pending_items.json) across all ids.
   - `merge_runs(local_runs: list[dict[str, object]], remote_runs: list[dict[str, object]]) -> list[dict[str, object]]` — Union two run-evidence lists by ``run_id`` — the runs.jsonl merge rule.
@@ -95,10 +106,11 @@ dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending st
   - `local_commit(local_schema: dict[str, object], result: SyncComputation, local_items_raw: list[dict[str, object]], local_pending_raw: list[dict[str, object]], base_items: list[dict[str, object]] | None, base_pending: list[dict[str, object]] | None, host: str | None = None) -> int | None` — Perform the three independently-conditioned writes, in crash-safe order.
   - `ssh_run(host: str, remote_script: str, remote_args: list[str], ssh_timeout: float, input_bytes: bytes | None = None) -> bytes` — Run ``remote_script`` on ``host`` over SSH, bounded against a hung network.
   - `ssh_export(host: str, remote_script: str, ssh_timeout: float) -> dict[str, object]`
-  - `ssh_import(host: str, remote_script: str, ssh_timeout: float, items: list[dict[str, object]], pending: list[dict[str, object]], runs: list[dict[str, object]], schema: dict[str, object], if_rev: int) -> None`
+  - `ssh_state(host: str, remote_script: str, ssh_timeout: float) -> dict[str, object]` — The remote machine's current migration/layout state (see ``state``).
+  - `ssh_import(host: str, remote_script: str, ssh_timeout: float, items: list[dict[str, object]], pending: list[dict[str, object]], runs: list[dict[str, object]], schema: dict[str, object], if_rev: int, expected_remote_state: dict[str, object] | None = None) -> None`
   - `print_diff(result: SyncComputation, local_items: list[dict[str, object]], local_pending: list[dict[str, object]], remote_items: list[dict[str, object]], remote_pending: list[dict[str, object]], local_rev: int, remote_rev: int, header: str, quiet: bool = False) -> None`
   - `build_parser() -> argparse.ArgumentParser`
-- Subcommand handlers: `cmd_export`, `cmd_import`, `cmd_status`, `cmd_sync`
+- Subcommand handlers: `cmd_export`, `cmd_import`, `cmd_state`, `cmd_status`, `cmd_sync`
 - Tested by: `claude/scripts/test_dev_status_sync.py`
 
 ### `claude/scripts/dotfiles_cli_common.py`

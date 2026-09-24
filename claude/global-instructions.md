@@ -581,10 +581,18 @@ reconciled with another machine's store, use
 preview, or `status` to check divergence without merging) — a desktop-
 initiated bidirectional merge over SSH. This is a manual, occasional
 operation, not part of the normal add/update/done loop above. `sync` also
-transfers the `~/.claude/data/grill/` artifact files referenced by items'
-`related_files` (specs, grill plans, critique notes) via `rsync`, so those
-references don't dangle on the other machine; pass `--no-artifacts` to skip,
-and `--rsync-io-timeout` to bound each rsync call.
+transfers the grill artifact files referenced by items' `related_files`
+(specs, grill plans, critique notes, under each machine's own grill
+directory, `~/.claude/data/grill/` on the legacy layout) via `rsync`, so
+those references don't dangle on the other machine; pass `--no-artifacts` to
+skip, and `--rsync-io-timeout` to bound each rsync call.
+
+`sync` refuses while either machine is mid-way through a toolkit-home
+migration, or when the two machines are on different toolkit layouts. It
+also refuses when the other machine runs an older copy of the script
+("redeploy dev_status_sync.py there"): update that machine's dotfiles
+checkout and rerun. Don't work around these refusals. A committed migration
+that is only awaiting finalize is allowed to sync.
 
 ### Git: personal-project bundling preference
 
