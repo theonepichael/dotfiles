@@ -468,5 +468,89 @@ class FinalRemoteStateTests(base.SyncTestCase):
         self.assertEqual(imported, [])
 
 
+class StatusPreviewTests(base.SyncTestCase):
+    def _args(self):
+        return base.argparse.Namespace(
+            lock_timeout=5.0,
+            host="fedora",
+            remote_script="x",
+            ssh_timeout=20.0,
+            max_retries=1,
+            user_map={"yanil": str(self.local_home), "theon": "/R"},
+            local_user="yanil",
+            remote_user="theon",
+            quiet=False,
+            verbose=False,
+        )
+
+    def setUp(self):
+        super().setUp()
+        self.local_home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.local_home, ignore_errors=True)
+        self.local_grill = self.local_home / ".agent-toolkit" / "data" / "grill"
+        self.local_grill.mkdir(parents=True)
+        self.spec = self.local_grill / "foo-plan.md"
+        self.spec.write_text("spec")
+
+    def test_status_previews_artifacts_under_toolkit_home_decisions_root(self):
+        local_grill = str(self.local_grill)
+        remote_grill = "/R/.agent-toolkit/data/grill"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        dev_status.save_items(
+            [make_item("foo", related_files=[{"path": str(self.spec)}])]
+        )
+        local_state = {
+            "layout": "toolkit-home",
+            "migration": "idle",
+            "detail": "idle",
+            "decisions_root": local_grill,
+        }
+        remote_state = {
+            "layout": "toolkit-home",
+            "migration": "idle",
+            "detail": "idle",
+            "decisions_root": remote_grill,
+        }
+        payload = {
+            "protocol_version": sync.PROTOCOL_VERSION,
+            "machine_state": remote_state,
+            "schema_version": {"items": 2, "pending_items": 1},
+            "items": [],
+            "pending_items": [],
+            "rev": 0,
+        }
+        buf = io.StringIO()
+        with (
+            patch.object(sync, "machine_state", lambda: local_state),
+            patch.object(sync, "_LAYOUT_AT_IMPORT", "toolkit-home"),
+            patch.object(sync, "ssh_export", lambda *a, **k: payload),
+            patch("sys.stdout", buf),
+        ):
+            sync.cmd_status(self._args())
+        out = buf.getvalue()
+        self.assertIn(f"artifacts (1 file(s) under {local_grill}/):", out)
+        self.assertIn(
+            f"push  {local_grill}/./foo-plan.md -> fedora:{remote_grill}/", out
+        )
+        self.assertNotIn("artifacts: none", out)
+
+    def test_status_refuses_when_remote_mid_migration(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        dev_status.save_items([make_item("foo")])
+        payload = {
+            "protocol_version": sync.PROTOCOL_VERSION,
+            "machine_state": {**sync.machine_state(), "migration": "in-flight"},
+            "schema_version": {"items": 2, "pending_items": 1},
+            "items": [],
+            "pending_items": [],
+            "rev": 0,
+        }
+        with (
+            patch.object(sync, "ssh_export", lambda *a, **k: payload),
+            self.assertRaisesRegex(sync.SyncFatalError, "mid-migration"),
+        ):
+            sync.cmd_status(self._args())
+
+
 if __name__ == "__main__":
     unittest.main()

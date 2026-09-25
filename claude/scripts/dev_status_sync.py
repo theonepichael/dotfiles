@@ -1685,55 +1685,74 @@ def cmd_state(args: argparse.Namespace) -> None:
 
 def cmd_status(args: argparse.Namespace) -> None:
     """``status``: report divergence (revs, counts, per-side ids) without merging."""
-    local_items_raw, local_items_schema = _read_store_file(dev_status.ITEMS_FILE)
-    local_pending_raw, local_pending_schema = _read_store_file(dev_status.PENDING_FILE)
-    local_rev = dev_status.load_rev()
-    local_schema = {"items": local_items_schema, "pending_items": local_pending_schema}
+    with migration_guard() as local_state:
+        local_items_raw, local_items_schema = _read_store_file(dev_status.ITEMS_FILE)
+        local_pending_raw, local_pending_schema = _read_store_file(
+            dev_status.PENDING_FILE
+        )
+        local_rev = dev_status.load_rev()
+        local_schema = {
+            "items": local_items_schema,
+            "pending_items": local_pending_schema,
+        }
 
-    remote_payload = ssh_export(args.host, args.remote_script, args.ssh_timeout)
-    _check_protocol_version(remote_payload)
-    remote_schema = cast(dict[str, object], remote_payload["schema_version"])
-    _check_schema_versions(local_schema, remote_schema)
+        remote_payload = ssh_export(args.host, args.remote_script, args.ssh_timeout)
+        _check_protocol_version(remote_payload)
+        refuse_unsafe_states(
+            local_state, remote_payload.get("machine_state"), args.host
+        )
+        remote_state = cast(dict[str, object], remote_payload["machine_state"])
+        local_root = local_state["decisions_root"]
+        remote_root = str(remote_state.get("decisions_root") or "")
+        inbound_roots = (remote_root, local_root) if remote_root else None
+        remote_schema = cast(dict[str, object], remote_payload["schema_version"])
+        _check_schema_versions(local_schema, remote_schema)
 
-    local_home = args.user_map[args.local_user]
-    remote_home = args.user_map[args.remote_user]
-    remote_items = rewrite_paths_list(
-        cast(list[dict[str, object]], remote_payload["items"]), remote_home, local_home
-    )
-    remote_pending = rewrite_paths_list(
-        cast(list[dict[str, object]], remote_payload["pending_items"]),
-        remote_home,
-        local_home,
-    )
+        local_home = args.user_map[args.local_user]
+        remote_home = args.user_map[args.remote_user]
+        remote_items = rewrite_paths_list(
+            cast(list[dict[str, object]], remote_payload["items"]),
+            remote_home,
+            local_home,
+            inbound_roots,
+        )
+        remote_pending = rewrite_paths_list(
+            cast(list[dict[str, object]], remote_payload["pending_items"]),
+            remote_home,
+            local_home,
+            inbound_roots,
+        )
 
-    base_items, base_pending = load_sync_base(local_schema)
-    result = compute_sync(
-        base_items,
-        base_pending,
-        local_items_raw,
-        local_pending_raw,
-        remote_items,
-        remote_pending,
-    )
-    print_diff(
-        result,
-        local_items_raw,
-        local_pending_raw,
-        remote_items,
-        remote_pending,
-        local_rev,
-        cast(int, remote_payload["rev"]),
-        "status (report only, no writes)",
-        quiet=getattr(args, "quiet", False),
-    )
-    # Preview only — status performs no network writes beyond the export above.
-    artifact_preview(
-        result.merged_items,
-        local_home,
-        remote_home,
-        args.host,
-        quiet=getattr(args, "quiet", False),
-    )
+        base_items, base_pending = load_sync_base(local_schema)
+        result = compute_sync(
+            base_items,
+            base_pending,
+            local_items_raw,
+            local_pending_raw,
+            remote_items,
+            remote_pending,
+        )
+        print_diff(
+            result,
+            local_items_raw,
+            local_pending_raw,
+            remote_items,
+            remote_pending,
+            local_rev,
+            cast(int, remote_payload["rev"]),
+            "status (report only, no writes)",
+            quiet=getattr(args, "quiet", False),
+        )
+        # Preview only — status performs no network writes beyond the export above.
+        artifact_preview(
+            result.merged_items,
+            local_home,
+            remote_home,
+            args.host,
+            quiet=getattr(args, "quiet", False),
+            local_root=local_root,
+            remote_root=remote_root or None,
+        )
 
 
 def cmd_sync(args: argparse.Namespace) -> None:
