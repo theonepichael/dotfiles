@@ -3,8 +3,7 @@
 Post meta-agent-toolkit-migration-cutover, this directory holds two kinds
 of file, not the full shared harness-tooling set it once did: this
 machine's personal-only scripts (`dev_status_sync.py`,
-`watchcommit_activity.py`,
-`opencode_skills_sync_activity.py`, `gen_core_instructions.py`, never
+`watchcommit_activity.py`, `gen_core_instructions.py`, never
 moving to agent-toolkit), and `install.py`'s own local dependencies
 (`dotfiles_cli_common.py`, `settings_seed_drift_check.py`, `gen_interfaces.py`) —
 kept here because `install.py` imports them from its own repo checkout,

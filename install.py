@@ -145,8 +145,8 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--pr
               --rollback concern (reverses every run recorded in the
               history file, not just the most recent one) or manual cleanup.
   --profile   personal (default) or work. Controls machine-level concerns:
-              excludes every personal-only managed service (watchcommit,
-              opencode-skills-sync), excludes personal API-key setup, seeds
+              excludes every personal-only managed service (watchcommit),
+              excludes personal API-key setup, seeds
               tightened settings where a profile-specific variant exists
               (settings.work.json), and excludes opencode entirely — it is
               never installed on a work machine, regardless of --harness.
@@ -2385,7 +2385,6 @@ class ManagedService:
 
 MANAGED_SERVICES = [
     ManagedService(name="watchcommit", unit="watchcommit.service"),
-    ManagedService(name="opencode-skills-sync", unit="opencode-skills-sync.service"),
 ]
 
 

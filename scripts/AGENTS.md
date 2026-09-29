@@ -15,7 +15,6 @@ installed into harness config directories.
   dotfiles second, guaranteeing that dotfiles' composed `global-instructions.md`
   always asserts the personal overlay across all harnesses. Direct unwrapped calls to
   `agent-toolkit/install.py` are blocked.
-- `opencode_skills_sync.py` manages skill configuration sync for OpenCode.
 
 ## Local Conventions
 

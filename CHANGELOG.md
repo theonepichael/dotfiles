@@ -3,6 +3,20 @@
 This repo's internal tooling changes are logged here. Breaking changes to
 harness CLIs, flags, or behavior get an entry going forward.
 
+## 2026-09-29
+
+### Removed
+
+- **`opencode-skills-sync`** — the daemon, its systemd unit, the
+  `opencode_skills_sync_activity.py` session-start reporter, the
+  `oc-pause`/`oc-resume`/`oc-status` aliases, and the pre-commit skip for
+  the `opencode-skills-live` branch. Every live opencode skill is a curated
+  symlink into this repo, which the daemon skips by design, so it was
+  backing up nothing. `MANAGED_SERVICES` is back to `watchcommit` only, so
+  `--depart`/`--rollback --wipe` no longer disable this unit — disable it
+  by hand on any machine that still runs it
+  (`systemctl --user disable --now opencode-skills-sync`).
+
 ## 2026-09-10
 
 ### Added

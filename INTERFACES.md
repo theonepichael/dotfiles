@@ -37,7 +37,6 @@ House style for these interfaces is in `STYLE.md`.
 | [`dotfiles_cli_common.py`](#claudescriptsdotfilesclicommonpy) | Shared CLI helpers used across dotfiles scripts. |
 | [`gen_core_instructions.py`](#claudescriptsgencoreinstructionspy) | gen_core_instructions.py — compose CORE_INSTRUCTIONS.md + personal-overlay.md into claude/global-instructions.md. |
 | [`gen_interfaces.py`](#claudescriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
-| [`opencode_skills_sync_activity.py`](#claudescriptsopencodeskillssyncactivitypy) | Print opencode-skills-sync's pause state and last known snapshot commit, so a session can tell whether the daemon is running and how current its mirror is -- mirrors watchcommit_activity.py's SessionStart banner role. |
 | [`settings_seed_drift_check.py`](#claudescriptssettingsseeddriftcheckpy) | CLI: detect and repair drift between the (under WSL) Windows-side VS Code ``settings.json``/``keybindings.json`` and their seeds in the dotfiles repo. |
 | [`sync_from_agent_toolkit.py`](#claudescriptssyncfromagenttoolkitpy) | sync_from_agent_toolkit.py — keep claude/CORE_INSTRUCTIONS.md current with agent-toolkit. |
 | [`watchcommit_activity.py`](#claudescriptswatchcommitactivitypy) | Print watchcommit's last known background pull/commit/push, so a session (or wc-status) can tell daemon-driven git state changes from manual ones instead of only seeing a clean/up-to-date working tree. |
@@ -235,17 +234,6 @@ gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
 - Subcommand handlers: `cmd_function_name`
 - Tested by: `claude/scripts/test_gen_interfaces.py`
-
-### `claude/scripts/opencode_skills_sync_activity.py`
-
-Print opencode-skills-sync's pause state and last known snapshot commit, so a session can tell whether the daemon is running and how current its mirror is -- mirrors watchcommit_activity.py's SessionStart banner role.
-
-- Installed at: `~/.claude/scripts/opencode_skills_sync_activity.py` (not on work)
-- Entrypoint: executable, `#!/usr/bin/env python3`
-- CLI: none (library module).
-- Public functions:
-  - `report(dest_worktree: Path) -> str`
-- Tested by: `claude/scripts/test_opencode_skills_sync_activity.py`
 
 ### `claude/scripts/settings_seed_drift_check.py`
 

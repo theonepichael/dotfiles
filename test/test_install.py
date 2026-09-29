@@ -1494,7 +1494,7 @@ def _disable_systemctl(monkeypatch):
     checks ``unit_path.is_symlink()`` before ever calling ``have()``, so
     with no symlink this never fires and never touches ``run_command``.
     Tests that *do* run a real install first (``links.toml`` records real
-    watchcommit.service/opencode-skills-sync.service symlinks for
+    watchcommit.service symlinks for
     personal+linux, and ``offline_install`` only stubs the install-time
     ``enable_managed_services`` call, not the symlinks themselves) must use
     ``_watchcommit_available`` instead — forcing
@@ -1625,25 +1625,6 @@ def test_wipe_disables_watchcommit_service(home, links, offline_install, monkeyp
 
     assert install.do_rollback(make_ctx(home, wipe=True)) == 0
     assert ["systemctl", "--user", "disable", "--now", "watchcommit.service"] in calls
-
-
-def test_wipe_disables_opencode_skills_sync_service(
-    home, links, offline_install, monkeypatch
-):
-    install.run_install(make_ctx(home, harnesses=("claude",)), links)
-    unit = home / ".config" / "systemd" / "user" / "opencode-skills-sync.service"
-    assert unit.is_symlink()
-
-    calls = _watchcommit_available(monkeypatch)
-
-    assert install.do_rollback(make_ctx(home, wipe=True)) == 0
-    assert [
-        "systemctl",
-        "--user",
-        "disable",
-        "--now",
-        "opencode-skills-sync.service",
-    ] in calls
 
 
 def test_wipe_dry_run_previews_watchcommit_disable(

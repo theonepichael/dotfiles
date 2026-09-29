@@ -566,17 +566,15 @@ cat /tmp/depart-real.out
 # finishes with those services unresolved — exit 1, not 0. That's the
 # correct, specified behavior (systemd --user unavailable marks
 # service/linger unresolved, never treated as already-clean), not a test
-# bug: verify it's *specifically* the two systemd service keys, nothing
-# else. Two, not one, since opencode-skills-sync.service joined
-# watchcommit.service in MANAGED_SERVICES (2026-08-22) — update this count
-# again if a future service joins that list.
+# bug: verify it's *specifically* the watchcommit systemd service key,
+# nothing else — update this count if a future service joins
+# MANAGED_SERVICES.
 check "depart exits 1 (only the systemd-unavailable service keys unresolved)" \
   bash -c "[[ $depart_real_code -eq 1 ]]"
-check "preflight reports exactly two unresolved items" \
-  grep -q "unresolved (2):" /tmp/depart-real.out
-check "depart's unresolved items are the two systemd service keys" bash -c \
-  'grep -A2 "unresolved (2):" /tmp/depart-real.out | grep -q "service:systemd/watchcommit" &&
-   grep -A2 "unresolved (2):" /tmp/depart-real.out | grep -q "service:systemd/opencode-skills-sync"'
+check "preflight reports exactly one unresolved item" \
+  grep -q "unresolved (1):" /tmp/depart-real.out
+check "depart's unresolved item is the watchcommit systemd service key" bash -c \
+  'grep -A1 "unresolved (1):" /tmp/depart-real.out | grep -q "service:systemd/watchcommit"'
 check "depart removed the vimrc symlink" bash -c '[[ ! -e ~/.vimrc ]]'
 check "depart removed the zshrc symlink" bash -c '[[ ! -e ~/.zshrc ]]'
 check "depart removed the watchcommit shim symlink" bash -c '[[ ! -e ~/.local/bin/watchcommit ]]'
@@ -611,9 +609,9 @@ echo ""
 echo "=== 16. --depart: Windows-side VS Code guard (mocked /mnt/c + tasklist.exe) ==="
 # Self-contained: real WSL interop isn't available in this container, so
 # /mnt/c, the Windows-side `code` CLI, and tasklist.exe are all stubbed.
-# Runs after the full 1-15b lifecycle, on a container that already has two
-# permanently-unresolved items (the systemd watchcommit and
-# opencode-skills-sync service keys) and a retained baseline.json from
+# Runs after the full 1-15b lifecycle, on a container that already has one
+# permanently-unresolved item (the systemd watchcommit service key) and a
+# retained baseline.json from
 # section 15's incomplete departure -- this section adds
 # to that state rather than assuming a clean machine.
 WIN_USER="$(id -un)"

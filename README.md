@@ -1,6 +1,6 @@
 # dotfiles
 
-Personal cross-platform system configuration for macOS and Linux/WSL. Manages shell environment (`zsh`), editor (`nvim`, `vim`), terminal (`alacritty`), window management (`tmux`, `karabiner`, `rectangle`, `vscode`), background daemons (`watchcommit`, `opencode-skills-sync`), and personal coding-agent instruction overlays.
+Personal cross-platform system configuration for macOS and Linux/WSL. Manages shell environment (`zsh`), editor (`nvim`, `vim`), terminal (`alacritty`), window management (`tmux`, `karabiner`, `rectangle`, `vscode`), background daemon (`watchcommit`), and personal coding-agent instruction overlays.
 
 ## Shared coding-agent toolkit vs. personal dotfiles
 
@@ -10,7 +10,7 @@ Following the separation of the cross-harness agent toolkit into `agent-toolkit`
 - **Personal dotfiles (`dotfiles`)**: This repository owns your personal operating system configuration plus your **personal agent overlay**:
   - `claude/personal-overlay.md`: Personal workflow rules (backlog management via `dev_status.py`, worktree-first policy, proactive capture, verification standards).
   - `claude/global-instructions.md`: Composed dynamically by combining upstream core instructions with `personal-overlay.md` via `gen_core_instructions.py`.
-  - Personal daemons: `watchcommit` (automatic commit and push) and `opencode-skills-sync`.
+  - Personal daemon: `watchcommit` (automatic commit and push).
 
 Claude Code and opencode config (`~/.claude/settings.json`, `~/.config/opencode/opencode.jsonc`) are seeded exclusively by `agent-toolkit`'s installer — this repo does not own or seed either.
 
@@ -80,8 +80,6 @@ Add `--dry-run` to preview any run (including `--rollback`) without writing or r
 | `scripts/wc-guard` | `~/.local/bin/wc-guard` | Watchcommit pause/resume wrapper |
 | `systemd/watchcommit.service` | `~/.config/systemd/user/watchcommit.service` | Linux systemd user service |
 | `launchd/com.user.watchcommit.plist` | `~/Library/LaunchAgents/com.user.watchcommit.plist` | macOS launchd agent |
-| `scripts/opencode_skills_sync.py` | `~/.local/bin/opencode-skills-sync` | Skills synchronization daemon (Linux personal) |
-| `systemd/opencode-skills-sync.service` | `~/.config/systemd/user/opencode-skills-sync.service` | Linux systemd user service |
 
 ### Copy-once seeds
 
@@ -195,10 +193,6 @@ Background daemon that automatically commits and pushes dotfiles changes within 
 - Managed on Linux via `systemd --user` (`watchcommit.service`) and macOS via launchd (`com.user.watchcommit.plist`).
 - Automatically detects active coding agents and pauses itself to avoid racing session edits.
 - Use `wc-guard <command>` or `wc-pause` / `wc-resume` to manually pause synchronization during git history edits or testing.
-
-### opencode-skills-sync
-
-Synchronizes local skills in `~/.config/opencode/skills` to a local commit-only git branch to prevent accidental loss of interactive skill edits.
 
 ## Notes & testing
 
