@@ -52,7 +52,7 @@ if [ ! -f "$AGENT_TOOLKIT_DIR/install.py" ]; then
   exit 2
 fi
 
-for candidate in python3.13 python3.12 python3 python; do
+for candidate in python3.14 python3 python3.13 python3.12 python; do
   bin="$(command -v "$candidate" 2>/dev/null)" || continue
   if "$bin" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' 2>/dev/null; then
     PYTHON="$bin"

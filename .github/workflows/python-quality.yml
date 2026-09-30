@@ -18,7 +18,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v10.0.1
@@ -37,3 +37,38 @@ jobs:
 
       - name: Run tests
         run: uv run pytest
+
+  # 3.12 stays a tested, supported floor (requires-python >=3.12) until the
+  # work machine's Python is known. .python-version pins 3.14, so every uv
+  # call here passes --python 3.12 explicitly and a step asserts the venv
+  # really is 3.12 — otherwise this job could silently rerun 3.14.
+  # UV_PYTHON covers the uv calls tests make themselves (test_lint.py runs
+  # a bare `uv run ruff`): without it, those resync the venv to 3.14
+  # mid-run.
+  check-3-12:
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.12"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y zsh
+
+      - name: Install locked development tools
+        run: uv sync --locked --dev --python 3.12
+
+      - name: Assert the venv is 3.12
+        run: uv run --python 3.12 python -c "import sys; assert sys.version_info[:2] == (3, 12), sys.version"
+
+      - name: Run tests
+        run: uv run --python 3.12 pytest

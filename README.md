@@ -48,7 +48,7 @@ chmod +x install.sh
 ./install.sh --dry-run --harness=claude               # preview only, nothing written
 ```
 
-`./install.sh` is a ~20-line POSIX bootstrap: it finds Python 3.12+ on PATH and hands off to **`install.py`**, which is the actual installer. You can also run `python3 install.py --harness=...` directly; flags and behavior are identical.
+`./install.sh` is a ~20-line POSIX bootstrap: it finds Python 3.12+ on PATH (preferring `python3.14`, then `python3`) and hands off to **`install.py`**, which is the actual installer. You can also run `python3 install.py --harness=...` directly; flags and behavior are identical, except that `./install.sh` prefers `python3.14` when present while `python3 install.py` uses whatever `python3` resolves to. Python 3.14 is the default runtime; 3.12 stays a supported, CI-tested floor until the work machine's Python is confirmed.
 
 The symlink table lives in **`links.toml`** at the repo root. Each entry can be gated on `harness`, `platform`, `wsl`, and `profile_exclude`. Copy-once seed files (Pi's `settings.json` and WSL VS Code settings) are handled directly by `install.py`. Claude Code and opencode config are seeded by `agent-toolkit`'s installer instead — see [Dual-repo machines](#dual-repo-machines-installation-ordering).
 
