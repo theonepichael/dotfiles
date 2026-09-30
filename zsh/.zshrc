@@ -47,7 +47,7 @@ zstyle ':completion:*:*:git:*:*' group-order 'common-commands' 'alias-commands' 
 # PATH
 # ============================================================================
 
-for pathdir in "$HOME/.local/bin" "$HOME/bin" "$HOME/.npm-global/bin" "/opt/homebrew/opt/python@3.13/libexec/bin"; do
+for pathdir in "$HOME/.local/bin" "$HOME/bin" "$HOME/.npm-global/bin" "/opt/homebrew/opt/python@3.14/libexec/bin"; do
     if [[ -d "$pathdir" && ":$PATH:" != *":$pathdir:"* ]]; then
         PATH="$pathdir:$PATH"
     fi

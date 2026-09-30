@@ -78,7 +78,7 @@ NEOVIM_FALLBACK_ASSETS = {
 INSTALLER_MANAGED_SHIMS: tuple[str, ...] = ("nvim", "bat", "fd")
 
 BREW_FORMULAE = (
-    "python@3.13",
+    "python@3.14",
     "uv",
     "ruff",
     "tmux",

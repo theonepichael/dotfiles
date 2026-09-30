@@ -15,6 +15,7 @@ Requires Python 3.12+.
 import io
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -3453,6 +3454,30 @@ def test_install_mac_packages_skips_already_installed(home, monkeypatch):
     for f in install.BREW_FORMULAE:
         if f not in existing_formulae:
             assert f in passed_formulae
+
+
+def test_brew_python_matches_the_repo_default_runtime() -> None:
+    """The Mac's Homebrew Python is the minor .python-version pins, so a
+    runtime bump can't leave macOS on the previous one. .zshrc puts that
+    formula's libexec/bin first on PATH, so its live (uncommented) PATH
+    line must name the same minor."""
+    pinned = (REPO_ROOT / ".python-version").read_text().strip()
+    brew_pythons = [f for f in install.BREW_FORMULAE if f.startswith("python@")]
+    assert brew_pythons == [f"python@{pinned}"]
+    zshrc_code = [
+        line
+        for line in (REPO_ROOT / "zsh" / ".zshrc").read_text().splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+    zshrc_pythons = {
+        match for line in zshrc_code for match in re.findall(r"python@\d+\.\d+", line)
+    }
+    assert zshrc_pythons == {f"python@{pinned}"}
+    assert any(
+        f'"/opt/homebrew/opt/python@{pinned}/libexec/bin"' in line
+        and line.lstrip().startswith("for pathdir in")
+        for line in zshrc_code
+    )
 
 
 def test_install_mac_packages_skips_completely_when_all_installed(home, monkeypatch):
