@@ -37,6 +37,9 @@ trust_level = "trusted"
 [projects."/tmp/herdr-probe-asasmwu4"]
 trust_level = "trusted"
 
+[projects."/home/yanil/Workspace"]
+trust_level = "trusted"
+
 [sandbox_workspace_write]
 writable_roots = ["/home/yanil/.claude"]
 
