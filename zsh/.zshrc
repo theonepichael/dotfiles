@@ -120,3 +120,6 @@ export COLORTERM=truecolor
 
 . "$HOME/.local/bin/env"
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+
+# agent-toolkit checkout (repos are nested ~/Workspace/<repo>/<repo>)
+export AGENT_TOOLKIT_PATH="$HOME/Workspace/agent-toolkit/agent-toolkit"
