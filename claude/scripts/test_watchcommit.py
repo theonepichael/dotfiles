@@ -6,6 +6,7 @@ whole job is orchestrating git, so a scenario test against real repos catches
 what a mocked unit test would miss (e.g. actual rebase/conflict behavior).
 """
 
+import io
 import json
 import os
 import shutil
@@ -218,7 +219,7 @@ class WatchcommitActivityStateTestCase(unittest.TestCase):
         sh(self.other, "git", "push", "-q")
 
         before_sha = sh(self.repo, "git", "rev-parse", "HEAD").stdout.strip()
-        watchcommit.pull_ff_only(self.repo)
+        self.assertTrue(watchcommit.pull_ff_only(self.repo))
         after_sha = sh(self.repo, "git", "rev-parse", "HEAD").stdout.strip()
 
         self.assertNotEqual(before_sha, after_sha)
@@ -226,8 +227,12 @@ class WatchcommitActivityStateTestCase(unittest.TestCase):
         self.assertEqual(data["last_pull"]["from_sha"], before_sha)
         self.assertEqual(data["last_pull"]["to_sha"], after_sha)
 
+    def test_pull_ff_only_reports_a_failed_pull(self) -> None:
+        sh(self.repo, "git", "remote", "set-url", "origin", str(self.tmp / "gone"))
+        self.assertFalse(watchcommit.pull_ff_only(self.repo))
+
     def test_pull_ff_only_noop_does_not_record(self) -> None:
-        watchcommit.pull_ff_only(self.repo)
+        self.assertTrue(watchcommit.pull_ff_only(self.repo))
         self.assertFalse(
             self.activity_file.exists(),
             "a no-op pull (nothing new on remote) must not write activity state",
@@ -601,6 +606,126 @@ class GuardActiveTestCase(unittest.TestCase):
         self.assertFalse(
             watchcommit.guard_active(), "guard_active stayed True after kill"
         )
+
+
+HOOK = "scripts/watchcommit-pre-tick"
+
+
+class PreTickHookTestCase(unittest.TestCase):
+    """run_pre_tick_hook(): optional, repo-provided, never fails a cycle."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="wc-hook-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.repo = self.tmp / "repo"
+        (self.repo / "scripts").mkdir(parents=True)
+
+    def _hook(self, body: str, *, executable: bool = True) -> None:
+        hook = self.repo / HOOK
+        hook.write_text(f"#!/bin/sh\n{body}\n")
+        if executable:
+            hook.chmod(0o755)
+
+    def _run(self) -> str:
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            watchcommit.run_pre_tick_hook(self.repo)
+        return err.getvalue()
+
+    def test_absent_hook_is_a_silent_no_op(self) -> None:
+        self.assertEqual(self._run(), "")
+
+    def test_non_executable_hook_is_skipped(self) -> None:
+        self._hook("touch ran", executable=False)
+        self._run()
+        self.assertFalse((self.repo / "ran").exists())
+
+    def test_hook_runs_in_the_repo(self) -> None:
+        self._hook("touch ran")
+        self._run()
+        self.assertTrue((self.repo / "ran").exists())
+
+    def test_hook_output_is_echoed_with_a_prefix(self) -> None:
+        self._hook("echo composed")
+        self.assertIn("[watchcommit] pre-tick: composed", self._run())
+
+    def test_failing_hook_is_logged_and_swallowed(self) -> None:
+        self._hook("echo boom >&2; exit 7")
+        out = self._run()
+        self.assertIn("boom", out)
+        self.assertIn("exited 7", out)
+
+    def test_timed_out_hook_and_its_children_are_killed(self) -> None:
+        # A grandchild that would write after the timeout must die with the
+        # hook, or it could keep writing after watchcommit moved on.
+        self._hook("(sleep 1; touch late) & sleep 30")
+        with patch.object(watchcommit, "PRE_TICK_TIMEOUT", 0.3):
+            out = self._run()
+        self.assertIn("timed out", out)
+        time.sleep(1.5)
+        self.assertFalse((self.repo / "late").exists())
+
+
+class TickTestCase(unittest.TestCase):
+    """Which branch of a tick runs the pre-tick hook."""
+
+    def setUp(self) -> None:
+        self.repo = Path("/nonexistent-repo")
+        self.calls: list[str] = []
+        self.state = {
+            "paused": False,
+            "agents": [],
+            "changes": False,
+            "unpushed": False,
+            "pull_ok": True,
+        }
+        for name, fn in (
+            ("is_paused", lambda: self.state["paused"]),
+            ("agent_active", lambda repo: self.state["agents"]),
+            ("has_changes", lambda repo: self.state["changes"]),
+            ("has_unpushed_commits", lambda repo: self.state["unpushed"]),
+            ("pull_ff_only", self._pull),
+            ("run_pre_tick_hook", lambda repo: self.calls.append("hook")),
+            ("build_diff", lambda repo: "diff"),
+            ("message_for_diff", lambda diff: "msg"),
+            ("commit_and_push", lambda repo, msg: self.calls.append("commit") or True),
+            ("push", lambda *a, **k: self.calls.append("push") or True),
+            ("_write_agent_state", lambda agents: None),
+            ("_clear_agent_state", lambda: None),
+        ):
+            self.enterContext(patch.object(watchcommit, name, fn))
+
+    def _pull(self, repo: Path) -> bool:
+        self.calls.append("pull")
+        return bool(self.state["pull_ok"])
+
+    def _tick(self) -> bool:
+        with patch("sys.stderr", io.StringIO()):
+            return watchcommit.tick(self.repo)
+
+    def test_clean_in_sync_tick_pulls_then_runs_the_hook(self) -> None:
+        self.assertTrue(self._tick())
+        self.assertEqual(self.calls, ["pull", "hook"])
+
+    def test_failed_pull_skips_the_hook_without_failing_the_tick(self) -> None:
+        self.state["pull_ok"] = False
+        self.assertTrue(self._tick())
+        self.assertEqual(self.calls, ["pull"])
+
+    def test_no_hook_when_paused_agent_active_dirty_or_unpushed(self) -> None:
+        for key, value in (
+            ("paused", True),
+            ("agents", [watchcommit.AgentProc(1, "claude", "name")]),
+            ("changes", True),
+            ("unpushed", True),
+        ):
+            with self.subTest(key=key):
+                self.calls.clear()
+                saved = self.state[key]
+                self.state[key] = value
+                self._tick()
+                self.state[key] = saved
+                self.assertNotIn("hook", self.calls)
 
 
 if __name__ == "__main__":

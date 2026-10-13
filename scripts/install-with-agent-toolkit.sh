@@ -49,7 +49,7 @@ DOTFILES_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
 for flag in "$@"; do
   case "$flag" in
-    --rollback|--check-links|--depart|--wipe)
+    --rollback | --check-links | --depart | --wipe)
       echo "install-with-agent-toolkit.sh: --rollback/--check-links/--depart/--wipe" >&2
       echo "  each mean something different per repo -- run install.py directly in" >&2
       echo "  the repo you mean (agent-toolkit or dotfiles), not through this wrapper." >&2
@@ -97,11 +97,11 @@ echo "==> dotfiles installer ($DOTFILES_DIR) -- reasserting the personal overlay
 dotfiles_status=0
 "$PYTHON" "$DOTFILES_DIR/install.py" "$@" || dotfiles_status=$?
 
-compose_mode=write
+compose_mode="write"
 for flag in "$@"; do
   case "$flag" in
     # A short-flag cluster such as -qh asks for help too.
-    -h|--help|-[!-]*h*) compose_mode=skip ;;
+    -h | --help | -[!-]*h*) compose_mode=skip ;;
     --dry-run) [ "$compose_mode" = skip ] || compose_mode=check ;;
   esac
 done
@@ -117,6 +117,10 @@ case "$compose_mode" in
     echo ""
     echo "==> composing claude/global-instructions.md from $AGENT_TOOLKIT_DIR"
     "$PYTHON" "$COMPOSER" --agent-toolkit-path "$AGENT_TOOLKIT_DIR" || compose_status=$?
+    # 3 = skipped by the forward-only rule (this checkout is behind or
+    # diverged from the one the committed file was composed from): the
+    # composer already said why; it is a notice, not a failed install.
+    [ "$compose_status" -ne 3 ] || compose_status=0
     ;;
   check)
     # Report-only under --dry-run: exit 1 (stale) is what the real run

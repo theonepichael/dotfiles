@@ -26,6 +26,15 @@ and composes it with `personal-overlay.md` into `global-instructions.md`.
 Any script that needs the agent-toolkit checkout uses that resolver rather
 than its own default path.
 
+The core is taken from the last agent-toolkit commit that touched it (its
+committed blob, never the working tree), and that commit is recorded in the
+output. Because the output is shared through git while each machine composes
+from its own checkout, a write is skipped (exit 3) unless the recorded commit
+is an ancestor of the local one, under an exclusive lock on
+`claude/.global-instructions.md.lock`. watchcommit runs it through
+`scripts/watchcommit-pre-tick` after every clean background pull; keep that
+hook's exit-3-is-fine mapping in step with the composer's exit codes.
+
 ## Standard library only
 
 No runtime third-party imports, ever. These tools have to run on a machine

@@ -8,8 +8,21 @@ shareable core is read live from the agent-toolkit checkout -- this repo
 keeps no copy of it, so there is no second copy to drift -- and joined with
 this machine's personal-policy overlay in a fixed append-at-end order, with
 no markup in either input file. install-with-agent-toolkit.sh runs this after
-every real install, so the committed output tracks agent-toolkit's current
-core.
+every real install, and watchcommit's pre-tick hook (scripts/watchcommit-pre-tick)
+runs it after every clean background pull, so the committed output tracks
+agent-toolkit's current core within a couple of watchcommit polls.
+
+Provenance and the forward-only rule: the core is read from the last
+agent-toolkit commit that touched claude/CORE_INSTRUCTIONS.md (its committed
+blob, not the working tree -- uncommitted core edits are never composed), and
+that commit is recorded on the line after the do-not-edit marker as
+``<!-- agent-toolkit source: <sha> -->``. The output is shared across machines
+through git while each machine composes from its own checkout, so a write
+only moves the file forward: it is skipped (exit 3) unless the recorded
+commit is the local source commit or an ancestor of it. A machine whose
+agent-toolkit is behind, or diverged, therefore never rolls the file back and
+never fights another machine over it; --force overrides. The check and the
+write happen under an exclusive lock on claude/.global-instructions.md.lock.
 
 The checkout is resolved by dotfiles_cli_common.agent_toolkit_checkout:
 --agent-toolkit-path, else $AGENT_TOOLKIT_PATH, else
@@ -21,25 +34,34 @@ Usage:
     python3 claude/scripts/gen_core_instructions.py --stdout    print, write nothing
     python3 claude/scripts/gen_core_instructions.py --print-agent-toolkit-path
 
-Flags: --check, --stdout, --print-agent-toolkit-path, --agent-toolkit-path <path>,
---core-path <file>, --repo-root <path>, --quiet/-q, --verbose/-v.
+Flags: --check, --stdout, --print-agent-toolkit-path, --force,
+--agent-toolkit-path <path>, --core-path <file>, --repo-root <path>,
+--quiet/-q, --verbose/-v.
 Env vars: AGENT_TOOLKIT_PATH (agent-toolkit checkout; set but not a checkout is
 an error, never a fallback).
-Files read: <agent-toolkit>/claude/CORE_INSTRUCTIONS.md (or --core-path),
+Files read: claude/CORE_INSTRUCTIONS.md at the agent-toolkit source commit
+(via git; or --core-path, recorded as source "unknown"),
 <repo>/claude/personal-overlay.md.
-Files written: <repo>/claude/global-instructions.md, atomically (skipped by
---check, --stdout and --print-agent-toolkit-path).
-Exit codes: 0 success; 1 --check found stale output; 2 bad usage, an
-unresolvable agent-toolkit checkout, or a missing or unreadable input file.
+Files written: <repo>/claude/global-instructions.md, atomically and only when
+its content changes (skipped by --check, --stdout and
+--print-agent-toolkit-path); <repo>/claude/.global-instructions.md.lock.
+Exit codes: 0 written or already up to date; 1 --check found stale output;
+2 bad usage, an unresolvable checkout, a missing or unreadable input, or a
+git failure (always reported, even with -q); 3 write skipped by the
+forward-only rule (reported on stderr unless -q).
 
 Requires Python 3.12+.
 """
 
 import argparse
+import fcntl
 import os
+import re
+import subprocess
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 import dotfiles_cli_common as cli_common
@@ -52,24 +74,114 @@ DO_NOT_EDIT_MARKER = (
 )
 
 
-class MissingInputError(FileNotFoundError):
-    """A composition input file does not exist."""
+CORE_RELPATH = "claude/CORE_INSTRUCTIONS.md"
+UNKNOWN_SOURCE = "unknown"
+PROVENANCE_RE = re.compile(r"^<!-- agent-toolkit source: (\S+) -->$", re.MULTILINE)
 
 
-def compose(core_path: Path, overlay_path: Path) -> str:
-    """Read the core and overlay files, return the composed text.
+class ComposeError(Exception):
+    """Composition cannot proceed; always reported, exit 2."""
 
-    Fixed append-at-end order, no substitution markup in either input file,
-    and no rewriting of the core: CORE_INSTRUCTIONS.md must remain valid,
-    complete, self-contained instructions on its own, since agent-toolkit
-    symlinks it directly with no generation step of its own.
+
+class ForwardOnlySkip(Exception):
+    """The write would move the output backwards or sideways; exit 3."""
+
+
+def compose_text(core_text: str, overlay_text: str, source: str) -> str:
+    """Join core, marker, provenance line and overlay in the fixed order.
+
+    No substitution markup in either input and no rewriting of the core:
+    CORE_INSTRUCTIONS.md must remain valid, self-contained instructions on
+    its own, since agent-toolkit symlinks it directly with no generation step.
     """
-    for path in (core_path, overlay_path):
-        if not path.is_file():
-            raise MissingInputError(f"missing {path}")
-    core_text = core_path.read_text(encoding="utf-8").rstrip("\n")
-    overlay_text = overlay_path.read_text(encoding="utf-8").rstrip("\n")
-    return f"{core_text}\n\n{DO_NOT_EDIT_MARKER}\n\n{overlay_text}\n"
+    core = core_text.rstrip("\n")
+    overlay = overlay_text.rstrip("\n")
+    provenance = f"<!-- agent-toolkit source: {source} -->"
+    return f"{core}\n\n{DO_NOT_EDIT_MARKER}\n{provenance}\n\n{overlay}\n"
+
+
+def recorded_source(text: str) -> str | None:
+    """Return the source commit recorded in composed ``text``, if any."""
+    match = PROVENANCE_RE.search(text)
+    return match.group(1) if match else None
+
+
+def _git(checkout: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["git", "-C", str(checkout), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise ComposeError(f"cannot run git in {checkout}: {exc}") from exc
+
+
+def _git_out(checkout: Path, *args: str) -> str:
+    result = _git(checkout, *args)
+    if result.returncode != 0:
+        raise ComposeError(
+            f"git {' '.join(args)} failed in {checkout}: {result.stderr.strip()}"
+        )
+    return result.stdout
+
+
+def read_core_at_source(checkout: Path) -> tuple[str, str]:
+    """Return (source commit, core text at that commit) from ``checkout``.
+
+    The source commit is the last one touching the core, so unrelated
+    agent-toolkit commits never change the output; reading its blob rather
+    than the working tree keeps the recorded commit and the bytes in step.
+    """
+    sha = _git_out(checkout, "log", "-1", "--format=%H", "--", CORE_RELPATH).strip()
+    if not sha:
+        raise ComposeError(f"no commit touches {CORE_RELPATH} in {checkout}")
+    return sha, _git_out(checkout, "show", f"{sha}:{CORE_RELPATH}")
+
+
+def check_forward(checkout: Path, recorded: str | None, local: str) -> None:
+    """Raise ForwardOnlySkip unless replacing ``recorded`` with ``local`` is forward.
+
+    A missing object (not fetched yet) and a non-ancestor are expected skips;
+    any other git failure is a ComposeError, never silenced.
+    """
+    if recorded in (None, UNKNOWN_SOURCE, local):
+        return
+    if _git(checkout, "cat-file", "-e", f"{recorded}^{{commit}}").returncode != 0:
+        if _git(checkout, "cat-file", "-e", recorded).returncode == 0:
+            raise ComposeError(
+                f"recorded agent-toolkit source {recorded} exists in {checkout} "
+                "but is not a commit"
+            )
+        raise ForwardOnlySkip(
+            f"composed from agent-toolkit {recorded}, which {checkout} does not "
+            "have yet -- pull agent-toolkit, or pass --force"
+        )
+    result = _git(checkout, "merge-base", "--is-ancestor", recorded, local)
+    if result.returncode == 1:
+        raise ForwardOnlySkip(
+            f"composed from agent-toolkit {recorded}, which is not an ancestor of "
+            f"this checkout's core commit {local} -- pull agent-toolkit, or pass "
+            "--force"
+        )
+    if result.returncode != 0:
+        raise ComposeError(
+            f"git merge-base --is-ancestor {recorded} {local} failed in "
+            f"{checkout}: {result.stderr.strip()}"
+        )
+
+
+@contextmanager
+def output_lock(output_path: Path) -> Iterator[None]:
+    """Hold an exclusive lock serializing every composer writing ``output_path``."""
+    lock_path = output_path.with_name(f".{output_path.name}.lock")
+    with open(lock_path, "a", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def write_atomically(path: Path, text: str) -> None:
@@ -113,6 +225,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the resolved agent-toolkit checkout and exit",
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help="write even when the forward-only rule would skip",
+    )
+    parser.add_argument(
         "--agent-toolkit-path",
         type=Path,
         default=None,
@@ -145,8 +262,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"[gen_core_instructions] {message}", file=sys.stderr)
         return 2
 
-    core_path = args.core_path
-    if core_path is None or args.print_agent_toolkit_path:
+    repo_root = (args.repo_root or default_repo_root()).resolve()
+    output_path = repo_root / "claude" / "global-instructions.md"
+    overlay_path = repo_root / "claude" / "personal-overlay.md"
+
+    checkout: Path | None = None
+    if args.core_path is None or args.print_agent_toolkit_path:
         try:
             checkout = cli_common.agent_toolkit_checkout(
                 explicit=args.agent_toolkit_path
@@ -156,25 +277,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.print_agent_toolkit_path:
             print(checkout)
             return 0
-        core_path = checkout / "claude" / "CORE_INSTRUCTIONS.md"
 
-    repo_root = (args.repo_root or default_repo_root()).resolve()
     try:
-        composed = compose(core_path, repo_root / "claude" / "personal-overlay.md")
+        if args.core_path is not None:
+            source = UNKNOWN_SOURCE
+            core_text = args.core_path.read_text(encoding="utf-8")
+        else:
+            assert checkout is not None
+            source, core_text = read_core_at_source(checkout)
+        overlay_text = overlay_path.read_text(encoding="utf-8")
+    except ComposeError as exc:
+        return fail(str(exc))
     except (OSError, UnicodeDecodeError) as exc:
         # Exit 2, not an uncaught crash: a crash exits 1, which --check
         # callers (the wrapper's dry run) read as merely "stale".
         return fail(str(exc))
-    output_path = repo_root / "claude" / "global-instructions.md"
+    composed = compose_text(core_text, overlay_text, source)
 
     if args.stdout:
         sys.stdout.write(composed)
         return 0
 
     if args.check:
-        current = (
-            output_path.read_text(encoding="utf-8") if output_path.is_file() else ""
-        )
+        try:
+            current = (
+                output_path.read_text(encoding="utf-8") if output_path.is_file() else ""
+            )
+        except (OSError, UnicodeDecodeError) as exc:
+            return fail(str(exc))
         if current == composed:
             cli_common.qprint(
                 "[gen_core_instructions] global-instructions.md is up to date",
@@ -188,7 +318,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 1
 
-    write_atomically(output_path, composed)
+    try:
+        with output_lock(output_path):
+            current = (
+                output_path.read_text(encoding="utf-8")
+                if output_path.is_file()
+                else None
+            )
+            if current == composed:
+                cli_common.qprint(
+                    "[gen_core_instructions] global-instructions.md is up to date",
+                    quiet=args.quiet,
+                )
+                return 0
+            if checkout is not None and not args.force:
+                recorded = recorded_source(current) if current is not None else None
+                check_forward(checkout, recorded, source)
+            write_atomically(output_path, composed)
+    except ForwardOnlySkip as exc:
+        cli_common.qprint(
+            f"[gen_core_instructions] skipped: {exc}",
+            quiet=args.quiet,
+            file=sys.stderr,
+        )
+        return 3
+    except ComposeError as exc:
+        return fail(str(exc))
+    except (OSError, UnicodeDecodeError) as exc:
+        return fail(str(exc))
     cli_common.qprint(
         "[gen_core_instructions] wrote claude/global-instructions.md", quiet=args.quiet
     )

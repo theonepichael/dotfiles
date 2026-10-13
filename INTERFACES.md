@@ -137,14 +137,20 @@ gen_core_instructions.py — compose agent-toolkit's CORE_INSTRUCTIONS.md + pers
 - CLI (`argparse`): compose agent-toolkit's CORE_INSTRUCTIONS.md + personal-overlay.md into global-instructions.md
   - `--quiet/-q`
   - `--verbose/-v`
+  - `--force` — write even when the forward-only rule would skip
   - `--agent-toolkit-path` — agent-toolkit checkout (default: $AGENT_TOOLKIT_PATH, then the nested, then the flat ~/Workspace layout)
   - `--core-path` — read the core from this file instead of resolving a checkout
   - `--repo-root` — repository root (default: inferred from this script's path)
 - Depends on: `dotfiles_cli_common.py`
 - Exceptions:
-  - `class MissingInputError(FileNotFoundError)` — A composition input file does not exist.
+  - `class ComposeError(Exception)` — Composition cannot proceed; always reported, exit 2.
+  - `class ForwardOnlySkip(Exception)` — The write would move the output backwards or sideways; exit 3.
 - Public functions:
-  - `compose(core_path: Path, overlay_path: Path) -> str` — Read the core and overlay files, return the composed text.
+  - `compose_text(core_text: str, overlay_text: str, source: str) -> str` — Join core, marker, provenance line and overlay in the fixed order.
+  - `recorded_source(text: str) -> str | None` — Return the source commit recorded in composed ``text``, if any.
+  - `read_core_at_source(checkout: Path) -> tuple[str, str]` — Return (source commit, core text at that commit) from ``checkout``.
+  - `check_forward(checkout: Path, recorded: str | None, local: str) -> None` — Raise ForwardOnlySkip unless replacing ``recorded`` with ``local`` is forward.
+  - `output_lock(output_path: Path) -> Iterator[None]` — Hold an exclusive lock serializing every composer writing ``output_path``.
   - `write_atomically(path: Path, text: str) -> None` — Write ``text`` to ``path`` so a reader never sees a partial file.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
   - `build_parser() -> argparse.ArgumentParser` — Build the CLI parser.

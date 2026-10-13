@@ -67,12 +67,18 @@ class _WrapperTreeTestCase(unittest.TestCase):
         self.wrapper_copy = wrapper_copy
 
     def _make_checkout(self, path: Path) -> None:
-        """Give ``path`` the markers and core file of an agent-toolkit checkout."""
+        """Give ``path`` the markers and a committed core, like a real checkout."""
         (path / "agent-scripts").mkdir(parents=True)
         (path / "links.toml").write_text("")
         (path / "install.py").write_text("")
         (path / "claude").mkdir()
         (path / "claude" / "CORE_INSTRUCTIONS.md").write_text(CORE_TEXT)
+        for args in (
+            ["init", "-q", "-b", "main"],
+            ["add", "-A"],
+            ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "c"],
+        ):
+            subprocess.run(["git", "-C", str(path), *args], check=True)
 
     def _write_fake_install(
         self, repo_dir: Path, *, marker: str, exit_code: int
@@ -231,7 +237,7 @@ class InstallWithAgentToolkitTestCase(_WrapperTreeTestCase):
     def test_dry_run_still_fails_when_composition_cannot_run(self) -> None:
         """Stale output is what a dry run expects; a composer error is not."""
         self._write_both()
-        (self.agent_toolkit_dir / "claude" / "CORE_INSTRUCTIONS.md").unlink()
+        shutil.rmtree(self.agent_toolkit_dir / ".git")  # no history to compose from
 
         result = self._run(["--dry-run", "--harness=claude"])
 
@@ -249,6 +255,18 @@ class InstallWithAgentToolkitTestCase(_WrapperTreeTestCase):
         result = self._run(["--bogus"])
         self.assertFalse(self.composed.exists(), result.stdout)
         self.assertNotEqual(result.returncode, 0)
+
+    def test_a_forward_only_skip_is_a_notice_not_a_failure(self) -> None:
+        self._write_both()
+        self.composed.write_text(
+            "old\n<!-- agent-toolkit source: " + "f" * 40 + " -->\n"
+        )
+
+        result = self._run(["--harness=claude"])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("skipped", result.stderr)
+        self.assertTrue(self.composed.read_text().startswith("old"))
 
     def test_composer_failure_fails_the_wrapper(self) -> None:
         self._write_both()

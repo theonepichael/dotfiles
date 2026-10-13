@@ -10,6 +10,8 @@ files=(
   "$REPO/install.sh"
   "$REPO/scripts/export_for_print.sh"
   "$REPO/scripts/export_for_print_trimmed.sh"
+  "$REPO/scripts/install-with-agent-toolkit.sh"
+  "$REPO/scripts/watchcommit-pre-tick"
   "$REPO/test/run.sh"
   "$REPO/test/scenarios.sh"
 )
