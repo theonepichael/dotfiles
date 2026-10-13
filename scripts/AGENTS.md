@@ -15,6 +15,11 @@ installed into harness config directories.
   dotfiles second, guaranteeing that dotfiles' composed `global-instructions.md`
   always asserts the personal overlay across all harnesses. Direct unwrapped calls to
   `agent-toolkit/install.py` are blocked.
+- Its flag routing table (`SHARED_FLAGS`, `AGENT_TOOLKIT_ONLY_FLAGS`,
+  `DOTFILES_ONLY_FLAGS`, `REFUSED_FLAGS`) must classify every flag either installer
+  declares. Adding a flag to either `install.py` fails
+  `claude/scripts/test_install_with_agent_toolkit.py`'s drift test until it is listed
+  there. A one-sided flag must be zero-argument with no short alias, or be refused.
 
 ## Local Conventions
 

@@ -3,6 +3,19 @@
 This repo's internal tooling changes are logged here. Breaking changes to
 harness CLIs, flags, or behavior get an entry going forward.
 
+## 2026-10-13
+
+### Changed
+
+- **`install-with-agent-toolkit.sh`** gives each installer only the flags it
+  accepts. `--force-harness` now reaches agent-toolkit only and `--no-nvim-pin`
+  reaches dotfiles only. Before, either flag made the other installer exit 2,
+  and a dotfiles failure also skipped the global-instructions compose. The
+  wrapper now refuses agent-toolkit's toolkit-home migration actions and their
+  modifiers (`--migrate-toolkit-home`, `--move-layout-pointer`, `--json`,
+  `--migration-id`, ...) up front with exit 2, the same as `--rollback`. Run
+  those with `install.py` directly in agent-toolkit.
+
 ## 2026-09-29
 
 ### Removed
