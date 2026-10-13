@@ -104,8 +104,21 @@ def make_pending(slug, status="waiting_for_reply", updated="2026-01-01", blockin
     }
 
 
+def other_layout(layout):
+    """The layout a machine on ``layout`` would migrate to (or from)."""
+    return {"legacy": "toolkit-home", "toolkit-home": "legacy"}[layout]
+
+
 class SyncTestCase(unittest.TestCase):
-    """Base fixture: an isolated tempdir standing in for ~/.claude/data/backlog."""
+    """Base fixture: an isolated tempdir standing in for ~/.claude/data/backlog.
+
+    ``sync._LAYOUT_AT_IMPORT`` is pinned to the sandbox's own layout, as if
+    the process had started in it. Otherwise it is whatever layout
+    agent-toolkit resolves for the HOME that was active when this module was
+    imported -- a default agent-toolkit is free to change (Release 2 turned
+    an empty home from legacy into toolkit-home, failing every test that
+    assumed one or the other).
+    """
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -120,7 +133,9 @@ class SyncTestCase(unittest.TestCase):
         self.journal_file = self.data_dir / "journal.jsonl"
         self.runs_file = self.data_dir / "runs.jsonl"
         self.machine_id_file = self.data_dir / "_machine_id"
+        self.sandbox_layout = sync.machine_state()["layout"]
         self._patches = [
+            patch.object(sync, "_LAYOUT_AT_IMPORT", self.sandbox_layout),
             patch.object(sync, "SYNC_BASE_FILE", self.sync_base_file),
             patch.object(sync, "CONFLICT_LOG_FILE", self.conflict_log_file),
             # sync re-reads the remote's state over SSH before committing; in
@@ -1362,9 +1377,12 @@ class ArtifactSyncIntegrationTests(SyncTestCase):
         grill.mkdir(parents=True)
         (grill / "spec.md").write_text("spec")
         # These tests use stand-in homes rather than the sandbox HOME, so the
-        # state each side reports must name the stand-in grill roots.
+        # state each side reports must name the stand-in grill roots -- and,
+        # since the stand-ins are legacy-shaped, the process counts as having
+        # started on legacy.
         self._remote_state = self._state(remote_home)
         for p in (
+            patch.object(sync, "_LAYOUT_AT_IMPORT", "legacy"),
             patch.object(sync, "machine_state", lambda: self._state(local_home)),
             patch.object(sync, "ssh_state", lambda *a, **k: self._remote_state),
         ):
