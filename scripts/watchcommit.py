@@ -427,7 +427,9 @@ def rebase_onto_remote(repo: Path) -> bool:
         return False
 
     branch = current_branch(repo)
-    result = git(repo, "rebase", f"origin/{branch}")
+    # --merge explicitly: repo merge drivers (.gitattributes) only run under
+    # the merge backend, and rebase.backend=apply would silently skip them.
+    result = git(repo, "rebase", "--merge", f"origin/{branch}")
     if result.returncode != 0:
         git(repo, "rebase", "--abort")
         print(

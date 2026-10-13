@@ -35,6 +35,12 @@ is an ancestor of the local one, under an exclusive lock on
 `scripts/watchcommit-pre-tick` after every clean background pull; keep that
 hook's exit-3-is-fine mapping in step with the composer's exit codes.
 
+Every write-mode run also registers `--merge-driver` as the repo-local git
+merge driver for `global-instructions.md` (git takes driver commands only
+from config, never from `.gitattributes`), baking in `sys.executable` and the
+resolved checkout, and refuses to write if that fails. watchcommit rebases
+with `--merge` explicitly because drivers only run under the merge backend.
+
 ## Standard library only
 
 No runtime third-party imports, ever. These tools have to run on a machine

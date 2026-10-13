@@ -21,6 +21,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -332,6 +333,294 @@ class LockTests(_FixtureTestCase):
         worker.join(timeout=10)
         self.assertTrue(done.is_set())
         self.assertEqual(self._recorded(), self.sha_a)
+
+
+SCRIPTS_DIR = Path(__file__).parent
+sys.path.insert(0, str(SCRIPTS_DIR.parent.parent / "scripts"))
+import watchcommit  # noqa: E402
+
+GI_REL = "claude/global-instructions.md"
+
+
+class _MergeFixture(_FixtureTestCase):
+    """Fixture checkout with core commits A -> B -> C, plus composer helpers."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.sha_b = self._commit_core("# CLAUDE.md\n\n## Planning Gate\n\nB.\n")
+        self.sha_c = self._commit_core("# CLAUDE.md\n\n## Planning Gate\n\nC.\n")
+        self.overlay_text = self.overlay.read_text()
+
+    def composed(self, sha: str, overlay: str | None = None) -> str:
+        core = git(self.checkout, "show", f"{sha}:{CORE_REL}") + "\n"
+        return gci.compose_text(core, overlay or self.overlay_text, sha)
+
+    def _driver(self, ours: bytes, theirs: bytes) -> tuple[int, Path, str]:
+        base_p, ours_p, theirs_p = (self.tmp / n for n in ("O", "A", "B"))
+        base_p.write_bytes(b"base")
+        ours_p.write_bytes(ours)
+        theirs_p.write_bytes(theirs)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            status = gci.main(
+                [
+                    "--agent-toolkit-path",
+                    str(self.checkout),
+                    "--merge-driver",
+                    str(base_p),
+                    str(ours_p),
+                    str(theirs_p),
+                ]
+            )
+        return status, ours_p, err.getvalue()
+
+
+class MergeDriverTests(_MergeFixture):
+    def test_keeps_ours_when_ours_is_forward(self) -> None:
+        ours = self.composed(self.sha_c).encode()
+        status, out, _ = self._driver(ours, self.composed(self.sha_b).encode())
+        self.assertEqual(status, 0)
+        self.assertEqual(out.read_bytes(), ours)
+
+    def test_takes_theirs_when_theirs_is_forward(self) -> None:
+        theirs = self.composed(self.sha_c).encode()
+        status, out, _ = self._driver(self.composed(self.sha_b).encode(), theirs)
+        self.assertEqual(status, 0)
+        self.assertEqual(out.read_bytes(), theirs)
+
+    def test_forward_crlf_theirs_is_validated_and_copied_byte_for_byte(self) -> None:
+        theirs = self.composed(self.sha_c).replace("\n", "\r\n").encode()
+        status, out, err = self._driver(self.composed(self.sha_b).encode(), theirs)
+        self.assertEqual(status, 0, err)
+        self.assertEqual(out.read_bytes(), theirs)
+
+    def test_identical_sides_merge_even_when_unknown(self) -> None:
+        same = gci.compose_text("x\n", "y\n", "unknown").encode()
+        status, out, _ = self._driver(same, same)
+        self.assertEqual(status, 0)
+        self.assertEqual(out.read_bytes(), same)
+
+    def _assert_unresolved(self, ours: bytes, theirs: bytes) -> str:
+        status, out, err = self._driver(ours, theirs)
+        self.assertEqual(status, 1, err)
+        self.assertEqual(out.read_bytes(), ours)
+        self.assertTrue(err.strip())
+        return err
+
+    def test_same_source_different_bytes_is_unresolved(self) -> None:
+        ours = self.composed(self.sha_b).encode()
+        self._assert_unresolved(ours, ours + b"extra\n")
+
+    def test_overlay_mismatch_is_unresolved(self) -> None:
+        self._assert_unresolved(
+            self.composed(self.sha_b).encode(),
+            self.composed(
+                self.sha_c, overlay="## Personal Policy\n\nedited\n"
+            ).encode(),
+        )
+
+    def test_diverged_history_is_unresolved(self) -> None:
+        git(self.checkout, "checkout", "-q", "-b", "side", self.sha_a)
+        sha_d = self._commit_core("D\n")
+        git(self.checkout, "checkout", "-q", "main")
+        self._assert_unresolved(
+            self.composed(self.sha_c).encode(), self.composed(sha_d).encode()
+        )
+
+    def test_missing_or_unknown_source_is_unresolved(self) -> None:
+        missing = gci.compose_text("x\n", self.overlay_text, "f" * 40).encode()
+        unknown = gci.compose_text("x\n", self.overlay_text, "unknown").encode()
+        for other in (missing, unknown):
+            self._assert_unresolved(self.composed(self.sha_b).encode(), other)
+
+    def test_unparseable_side_is_unresolved(self) -> None:
+        self._assert_unresolved(b"not composed\n", self.composed(self.sha_b).encode())
+
+    def test_unresolvable_checkout_is_unresolved(self) -> None:
+        ours = self.composed(self.sha_b).encode()
+        theirs = self.composed(self.sha_c).encode()
+        shutil.rmtree(self.checkout / ".git")
+        self._assert_unresolved(ours, theirs)
+
+    def test_hand_edited_core_with_a_valid_older_sha_is_unresolved(self) -> None:
+        edited = self.composed(self.sha_b).replace("B.", "B, hand-edited.")
+        self._assert_unresolved(self.composed(self.sha_c).encode(), edited.encode())
+
+
+class _GitDotfilesFixture(_MergeFixture):
+    """The fixture dotfiles tree as a git repo, so registration applies."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        git(self.repo, "init", "-q", "-b", "main")
+
+    def _driver_config(self) -> str:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.repo),
+                "config",
+                "--local",
+                "--get",
+                "merge.global-instructions.driver",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+
+class RegistrationTests(_GitDotfilesFixture):
+    def test_write_registers_the_driver_with_python_and_checkout(self) -> None:
+        self._main("-q")
+        self.assertEqual(
+            self._driver_config(),
+            f"'{sys.executable}' claude/scripts/gen_core_instructions.py "
+            f"--agent-toolkit-path '{self.checkout.resolve()}' "
+            "--merge-driver %O %A %B",
+        )
+
+    def test_registration_is_idempotent_and_replaces_a_stale_command(self) -> None:
+        git(self.repo, "config", "merge.global-instructions.driver", "stale")
+        self._main("-q")
+        first = self._driver_config()
+        self._main("-q")
+        self.assertEqual(self._driver_config(), first)
+        self.assertNotEqual(first, "stale")
+
+    def test_an_up_to_date_run_still_refreshes_registration(self) -> None:
+        self._main("-q")
+        git(self.repo, "config", "merge.global-instructions.driver", "stale")
+        status, _, _ = self._main("-q")
+        self.assertEqual(status, 0)
+        self.assertNotEqual(self._driver_config(), "stale")
+
+    def test_config_failure_refuses_the_write(self) -> None:
+        (self.repo / ".git" / "config.lock").write_text("held")
+        status, _, err = self._main("-q")
+        self.assertEqual(status, 2)
+        self.assertIn("merge driver", err)
+        self.assertFalse(self.output.exists())
+
+    def test_quote_in_a_path_is_refused_and_never_written(self) -> None:
+        with self.assertRaises(gci.ComposeError):
+            gci.register_merge_driver(self.repo, "/opt/it's/python3", self.checkout)
+        self.assertEqual(self._driver_config(), "")
+
+    def test_check_and_stdout_never_register(self) -> None:
+        self._main("--check")
+        self._main("--stdout")
+        self.assertEqual(self._driver_config(), "")
+
+    def test_a_non_git_repo_root_writes_without_registering(self) -> None:
+        shutil.rmtree(self.repo / ".git")
+        status, _, _ = self._main("-q")
+        self.assertEqual(status, 0)
+        self.assertTrue(self.output.exists())
+
+
+class RebaseRaceTests(_MergeFixture):
+    """Two dotfiles clones racing to commit different recompositions."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        remote = self.tmp / "remote.git"
+        remote.mkdir()
+        git(remote, "init", "-q", "--bare", "-b", "main")
+        seed = self.tmp / "seed"
+        (seed / "claude" / "scripts").mkdir(parents=True)
+        for name in ("gen_core_instructions.py", "dotfiles_cli_common.py"):
+            shutil.copy(SCRIPTS_DIR / name, seed / "claude" / "scripts" / name)
+        (seed / "claude" / "personal-overlay.md").write_text(self.overlay_text)
+        (seed / ".gitattributes").write_text((REPO_ROOT / ".gitattributes").read_text())
+        (seed / GI_REL).write_text(self.composed(self.sha_a))
+        (seed / "notes.txt").write_text("notes\n")
+        git(seed, "init", "-q", "-b", "main")
+        git(seed, "config", "user.email", "t@t")
+        git(seed, "config", "user.name", "t")
+        git(seed, "add", "-A")
+        git(seed, "commit", "-q", "-m", "seed")
+        git(seed, "remote", "add", "origin", str(remote))
+        git(seed, "push", "-q", "-u", "origin", "main")
+        self.clones = []
+        for name in ("one", "two"):
+            clone = self.tmp / name
+            git(self.tmp, "clone", "-q", str(remote), str(clone))
+            git(clone, "config", "user.email", f"{name}@t")
+            git(clone, "config", "user.name", name)
+            self.clones.append(clone)
+        # The driver must find the checkout through its registered command.
+        self.enterContext(patch.dict(os.environ))
+        os.environ.pop("AGENT_TOOLKIT_PATH", None)
+
+    def _commit_composition(
+        self, clone: Path, sha: str, *, extra: bool = False
+    ) -> None:
+        (clone / GI_REL).write_text(self.composed(sha))
+        if extra:
+            (clone / "notes.txt").write_text("notes\nlocal edit\n")
+        git(clone, "commit", "-q", "-am", f"recompose {sha[:7]}")
+
+    def _register(self, clone: Path) -> None:
+        gci.register_merge_driver(clone, sys.executable, self.checkout)
+
+    def _rebase(self, clone: Path) -> bool:
+        with contextlib.redirect_stderr(io.StringIO()):
+            return watchcommit.rebase_onto_remote(clone)
+
+    def _recorded_in(self, clone: Path) -> str | None:
+        return gci.recorded_source((clone / GI_REL).read_text())
+
+    def test_local_forward_wins(self) -> None:
+        one, two = self.clones
+        self._commit_composition(one, self.sha_b)
+        git(one, "push", "-q")
+        self._register(two)
+        self._commit_composition(two, self.sha_c)
+        self.assertTrue(self._rebase(two))
+        self.assertEqual(self._recorded_in(two), self.sha_c)
+        git(two, "push", "-q")
+
+    def test_remote_forward_wins_and_the_stale_commit_is_dropped(self) -> None:
+        one, two = self.clones
+        self._commit_composition(one, self.sha_c)
+        git(one, "push", "-q")
+        self._register(two)
+        self._commit_composition(two, self.sha_b)
+        self.assertTrue(self._rebase(two))
+        self.assertEqual(self._recorded_in(two), self.sha_c)
+        self.assertEqual(
+            git(two, "rev-parse", "HEAD"), git(two, "rev-parse", "origin/main")
+        )
+
+    def test_without_registration_it_still_conflicts(self) -> None:
+        one, two = self.clones
+        self._commit_composition(one, self.sha_b)
+        git(one, "push", "-q")
+        self._commit_composition(two, self.sha_c)
+        self.assertFalse(self._rebase(two))
+
+    def test_mixed_commit_keeps_its_unrelated_change(self) -> None:
+        one, two = self.clones
+        self._commit_composition(one, self.sha_c)
+        git(one, "push", "-q")
+        self._register(two)
+        self._commit_composition(two, self.sha_b, extra=True)
+        self.assertTrue(self._rebase(two))
+        self.assertEqual(self._recorded_in(two), self.sha_c)
+        self.assertIn("local edit", (two / "notes.txt").read_text())
+        self.assertEqual(git(two, "rev-list", "--count", "origin/main..HEAD"), "1")
+
+    def test_apply_backend_config_does_not_bypass_the_driver(self) -> None:
+        one, two = self.clones
+        self._commit_composition(one, self.sha_b)
+        git(one, "push", "-q")
+        self._register(two)
+        git(two, "config", "rebase.backend", "apply")
+        self._commit_composition(two, self.sha_c)
+        self.assertTrue(self._rebase(two))
+        self.assertEqual(self._recorded_in(two), self.sha_c)
 
 
 class CommittedOutputTests(unittest.TestCase):

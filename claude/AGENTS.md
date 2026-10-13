@@ -26,6 +26,15 @@ composition sources. Harness-runtime Python scripts live in child `claude/script
   behind skips the write instead of rolling the shared file back, so two
   machines never fight over it. Pull agent-toolkit there, or pass `--force`
   for a deliberate rollback.
+- If two machines still commit different compositions in the same poll,
+  the rebase is resolved by a git merge driver (`.gitattributes` names it;
+  the composer registers its command in this repo's local git config on
+  every write). It keeps whichever side's agent-toolkit source is forward,
+  and never text-merges. When it can't decide (overlays differ, histories
+  diverged, a hand-edited core), the path stays unmerged with no conflict
+  markers: inspect `git show :2:claude/global-instructions.md` and `:3:`,
+  keep the side you mean or abort and pull agent-toolkit -- don't just
+  recompose and `git add`.
 - `claude/scripts/` — runtime scripts and tools. Read `claude/scripts/AGENTS.md` before
   editing scripts there.
 

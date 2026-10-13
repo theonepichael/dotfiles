@@ -24,6 +24,24 @@ agent-toolkit is behind, or diverged, therefore never rolls the file back and
 never fights another machine over it; --force overrides. The check and the
 write happen under an exclusive lock on claude/.global-instructions.md.lock.
 
+Merge driver: if two machines still commit different compositions in the
+same watchcommit poll, the second one's rebase would conflict. Every
+write-mode run therefore first registers this script as the repo-local git
+merge driver for the file (.gitattributes names it; git only takes the
+command from config): ``merge.global-instructions.driver`` runs
+``--merge-driver %O %A %B`` with this interpreter and this checkout, and the
+write is refused if registration fails. The driver never text-merges: it
+keeps whichever side's recorded source is forward of the other, after
+checking each side's core against the commit it names, and copies that side
+byte-for-byte. Byte-identical sides merge cleanly. Anything else -- an
+overlay mismatch, diverged or missing commits, a hand-edited core,
+unparseable content, any git failure -- exits 1, which git turns into an
+unmerged path holding the upstream side (no conflict markers); watchcommit
+then aborts the rebase as before. To resolve one by hand, inspect both sides
+(``git show :2:claude/global-instructions.md`` and ``:3:``) and keep the one
+you intend, or abort, pull agent-toolkit and retry -- never blindly
+recompose and ``git add``.
+
 The checkout is resolved by dotfiles_cli_common.agent_toolkit_checkout:
 --agent-toolkit-path, else $AGENT_TOOLKIT_PATH, else
 ~/Workspace/agent-toolkit/agent-toolkit, else ~/Workspace/agent-toolkit.
@@ -33,8 +51,10 @@ Usage:
     python3 claude/scripts/gen_core_instructions.py --check     exit 1 if stale
     python3 claude/scripts/gen_core_instructions.py --stdout    print, write nothing
     python3 claude/scripts/gen_core_instructions.py --print-agent-toolkit-path
+    python3 claude/scripts/gen_core_instructions.py --merge-driver BASE OURS THEIRS
 
-Flags: --check, --stdout, --print-agent-toolkit-path, --force,
+Flags: --check, --stdout, --print-agent-toolkit-path, --merge-driver <3 paths>,
+--force,
 --agent-toolkit-path <path>, --core-path <file>, --repo-root <path>,
 --quiet/-q, --verbose/-v.
 Env vars: AGENT_TOOLKIT_PATH (agent-toolkit checkout; set but not a checkout is
@@ -44,11 +64,14 @@ Files read: claude/CORE_INSTRUCTIONS.md at the agent-toolkit source commit
 <repo>/claude/personal-overlay.md.
 Files written: <repo>/claude/global-instructions.md, atomically and only when
 its content changes (skipped by --check, --stdout and
---print-agent-toolkit-path); <repo>/claude/.global-instructions.md.lock.
+--print-agent-toolkit-path); <repo>/claude/.global-instructions.md.lock;
+<repo>'s local git config (merge.global-instructions.*, on every write-mode
+run); OURS, in --merge-driver mode.
 Exit codes: 0 written or already up to date; 1 --check found stale output;
 2 bad usage, an unresolvable checkout, a missing or unreadable input, or a
 git failure (always reported, even with -q); 3 write skipped by the
-forward-only rule (reported on stderr unless -q).
+forward-only rule (reported on stderr unless -q). --merge-driver: 0 resolved,
+1 left unresolved (OURS untouched).
 
 Requires Python 3.12+.
 """
@@ -77,6 +100,10 @@ DO_NOT_EDIT_MARKER = (
 CORE_RELPATH = "claude/CORE_INSTRUCTIONS.md"
 UNKNOWN_SOURCE = "unknown"
 PROVENANCE_RE = re.compile(r"^<!-- agent-toolkit source: (\S+) -->$", re.MULTILINE)
+
+
+MERGE_DRIVER_NAME = "global-instructions"
+MERGE_DRIVER_LABEL = "global-instructions.md: keep the forward-most agent-toolkit core"
 
 
 class ComposeError(Exception):
@@ -172,6 +199,136 @@ def check_forward(checkout: Path, recorded: str | None, local: str) -> None:
         )
 
 
+def register_merge_driver(repo_root: Path, python: str, checkout: Path | None) -> None:
+    """Point the repo's ``merge.global-instructions`` driver at this script.
+
+    A no-op outside a git work tree (no race is possible there). Raises
+    ComposeError if a path cannot be quoted safely or the config write does
+    not stick, so callers refuse to compose rather than create a commit the
+    repo could not resolve.
+    """
+    inside = _git(repo_root, "rev-parse", "--is-inside-work-tree")
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        return
+    parts = [python] + ([] if checkout is None else [str(checkout)])
+    for part in parts:
+        if "'" in part:
+            raise ComposeError(
+                f"cannot register the merge driver: {part!r} contains a quote"
+            )
+    command = f"'{python}' claude/scripts/gen_core_instructions.py"
+    if checkout is not None:
+        command += f" --agent-toolkit-path '{checkout}'"
+    command += " --merge-driver %O %A %B"
+    for key, value in (("name", MERGE_DRIVER_LABEL), ("driver", command)):
+        result = _git(
+            repo_root, "config", "--local", f"merge.{MERGE_DRIVER_NAME}.{key}", value
+        )
+        if result.returncode != 0:
+            raise ComposeError(
+                f"cannot register the merge driver in {repo_root}: "
+                f"{result.stderr.strip()}"
+            )
+    stored = _git(
+        repo_root, "config", "--local", "--get", f"merge.{MERGE_DRIVER_NAME}.driver"
+    )
+    if stored.stdout.strip() != command:
+        raise ComposeError(
+            f"cannot register the merge driver in {repo_root}: config did not stick"
+        )
+
+
+def _normalize(text: str) -> str:
+    return text.replace("\r\n", "\n")
+
+
+def parse_composed(text: str) -> tuple[str, str, str] | None:
+    """Split normalized composed text into (core, source, overlay), or None."""
+    text = _normalize(text)
+    core, marker, rest = text.partition(DO_NOT_EDIT_MARKER)
+    if not marker or not rest.startswith("\n"):
+        return None
+    line, newline, overlay = rest[1:].partition("\n")
+    match = PROVENANCE_RE.fullmatch(line)
+    if match is None or not newline:
+        return None
+    return core.rstrip("\n"), match.group(1), overlay.strip("\n")
+
+
+class _Unresolved(Exception):
+    """The driver cannot pick a side safely; leave the conflict."""
+
+
+def _check_side_core(checkout: Path, core: str, source: str) -> None:
+    if source == UNKNOWN_SOURCE:
+        raise _Unresolved("a side was composed without a known agent-toolkit source")
+    if _git(checkout, "cat-file", "-e", f"{source}^{{commit}}").returncode != 0:
+        raise _Unresolved(f"agent-toolkit {source} is not a commit in {checkout}")
+    shown = _git(checkout, "show", f"{source}:{CORE_RELPATH}")
+    if shown.returncode != 0:
+        raise _Unresolved(f"cannot read {CORE_RELPATH} at {source}")
+    if _normalize(shown.stdout).rstrip("\n") != core:
+        raise _Unresolved(f"a side's core does not match agent-toolkit {source}")
+
+
+def _is_ancestor(checkout: Path, older: str, newer: str) -> bool:
+    result = _git(checkout, "merge-base", "--is-ancestor", older, newer)
+    if result.returncode not in (0, 1):
+        raise _Unresolved(f"git merge-base failed: {result.stderr.strip()}")
+    return result.returncode == 0
+
+
+def _select_side(
+    explicit_checkout: Path | None, ours_bytes: bytes, theirs_bytes: bytes
+) -> tuple[bool, str]:
+    """Return (take_theirs, reason) or raise _Unresolved; never writes."""
+    sides = []
+    for raw in (ours_bytes, theirs_bytes):
+        parsed = parse_composed(raw.decode("utf-8"))
+        if parsed is None:
+            raise _Unresolved("a side is not a composed global-instructions.md")
+        sides.append(parsed)
+    (ours_core, ours_src, ours_overlay), (theirs_core, theirs_src, theirs_overlay) = (
+        sides
+    )
+    if ours_overlay != theirs_overlay:
+        raise _Unresolved("the personal overlays differ -- resolve by hand")
+    if ours_src == theirs_src:
+        raise _Unresolved(f"both sides claim {ours_src} but differ")
+    try:
+        checkout = cli_common.agent_toolkit_checkout(explicit=explicit_checkout)
+    except cli_common.AgentToolkitNotFoundError as exc:
+        raise _Unresolved(str(exc)) from exc
+    _check_side_core(checkout, ours_core, ours_src)
+    _check_side_core(checkout, theirs_core, theirs_src)
+    if _is_ancestor(checkout, theirs_src, ours_src):
+        return False, f"kept {ours_src[:12]} (forward of {theirs_src[:12]})"
+    if _is_ancestor(checkout, ours_src, theirs_src):
+        return True, f"took {theirs_src[:12]} (forward of {ours_src[:12]})"
+    raise _Unresolved(f"{ours_src} and {theirs_src} have diverged")
+
+
+def merge_driver(explicit_checkout: Path | None, ours: Path, theirs: Path) -> int:
+    """Resolve a global-instructions.md conflict by whole-side selection.
+
+    ``ours`` is git's %A (upstream plus what is replayed so far), ``theirs``
+    %B. Returns 0 with the chosen side in ``ours``, or 1 leaving ``ours``
+    untouched.
+    """
+    try:
+        ours_bytes, theirs_bytes = ours.read_bytes(), theirs.read_bytes()
+        if ours_bytes == theirs_bytes:
+            return 0
+        take_theirs, reason = _select_side(explicit_checkout, ours_bytes, theirs_bytes)
+        if take_theirs:
+            write_atomically_bytes(ours, theirs_bytes)
+    except (_Unresolved, ComposeError, OSError, UnicodeDecodeError) as exc:
+        print(f"[gen_core_instructions] merge: left unresolved: {exc}", file=sys.stderr)
+        return 1
+    print(f"[gen_core_instructions] merge: {reason}", file=sys.stderr)
+    return 0
+
+
 @contextmanager
 def output_lock(output_path: Path) -> Iterator[None]:
     """Hold an exclusive lock serializing every composer writing ``output_path``."""
@@ -186,11 +343,16 @@ def output_lock(output_path: Path) -> Iterator[None]:
 
 def write_atomically(path: Path, text: str) -> None:
     """Write ``text`` to ``path`` so a reader never sees a partial file."""
+    write_atomically_bytes(path, text.encode("utf-8"))
+
+
+def write_atomically_bytes(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` so a reader never sees a partial file."""
     fd, temp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     temp_path = Path(temp_name)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
         os.replace(temp_path, path)
     except BaseException:
         temp_path.unlink(missing_ok=True)
@@ -223,6 +385,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--print-agent-toolkit-path",
         action="store_true",
         help="print the resolved agent-toolkit checkout and exit",
+    )
+    mode.add_argument(
+        "--merge-driver",
+        nargs=3,
+        type=Path,
+        default=None,
+        metavar=("BASE", "OURS", "THEIRS"),
+        help="act as git's merge driver for global-instructions.md (%%O %%A %%B)",
     )
     parser.add_argument(
         "--force",
@@ -261,6 +431,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     def fail(message: str) -> int:
         print(f"[gen_core_instructions] {message}", file=sys.stderr)
         return 2
+
+    if args.merge_driver is not None:
+        # BASE is ignored: provenance ancestry decides, not a 3-way text merge.
+        _base, ours, theirs = args.merge_driver
+        return merge_driver(args.agent_toolkit_path, ours, theirs)
 
     repo_root = (args.repo_root or default_repo_root()).resolve()
     output_path = repo_root / "claude" / "global-instructions.md"
@@ -319,6 +494,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     try:
+        register_merge_driver(repo_root, sys.executable, checkout)
         with output_lock(output_path):
             current = (
                 output_path.read_text(encoding="utf-8")
