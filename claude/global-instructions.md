@@ -1,7 +1,7 @@
 # CLAUDE.md
 
-<!-- Shared with ~/.copilot/copilot-instructions.md and ~/.gemini/GEMINI.md (same
-     symlink target). -->
+<!-- Shared with ~/.copilot/copilot-instructions.md, ~/.gemini/GEMINI.md,
+     ~/.pi/agent/AGENTS.md, and ~/.codex/AGENTS.md (same symlink target). -->
 
 ## Planning Gate
 
@@ -45,6 +45,33 @@ fix genuinely only covers the specific instance (time pressure, unclear root
 cause, etc.), say so explicitly and note what a systemic fix would look
 like, rather than letting the instance-only fix pass as if it were complete.
 
+### Fit the existing design
+
+Before implementing, check how nearby code — callers, siblings, the
+module's own tests — already solves the same kind of problem (error
+handling, config loading, test fixtures), and reuse that approach. This is
+about solution structure, not just naming and style. Scale the look to the
+change: a trivial edit needs no survey, and finding no analogue nearby
+means proceed, not search exhaustively.
+
+Departing from a pattern is a judgment call (see above): never silently
+introduce a second way of doing the same thing — put the deviation and its
+reason in the plan when the Planning Gate applies, otherwise state it at
+the point of change. A concrete defect in the existing pattern, or a
+drawback that matters for this task, is a valid reason; a general
+preference isn't. Existing instances outside the task stay as they are —
+offer them via Proactive capture below.
+
+A repo's written conventions (`STYLE.md`, `AGENTS.md`, lint config)
+outrank patterns inferred from code. An alternative a convention explicitly
+allows needs no waiver, but still gets explained if it departs from the
+surrounding code. Violating an applicable written requirement needs the
+user's okay even on a trivial edit — the trivial-change exception waives
+planning, not written requirements; an approved plan naming the deviation
+counts. Where the codebase deliberately uses several approaches (e.g. test
+style chosen by what's under test), pick by which case the change belongs
+to, not by which instance is closest or newest.
+
 ### Naming conflated states without over-building
 
 A label conflating two cases with different resumption costs (e.g. "not
@@ -61,7 +88,7 @@ underneath — the `--model-index` bug (silent fallback became a hard error)
 was exactly this: every skill doc that named the flag still compiled and
 still passed a marker check, because nothing re-read the flag's actual
 current behavior. Before committing an edit to any script under
-`claude/scripts/` that a skill doc names (check `INTERFACES.md`'s "Tested
+`agent-scripts/` that a skill doc names (check `INTERFACES.md`'s "Tested
 by"/module entries, or grep `claude/commands/`, `opencode/skills/`,
 `copilot/skills/`, `agy/skills/`, `pi/prompts/` for the script's filename), read that
 script's updated `INTERFACES.md` entry and check every skill doc that names
@@ -130,7 +157,7 @@ turns that the outcome genuinely needs synthesis.
 When the user says "add this as a backlog item" or a variation of it, run:
 
 ```bash
-python3 ~/.claude/scripts/dev_status.py add '{"id": "<prefix-slug>", "summary": "<concise title>", "category": "<bug|feature|chore|research>", "context": "<what was happening>", "next_steps": "<what to pick up from>", "related_files": [{"path": "<abs path>", "note": "<note>"}]}'
+python3 ~/.agent-toolkit/scripts/dev_status.py add '{"id": "<prefix-slug>", "summary": "<concise title>", "category": "<bug|feature|chore|research>", "context": "<what was happening>", "next_steps": "<what to pick up from>", "related_files": [{"path": "<abs path>", "note": "<note>"}]}'
 ```
 
 The `id` field is **required**. Use a kebab-case slug whose prefix names the
@@ -177,9 +204,9 @@ cycle detection — it would silently clobber anything already set and skip
 and duplicate/cycle-safe:
 
 - An existing item should block the new one:
-  `python3 ~/.claude/scripts/dev_status.py block <new-slug> <existing-slug>`
+  `python3 ~/.agent-toolkit/scripts/dev_status.py block <new-slug> <existing-slug>`
 - The new item should block an existing one:
-  `python3 ~/.claude/scripts/dev_status.py block <existing-slug> <new-slug>`
+  `python3 ~/.agent-toolkit/scripts/dev_status.py block <existing-slug> <new-slug>`
 
 (`block`'s arguments are `<id> <blocker>` — the item being blocked comes
 first, the blocker second.)
@@ -192,8 +219,8 @@ risk as `update` above), so check the item's current `blocking` first and
 include it in the patch:
 
 ```bash
-python3 ~/.claude/scripts/dev_status.py show <new-slug>
-python3 ~/.claude/scripts/dev_status.py pending update <new-slug> '{"blocking": ["<existing-slug>", ...already-present entries...]}'
+python3 ~/.agent-toolkit/scripts/dev_status.py show <new-slug>
+python3 ~/.agent-toolkit/scripts/dev_status.py pending update <new-slug> '{"blocking": ["<existing-slug>", ...already-present entries...]}'
 ```
 
 If nothing looks related, do nothing — this is a judgment call per add, not
@@ -253,12 +280,12 @@ confirmation. At most one offer per distinct concept; if declined, don't
 re-offer it.
 
 ```bash
-python3 ~/.claude/scripts/dev_status.py out-of-scope add <concept-slug> --reason-file <path> [--related-item <backlog-slug>]
-python3 ~/.claude/scripts/dev_status.py out-of-scope list
-python3 ~/.claude/scripts/dev_status.py out-of-scope show <concept-slug>
-python3 ~/.claude/scripts/dev_status.py out-of-scope link <concept-slug> <backlog-slug>
-python3 ~/.claude/scripts/dev_status.py out-of-scope unlink <concept-slug> <backlog-slug>
-python3 ~/.claude/scripts/dev_status.py out-of-scope remove <concept-slug>
+python3 ~/.agent-toolkit/scripts/dev_status.py out-of-scope add <concept-slug> --reason-file <path> [--related-item <backlog-slug>]
+python3 ~/.agent-toolkit/scripts/dev_status.py out-of-scope list
+python3 ~/.agent-toolkit/scripts/dev_status.py out-of-scope show <concept-slug>
+python3 ~/.agent-toolkit/scripts/dev_status.py out-of-scope link <concept-slug> <backlog-slug>
+python3 ~/.agent-toolkit/scripts/dev_status.py out-of-scope unlink <concept-slug> <backlog-slug>
+python3 ~/.agent-toolkit/scripts/dev_status.py out-of-scope remove <concept-slug>
 ```
 
 `out-of-scope` is unrelated to `reject <id> <feedback>` below — `reject`
@@ -269,25 +296,26 @@ To update, start, or complete an item — pass the integer directly to the scrip
 **Do not look up the slug in your context; the script resolves numbers internally.**
 
 ```bash
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py start <slug|N>
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py done <slug|N>
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py update <slug|N> '{"field": "value"}'
-python3 ~/.claude/scripts/dev_status.py show <slug|N>
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py start <slug|N>
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py done <slug|N>
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py reopen <slug|N>
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py update <slug|N> '{"field": "value"}'
+python3 ~/.agent-toolkit/scripts/dev_status.py show <slug|N>
 ```
 
 Once work is ready for review, submit it and let the review/approve/reject
 cycle replace a direct `done`:
 
 ```bash
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py review <slug|N>
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py approve <slug|N>
-DEVSTATUS_AGENT=1 python3 ~/.claude/scripts/dev_status.py reject <slug|N> "<feedback>"
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py review <slug|N>
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py approve <slug|N>
+DEVSTATUS_AGENT=1 python3 ~/.agent-toolkit/scripts/dev_status.py reject <slug|N> "<feedback>"
 ```
 
-When passing a numeric position (not a slug) to `start`/`done`/`update`/`block`/
-`unblock`/`pending update`/`review`/`approve`/`reject`/`run`/`gate-set`/
-`gate-pass`/`remove`/`rename` (rename's numeric position is its `old_slug`
-argument), fetch the current rev first —
+When passing a numeric position (not a slug) to `start`/`done`/`reopen`/
+`update`/`block`/`unblock`/`pending update`/`review`/`approve`/`reject`/`run`/
+`gate-set`/`gate-pass`/`remove`/`rename` (rename's numeric position is its
+`old_slug` argument), fetch the current rev first —
 the `item-map:` line of `render` (or `# rev=N` of `list`/`show`) output — in the
 same tool-call step immediately before the mutating call, and pass it as
 `--if-rev <N>`. This pre-mutation `render` must run **without**
@@ -300,10 +328,18 @@ render printed for retry, it never silently mutates the wrong item.
 Slug-based calls are exempt and need nothing extra.
 
 When work is ready, submit it with `review`; once a reviewer approves it (or
-you're working solo and are confident it's ready), use `approve` to mark it done.
-`done` alone now refuses on an in-review item — go through the review cycle
-(`approve` to complete, `reject <feedback>` to send back) rather than patching
-`status` directly, which is also refused for in-review items.
+you're working solo and are confident it's ready), use `approve` to mark it
+done. `done` alone now refuses on an in-review item — go through the review
+cycle (`approve` to complete, `reject <feedback>` to send back). Patching
+`status` directly is refused by `update` outright now (as is `claimed_by`):
+every lifecycle move goes through the command for its edge — `start`,
+`review`, `approve`, `reject`, `done`, or `reopen` (in-progress or done →
+open, releasing the claim and invalidating a passed gate).
+
+If `approve`/`done` runs from the item's own slug-named worktree and that
+worktree's HEAD isn't confirmed merged into the default branch, both print an
+advisory warning (completion still succeeds — this is a flag, not a guard).
+Don't skip the merge step just because the command didn't stop you.
 
 An item whose implementation plan had judgment-call steps may also carry a
 `gate` (set via `gate-set` when the plan was classified — see backlog-item.md
@@ -315,15 +351,23 @@ records an executed command; `"manual:<note>"` covers genuinely-manual
 checks) and retry. A bare `gate-pass` without coverage is refused.
 `gate` can't be set via a raw `update` patch — always `gate-set`/`gate-pass`.
 
-Under `DEVSTATUS_AGENT=1`, mutating commands (`start`, `done`, `update`,
-`review`, `approve`, `reject`, `add`, `pending *`, `block`, `unblock`,
-`gate-*`, `rename`, `remove`) emit a single structured confirmation line on
-stdout: `[<cmd>] slug=<slug> status=<status> rev=<rev> [ref=<ref>]
-detail="<detail>"`. Because the harness tool runner displays stdout directly
-to the user, do not copy or narrate the confirmation back. Verify against
-misresolution by checking that `slug`, `ref` (if numeric), and `detail`
-match the item intended; if they don't, revert (`update <slug> '{"status":
-"open"}'` or similar) and ask.
+Under `DEVSTATUS_AGENT=1`, mutating commands (`start`, `done`, `reopen`,
+`update`, `review`, `approve`, `reject`, `add`, `pending *`, `block`,
+`unblock`, `gate-*`, `rename`, `remove`) emit a single structured
+confirmation line on stdout: `[<cmd>] slug=<slug> status=<status> rev=<rev>
+[ref=<ref>] detail="<detail>"`. Because the harness tool runner displays
+stdout directly to the user, do not copy or narrate the confirmation back.
+Verify against misresolution by checking that `slug`, `ref` (if numeric), and
+`detail` match the item intended; if they don't, revert (`reopen <slug>` or
+similar) and ask.
+
+Exit code 75 from any toolkit script (`dev_status.py`, `grill.py`,
+`second_opinion.py`, `to_tickets_runner.py`, `vitals_promotion.py`, ...)
+means the machine-wide migration lock refused the write — nothing was
+written. Run `python3 ~/.agent-toolkit/scripts/migration_lock.py status`: if a
+toolkit-home migration holds it exclusively, tell the user and retry once it
+finishes; if the lock file itself is unusable, report that and stop. Never
+work around the refusal — no hand-edits to the stores, no retry loop.
 
 If the item's work touched a real project repo and left actual file
 changes, offer to commit — and if the repo has a remote, offer to push too
@@ -359,7 +403,7 @@ names ("work on 4", "let's pick up the truncation item", etc.), run `show` on it
 first and read the full record:
 
 ```bash
-python3 ~/.claude/scripts/dev_status.py show <slug|N>
+python3 ~/.agent-toolkit/scripts/dev_status.py show <slug|N>
 ```
 
 Then, with that context in hand, actually act on it — e.g. open the listed
@@ -379,17 +423,18 @@ and prose cross-references, use slugs for any item references — never raw hex 
 #### Starting work on a backlog item
 
 Follow the Git section's worktree-first policy below: before touching the repo
-under `related_files` or branching in main, run the worktree automation tool:
+under `related_files` or branching in main, run the worktree subcommand:
 
 ```bash
-python3 ~/.claude/scripts/worktree.py <slug|N>
+python3 ~/.agent-toolkit/scripts/dev_status.py worktree <slug|N>
 ```
 
 This resolves the target repository from the item's `related_files`, sets up
 or reuses the worktree at the sibling path, and bootstraps its dependencies in
-a single step. Never create worktrees manually with bare `git worktree add` or
-invoke bootstrap scripts by hand when working a backlog item — `worktree.py`
-owns both steps.
+a single step (it delegates to `worktree.py` internally — that script is an
+implementation detail now, not the entry point). Never create worktrees
+manually with bare `git worktree add` or invoke bootstrap scripts by hand
+when working a backlog item.
 
 `dev_status.py start` now enforces part of this itself, as a backstop: it
 refuses to run from a main/master checkout of a git repository (exit 1,
@@ -412,7 +457,7 @@ approval), offer explicitly — never add silently: "want me to track this as
 a pending item?"
 
 ```bash
-python3 ~/.claude/scripts/dev_status.py pending add '{"id": "<slug>", "description": "<what you are waiting on>", "kind": "<email|chat|approval>", "source_ref": {...}, "context": "<why>", "next_steps": ["..."]}'
+python3 ~/.agent-toolkit/scripts/dev_status.py pending add '{"id": "<slug>", "description": "<what you are waiting on>", "kind": "<email|chat|approval>", "source_ref": {...}, "context": "<why>", "next_steps": ["..."]}'
 ```
 
 Status moves one step at a time — `waiting_for_reply` → `reply_received` →
@@ -420,8 +465,8 @@ Status moves one step at a time — `waiting_for_reply` → `reply_received` →
 needs a look, not that it's closed:
 
 ```bash
-python3 ~/.claude/scripts/dev_status.py pending update <slug|N> '{"status": "reply_received"}'
-python3 ~/.claude/scripts/dev_status.py pending update <slug|N> '{"status": "resolved", "outcome": "<what happened>"}'
+python3 ~/.agent-toolkit/scripts/dev_status.py pending update <slug|N> '{"status": "reply_received"}'
+python3 ~/.agent-toolkit/scripts/dev_status.py pending update <slug|N> '{"status": "resolved", "outcome": "<what happened>"}'
 ```
 
 Same proactive-capture discipline as the backlog section above: if you catch
@@ -437,14 +482,17 @@ used for backlog capture.
   work — regardless of whether the checkout is currently clean or dirty,
   and even in solo sessions with no concurrent activity — create a fresh
   worktree for it rather than branching in the existing checkout. Always
-  use the canonical automation tool:
+  use the canonical automation entry point:
 
   ```bash
-  python3 ~/.claude/scripts/worktree.py <slug|N>
+  python3 ~/.agent-toolkit/scripts/dev_status.py worktree <slug|N>
   ```
 
-  `worktree.py` automatically resolves the repository from the backlog item,
-  handles branch creation or attachment, reuses existing worktrees idempotently,
+  This delegates to `worktree.py` internally, which automatically resolves
+  the repository from the backlog item, handles branch creation or
+  attachment (a new branch starts from the item's `integration_branch`
+  when one is set, else `HEAD`; `--base <ref>` overrides), reuses existing
+  worktrees idempotently,
   and bootstraps project dependencies in a single step. Do not manually run
   `git worktree add` or execute bare bootstrap scripts (`scripts/bootstrap-worktree.sh`,
   etc.) for backlog items.
@@ -461,7 +509,8 @@ used for backlog capture.
   checkout. On a machine where `install.py` has run, a pre-tool guard
   enforces it: every harness refuses a write into a repo's main checkout
   while a backlog item for that repo is in progress, and warns when a
-  worktree's base is behind `origin/main`. Only the user can switch it off,
+  worktree's base is behind `origin/main` (or `origin/<integration_branch>`
+  for an item that declares one). Only the user can switch it off,
   by setting `GUARD_RAILS_OFF=1` in the environment the harness is launched
   from — an agent's own `export` never reaches the hook. Elsewhere, this
   rule is on you.
@@ -479,8 +528,8 @@ used for backlog capture.
 ## Test Hygiene
 
 Never let tests touch real user state. Mock `subprocess.Popen`/
-`subprocess.run` calls and any writes to `~/.claude/`, `~/.config/`, or
-production data directories. When fixing a bug, add a regression test
+`subprocess.run` calls and any writes to `~/.claude/`, `~/.agent-toolkit/`,
+`~/.config/`, or production data directories. When fixing a bug, add a regression test
 proven to fail against the pre-fix code (run it red, then green) — a test
 that can't be made to fail first isn't verifying anything.
 
@@ -538,15 +587,15 @@ uv run ruff check --fix .        # lint + auto-fix
 - **No `Any`** unless genuinely unavoidable; prefer `object` or a Union
 - **Prefer `pathlib.Path`** over `os.path` string manipulation
 
-<!-- generated by claude/scripts/gen_core_instructions.py — do not edit; edit claude/CORE_INSTRUCTIONS.md (shareable) or claude/personal-overlay.md (this machine's personal policy) instead, then regenerate -->
+<!-- generated by claude/scripts/gen_core_instructions.py — do not edit; edit agent-toolkit's claude/CORE_INSTRUCTIONS.md (shareable) or dotfiles' claude/personal-overlay.md (this machine's personal policy) instead, then regenerate -->
 
 ## Personal Policy
 
-<!-- This user's own configuration, layered on top of CORE_INSTRUCTIONS.md.
-     Composed by claude/scripts/gen_core_instructions.py into the final
+<!-- This user's own configuration, layered on top of agent-toolkit's
+     claude/CORE_INSTRUCTIONS.md. Composed by
+     claude/scripts/gen_core_instructions.py into the final
      claude/global-instructions.md that's actually symlinked to every
-     harness. Never synced to agent-toolkit -- see
-     scripts/sync_from_dotfiles.py's EXCLUDE tuple. -->
+     harness. Never synced to agent-toolkit. -->
 
 ### MCP configuration note
 

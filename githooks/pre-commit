@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Block a commit that leaves global-instructions.md stale relative to
-# CORE_INSTRUCTIONS.md/personal-overlay.md (gen_core_instructions.py), or
-# that lets claude/commands/swarm.md drift from herdr_delegate.py's real
-# CLI contract, or that leaves INTERFACES.md itself stale. gen_core_
-# instructions.py runs first so a forgotten regeneration reports as that,
-# not as a confusing downstream CLI-contract-drift error from
-# gen_interfaces.py reading stale generated content. See
+# Block a commit that lets a skill/command doc drift from its script's real
+# CLI contract, or that leaves INTERFACES.md itself stale. See
 # claude/scripts/gen_interfaces.py --check for its two distinct exit codes
 # (1 = stale file, 3 = doc drift).
+#
+# global-instructions.md is deliberately not checked here: its core is read
+# live from agent-toolkit, so a commit-time freshness gate would fail CI
+# (no checkout) and stall watchcommit's auto-commits whenever agent-toolkit
+# moved. install-with-agent-toolkit.sh recomposes it on every install, and
+# test_gen_core_instructions.py checks the committed overlay portion.
 #
 # meta-agent-toolkit-migration-cutover: dropped the gen_skills.py/
 # gen_second_opinion.py checks that used to run here -- both scripts (and
@@ -25,15 +26,6 @@ repo_root="$(git rev-parse --show-toplevel)"
 # path below.
 source "$repo_root/githooks-global/lib/no-commit-on-main.sh"
 refuse_if_protected_branch || exit $?
-
-output="$(python3 "$repo_root/claude/scripts/gen_core_instructions.py" --check --repo-root "$repo_root" 2>&1)"
-status=$?
-if [ "$status" -ne 0 ]; then
-    echo "$output" >&2
-    echo "" >&2
-    echo "pre-commit: global-instructions.md is stale -- run gen_core_instructions.py, then re-stage and commit." >&2
-    exit "$status"
-fi
 
 output="$(python3 "$repo_root/claude/scripts/gen_interfaces.py" --check --repo-root "$repo_root" 2>&1)"
 status=$?

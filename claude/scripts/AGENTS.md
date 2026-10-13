@@ -14,16 +14,17 @@ actually calls through `~/.claude/scripts/` (`dev_status.py`, `grill.py`,
 easy to get wrong here; general conventions are in the repo root's
 `AGENTS.md` and `STYLE.md`.
 
-## `claude/CORE_INSTRUCTIONS.md` is pulled, not hand-edited
+## The core instructions are read from agent-toolkit, never copied here
 
-Since the 2026-09-10 zero-coupling flip, `CORE_INSTRUCTIONS.md` is authored
-in agent-toolkit and pulled into this repo by `sync_from_agent_toolkit.py`
-(`--check` for the drift-guard exit code, `--apply` to write). Hand-editing
-this repo's copy directly will get silently overwritten by the next
-`--apply`, or flagged as drift by `--check` — edit it in agent-toolkit
-instead. `gen_core_instructions.py` runs separately and composes it with
-`personal-overlay.md` into `global-instructions.md` regardless of which
-repo authors the upstream half.
+`CORE_INSTRUCTIONS.md` is authored in agent-toolkit, and this repo keeps no
+copy of it: a pulled copy went stale unnoticed once, leaving every harness
+loading two dozen paths that no longer existed. `gen_core_instructions.py`
+reads the core live from the checkout that
+`dotfiles_cli_common.agent_toolkit_checkout` resolves (`$AGENT_TOOLKIT_PATH`,
+then `~/Workspace/agent-toolkit/agent-toolkit`, then `~/Workspace/agent-toolkit`)
+and composes it with `personal-overlay.md` into `global-instructions.md`.
+Any script that needs the agent-toolkit checkout uses that resolver rather
+than its own default path.
 
 ## Standard library only
 

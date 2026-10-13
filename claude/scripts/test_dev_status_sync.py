@@ -20,29 +20,27 @@ import conftest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import dotfiles_cli_common as cli_common  # noqa: E402
+
 # dev_status.py itself lives in agent-toolkit post meta-agent-toolkit-
 # migration-cutover -- dev_status_sync.py finds it via the live install
 # directory (Path(__file__).parent, deliberately not .resolve()'d -- see
 # its own sys.path.insert), which this test can't replicate without an
-# actual install in place. Same AGENT_TOOLKIT_PATH convention as
-# scripts/install-with-agent-toolkit.sh.
-_AGENT_TOOLKIT_DIR = Path(
-    os.environ.get(
-        "AGENT_TOOLKIT_PATH",
-        str(conftest._REAL_HOME / "Workspace" / "agent-toolkit"),
+# actual install in place. An optional cross-repo integration test: it
+# resolves the checkout the same way install-with-agent-toolkit.sh does and
+# skips when there is none (CI has none).
+try:
+    _AGENT_TOOLKIT_DIR = cli_common.agent_toolkit_checkout(home=conftest._REAL_HOME)
+except cli_common.AgentToolkitNotFoundError as exc:
+    pytest.skip(
+        f"{exc} -- this cross-repo test needs an agent-toolkit checkout",
+        allow_module_level=True,
     )
-)
 _AGENT_TOOLKIT_SCRIPTS = _AGENT_TOOLKIT_DIR / "agent-scripts"
 if not (_AGENT_TOOLKIT_SCRIPTS / "dev_status.py").is_file():
-    if _AGENT_TOOLKIT_DIR.is_dir():
-        pytest.fail(
-            f"agent-toolkit directory found at {_AGENT_TOOLKIT_DIR}, but "
-            f"dev_status.py not found under {_AGENT_TOOLKIT_SCRIPTS}"
-        )
-    pytest.skip(
-        f"dev_status.py not found under {_AGENT_TOOLKIT_SCRIPTS} -- set "
-        "AGENT_TOOLKIT_PATH to your agent-toolkit checkout to run this test",
-        allow_module_level=True,
+    pytest.fail(
+        f"agent-toolkit checkout found at {_AGENT_TOOLKIT_DIR}, but "
+        f"dev_status.py not found under {_AGENT_TOOLKIT_SCRIPTS}"
     )
 sys.path.insert(0, str(_AGENT_TOOLKIT_SCRIPTS))
 
