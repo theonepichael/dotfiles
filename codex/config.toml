@@ -40,6 +40,9 @@ trust_level = "trusted"
 [projects."/home/yanil/Workspace"]
 trust_level = "trusted"
 
+[projects."/home/yanil/Workspace/mvc2-cloud/mvc2-cloud"]
+trust_level = "trusted"
+
 [sandbox_workspace_write]
 writable_roots = ["/home/yanil/.claude"]
 
@@ -49,3 +52,4 @@ screen_reader_detection_done = true
 
 [tui.model_availability_nux]
 gpt-6-astra = 4
+"gpt-6.1-sol" = 1
