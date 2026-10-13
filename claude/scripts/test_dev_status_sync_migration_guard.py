@@ -203,8 +203,9 @@ class MigrationGuardTests(base.SyncTestCase):
             pass
 
     def test_a_layout_change_since_start_refuses(self):
+        started_on = base.other_layout(self.sandbox_layout)
         with (
-            patch.object(sync, "_LAYOUT_AT_IMPORT", "toolkit-home"),
+            patch.object(sync, "_LAYOUT_AT_IMPORT", started_on),
             self.assertRaisesRegex(sync.SyncFatalError, "since this process started"),
             sync.migration_guard(),
         ):
@@ -248,7 +249,7 @@ class ExportImportGuardTests(base.SyncTestCase):
         payload = self._export()
         payload["items"][0]["status"] = "done"
         payload["expected_remote_state"] = {
-            "layout": "toolkit-home",
+            "layout": base.other_layout(payload["machine_state"]["layout"]),
             "decisions_root": payload["machine_state"]["decisions_root"],
         }
         with self.assertRaisesRegex(sync.SyncFatalError, "changed since export"):
@@ -441,7 +442,7 @@ class FinalRemoteStateTests(base.SyncTestCase):
 
     def test_a_remote_that_migrated_during_the_sync_is_not_committed_over(self):
         with self.assertRaisesRegex(sync.SyncFatalError, "changed during the sync"):
-            self._run(lambda s: {**s, "layout": "toolkit-home"})
+            self._run(lambda s: {**s, "layout": base.other_layout(s["layout"])})
 
     def test_a_remote_now_mid_migration_is_not_committed_over(self):
         with self.assertRaisesRegex(sync.SyncFatalError, "changed during the sync"):
