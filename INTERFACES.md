@@ -150,8 +150,12 @@ gen_core_instructions.py — compose agent-toolkit's CORE_INSTRUCTIONS.md + pers
   - `recorded_source(text: str) -> str | None` — Return the source commit recorded in composed ``text``, if any.
   - `read_core_at_source(checkout: Path) -> tuple[str, str]` — Return (source commit, core text at that commit) from ``checkout``.
   - `check_forward(checkout: Path, recorded: str | None, local: str) -> None` — Raise ForwardOnlySkip unless replacing ``recorded`` with ``local`` is forward.
+  - `register_merge_driver(repo_root: Path, python: str, checkout: Path | None) -> None` — Point the repo's ``merge.global-instructions`` driver at this script.
+  - `parse_composed(text: str) -> tuple[str, str, str] | None` — Split normalized composed text into (core, source, overlay), or None.
+  - `merge_driver(explicit_checkout: Path | None, ours: Path, theirs: Path) -> int` — Resolve a global-instructions.md conflict by whole-side selection.
   - `output_lock(output_path: Path) -> Iterator[None]` — Hold an exclusive lock serializing every composer writing ``output_path``.
   - `write_atomically(path: Path, text: str) -> None` — Write ``text`` to ``path`` so a reader never sees a partial file.
+  - `write_atomically_bytes(path: Path, data: bytes) -> None` — Write ``data`` to ``path`` so a reader never sees a partial file.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
   - `build_parser() -> argparse.ArgumentParser` — Build the CLI parser.
 - Tested by: `claude/scripts/test_gen_core_instructions.py`

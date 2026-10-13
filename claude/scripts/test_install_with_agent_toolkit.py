@@ -268,6 +268,18 @@ class InstallWithAgentToolkitTestCase(_WrapperTreeTestCase):
         self.assertIn("skipped", result.stderr)
         self.assertTrue(self.composed.read_text().startswith("old"))
 
+    def test_a_merge_driver_registration_failure_fails_the_wrapper(self) -> None:
+        self._write_both()
+        subprocess.run(["git", "init", "-q", str(self.dotfiles_dir)], check=True)
+        (self.dotfiles_dir / ".git" / "config.lock").write_text("held")
+
+        result = self._run(["--harness=claude"])
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("compose exit=2", result.stderr)
+        self.assertIn("merge driver", result.stderr)
+        self.assertFalse(self.composed.exists())
+
     def test_composer_failure_fails_the_wrapper(self) -> None:
         self._write_both()
         self.overlay.unlink()

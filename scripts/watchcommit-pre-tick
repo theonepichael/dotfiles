@@ -5,7 +5,10 @@
 # Recomposes claude/global-instructions.md from agent-toolkit's current
 # claude/CORE_INSTRUCTIONS.md, so an edit there reaches every harness within
 # a couple of watchcommit polls instead of waiting for the next install.
-# watchcommit commits whatever this writes on its next tick.
+# watchcommit commits whatever this writes on its next tick. Composing also
+# keeps this repo's git merge driver for that file registered (with the
+# interpreter chosen below), so two machines committing different
+# compositions in the same poll resolve on rebase instead of stalling.
 #
 # The composer only ever moves the file forward along agent-toolkit's
 # history: on a machine whose agent-toolkit checkout is behind, or diverged
