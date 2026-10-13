@@ -7,3 +7,4 @@ __pycache__/
 *.bundle
 .claude/settings.local.json
 /local/
+/claude/.global-instructions.md.lock

@@ -29,6 +29,8 @@ Claude Code and opencode config (`~/.claude/settings.json`, `~/.config/opencode/
 > ```
 >
 > The wrapper guarantees the correct installation order: it runs `agent-toolkit`'s installer first, then immediately runs `dotfiles`' installer second to reassert the composed personal overlay.
+>
+> After that, edits to `agent-toolkit`'s `claude/CORE_INSTRUCTIONS.md` reach every harness on their own: once committed there, watchcommit recomposes `claude/global-instructions.md` within a couple of polls (via `scripts/watchcommit-pre-tick`) and commits it. A machine whose `agent-toolkit` checkout is behind never rolls the shared file back.
 
 **Work machine, no git checkout?** The wrapper above assumes dotfiles should keep winning those five destinations — correct for a personal machine, wrong for work hardware, which shouldn't carry the personal overlay at all. If dotfiles there is a downloaded ZIP rather than a git checkout, see [`docs/work-machine-cutover.md`](docs/work-machine-cutover.md) for the inverse procedure.
 

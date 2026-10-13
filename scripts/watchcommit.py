@@ -46,6 +46,18 @@ touches the pause-file itself — it registers its own PID under
 $STATE_DIR/guard-pids while running, and is_paused() below checks both the
 pause-file and any live, identity-verified wc-guard registration.
 
+Pre-tick hook (opt-in, per repo): on a tick with nothing local to protect
+(not paused, no active agent, no changes, no unpushed commits) and only after
+the fast-forward pull succeeded, an executable <repo>/scripts/watchcommit-pre-tick
+is run with the repo as cwd, in its own process group, with a
+PRE_TICK_TIMEOUT-second limit (the whole group is killed on timeout). It lets
+a repo regenerate derived files from the freshly pulled state -- dotfiles uses
+it to recompose global-instructions.md from agent-toolkit. Whatever it writes
+is committed by the *next* tick through the ordinary change path, with every
+check above still applying; watchcommit itself knows nothing about what the
+hook does. Its output is echoed to stderr, and a failure or timeout is logged
+and never fails or backs off the cycle.
+
 Main-branch interaction: the no-commit-on-main pre-commit hook
 (githooks-global/lib/no-commit-on-main.sh) blocks every human/agent commit
 to main, but watchcommit's design commits straight to main — so the daemon
@@ -110,6 +122,11 @@ FALLBACK_MESSAGE = "chore(wip): auto-checkpoint (claude message-gen unavailable)
 # persistently-blocked commit (hook refusal, gen-check failure, dead remote)
 # costs one attempt per 15 minutes instead of a subprocess churn every 90s.
 MAX_BACKOFF_SECONDS = 900
+
+# Optional per-repo hook run on clean, freshly pulled ticks (see the module
+# docstring). Relative to the watched repo's root.
+PRE_TICK_HOOK = Path("scripts") / "watchcommit-pre-tick"
+PRE_TICK_TIMEOUT = 60
 
 # Linux /proc/[pid]/comm truncates the executable basename to at most
 # TASK_COMM_LEN-1 = 15 visible chars + null. Names <=15 chars match exactly;
@@ -461,11 +478,12 @@ def commit_and_push(repo: Path, message: str) -> bool:
     return push(repo, message, trigger="commit")
 
 
-def pull_ff_only(repo: Path) -> None:
+def pull_ff_only(repo: Path) -> bool:
     """Fast-forward pull, safe to call whenever there's nothing local to
     protect — can only fast-forward or no-op, never conflict. Records the
     move in activity state only when HEAD actually changed, so a no-op poll
-    tick doesn't spam last_pull with an identical from/to sha."""
+    tick doesn't spam last_pull with an identical from/to sha. Returns
+    whether the pull succeeded (a no-op counts as success)."""
     before_sha = git(repo, "rev-parse", "HEAD").stdout.strip()
     result = git(repo, "pull", "--ff-only")
     if result.returncode != 0:
@@ -473,10 +491,99 @@ def pull_ff_only(repo: Path) -> None:
             f"[watchcommit] background sync failed: {result.stderr.strip()}",
             file=sys.stderr,
         )
-        return
+        return False
     after_sha = git(repo, "rev-parse", "HEAD").stdout.strip()
     if after_sha != before_sha:
         _record_activity("last_pull", from_sha=before_sha, to_sha=after_sha)
+    return True
+
+
+def run_pre_tick_hook(repo: Path) -> None:
+    """Run the repo's optional pre-tick hook; log, never raise, never fail.
+
+    Runs in its own process group so a timeout kills the hook and anything it
+    spawned, not just the top-level process.
+    """
+    hook = repo / PRE_TICK_HOOK
+    if not (hook.is_file() and os.access(hook, os.X_OK)):
+        return
+    try:
+        proc = subprocess.Popen(
+            [str(hook)],
+            cwd=repo,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        print(f"[watchcommit] pre-tick: could not run {hook}: {exc}", file=sys.stderr)
+        return
+    try:
+        output, _ = proc.communicate(timeout=PRE_TICK_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        with suppress(ProcessLookupError):
+            os.killpg(proc.pid, 9)
+        proc.communicate()
+        print(
+            f"[watchcommit] pre-tick: {hook} timed out after {PRE_TICK_TIMEOUT}s "
+            "— killed",
+            file=sys.stderr,
+        )
+        return
+    for line in output.splitlines():
+        print(f"[watchcommit] pre-tick: {line}", file=sys.stderr)
+    if proc.returncode != 0:
+        print(
+            f"[watchcommit] pre-tick: {hook} exited {proc.returncode}",
+            file=sys.stderr,
+        )
+
+
+def tick(repo: Path) -> bool:
+    """Run one poll cycle; return False only when it should back off."""
+    if is_paused():
+        # Pause guard — either the touch-file (managed by wc-pause /
+        # wc-resume, or a manual `touch`/`rm`) or a live wc-guard
+        # registration. Skipping the cycle here holds the daemon back
+        # from racing any manual git history surgery or a script's
+        # deliberate temporary breakage. Logged via stderr so
+        # journalctl shows the gap alongside the regular commit lines.
+        print(f"[watchcommit] paused ({PAUSE_FILE})", file=sys.stderr)
+        return True
+    agents = agent_active(repo)
+    if agents:
+        # Opt-out agent-proc detection — a live LLM agent editing
+        # the repo mid-session. Skip the entire tick so the agent
+        # is never raced; its skips are surfacable via wc-status.
+        _write_agent_state(agents)
+        summary = ", ".join(f"{a.pid}={a.name}" for a in agents)
+        print(
+            f"[watchcommit] agent-active: {summary} — skipping tick",
+            file=sys.stderr,
+        )
+        return True
+    _clear_agent_state()
+    if has_changes(repo):
+        diff = build_diff(repo)
+        if diff:
+            message = message_for_diff(diff)
+            return commit_and_push(repo, message)
+        return True
+    if has_unpushed_commits(repo):
+        # Working tree is clean, but a prior cycle committed and then
+        # failed to push (remote had diverged in between). Retry —
+        # this is the case that used to get stuck silently forever,
+        # since has_changes() is False here and the old loop did
+        # nothing at all in that state.
+        return push(repo, "pushed previously-stuck commit(s)", trigger="retry")
+    # Nothing local to protect, so a plain fast-forward pull is always safe
+    # here. Keeps the working copy current even on machines that only ever
+    # read this repo. A failed pull keeps today's no-backoff behavior; the
+    # hook runs only against a successfully pulled tree.
+    if pull_ff_only(repo):
+        run_pre_tick_hook(repo)
+    return True
 
 
 def main() -> None:
@@ -498,52 +605,8 @@ def main() -> None:
 
     consecutive_failures = 0
     while True:
-        cycle_ok = True
         try:
-            if is_paused():
-                # Pause guard — either the touch-file (managed by wc-pause /
-                # wc-resume, or a manual `touch`/`rm`) or a live wc-guard
-                # registration. Skipping the cycle here holds the daemon back
-                # from racing any manual git history surgery or a script's
-                # deliberate temporary breakage. Logged via stderr so
-                # journalctl shows the gap alongside the regular commit lines.
-                print(f"[watchcommit] paused ({PAUSE_FILE})", file=sys.stderr)
-            else:
-                agents = agent_active(repo)
-                if agents:
-                    # Opt-out agent-proc detection — a live LLM agent editing
-                    # the repo mid-session. Skip the entire tick so the agent
-                    # is never raced; its skips are surfacable via wc-status.
-                    _write_agent_state(agents)
-                    summary = ", ".join(f"{a.pid}={a.name}" for a in agents)
-                    print(
-                        f"[watchcommit] agent-active: {summary} — skipping tick",
-                        file=sys.stderr,
-                    )
-                elif has_changes(repo):
-                    _clear_agent_state()
-                    diff = build_diff(repo)
-                    if diff:
-                        message = message_for_diff(diff)
-                        if not commit_and_push(repo, message):
-                            cycle_ok = False
-                elif has_unpushed_commits(repo):
-                    # Working tree is clean, but a prior cycle committed and then
-                    # failed to push (remote had diverged in between). Retry —
-                    # this is the case that used to get stuck silently forever,
-                    # since has_changes() is False here and the old loop did
-                    # nothing at all in that state.
-                    _clear_agent_state()
-                    if not push(
-                        repo, "pushed previously-stuck commit(s)", trigger="retry"
-                    ):
-                        cycle_ok = False
-                else:
-                    # Nothing local to protect, so a plain fast-forward pull is
-                    # always safe here. Keeps the working copy current even on
-                    # machines that only ever read this repo.
-                    _clear_agent_state()
-                    pull_ff_only(repo)
+            cycle_ok = tick(repo)
         except KeyboardInterrupt:
             print("\n[watchcommit] stopped")
             sys.exit(0)
