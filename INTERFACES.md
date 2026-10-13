@@ -126,7 +126,7 @@ Shared CLI helpers used across dotfiles scripts.
   - `qprint(msg: str, *, quiet: bool, file: TextIO | None = None) -> None` — Print a message unless quiet mode is enabled.
   - `is_agent_toolkit_checkout(path: Path) -> bool` — True when ``path`` has install.py and links.toml and an agent-scripts/ dir.
   - `agent_toolkit_checkout(*, explicit: Path | None = None, env: Mapping[str, str] | None = None, home: Path | None = None) -> Path` — Return the agent-toolkit checkout, resolved.
-- Tested by: `claude/scripts/test_dev_status_sync.py`, `claude/scripts/test_dotfiles_cli_common.py`, `test/test_link_ownership_boundary.py`
+- Tested by: `claude/scripts/test_dev_status_sync.py`, `claude/scripts/test_dotfiles_cli_common.py`, `claude/scripts/test_install_with_agent_toolkit.py`, `test/test_link_ownership_boundary.py`
 
 ### `claude/scripts/gen_core_instructions.py`
 

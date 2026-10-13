@@ -41,21 +41,66 @@
 # each mean something different per-repo (rolling back BOTH repos' entire
 # histories together, auditing two different link tables at once) that this
 # script does not attempt to reconcile -- run install.py directly in the
-# repo you mean for those.
+# repo you mean for those. The same goes for agent-toolkit's toolkit-home
+# migration actions and every modifier that only means something alongside
+# one of those actions: REFUSED_FLAGS below lists them all.
+#
+# Each installer gets only the flags it accepts. Both reject an unknown flag
+# with exit 2, so forwarding "$@" verbatim to both broke the run whenever a
+# flag existed on one side only: --force-harness (agent-toolkit: configure a
+# harness whose CLI isn't on PATH) made the dotfiles step fail and skip the
+# compose, and --no-nvim-pin (dotfiles) failed the agent-toolkit step.
 set -eu
+
+# Flag routing table, long names only, one line each.
+# claude/scripts/test_install_with_agent_toolkit.py reads these four lines
+# and reads both installers' argparse declarations, and fails until every
+# flag either installer declares is classified here. The shell only acts on
+# the last three: anything not one-sided is forwarded to both installers.
+# shellcheck disable=SC2034 # read by the drift test, not by this script.
+SHARED_FLAGS="--profile --harness --force --dry-run --reseed --adopt --quiet --verbose --help"
+AGENT_TOOLKIT_ONLY_FLAGS="--force-harness"
+DOTFILES_ONLY_FLAGS="--no-nvim-pin"
+REFUSED_FLAGS="--rollback --check-links --depart --wipe --yes --report-uninstalled --no-report-uninstalled --during-migration --migrate-toolkit-home --json --cross-filesystem --skip-reconciliation --migration-id --rollback-toolkit-home-migration --finalize-toolkit-home-migration --move-layout-pointer"
+
+# run_without <drop-list> <python> <install.py> [args...]
+# Runs the installer with every arg that exactly matches a flag in
+# <drop-list> removed, keeping the rest (empty strings, spaces, globs) in
+# order. An ordinary call, never exec, so the wrapper always reaches its next
+# step; the installer is the last command, so its status is the function's.
+run_without() {
+  _drop=$1
+  _python=$2
+  _script=$3
+  shift 3
+  for _arg; do
+    shift
+    _keep=1
+    for _flag in $_drop; do
+      case "$_arg" in "$_flag") _keep=0 ;; esac
+    done
+    if [ "$_keep" = 1 ]; then
+      set -- "$@" "$_arg"
+    fi
+  done
+  "$_python" "$_script" "$@"
+}
 
 # shellcheck disable=SC1007 # CDPATH= clears CDPATH for this one command so cd ignores it.
 DOTFILES_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
 for flag in "$@"; do
-  case "$flag" in
-    --rollback | --check-links | --depart | --wipe)
-      echo "install-with-agent-toolkit.sh: --rollback/--check-links/--depart/--wipe" >&2
-      echo "  each mean something different per repo -- run install.py directly in" >&2
-      echo "  the repo you mean (agent-toolkit or dotfiles), not through this wrapper." >&2
-      exit 2
-      ;;
-  esac
+  for refused in $REFUSED_FLAGS; do
+    case "$flag" in
+      "$refused" | "$refused"=*)
+        echo "install-with-agent-toolkit.sh: $refused is not a plain install flag" >&2
+        echo "  (it means something different per repo, or exists in only one) --" >&2
+        echo "  run install.py directly in the repo you mean (agent-toolkit or" >&2
+        echo "  dotfiles), not through this wrapper." >&2
+        exit 2
+        ;;
+    esac
+  done
 done
 
 for candidate in python3.14 python3 python3.13 python3.12 python; do
@@ -82,7 +127,11 @@ export AGENT_TOOLKIT_PATH="$AGENT_TOOLKIT_DIR"
 
 echo "==> agent-toolkit installer ($AGENT_TOOLKIT_DIR)"
 agent_toolkit_status=0
-AGENT_TOOLKIT_INSTALL_WRAPPER=1 "$PYTHON" "$AGENT_TOOLKIT_DIR/install.py" "$@" || agent_toolkit_status=$?
+(
+  AGENT_TOOLKIT_INSTALL_WRAPPER=1
+  export AGENT_TOOLKIT_INSTALL_WRAPPER
+  run_without "$DOTFILES_ONLY_FLAGS" "$PYTHON" "$AGENT_TOOLKIT_DIR/install.py" "$@"
+) || agent_toolkit_status=$?
 
 # The dotfiles reassert step below MUST still run even if agent-toolkit's
 # install reported a skip (exit 1 is install.py's normal "something was
@@ -95,7 +144,7 @@ AGENT_TOOLKIT_INSTALL_WRAPPER=1 "$PYTHON" "$AGENT_TOOLKIT_DIR/install.py" "$@" |
 echo ""
 echo "==> dotfiles installer ($DOTFILES_DIR) -- reasserting the personal overlay"
 dotfiles_status=0
-"$PYTHON" "$DOTFILES_DIR/install.py" "$@" || dotfiles_status=$?
+run_without "$AGENT_TOOLKIT_ONLY_FLAGS" "$PYTHON" "$DOTFILES_DIR/install.py" "$@" || dotfiles_status=$?
 
 compose_mode="write"
 for flag in "$@"; do
