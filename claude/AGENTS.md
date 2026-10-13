@@ -10,15 +10,19 @@ composition sources. Harness-runtime Python scripts live in child `claude/script
 
 ## Hazards & Signposts
 
-- `CORE_INSTRUCTIONS.md` is pulled, not hand-edited: authored upstream in
-  `agent-toolkit` and synchronized via `claude/scripts/sync_from_agent_toolkit.py`.
-  Direct edits will be overwritten.
-- `global-instructions.md` is generated: composed from `CORE_INSTRUCTIONS.md` +
-  `personal-overlay.md` by `claude/scripts/gen_core_instructions.py`.
+- There is no `CORE_INSTRUCTIONS.md` here, on purpose: the shareable core is
+  authored in agent-toolkit and read live from its checkout. Edit it there.
+- `global-instructions.md` is generated and committed: composed from
+  agent-toolkit's `claude/CORE_INSTRUCTIONS.md` + `personal-overlay.md` by
+  `claude/scripts/gen_core_instructions.py`, which
+  `scripts/install-with-agent-toolkit.sh` reruns after every install. Never
+  hand-edit it; the next install overwrites it.
 - `claude/scripts/` — runtime scripts and tools. Read `claude/scripts/AGENTS.md` before
   editing scripts there.
 
 ## Local Conventions
 
-When modifying prompt overlays, run `python3 claude/scripts/gen_core_instructions.py --check`
-(or `--apply`) to verify composition integrity.
+After editing `personal-overlay.md`, run `python3 claude/scripts/gen_core_instructions.py`
+to recompose (`--check` reports staleness without writing).
+`test_gen_core_instructions.py` fails if the committed overlay portion no
+longer matches `personal-overlay.md`.

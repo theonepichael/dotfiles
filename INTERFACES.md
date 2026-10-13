@@ -35,10 +35,9 @@ House style for these interfaces is in `STYLE.md`.
 | --- | --- |
 | [`dev_status_sync.py`](#claudescriptsdevstatussyncpy) | dev_status_sync.py — cross-machine sync for dev_status.py's backlog/pending store. |
 | [`dotfiles_cli_common.py`](#claudescriptsdotfilesclicommonpy) | Shared CLI helpers used across dotfiles scripts. |
-| [`gen_core_instructions.py`](#claudescriptsgencoreinstructionspy) | gen_core_instructions.py — compose CORE_INSTRUCTIONS.md + personal-overlay.md into claude/global-instructions.md. |
+| [`gen_core_instructions.py`](#claudescriptsgencoreinstructionspy) | gen_core_instructions.py — compose agent-toolkit's CORE_INSTRUCTIONS.md + personal-overlay.md into claude/global-instructions.md. |
 | [`gen_interfaces.py`](#claudescriptsgeninterfacespy) | gen_interfaces.py — regenerate INTERFACES.md mechanically from the sources. |
 | [`settings_seed_drift_check.py`](#claudescriptssettingsseeddriftcheckpy) | CLI: detect and repair drift between the (under WSL) Windows-side VS Code ``settings.json``/``keybindings.json`` and their seeds in the dotfiles repo. |
-| [`sync_from_agent_toolkit.py`](#claudescriptssyncfromagenttoolkitpy) | sync_from_agent_toolkit.py — keep claude/CORE_INSTRUCTIONS.md current with agent-toolkit. |
 | [`watchcommit_activity.py`](#claudescriptswatchcommitactivitypy) | Print watchcommit's last known background pull/commit/push, so a session (or wc-status) can tell daemon-driven git state changes from manual ones instead of only seeing a clean/up-to-date working tree. |
 
 ### `claude/scripts/dev_status_sync.py`
@@ -119,29 +118,36 @@ Shared CLI helpers used across dotfiles scripts.
 - Installed at: not symlinked by `links.toml`
 - Entrypoint: not executable, no shebang
 - CLI: none (library module).
+- Exceptions:
+  - `class AgentToolkitNotFoundError(LookupError)` — No candidate location is an agent-toolkit checkout.
 - Public functions:
   - `add_verbosity_args(parser: argparse.ArgumentParser) -> None` — Add mutually-exclusive --quiet/-q and --verbose/-v flags to a parser.
   - `vprint(msg: str, *, verbose: bool, file: TextIO | None = None) -> None` — Print a diagnostic message when verbose mode is enabled.
   - `qprint(msg: str, *, quiet: bool, file: TextIO | None = None) -> None` — Print a message unless quiet mode is enabled.
-- Tested by: `claude/scripts/test_dotfiles_cli_common.py`
+  - `is_agent_toolkit_checkout(path: Path) -> bool` — True when ``path`` has install.py and links.toml and an agent-scripts/ dir.
+  - `agent_toolkit_checkout(*, explicit: Path | None = None, env: Mapping[str, str] | None = None, home: Path | None = None) -> Path` — Return the agent-toolkit checkout, resolved.
+- Tested by: `claude/scripts/test_dev_status_sync.py`, `claude/scripts/test_dotfiles_cli_common.py`, `test/test_link_ownership_boundary.py`
 
 ### `claude/scripts/gen_core_instructions.py`
 
-gen_core_instructions.py — compose CORE_INSTRUCTIONS.md + personal-overlay.md into claude/global-instructions.md.
+gen_core_instructions.py — compose agent-toolkit's CORE_INSTRUCTIONS.md + personal-overlay.md into claude/global-instructions.md.
 
 - Installed at: `~/.claude/scripts/gen_core_instructions.py` (all harnesses)
 - Entrypoint: not executable, `#!/usr/bin/env python3`
-- CLI (`argparse`): compose CORE_INSTRUCTIONS.md + personal-overlay.md into global-instructions.md
+- CLI (`argparse`): compose agent-toolkit's CORE_INSTRUCTIONS.md + personal-overlay.md into global-instructions.md
   - `--quiet/-q`
   - `--verbose/-v`
-  - `--check` — exit 1 (with a diff-free notice on stderr) if the output is stale
-  - `--stdout` — print the composed file, write nothing
+  - `--agent-toolkit-path` — agent-toolkit checkout (default: $AGENT_TOOLKIT_PATH, then the nested, then the flat ~/Workspace layout)
+  - `--core-path` — read the core from this file instead of resolving a checkout
   - `--repo-root` — repository root (default: inferred from this script's path)
-- Explicit exit codes: `1`, `2`
 - Depends on: `dotfiles_cli_common.py`
+- Exceptions:
+  - `class MissingInputError(FileNotFoundError)` — A composition input file does not exist.
 - Public functions:
-  - `compose(repo_root: Path) -> str` — Read CORE_INSTRUCTIONS.md + personal-overlay.md, return the composed text.
+  - `compose(core_path: Path, overlay_path: Path) -> str` — Read the core and overlay files, return the composed text.
+  - `write_atomically(path: Path, text: str) -> None` — Write ``text`` to ``path`` so a reader never sees a partial file.
   - `default_repo_root() -> Path` — Return the repo root inferred from this script's real location.
+  - `build_parser() -> argparse.ArgumentParser` — Build the CLI parser.
 - Tested by: `claude/scripts/test_gen_core_instructions.py`
 
 ### `claude/scripts/gen_interfaces.py`
@@ -259,40 +265,6 @@ CLI: detect and repair drift between the (under WSL) Windows-side VS Code ``sett
 - Subcommand handlers: `cmd_check`, `cmd_sync_to_seed`, `cmd_push_vscode`
 - Tested by: `claude/scripts/test_settings_seed_drift_check.py`, `test/test_install.py`
 
-### `claude/scripts/sync_from_agent_toolkit.py`
-
-sync_from_agent_toolkit.py — keep claude/CORE_INSTRUCTIONS.md current with agent-toolkit.
-
-- Installed at: not symlinked by `links.toml`
-- Entrypoint: executable, `#!/usr/bin/env python3`
-- CLI (`argparse`): keep claude/CORE_INSTRUCTIONS.md current with agent-toolkit@HEAD (the one permanent post-flip upstream relationship); see the module docstring for the full contract
-  - `--apply` — apply the sync (default: report/diff only)
-  - `--check` — exit 1 if the working tree has drifted from a fresh pull, without writing anything
-  - `--agent-toolkit-path` — path to the agent-toolkit checkout (default: ~/Workspace/agent-toolkit)
-  - `--quiet/-q`
-  - `--verbose/-v`
-- Filesystem constants:
-  - `REPO_ROOT = Path(__file__).resolve().parents[2]`
-  - `DEFAULT_AGENT_TOOLKIT_PATH = Path.home() / 'Workspace' / 'agent-toolkit'`
-- Explicit exit codes: `0`, `1`
-- Depends on: `dotfiles_cli_common.py`
-- Exceptions:
-  - `class PullError(Exception)` — Raised when a fresh pull from agent-toolkit@HEAD can't be resolved.
-- Public functions:
-  - `state_path(repo_root: Path) -> Path` — Return the path to the committed sync-state marker.
-  - `load_state(repo_root: Path) -> dict[str, object] | None` — Load the sync-state marker, or None if absent or corrupt.
-  - `write_state(repo_root: Path, *, agent_toolkit_sha: str) -> None` — Record provenance for a successful content sync.
-  - `run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]` — Run a git command in ``repo``, capturing output as text.
-  - `resolve_head(repo: Path) -> str` — Return the current HEAD commit of ``repo``.
-  - `path_exists_at(repo: Path, ref: str, path: str) -> bool` — Return whether ``path`` exists in ``repo`` at ``ref``.
-  - `read_at(repo: Path, ref: str, path: str) -> bytes` — Return the raw bytes of ``path`` in ``repo`` at ``ref``.
-  - `last_commit_touching(repo: Path, ref: str, path: str) -> str` — The sha of the last commit in ``repo`` (at ``ref``) touching ``path``.
-  - `git_add(repo_root: Path, paths: list[str]) -> None` — Stage the given repo-relative paths.
-  - `apply_transform(text: str) -> tuple[str, int]` — Apply the registered transform; return (new text, substitution count).
-  - `pull_transformed(agent_toolkit_path: Path) -> tuple[str, int, str]` — Resolve agent-toolkit@HEAD's contract file, transformed.
-  - `build_parser() -> argparse.ArgumentParser` — Build the argument parser.
-- Tested by: `claude/scripts/test_sync_from_agent_toolkit.py`
-
 ### `claude/scripts/watchcommit_activity.py`
 
 Print watchcommit's last known background pull/commit/push, so a session (or wc-status) can tell daemon-driven git state changes from manual ones instead of only seeing a clean/up-to-date working tree.
@@ -320,7 +292,6 @@ are copy-once seeds for exactly that reason.
 | --- | --- |
 | `claude/AGENTS.md` | not symlinked by `links.toml` |
 | `claude/CLAUDE.md` | not symlinked by `links.toml` |
-| `claude/CORE_INSTRUCTIONS.md` | not symlinked by `links.toml` |
 | `claude/global-instructions.md` | `~/.claude/CLAUDE.md` (claude), `~/.copilot/copilot-instructions.md` (copilot), `~/.gemini/GEMINI.md` (agy), `~/.pi/agent/AGENTS.md` (pi), `~/.codex/AGENTS.md` (codex) |
 | `claude/output-styles/PlainEngineer.md` | `~/.claude/output-styles/PlainEngineer.md` (claude) |
 | `claude/personal-overlay.md` | not symlinked by `links.toml` |

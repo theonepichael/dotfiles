@@ -19,7 +19,7 @@ personal-overlay.md and is *supposed* to keep winning. Any other overlap
 means one side's declaration should have been dropped and wasn't.
 """
 
-import os
+import sys
 import tomllib
 from pathlib import Path
 
@@ -28,6 +28,9 @@ import pytest
 import conftest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "claude" / "scripts"))
+
+import dotfiles_cli_common as cli_common  # noqa: E402 — must follow sys.path.insert above
 
 # The only destinations both repos are allowed to declare -- dotfiles wins
 # these by design (install-with-agent-toolkit.sh runs it second specifically
@@ -42,17 +45,12 @@ _SANCTIONED_SHARED_DESTS = {
 
 
 def _agent_toolkit_links_toml() -> Path | None:
-    """Same AGENT_TOOLKIT_PATH convention as install-with-agent-toolkit.sh."""
-    candidate = (
-        Path(
-            os.environ.get(
-                "AGENT_TOOLKIT_PATH",
-                str(conftest._REAL_HOME / "Workspace" / "agent-toolkit"),
-            )
-        )
-        / "links.toml"
-    )
-    return candidate if candidate.is_file() else None
+    """Same checkout resolution as install-with-agent-toolkit.sh."""
+    try:
+        checkout = cli_common.agent_toolkit_checkout(home=conftest._REAL_HOME)
+    except cli_common.AgentToolkitNotFoundError:
+        return None
+    return checkout / "links.toml"
 
 
 def _dest_set(links_toml: Path) -> set[str]:

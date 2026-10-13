@@ -1,10 +1,10 @@
 ## Personal Policy
 
-<!-- This user's own configuration, layered on top of CORE_INSTRUCTIONS.md.
-     Composed by claude/scripts/gen_core_instructions.py into the final
+<!-- This user's own configuration, layered on top of agent-toolkit's
+     claude/CORE_INSTRUCTIONS.md. Composed by
+     claude/scripts/gen_core_instructions.py into the final
      claude/global-instructions.md that's actually symlinked to every
-     harness. Never synced to agent-toolkit -- see
-     scripts/sync_from_dotfiles.py's EXCLUDE tuple. -->
+     harness. Never synced to agent-toolkit. -->
 
 ### MCP configuration note
 

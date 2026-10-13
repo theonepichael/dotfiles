@@ -39,7 +39,7 @@ not the rules themselves; the mechanics stay in the directory file.
   subprocess calls and production-path writes blocked. Read
   `test/AGENTS.md` before writing one.
 - **`claude/`** — personal policy composition and instruction overlay
-  sources (`CORE_INSTRUCTIONS.md` is pulled from agent-toolkit;
+  sources (the core is read live from agent-toolkit, never copied here;
   `global-instructions.md` is generated). See `claude/AGENTS.md`.
 - **`claude/scripts/`** — standard library only, and the module docstrings
   are generated source, not commentary. See `claude/scripts/AGENTS.md`.

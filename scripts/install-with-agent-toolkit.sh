@@ -24,6 +24,19 @@
 # this script -- dotfiles' own reassert step (below) is still what actually
 # recomposes the personal overlay content on every run.
 #
+# After both installers, it recomposes claude/global-instructions.md from
+# agent-toolkit's live claude/CORE_INSTRUCTIONS.md (this repo keeps no copy
+# of the core), so every install leaves the harnesses loading the current
+# core. It composes only when the dotfiles installer actually installed
+# (exit 0, or 1 for an ordinary skip), previews with --check under
+# --dry-run, and never composes for --help or a usage error.
+#
+# The agent-toolkit checkout is resolved by gen_core_instructions.py
+# --print-agent-toolkit-path ($AGENT_TOOLKIT_PATH, then
+# ~/Workspace/agent-toolkit/agent-toolkit, then ~/Workspace/agent-toolkit)
+# -- one Python implementation rather than a shell copy that could drift --
+# and exported so the dotfiles installer sees the same checkout.
+#
 # Only for a plain install run. --rollback/--check-links/--depart/--wipe
 # each mean something different per-repo (rolling back BOTH repos' entire
 # histories together, auditing two different link tables at once) that this
@@ -33,7 +46,6 @@ set -eu
 
 # shellcheck disable=SC1007 # CDPATH= clears CDPATH for this one command so cd ignores it.
 DOTFILES_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-AGENT_TOOLKIT_DIR="${AGENT_TOOLKIT_PATH:-$HOME/Workspace/agent-toolkit}"
 
 for flag in "$@"; do
   case "$flag" in
@@ -46,12 +58,6 @@ for flag in "$@"; do
   esac
 done
 
-if [ ! -f "$AGENT_TOOLKIT_DIR/install.py" ]; then
-  echo "install-with-agent-toolkit.sh: no install.py at $AGENT_TOOLKIT_DIR" >&2
-  echo "  set AGENT_TOOLKIT_PATH to override the default (~/Workspace/agent-toolkit)." >&2
-  exit 2
-fi
-
 for candidate in python3.14 python3 python3.13 python3.12 python; do
   bin="$(command -v "$candidate" 2>/dev/null)" || continue
   if "$bin" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' 2>/dev/null; then
@@ -63,6 +69,16 @@ if [ -z "${PYTHON:-}" ]; then
   echo "install-with-agent-toolkit.sh: no Python 3.12+ found on PATH." >&2
   exit 1
 fi
+
+COMPOSER="$DOTFILES_DIR/claude/scripts/gen_core_instructions.py"
+# An explicit branch, not a bare assignment: under `set -e` a failing
+# command substitution would exit 1 before this message could explain it.
+if ! AGENT_TOOLKIT_DIR="$("$PYTHON" "$COMPOSER" --print-agent-toolkit-path)"; then
+  echo "install-with-agent-toolkit.sh: cannot resolve the agent-toolkit checkout (see above);" >&2
+  echo "  set AGENT_TOOLKIT_PATH to your checkout." >&2
+  exit 2
+fi
+export AGENT_TOOLKIT_PATH="$AGENT_TOOLKIT_DIR"
 
 echo "==> agent-toolkit installer ($AGENT_TOOLKIT_DIR)"
 agent_toolkit_status=0
@@ -81,8 +97,40 @@ echo "==> dotfiles installer ($DOTFILES_DIR) -- reasserting the personal overlay
 dotfiles_status=0
 "$PYTHON" "$DOTFILES_DIR/install.py" "$@" || dotfiles_status=$?
 
-if [ "$agent_toolkit_status" -ne 0 ] || [ "$dotfiles_status" -ne 0 ]; then
+compose_mode=write
+for flag in "$@"; do
+  case "$flag" in
+    # A short-flag cluster such as -qh asks for help too.
+    -h|--help|-[!-]*h*) compose_mode=skip ;;
+    --dry-run) [ "$compose_mode" = skip ] || compose_mode=check ;;
+  esac
+done
+if [ "$compose_mode" = write ] && [ "$dotfiles_status" -gt 1 ]; then
+  compose_mode=skip
   echo "" >&2
-  echo "install-with-agent-toolkit.sh: agent-toolkit exit=$agent_toolkit_status dotfiles exit=$dotfiles_status" >&2
+  echo "install-with-agent-toolkit.sh: dotfiles installer exited $dotfiles_status -- not recomposing global-instructions.md" >&2
+fi
+
+compose_status=0
+case "$compose_mode" in
+  write)
+    echo ""
+    echo "==> composing claude/global-instructions.md from $AGENT_TOOLKIT_DIR"
+    "$PYTHON" "$COMPOSER" --agent-toolkit-path "$AGENT_TOOLKIT_DIR" || compose_status=$?
+    ;;
+  check)
+    # Report-only under --dry-run: exit 1 (stale) is what the real run
+    # would fix, not a failure of this one -- but exit 2 means the real run
+    # could not compose at all, so that one still counts.
+    echo ""
+    echo "==> [dry-run] would recompose claude/global-instructions.md from $AGENT_TOOLKIT_DIR"
+    "$PYTHON" "$COMPOSER" --check --agent-toolkit-path "$AGENT_TOOLKIT_DIR" || compose_status=$?
+    [ "$compose_status" -ne 1 ] || compose_status=0
+    ;;
+esac
+
+if [ "$agent_toolkit_status" -ne 0 ] || [ "$dotfiles_status" -ne 0 ] || [ "$compose_status" -ne 0 ]; then
+  echo "" >&2
+  echo "install-with-agent-toolkit.sh: agent-toolkit exit=$agent_toolkit_status dotfiles exit=$dotfiles_status compose exit=$compose_status" >&2
   exit 1
 fi
