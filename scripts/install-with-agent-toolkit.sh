@@ -41,9 +41,7 @@
 # each mean something different per-repo (rolling back BOTH repos' entire
 # histories together, auditing two different link tables at once) that this
 # script does not attempt to reconcile -- run install.py directly in the
-# repo you mean for those. The same goes for agent-toolkit's toolkit-home
-# migration actions and every modifier that only means something alongside
-# one of those actions: REFUSED_FLAGS below lists them all.
+# repo you mean for those. REFUSED_FLAGS below lists them all.
 #
 # Each installer gets only the flags it accepts. Both reject an unknown flag
 # with exit 2, so forwarding "$@" verbatim to both broke the run whenever a
@@ -61,7 +59,7 @@ set -eu
 SHARED_FLAGS="--profile --harness --force --dry-run --reseed --adopt --quiet --verbose --help"
 AGENT_TOOLKIT_ONLY_FLAGS="--force-harness"
 DOTFILES_ONLY_FLAGS="--no-nvim-pin"
-REFUSED_FLAGS="--rollback --check-links --depart --wipe --yes --report-uninstalled --no-report-uninstalled --during-migration --migrate-toolkit-home --json --cross-filesystem --skip-reconciliation --migration-id --rollback-toolkit-home-migration --finalize-toolkit-home-migration --move-layout-pointer"
+REFUSED_FLAGS="--rollback --check-links --depart --wipe --yes --report-uninstalled --no-report-uninstalled"
 
 # run_without <drop-list> <python> <install.py> [args...]
 # Runs the installer with every arg that exactly matches a flag in

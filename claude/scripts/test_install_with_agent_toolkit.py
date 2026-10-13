@@ -20,10 +20,10 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
+import dotfiles_cli_common as cli_common
 import pytest
 
 import conftest
-import dotfiles_cli_common as cli_common
 
 pytestmark = pytest.mark.allow_real_subprocess
 
@@ -456,7 +456,15 @@ class FlagRoutingTestCase(_WrapperTreeTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             self._argv(result.stdout, "AGENT_TOOLKIT_RAN"),
-            ["--harness", "claude", "", "a b", "*", "--force-harness", "--force-harness"],
+            [
+                "--harness",
+                "claude",
+                "",
+                "a b",
+                "*",
+                "--force-harness",
+                "--force-harness",
+            ],
         )
         self.assertEqual(
             self._argv(result.stdout, "DOTFILES_RAN"),
@@ -489,25 +497,6 @@ class FlagRoutingTestCase(_WrapperTreeTestCase):
 
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("agent-toolkit exit=1 dotfiles exit=1", result.stderr)
-
-    def test_refuses_agent_toolkit_only_actions_before_either_installer(self) -> None:
-        for args, refused in (
-            (["--migrate-toolkit-home", "--harness=claude"], "--migrate-toolkit-home"),
-            (["--migration-id=abc"], "--migration-id"),
-            (["--migration-id", "abc"], "--migration-id"),
-            (["--move-layout-pointer"], "--move-layout-pointer"),
-            (["--harness=claude", "--json"], "--json"),
-        ):
-            with self.subTest(args=args):
-                self._write_both()
-
-                result = self._run(args)
-
-                self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertNotIn("AGENT_TOOLKIT_RAN", result.stdout)
-                self.assertNotIn("DOTFILES_RAN", result.stdout)
-                self.assertIn(f"{refused} is not a plain install flag", result.stderr)
-                self.assertIn("run install.py directly", result.stderr)
 
 
 # --- Flag-table drift guard -------------------------------------------------
@@ -659,9 +648,7 @@ def installer_flags(install_src: str, cli_common_src: str) -> dict[str, FlagReco
             f"expected one direct parser constructor in parse_args, found {parsers}"
         )
     helpers = {
-        "add_verbosity_args": _function(
-            ast.parse(cli_common_src), "add_verbosity_args"
-        )
+        "add_verbosity_args": _function(ast.parse(cli_common_src), "add_verbosity_args")
     }
     records: dict[str, FlagRecord] = {}
     _scan(parse_args, {parsers[0]}, helpers, records)
@@ -674,7 +661,7 @@ def wrapper_flag_table(wrapper_src: str) -> dict[str, set[str]]:
     for name in TABLE_NAMES:
         match = re.search(rf'^{name}="([^"]*)"$', wrapper_src, re.MULTILINE)
         if match is None:
-            raise AssertionError(f"wrapper has no one-line {name}=\"...\"")
+            raise AssertionError(f'wrapper has no one-line {name}="..."')
         table[name] = set(match.group(1).split())
     return table
 
@@ -740,8 +727,7 @@ def drift_problems(
         for records in (dotfiles, agent_toolkit):
             if flag in records and records[flag].aliases:
                 problems.append(
-                    f"{flag} is refused but has aliases "
-                    f"{sorted(records[flag].aliases)}"
+                    f"{flag} is refused but has aliases {sorted(records[flag].aliases)}"
                 )
     return problems
 
@@ -795,7 +781,9 @@ class FlagScannerTestCase(unittest.TestCase):
 
     def test_nargs_makes_a_store_true_flag_take_a_value(self) -> None:
         flags = installer_flags(
-            _synth_install('parser.add_argument("--x", action="store_const", nargs="?")'),
+            _synth_install(
+                'parser.add_argument("--x", action="store_const", nargs="?")'
+            ),
             _SYNTH_CLI_COMMON,
         )
 

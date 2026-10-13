@@ -15,7 +15,7 @@ than holding a live bidirectional session. See the companion plan document
 for the full design rationale (3-way merge algorithm, conflict log, graph
 integrity pass, path mapping, locking).
 
-In addition to the JSON store, ``sync`` transfers the ``~/.claude/data/grill/``
+In addition to the JSON store, ``sync`` transfers the ``~/.agent-toolkit/data/grill/``
 files referenced by an item's ``related_files`` (specs, grill plans, critique
 notes) in both directions, guarded by an mtime check so neither side's newer
 edit is clobbered. Project-source ``related_files`` entries (any path outside
@@ -26,15 +26,7 @@ Flags
   --verbose, -v  emit extra diagnostic messages to stderr
   sync --no-artifacts     skip grill/ artifact transfer (metadata-only sync)
   sync --dry-run          report only; print the would-transfer artifact set
-  state                   print this machine's migration/layout state (framed JSON)
-
-Migration safety: a sync refuses while either machine is mid-way through a
-toolkit-home migration (its migration lock is held exclusively, or a
-migration journal is unfinished or unreadable), or when the two machines are
-on different toolkit layouts. A committed migration awaiting finalize is
-allowed. Each side holds the migration lock shared for the duration of its
-own work, and the desktop re-reads the remote's state just before its local
-commit.
+  state                   print this machine's state (framed JSON)
 
 Requires Python 3.12+.
 """
@@ -59,13 +51,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 
-# The toolkit modules this script imports live beside it in ~/.claude/scripts
-# today and in ~/.agent-toolkit/scripts once the toolkit-home migration lands.
+# The toolkit modules this script imports live beside it in ~/.agent-toolkit/scripts.
 _REQUIRED_TOOLKIT_MODULES = (
     "dev_status",
     "dev_status_mutation",
     "agent_toolkit_paths",
-    "migration_lock",
 )
 
 
@@ -96,16 +86,15 @@ sys.path.insert(0, str(_TOOLKIT_DIR or Path(__file__).parent))
 import agent_toolkit_paths  # noqa: E402
 import dev_status  # noqa: E402
 import dotfiles_cli_common as cli_common  # noqa: E402
-import migration_lock  # noqa: E402
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 # The one directory this feature ever touches: the grill/ tree under a home
-# prefix (e.g. /home/yanil/.claude/data/grill). Every artifact-collection and
+# prefix (e.g. /home/yanil/.agent-toolkit/data/grill). Every artifact-collection and
 # transfer rule is scoped to this prefix only — a related_files path pointing
 # at ordinary project source (or anything else under home) is never collected,
 # never rsynced, and never a reason to warn.
-GRILL_SUBPATH = ".claude/data/grill"
+GRILL_SUBPATH = ".agent-toolkit/data/grill"
 
 # rsync's remote shell, mirroring ssh_run()'s ssh options exactly so transport
 # behavior matches the JSON channel.
@@ -136,217 +125,35 @@ class SyncRetryableError(Exception):
     """A retryable sync condition (stale rev, lock timeout, SSH hiccup). Exit code 2."""
 
 
-# ── migration safety ──────────────────────────────────────────────────────────
-
-MIGRATION_LOCK_SITE = "dev-status-sync"
-MIGRATION_TERMINAL_EVENTS = frozenset({"end", "abandoned"})
-_MIGRATION_JOURNALS = ("journal.jsonl", "rollback.jsonl", "finalize.jsonl")
-_UNSAFE_MIGRATION_STATES = frozenset({"in-flight", "unknown"})
-
-
-class JournalCorruptError(Exception):
-    """A migration journal has a malformed line before its last one."""
-
-
-def _parse_journal_line(line: bytes) -> dict[str, object] | None:
-    if not line.strip():
-        return None
-    try:
-        parsed = json.loads(line.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
-def read_journal(path: Path) -> list[dict[str, object]] | None:
-    """Valid records of one migration journal, or None if the file is absent.
-
-    Mirrors the migrator's own reader: a malformed final line is a torn write
-    and is skipped; a malformed earlier line raises :class:`JournalCorruptError`.
-    """
-    try:
-        raw = path.read_bytes()
-    except FileNotFoundError:
-        return None
-    records: list[dict[str, object]] = []
-    lines = raw.split(b"\n")
-    complete, tail = lines[:-1], lines[-1]
-    for index, line in enumerate(complete):
-        record = _parse_journal_line(line)
-        if record is None:
-            if index == len(complete) - 1 and not tail:
-                return records
-            raise JournalCorruptError(f"{path}: malformed journal line {index + 1}")
-        records.append(record)
-    if tail:
-        record = _parse_journal_line(tail)
-        if record is not None:
-            records.append(record)
-    return records
-
-
-def _journal_outcome(records: list[dict[str, object]] | None) -> str | None:
-    """The ``end`` outcome of a finished journal, else None."""
-    if not records or records[-1].get("event") != "end":
-        return None
-    detail = records[-1].get("detail")
-    return str(detail.get("outcome")) if isinstance(detail, dict) else None
-
-
-def installer_state_dir() -> Path:
-    """Where the migrator keeps its journals (it ignores XDG_STATE_HOME)."""
-    return Path.home() / ".local" / "state" / "agent-toolkit"
-
-
-def migration_status(installer_state: Path) -> tuple[str, str]:
-    """Classify this machine's toolkit-home migrations as ``(state, detail)``.
-
-    ``state`` is ``"in-flight"`` when any migration's main journal is missing,
-    empty or unfinished, or a rollback/finalize journal exists but is
-    unfinished; ``"committed-unfinalized"`` when a committed migration awaits
-    finalize (allowed: the rollout syncs on the new layout before finalizing);
-    ``"unknown"`` when a journal cannot be read; otherwise ``"idle"``.
-    """
-    root = installer_state / "migrations"
-    if not root.is_dir():
-        return ("idle", "")
-    awaiting: list[str] = []
-    try:
-        directories = sorted(
-            p for p in root.iterdir() if p.is_dir() and not p.is_symlink()
-        )
-        for directory in directories:
-            journals = {
-                name: read_journal(directory / name) for name in _MIGRATION_JOURNALS
-            }
-            for name, records in journals.items():
-                if records is None and name != "journal.jsonl":
-                    continue
-                if (
-                    not records
-                    or records[-1].get("event") not in MIGRATION_TERMINAL_EVENTS
-                ):
-                    return (
-                        "in-flight",
-                        f"migration {directory.name}: {name} is unfinished",
-                    )
-            if (
-                _journal_outcome(journals["journal.jsonl"]) == "committed"
-                and _journal_outcome(journals["finalize.jsonl"]) != "finalized"
-                and _journal_outcome(journals["rollback.jsonl"]) != "rolled-back"
-            ):
-                awaiting.append(directory.name)
-    except (JournalCorruptError, OSError) as exc:
-        return ("unknown", str(exc))
-    if awaiting:
-        return ("committed-unfinalized", ", ".join(awaiting))
-    return ("idle", "")
-
-
-def migration_lock_held_exclusively() -> bool | None:
-    """Whether a migration holds this machine's migration lock right now.
-
-    A non-blocking *shared* flock on a separate descriptor: it never conflicts
-    with this process's own shared scope, only with an exclusive holder.
-    None when the lock file cannot be checked.
-    """
-    try:
-        fd = os.open(migration_lock.lock_path(), os.O_RDONLY)
-    except FileNotFoundError:
-        return False
-    except OSError:
-        return None
-    try:
-        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-    except BlockingIOError:
-        return True
-    except OSError:
-        return None
-    else:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        return False
-    finally:
-        os.close(fd)
-
-
-def _current_layout() -> str:
-    try:
-        return str(agent_toolkit_paths.current_layout())
-    except (agent_toolkit_paths.LayoutError, OSError, ValueError):
-        return "unknown"
+# ── sync state ────────────────────────────────────────────────────────────────
 
 
 def machine_state() -> dict[str, str]:
-    """This machine's layout, migration state and resolved grill root."""
-    layout = _current_layout()
-    decisions_root = ""
-    if layout != "unknown":
-        try:
-            decisions_root = os.path.abspath(agent_toolkit_paths.path_for("decisions"))
-        except (agent_toolkit_paths.LayoutError, OSError, ValueError):
-            layout = "unknown"
-    held = migration_lock_held_exclusively()
-    if held is None:
-        migration, detail = "unknown", "the migration lock could not be checked"
-    elif held:
-        migration, detail = "in-flight", "the migration lock is held exclusively"
-    else:
-        migration, detail = migration_status(installer_state_dir())
-    return {
-        "layout": layout,
-        "migration": migration,
-        "decisions_root": decisions_root,
-        "detail": detail,
-    }
+    """This machine's resolved grill root (the decisions directory)."""
+    try:
+        root = os.path.abspath(agent_toolkit_paths.path_for("decisions"))
+    except (agent_toolkit_paths.LayoutError, OSError, ValueError) as exc:
+        raise SyncFatalError(
+            f"cannot resolve this machine's grill directory: {exc}"
+        ) from exc
+    return {"decisions_root": root}
 
 
-def refuse_unsafe_states(local: dict[str, str], remote: object, host: str) -> None:
-    """Raise SyncFatalError unless both machines are safe to sync together."""
-    if not isinstance(remote, dict):
+def remote_machine_state(payload: object, host: str) -> dict[str, str]:
+    """The remote's ``machine_state``, or fail if it is absent."""
+    if not isinstance(payload, dict) or not isinstance(
+        payload.get("machine_state"), dict
+    ):
         raise SyncFatalError(
             f"{host} sent no machine state -- redeploy dev_status_sync.py there"
         )
-    for side, state in (("this machine", local), (host, remote)):
-        if state.get("migration") in _UNSAFE_MIGRATION_STATES:
-            raise SyncFatalError(
-                f"{side} is mid-migration (state {state.get('migration')}: "
-                f"{state.get('detail')}) -- refusing to sync; retry once it finishes"
-            )
-        if state.get("layout") in (None, "unknown"):
-            raise SyncFatalError(
-                f"{side} has an unknown toolkit layout -- refusing to sync"
-            )
-    if local.get("layout") != remote.get("layout"):
-        raise SyncFatalError(
-            f"layout mismatch: this machine is {local.get('layout')}, {host} is "
-            f"{remote.get('layout')} -- both machines must be on the same layout"
-        )
-
-
-_LAYOUT_AT_IMPORT = _current_layout()
+    return cast(dict[str, str], payload["machine_state"])
 
 
 @contextmanager
-def migration_guard() -> Iterator[dict[str, str]]:
-    """Hold the migration lock shared and yield this machine's state under it.
-
-    Refuses when a migration holds the lock, and when the layout has changed
-    since this process started (the store paths ``dev_status`` computed at
-    import would then point at the old layout).
-    """
-    try:
-        with migration_lock.shared(MIGRATION_LOCK_SITE, quiet=True):
-            state = machine_state()
-            if state["layout"] != _LAYOUT_AT_IMPORT:
-                raise SyncFatalError(
-                    f"toolkit layout changed from {_LAYOUT_AT_IMPORT} to "
-                    f"{state['layout']} since this process started -- rerun"
-                )
-            yield state
-    except migration_lock.MigrationLockBusy as exc:
-        raise SyncFatalError(
-            f"a toolkit-home migration is running on this machine: {exc}"
-        ) from exc
+def state_guard() -> Iterator[dict[str, str]]:
+    """Yield this machine's state; nothing to guard against post-cutover."""
+    yield machine_state()
 
 
 # ── local lock (can't reuse dev_status.backlog_lock — needs a timeout) ────────
@@ -546,12 +353,12 @@ def rewrite_paths_list(
     ]
 
 
-# ── artifact transfer (~/.claude/data/grill/ files referenced by related_files) ──
+# ── artifact transfer (~/.agent-toolkit/data/grill/ files referenced by related_files) ──
 
 
 def grill_root_for(home: str, grill_root: str | None = None) -> str:
-    """The grill directory to use: ``grill_root`` when given, else the legacy
-    ``{home}/.claude/data/grill``."""
+    """The grill directory to use: ``grill_root`` when given, else the
+    ``{home}/.agent-toolkit/data/grill`` default."""
     if grill_root:
         return grill_root.rstrip("/")
     return f"{home.rstrip('/')}/{GRILL_SUBPATH}"
@@ -583,7 +390,7 @@ def collect_artifact_paths(
 ) -> list[Path]:
     """Return distinct, sorted artifact paths to transfer for ``items``.
 
-    Only ``related_files[]`` paths under ``{home}/.claude/data/grill/`` are
+    Only ``related_files[]`` paths under ``{home}/.agent-toolkit/data/grill/`` are
     in scope — the one directory this session's own tooling writes (specs,
     grill plans, critique notes, the ``vitals/`` subtree). Everything else
     under home (project source in its own git repo, dotfiles, ``/tmp``, a
@@ -621,7 +428,7 @@ def _grill_classify(
 
     Returns ``(kind, warning)`` where ``kind`` is one of:
 
-    * ``"out"``     - not under ``{home}/.claude/data/grill/`` (project
+    * ``"out"``     - not under ``{home}/.agent-toolkit/data/grill/`` (project
       source, dotfiles, ``/tmp``, a worktree, ...). Correctly out of scope.
     * ``"escape"``  - raw grill prefix but resolves outside the grill dir,
       is a symlink, or is the grill dir itself. Excluded; ``warning`` is the
@@ -1449,7 +1256,7 @@ def ssh_export(host: str, remote_script: str, ssh_timeout: float) -> dict[str, o
 
 
 def ssh_state(host: str, remote_script: str, ssh_timeout: float) -> dict[str, object]:
-    """The remote machine's current migration/layout state (see ``state``)."""
+    """The remote machine's current state (see ``state``)."""
     payload = _extract_framed_json(
         ssh_run(host, remote_script, ["state"], ssh_timeout).decode(
             "utf-8", errors="replace"
@@ -1596,7 +1403,7 @@ def print_diff(
 
 def cmd_export(args: argparse.Namespace) -> None:
     """``export``: dump this machine's local store+rev as one framed JSON blob."""
-    with migration_guard() as state, local_lock(args.lock_timeout):
+    with state_guard() as state, local_lock(args.lock_timeout):
         items, items_schema = _read_store_file(dev_status.ITEMS_FILE)
         pending, pending_schema = _read_store_file(dev_status.PENDING_FILE)
         rev = dev_status.load_rev()
@@ -1623,15 +1430,13 @@ def cmd_import(args: argparse.Namespace) -> None:
     payload = _extract_framed_json(raw_stdin)
     _check_protocol_version(payload)
 
-    with migration_guard() as state, local_lock(args.lock_timeout):
+    with state_guard() as state, local_lock(args.lock_timeout):
         expected = payload.get("expected_remote_state")
-        if (
-            state["migration"] in _UNSAFE_MIGRATION_STATES
-            or not isinstance(expected, dict)
-            or any(state[k] != expected.get(k) for k in ("layout", "decisions_root"))
+        if not isinstance(expected, dict) or state["decisions_root"] != expected.get(
+            "decisions_root"
         ):
             raise SyncFatalError(
-                "refusing import: this machine's migration/layout state changed "
+                "refusing import: this machine's state changed "
                 f"since export (expected {expected}, now {state})"
             )
         _, local_items_schema = _read_store_file(dev_status.ITEMS_FILE)
@@ -1674,8 +1479,8 @@ def cmd_import(args: argparse.Namespace) -> None:
 
 
 def cmd_state(args: argparse.Namespace) -> None:
-    """``state``: print this machine's migration/layout state as framed JSON."""
-    with migration_guard() as state:
+    """``state``: print this machine's state as framed JSON."""
+    with state_guard() as state:
         payload = {"protocol_version": PROTOCOL_VERSION, "machine_state": state}
     nonce = secrets.token_hex(8)
     print(f"==={_FRAME_MARK}_START:{nonce}===")
@@ -1685,7 +1490,7 @@ def cmd_state(args: argparse.Namespace) -> None:
 
 def cmd_status(args: argparse.Namespace) -> None:
     """``status``: report divergence (revs, counts, per-side ids) without merging."""
-    with migration_guard() as local_state:
+    with state_guard() as local_state:
         local_items_raw, local_items_schema = _read_store_file(dev_status.ITEMS_FILE)
         local_pending_raw, local_pending_schema = _read_store_file(
             dev_status.PENDING_FILE
@@ -1698,10 +1503,7 @@ def cmd_status(args: argparse.Namespace) -> None:
 
         remote_payload = ssh_export(args.host, args.remote_script, args.ssh_timeout)
         _check_protocol_version(remote_payload)
-        refuse_unsafe_states(
-            local_state, remote_payload.get("machine_state"), args.host
-        )
-        remote_state = cast(dict[str, object], remote_payload["machine_state"])
+        remote_state = remote_machine_state(remote_payload, args.host)
         local_root = local_state["decisions_root"]
         remote_root = str(remote_state.get("decisions_root") or "")
         inbound_roots = (remote_root, local_root) if remote_root else None
@@ -1765,7 +1567,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
         else args.ssh_timeout
     )
 
-    with migration_guard() as local_state, local_lock(args.lock_timeout):
+    with state_guard() as local_state, local_lock(args.lock_timeout):
         local_items_raw, local_items_schema = _read_store_file(dev_status.ITEMS_FILE)
         local_pending_raw, local_pending_schema = _read_store_file(
             dev_status.PENDING_FILE
@@ -1792,10 +1594,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
                     args.host, args.remote_script, args.ssh_timeout
                 )
                 _check_protocol_version(remote_payload)
-                refuse_unsafe_states(
-                    local_state, remote_payload.get("machine_state"), args.host
-                )
-                remote_state = cast(dict[str, object], remote_payload["machine_state"])
+                remote_state = remote_machine_state(remote_payload, args.host)
                 remote_root = str(remote_state.get("decisions_root") or "")
                 inbound_roots = (remote_root, local_root) if remote_root else None
                 outbound_roots = (local_root, remote_root) if remote_root else None
@@ -1832,9 +1631,8 @@ def cmd_sync(args: argparse.Namespace) -> None:
 
                 if args.dry_run:
                     cli_common.qprint(
-                        f"machine state: this machine {local_state['layout']}/"
-                        f"{local_state['migration']}, {args.host} "
-                        f"{remote_state.get('layout')}/{remote_state.get('migration')}",
+                        f"machine state: this machine {local_state['decisions_root']}, "
+                        f"{args.host} {remote_state.get('decisions_root')}",
                         quiet=getattr(args, "quiet", False),
                     )
                     print_diff(
@@ -1914,7 +1712,6 @@ def cmd_sync(args: argparse.Namespace) -> None:
                         remote_schema,
                         cast(int, remote_payload["rev"]),
                         {
-                            "layout": remote_state.get("layout"),
                             "decisions_root": remote_state.get("decisions_root"),
                         },
                     )
@@ -1953,18 +1750,13 @@ def cmd_sync(args: argparse.Namespace) -> None:
                 continue
 
         assert result is not None and remote_payload is not None
-        # The remote held its migration lock only inside each SSH call, so
-        # re-read its state before committing locally: a migration that ran
-        # since export (during artifact transfer, or with no import needed)
-        # must not be committed over. A migration starting after this read
-        # and before the commit below is an accepted residual window.
+        # Re-read the remote's state before committing locally: a change that
+        # ran since export (during artifact transfer, or with no import needed)
+        # must not be committed over.
         final_remote = ssh_state(args.host, args.remote_script, args.ssh_timeout)
-        if final_remote.get("migration") in _UNSAFE_MIGRATION_STATES or any(
-            final_remote.get(k) != remote_state.get(k)
-            for k in ("layout", "decisions_root")
-        ):
+        if final_remote.get("decisions_root") != remote_state.get("decisions_root"):
             raise SyncFatalError(
-                f"{args.host}'s migration/layout state changed during the sync "
+                f"{args.host}'s state changed during the sync "
                 f"(was {remote_state}, now {final_remote}) -- not committing locally"
             )
         new_rev = local_commit(
@@ -2088,7 +1880,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_state = sub.add_parser(
         "state",
-        help="internal: print this machine's migration/layout state as JSON",
+        help="internal: print this machine's state as JSON",
         parents=[verbosity_parent],
     )
     p_state.set_defaults(func=cmd_state)

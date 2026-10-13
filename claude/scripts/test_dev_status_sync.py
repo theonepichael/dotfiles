@@ -8,8 +8,8 @@ import os
 import shutil
 import subprocess
 import sys
-import textwrap
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -55,8 +55,7 @@ if not hasattr(dev_status, "_content_hash"):
 
 def _expected_state():
     """The expected_remote_state an import payload carries: the sandbox's own."""
-    state = sync.machine_state()
-    return {"layout": state["layout"], "decisions_root": state["decisions_root"]}
+    return sync.machine_state()
 
 
 def make_item(
@@ -104,21 +103,8 @@ def make_pending(slug, status="waiting_for_reply", updated="2026-01-01", blockin
     }
 
 
-def other_layout(layout):
-    """The layout a machine on ``layout`` would migrate to (or from)."""
-    return {"legacy": "toolkit-home", "toolkit-home": "legacy"}[layout]
-
-
 class SyncTestCase(unittest.TestCase):
-    """Base fixture: an isolated tempdir standing in for ~/.claude/data/backlog.
-
-    ``sync._LAYOUT_AT_IMPORT`` is pinned to the sandbox's own layout, as if
-    the process had started in it. Otherwise it is whatever layout
-    agent-toolkit resolves for the HOME that was active when this module was
-    imported -- a default agent-toolkit is free to change (Release 2 turned
-    an empty home from legacy into toolkit-home, failing every test that
-    assumed one or the other).
-    """
+    """Base fixture: an isolated tempdir standing in for the data directory."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -133,9 +119,7 @@ class SyncTestCase(unittest.TestCase):
         self.journal_file = self.data_dir / "journal.jsonl"
         self.runs_file = self.data_dir / "runs.jsonl"
         self.machine_id_file = self.data_dir / "_machine_id"
-        self.sandbox_layout = sync.machine_state()["layout"]
         self._patches = [
-            patch.object(sync, "_LAYOUT_AT_IMPORT", self.sandbox_layout),
             patch.object(sync, "SYNC_BASE_FILE", self.sync_base_file),
             patch.object(sync, "CONFLICT_LOG_FILE", self.conflict_log_file),
             # sync re-reads the remote's state over SSH before committing; in
@@ -892,7 +876,7 @@ class ExportImportTests(SyncTestCase):
         # The desktop echoes the state it saw at export back to the import.
         exported["items"][0]["status"] = "done"
         exported["expected_remote_state"] = {
-            k: exported["machine_state"][k] for k in ("layout", "decisions_root")
+            k: exported["machine_state"][k] for k in ("decisions_root",)
         }
         nonce = "deadbeef"
         framed = (
@@ -1104,7 +1088,7 @@ class ArtifactCollectTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.home = Path(self.tmp) / "home"
-        self.grill = self.home / ".claude" / "data" / "grill"
+        self.grill = self.home / ".agent-toolkit" / "data" / "grill"
         self.grill.mkdir(parents=True)
         self.spec = self.grill / "spec.md"
         self.spec.write_text("spec")
@@ -1175,7 +1159,7 @@ class ArtifactContractTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.home = Path(self.tmp) / "home"
-        self.grill = self.home / ".claude" / "data" / "grill"
+        self.grill = self.home / ".agent-toolkit" / "data" / "grill"
         self.grill.mkdir(parents=True)
         self.spec = self.grill / "spec.md"
         self.spec.write_text("spec")
@@ -1206,7 +1190,7 @@ class ArtifactTransferTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.home = Path(self.tmp) / "home"
-        self.grill = self.home / ".claude" / "data" / "grill"
+        self.grill = self.home / ".agent-toolkit" / "data" / "grill"
         self.grill.mkdir(parents=True)
         self.spec = self.grill / "spec.md"
         self.spec.write_text("spec")
@@ -1258,7 +1242,7 @@ class ArtifactTransferTests(unittest.TestCase):
         argv = run.call_args[0][0]
         self.assertIn("-rptDuR", argv)  # -u is folded into the combined flag
         self.assertTrue(any(a.startswith("fedora:") for a in argv))
-        self.assertIn(str(self.home) + "/.claude/data/grill/", argv)
+        self.assertIn(str(self.home) + "/.agent-toolkit/data/grill/", argv)
         self.assertIn("--mkpath", argv)
 
     def test_dry_run_no_rsync(self):
@@ -1363,26 +1347,18 @@ class ArtifactTransferTests(unittest.TestCase):
 class ArtifactSyncIntegrationTests(SyncTestCase):
     @staticmethod
     def _state(home):
-        return {
-            "layout": "legacy",
-            "migration": "idle",
-            "decisions_root": f"{home}/.claude/data/grill",
-            "detail": "",
-        }
+        return {"decisions_root": f"{home}/.agent-toolkit/data/grill"}
 
     def _home_paths(self):
         local_home = self.data_dir.parent / "localhome"
         remote_home = self.data_dir.parent / "remotehome"
-        grill = local_home / ".claude" / "data" / "grill"
+        grill = local_home / ".agent-toolkit" / "data" / "grill"
         grill.mkdir(parents=True)
         (grill / "spec.md").write_text("spec")
         # These tests use stand-in homes rather than the sandbox HOME, so the
-        # state each side reports must name the stand-in grill roots -- and,
-        # since the stand-ins are legacy-shaped, the process counts as having
-        # started on legacy.
+        # state each side reports must name the stand-in grill roots.
         self._remote_state = self._state(remote_home)
         for p in (
-            patch.object(sync, "_LAYOUT_AT_IMPORT", "legacy"),
             patch.object(sync, "machine_state", lambda: self._state(local_home)),
             patch.object(sync, "ssh_state", lambda *a, **k: self._remote_state),
         ):
@@ -1575,7 +1551,7 @@ class ArtifactPreviewTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.home = Path(self.tmp) / "home"
-        self.grill = self.home / ".claude" / "data" / "grill"
+        self.grill = self.home / ".agent-toolkit" / "data" / "grill"
         self.grill.mkdir(parents=True)
         self.spec = self.grill / "spec.md"
         self.spec.write_text("spec")
@@ -1592,7 +1568,7 @@ class ArtifactPreviewTests(unittest.TestCase):
             sync.artifact_preview(merged, str(self.home), "/R", "fedora", quiet=False)
         out = buf.getvalue()
         self.assertIn("artifacts (1 file", out)
-        self.assertIn(str(self.home) + "/.claude/data/grill/./spec.md", out)
+        self.assertIn(str(self.home) + "/.agent-toolkit/data/grill/./spec.md", out)
 
     def test_preview_none_when_no_grill_paths(self):
         import io
@@ -1604,6 +1580,338 @@ class ArtifactPreviewTests(unittest.TestCase):
         with patch("sys.stdout", buf):
             sync.artifact_preview(merged, str(self.home), "/R", "fedora", quiet=False)
         self.assertIn("artifacts: none", buf.getvalue())
+
+
+# ── toolkit_scripts_dir + state/protocol refusal (moved from the old
+# migration-guard test file; the migration-specific cases were dropped) ───────
+
+
+class ToolkitScriptsDirTests(unittest.TestCase):
+    MODULES = ("dev_status", "dev_status_mutation", "agent_toolkit_paths")
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.checkout = self.root / "checkout"
+        self.checkout.mkdir()
+        for m in self.MODULES:
+            (self.checkout / f"{m}.py").write_text("")
+
+    def _install(self, name, modules=MODULES, target=None):
+        d = self.root / name
+        d.mkdir()
+        for m in modules:
+            (d / f"{m}.py").symlink_to((target or self.checkout) / f"{m}.py")
+        return d
+
+    def test_picks_the_first_complete_install_and_resolves_to_the_checkout(self):
+        partial = self._install("new", modules=self.MODULES[:2])
+        full = self._install("old")
+        self.assertEqual(sync.toolkit_scripts_dir([partial, full]), self.checkout)
+
+    def test_prefers_the_toolkit_home_install_when_complete(self):
+        other = self.root / "other-checkout"
+        other.mkdir()
+        for m in self.MODULES:
+            (other / f"{m}.py").write_text("")
+        new = self._install("new", target=other)
+        old = self._install("old")
+        self.assertEqual(sync.toolkit_scripts_dir([new, old]), other)
+
+    def test_an_install_split_across_checkouts_is_skipped(self):
+        other = self.root / "other-checkout"
+        other.mkdir()
+        (other / "agent_toolkit_paths.py").write_text("")
+        split = self.root / "split"
+        split.mkdir()
+        for m in self.MODULES:
+            src = other if m == "agent_toolkit_paths" else self.checkout
+            (split / f"{m}.py").symlink_to(src / f"{m}.py")
+        self.assertIsNone(sync.toolkit_scripts_dir([split]))
+
+    def test_no_complete_install_returns_none(self):
+        self.assertIsNone(sync.toolkit_scripts_dir([self.root / "missing"]))
+
+
+class StateRefusalTests(unittest.TestCase):
+    def test_a_peer_sending_no_state_is_told_to_redeploy(self):
+        with self.assertRaisesRegex(sync.SyncFatalError, "redeploy"):
+            sync.remote_machine_state(None, "fedora")
+
+    def test_a_peer_sending_a_non_dict_state_is_told_to_redeploy(self):
+        with self.assertRaisesRegex(sync.SyncFatalError, "redeploy"):
+            sync.remote_machine_state({"machine_state": "nope"}, "fedora")
+
+    def test_an_older_protocol_peer_is_refused(self):
+        with self.assertRaisesRegex(sync.SyncFatalError, "redeploy"):
+            sync._check_protocol_version(
+                {"protocol_version": sync.PROTOCOL_VERSION - 1}
+            )
+
+
+class ExportImportGuardTests(SyncTestCase):
+    def _export(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        dev_status.save_items([make_item("foo-bar")])
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            sync.cmd_export(argparse.Namespace(lock_timeout=5.0))
+        return sync._extract_framed_json(out.getvalue())
+
+    def test_export_payload_keys_are_pinned(self):
+        payload = self._export()
+        self.assertEqual(
+            set(payload),
+            {
+                "protocol_version",
+                "machine_state",
+                "rev",
+                "schema_version",
+                "items",
+                "pending_items",
+                "runs",
+            },
+        )
+        self.assertEqual(set(payload["machine_state"]), {"decisions_root"})
+
+    def _import(self, payload):
+        raw = f"===DEVSTATUS_SYNC_JSON_START:ab===\n{json.dumps(payload)}\n===DEVSTATUS_SYNC_JSON_END:ab===\n"
+        with patch("sys.stdin", io.StringIO(raw)):
+            sync.cmd_import(argparse.Namespace(lock_timeout=5.0, if_rev=0))
+
+    def test_import_refuses_when_the_state_changed_since_export(self):
+        payload = self._export()
+        payload["items"][0]["status"] = "done"
+        payload["expected_remote_state"] = {"decisions_root": "/some/other/grill"}
+        with self.assertRaisesRegex(sync.SyncFatalError, "changed since export"):
+            self._import(payload)
+        self.assertEqual(dev_status.load_items()[0]["status"], "open")
+
+    def test_import_refuses_without_an_expected_state(self):
+        payload = self._export()
+        with self.assertRaisesRegex(sync.SyncFatalError, "changed since export"):
+            self._import(payload)
+
+    def test_import_with_a_matching_state_writes(self):
+        payload = self._export()
+        payload["items"][0]["status"] = "done"
+        payload["expected_remote_state"] = {
+            "decisions_root": payload["machine_state"]["decisions_root"],
+        }
+        self._import(payload)
+        self.assertEqual(dev_status.load_items()[0]["status"], "done")
+
+    def test_state_subcommand_prints_this_machines_state(self):
+        out = io.StringIO()
+        with patch("sys.stdout", out):
+            sync.cmd_state(argparse.Namespace())
+        payload = sync._extract_framed_json(out.getvalue())
+        self.assertEqual(payload["protocol_version"], sync.PROTOCOL_VERSION)
+        self.assertEqual(
+            payload["machine_state"],
+            {"decisions_root": sync.machine_state()["decisions_root"]},
+        )
+
+
+class ArtifactRootTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.local_root = self.tmp / "L" / ".agent-toolkit" / "data" / "grill"
+        self.local_root.mkdir(parents=True)
+        (self.local_root / "spec.md").write_text("spec")
+        self.remote_root = "/home/theon/custom/toolkit/data/grill"
+        self.item = make_item(
+            "foo", related_files=[{"path": str(self.local_root / "spec.md")}]
+        )
+
+    def _argv(self, fn):
+        with patch("subprocess.run") as run:
+            run.return_value = subprocess.CompletedProcess(None, 0, b"", b"")
+            fn(
+                "fedora",
+                [self.item],
+                str(self.tmp / "L"),
+                "/home/theon",
+                20.0,
+                20.0,
+                quiet=True,
+                dry_run=False,
+                local_root=str(self.local_root),
+                remote_root=self.remote_root,
+            )
+        return run.call_args[0][0]
+
+    def test_push_anchors_at_each_sides_grill_root(self):
+        argv = self._argv(sync.push_artifacts)
+        self.assertIn(f"{self.local_root}/./spec.md", argv)
+        self.assertEqual(argv[-1], f"fedora:{self.remote_root}/")
+        self.assertIn("--mkpath", argv)
+
+    def test_pull_anchors_at_each_sides_grill_root(self):
+        argv = self._argv(sync.pull_artifacts)
+        self.assertIn(f"fedora:{self.remote_root}/./spec.md", argv)
+        self.assertEqual(argv[-1], f"{self.local_root}/")
+
+    def test_grill_root_rewrite_runs_before_the_home_rewrite(self):
+        item = make_item(
+            "foo",
+            related_files=[
+                {"path": "/home/theon/custom/toolkit/data/grill/spec.md"},
+                {"path": "/home/theon/Workspace/repo/file.py"},
+            ],
+        )
+        out = sync.rewrite_related_files_paths(
+            item,
+            "/home/theon",
+            "/home/yanil",
+            (
+                "/home/theon/custom/toolkit/data/grill",
+                "/home/yanil/.agent-toolkit/data/grill",
+            ),
+        )
+        self.assertEqual(
+            [e["path"] for e in out["related_files"]],
+            [
+                "/home/yanil/.agent-toolkit/data/grill/spec.md",
+                "/home/yanil/Workspace/repo/file.py",
+            ],
+        )
+
+
+class FinalRemoteStateTests(SyncTestCase):
+    def _args(self, **kw):
+        ns = argparse.Namespace(
+            lock_timeout=5.0,
+            host="fedora",
+            remote_script="x",
+            ssh_timeout=20.0,
+            max_retries=1,
+            user_map={"yanil": "/L", "theon": "/R"},
+            local_user="yanil",
+            remote_user="theon",
+            dry_run=False,
+            quiet=True,
+            verbose=False,
+            no_artifacts=True,
+            rsync_io_timeout=None,
+        )
+        for k, v in kw.items():
+            setattr(ns, k, v)
+        return ns
+
+    def _run(self, final_state):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        dev_status.save_items([make_item("foo", updated="2026-03-01")])
+        exported = sync.machine_state()
+        payload = {
+            "protocol_version": sync.PROTOCOL_VERSION,
+            "machine_state": exported,
+            "schema_version": {"items": 2, "pending_items": 1},
+            "items": [make_item("foo", updated="2026-02-01")],
+            "pending_items": [],
+            "rev": 0,
+        }
+        committed = []
+        with (
+            patch.object(sync, "ssh_export", lambda *a, **k: payload),
+            patch.object(sync, "ssh_import", lambda *a, **k: None),
+            patch.object(sync, "ssh_state", lambda *a, **k: final_state(exported)),
+            patch.object(sync, "local_commit", lambda *a, **k: committed.append(1)),
+        ):
+            sync.cmd_sync(self._args())
+        return committed
+
+    def test_an_unchanged_remote_state_commits(self):
+        self.assertEqual(self._run(lambda s: dict(s)), [1])
+
+    def test_a_remote_that_changed_grill_root_during_the_sync_is_not_committed_over(
+        self,
+    ):
+        with self.assertRaisesRegex(sync.SyncFatalError, "changed during the sync"):
+            self._run(lambda s: {**s, "decisions_root": "/other/grill"})
+
+    def test_dry_run_reports_and_writes_nothing(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        dev_status.save_items([make_item("foo", updated="2026-03-01")])
+        exported = sync.machine_state()
+        payload = {
+            "protocol_version": sync.PROTOCOL_VERSION,
+            "machine_state": exported,
+            "schema_version": {"items": 2, "pending_items": 1},
+            "items": [make_item("foo", updated="2026-02-01")],
+            "pending_items": [],
+            "rev": 0,
+        }
+        committed = []
+        out = io.StringIO()
+        with (
+            patch.object(sync, "ssh_export", lambda *a, **k: payload),
+            patch.object(sync, "ssh_import", lambda *a, **k: None),
+            patch.object(sync, "ssh_state", lambda *a, **k: dict(exported)),
+            patch.object(sync, "local_commit", lambda *a, **k: committed.append(1)),
+            patch("sys.stdout", out),
+        ):
+            sync.cmd_sync(self._args(dry_run=True, quiet=False))
+        self.assertEqual(committed, [])
+        self.assertIn("sync --dry-run (no writes)", out.getvalue())
+        self.assertIn("machine state:", out.getvalue())
+
+
+class StatusPreviewTests(SyncTestCase):
+    def _args(self):
+        return argparse.Namespace(
+            lock_timeout=5.0,
+            host="fedora",
+            remote_script="x",
+            ssh_timeout=20.0,
+            max_retries=1,
+            user_map={"yanil": str(self.local_home), "theon": "/R"},
+            local_user="yanil",
+            remote_user="theon",
+            quiet=False,
+            verbose=False,
+        )
+
+    def setUp(self):
+        super().setUp()
+        self.local_home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.local_home, ignore_errors=True)
+        self.local_grill = self.local_home / ".agent-toolkit" / "data" / "grill"
+        self.local_grill.mkdir(parents=True)
+        self.spec = self.local_grill / "foo-plan.md"
+        self.spec.write_text("spec")
+
+    def test_status_previews_artifacts_under_toolkit_home_decisions_root(self):
+        local_grill = str(self.local_grill)
+        remote_grill = "/R/.agent-toolkit/data/grill"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        dev_status.save_items(
+            [make_item("foo", related_files=[{"path": str(self.spec)}])]
+        )
+        local_state = {"decisions_root": local_grill}
+        remote_state = {"decisions_root": remote_grill}
+        payload = {
+            "protocol_version": sync.PROTOCOL_VERSION,
+            "machine_state": remote_state,
+            "schema_version": {"items": 2, "pending_items": 1},
+            "items": [],
+            "pending_items": [],
+            "rev": 0,
+        }
+        buf = io.StringIO()
+        with (
+            patch.object(sync, "machine_state", lambda: local_state),
+            patch.object(sync, "ssh_export", lambda *a, **k: payload),
+            patch("sys.stdout", buf),
+        ):
+            sync.cmd_status(self._args())
+        out = buf.getvalue()
+        self.assertIn(f"artifacts (1 file(s) under {local_grill}/):", out)
+        self.assertIn(
+            f"push  {local_grill}/./foo-plan.md -> fedora:{remote_grill}/", out
+        )
+        self.assertNotIn("artifacts: none", out)
 
 
 if __name__ == "__main__":
