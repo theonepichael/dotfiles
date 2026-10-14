@@ -59,7 +59,7 @@ set -eu
 SHARED_FLAGS="--profile --harness --force --dry-run --reseed --adopt --quiet --verbose --help"
 AGENT_TOOLKIT_ONLY_FLAGS="--force-harness"
 DOTFILES_ONLY_FLAGS="--no-nvim-pin"
-REFUSED_FLAGS="--rollback --check-links --depart --wipe --yes --report-uninstalled --no-report-uninstalled"
+REFUSED_FLAGS="--rollback --check-links --depart --wipe --yes --report-uninstalled --no-report-uninstalled --report-legacy-env"
 
 # run_without <drop-list> <python> <install.py> [args...]
 # Runs the installer with every arg that exactly matches a flag in
