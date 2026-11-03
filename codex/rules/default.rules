@@ -115,3 +115,4 @@ prefix_rule(pattern=["/usr/bin/zsh", "-lc", "python3 ~/.agent-toolkit/scripts/de
 prefix_rule(pattern=["uv", "run", "ruff", "format"], decision="allow")
 prefix_rule(pattern=["/usr/bin/zsh", "-lc", "RUFF_CACHE_DIR=/tmp/atk-nested-mounts-ruff-cache uv run pytest -q"], decision="allow")
 prefix_rule(pattern=["/usr/bin/zsh", "-lc", "RUFF_CACHE_DIR=/tmp/atk-nested-mounts-ruff-cache uv run ruff format agent-scripts/llm_backends.py"], decision="allow")
+prefix_rule(pattern=["/usr/bin/zsh", "-lc", "RUFF_CACHE_DIR=/tmp/atk-nested-mounts-ruff-cache uv run ruff format agent-scripts/llm_backends.py agent-scripts/second_opinion.py test/test_backend_isolation.py test/test_llm_backends.py test/test_second_opinion.py test/test_timing.py"], decision="allow")
