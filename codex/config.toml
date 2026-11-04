@@ -1,4 +1,4 @@
-notify = ["python3", "/home/yanil/.claude/scripts/notify.py"]
+notify = ["python3", "/home/yanil/.agent-toolkit/scripts/notify.py"]
 model = "gpt-6-luna"
 model_reasoning_effort = "high"
 [projects."/home/yanil/Workspace/agent-toolkit/agent-toolkit"]
