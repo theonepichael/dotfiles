@@ -28,7 +28,7 @@ sys.path.insert(0, str(REPO_ROOT / "claude" / "scripts"))
 
 import settings_seed_drift_check  # noqa: E402 — must follow sys.path.insert above
 
-import depart  # noqa: E402 — must follow sys.path.insert above
+import uninstall_state  # noqa: E402 — must follow sys.path.insert above
 import install  # noqa: E402 — must follow sys.path.insert above
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ def make_ctx(
     no_nvim_pin=False,
     reseed=False,
     adopt=False,
-    depart=False,
+    uninstall=False,
     yes=False,
     check_links=False,
     report_uninstalled=False,
@@ -86,7 +86,7 @@ def make_ctx(
         no_nvim_pin=no_nvim_pin,
         reseed=reseed,
         adopt=adopt,
-        depart=depart,
+        uninstall=uninstall,
         yes=yes,
         check_links=check_links,
         report_uninstalled=report_uninstalled,
@@ -186,13 +186,13 @@ def parse_error(argv, capsys):
         # parse_args ordering fix (the --wipe-without-rollback check must
         # fire before the missing-harness check, not after).
         (["--wipe"], "--wipe can only be used with --rollback"),
-        (["--depart", "--harness=claude"], "--depart must be used alone"),
-        (["--depart", "--rollback"], "--depart must be used alone"),
-        (["--depart", "--wipe"], "--depart must be used alone"),
-        (["--depart", "--profile=work"], "--depart must be used alone"),
-        (["--depart", "--force"], "--depart must be used alone"),
-        (["--depart", "--reseed"], "--depart must be used alone"),
-        (["--depart", "--adopt"], "--depart must be used alone"),
+        (["--uninstall", "--harness=claude"], "--uninstall must be used alone"),
+        (["--uninstall", "--rollback"], "--uninstall must be used alone"),
+        (["--uninstall", "--wipe"], "--uninstall must be used alone"),
+        (["--uninstall", "--profile=work"], "--uninstall must be used alone"),
+        (["--uninstall", "--force"], "--uninstall must be used alone"),
+        (["--uninstall", "--reseed"], "--uninstall must be used alone"),
+        (["--uninstall", "--adopt"], "--uninstall must be used alone"),
         (["--check-links", "--adopt"], "--check-links must be used alone"),
         (
             ["--report-uninstalled"],
@@ -202,12 +202,12 @@ def parse_error(argv, capsys):
             ["--report-uninstalled", "--harness=claude"],
             "--report-uninstalled can only be used with --check-links",
         ),
-        (["--depart", "--no-nvim-pin"], "--depart must be used alone"),
-        # --depart --rollback names the --depart conflict, not rollback's —
-        # the --depart-alone check runs first.
-        (["--rollback", "--depart"], "--depart must be used alone"),
-        (["--yes"], "--yes can only be used with --depart"),
-        (["--yes", "--harness=claude"], "--yes can only be used with --depart"),
+        (["--uninstall", "--no-nvim-pin"], "--uninstall must be used alone"),
+        # --uninstall --rollback names the --uninstall conflict, not rollback's —
+        # the --uninstall-alone check runs first.
+        (["--rollback", "--uninstall"], "--uninstall must be used alone"),
+        (["--yes"], "--yes can only be used with --uninstall"),
+        (["--yes", "--harness=claude"], "--yes can only be used with --uninstall"),
     ],
 )
 def test_argument_errors_exit_2(argv, expected, capsys):
@@ -240,23 +240,29 @@ def test_comma_separated_harnesses():
     assert opts.harnesses == ("claude", "opencode", "agy")
 
 
-def test_depart_alone_parses():
-    opts = install.parse_args(["--depart"])
-    assert opts.depart is True
+def test_uninstall_alone_parses():
+    opts = install.parse_args(["--uninstall"])
+    assert opts.uninstall is True
     assert opts.yes is False
 
 
-def test_depart_with_yes_and_dry_run_parses():
-    opts = install.parse_args(["--depart", "--yes", "--dry-run"])
-    assert opts.depart is True
+def test_uninstall_with_yes_and_dry_run_parses():
+    opts = install.parse_args(["--uninstall", "--yes", "--dry-run"])
+    assert opts.uninstall is True
     assert opts.yes is True
     assert opts.dry_run is True
 
 
-def test_usage_documents_depart(capsys):
+def test_usage_documents_uninstall(capsys):
     with pytest.raises(SystemExit):
         install.parse_args(["--help"])
-    assert "--depart" in capsys.readouterr().out
+    assert "--uninstall" in capsys.readouterr().out
+
+
+def test_legacy_depart_flag_is_rejected(capsys):
+    code, err = parse_error(["--depart"], capsys)
+    assert code == 2
+    assert "unknown argument: --depart" in err
 
 
 def test_duplicate_harness_is_collapsed():
@@ -1357,7 +1363,7 @@ def test_run_install_never_provisions_node_or_npm_for_harnesses(
     monkeypatch.setattr(install, "have", lambda name: True)
 
     ctx = make_ctx(home, harnesses=("claude", "copilot"))
-    ctx.departure_baseline = depart.Baseline()
+    ctx.uninstall_baseline = uninstall_state.Baseline()
     install.run_install(ctx, links)
 
     for cmd in calls:
@@ -2149,7 +2155,7 @@ def test_install_neovim_fallback_replaces_stale_prefix(home, monkeypatch):
     """An unrecorded stale prefix self-heals: TREE_UNRECORDED still proceeds
     (see meta-guard-nvim-fallback-clobber's asymmetric verdict design)."""
     ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
+    ctx.uninstall_baseline = uninstall_state.Baseline()
     prefix = home / ".local" / "opt" / "neovim"
     (prefix / "bin").mkdir(parents=True)
     (prefix / "bin" / "nvim").write_text("stale old binary\n")
@@ -2164,7 +2170,7 @@ def test_install_neovim_fallback_replaces_stale_prefix(home, monkeypatch):
 
 def test_install_neovim_fallback_replaces_incomplete_prefix(home, monkeypatch):
     ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
+    ctx.uninstall_baseline = uninstall_state.Baseline()
     prefix = home / ".local" / "opt" / "neovim"
     (prefix / "bin").mkdir(parents=True)  # interrupted install: no nvim binary
 
@@ -2179,11 +2185,11 @@ def test_install_neovim_fallback_replaces_unchanged_recorded_prefix(home, monkey
     removed and replaced, same as an unrecorded one — the common reinstall
     case."""
     ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
+    ctx.uninstall_baseline = uninstall_state.Baseline()
     prefix = home / ".local" / "opt" / "neovim"
     (prefix / "bin").mkdir(parents=True)
     (prefix / "bin" / "nvim").write_text("previous fallback binary\n")
-    depart.record_installed_tree(ctx.departure_baseline, prefix)
+    uninstall_state.record_installed_tree(ctx.uninstall_baseline, prefix)
 
     _stub_neovim_fallback(monkeypatch, have_nvim=False)
     install._install_neovim_fallback(ctx)
@@ -2198,11 +2204,11 @@ def test_install_neovim_fallback_blocks_on_modified_recorded_prefix(
     added something) is left untouched, not silently destroyed — the fix
     for meta-guard-nvim-fallback-clobber's incident class."""
     ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
+    ctx.uninstall_baseline = uninstall_state.Baseline()
     prefix = home / ".local" / "opt" / "neovim"
     (prefix / "bin").mkdir(parents=True)
     (prefix / "bin" / "nvim").write_text("previous fallback binary\n")
-    depart.record_installed_tree(ctx.departure_baseline, prefix)
+    uninstall_state.record_installed_tree(ctx.uninstall_baseline, prefix)
     (prefix / "my-own-plugin.lua").write_text("-- mine\n")
 
     calls = _stub_neovim_fallback(monkeypatch, have_nvim=False)
@@ -2225,12 +2231,12 @@ def test_install_neovim_fallback_blocks_on_modified_recorded_symlink(
     """A symlinked prefix goes through the same verdict check as a
     directory -- TREE_MODIFIED blocks it too, not just the directory case."""
     ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
+    ctx.uninstall_baseline = uninstall_state.Baseline()
     prefix = home / ".local" / "opt" / "neovim"
     real_dir = home / "custom-neovim-build"
     (real_dir / "bin").mkdir(parents=True)
     (real_dir / "bin" / "nvim").write_text("custom build\n")
-    depart.record_installed_tree(ctx.departure_baseline, prefix)  # recorded as a dir
+    uninstall_state.record_installed_tree(ctx.uninstall_baseline, prefix)  # recorded as a dir
     prefix.parent.mkdir(parents=True)
     prefix.symlink_to(real_dir)  # now a symlink -- mismatches the recording
 
@@ -2248,7 +2254,7 @@ def test_install_neovim_fallback_replaces_unrecorded_symlink(home, monkeypatch):
     the non-directory branch's TREE_UNRECORDED path doesn't hit a
     shutil.rmtree-on-non-directory error."""
     ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
+    ctx.uninstall_baseline = uninstall_state.Baseline()
     prefix = home / ".local" / "opt" / "neovim"
     real_dir = home / "elsewhere"
     real_dir.mkdir(parents=True)
@@ -2265,13 +2271,13 @@ def test_install_neovim_fallback_replaces_unrecorded_symlink(home, monkeypatch):
 def test_install_neovim_fallback_no_baseline_skips_when_prefix_exists(
     home, monkeypatch, capsys
 ):
-    """ctx.departure_baseline is None with an existing prefix fails safe
+    """ctx.uninstall_baseline is None with an existing prefix fails safe
     (skips) rather than falling through to an unguarded clobber -- this
     branch is unreachable via a real run_install (see the module-level
     comment at its call site) but must still fail safe if ever hit
     directly, e.g. by a test or a future refactor."""
     ctx = make_ctx(home)
-    assert ctx.departure_baseline is None
+    assert ctx.uninstall_baseline is None
     prefix = home / ".local" / "opt" / "neovim"
     (prefix / "bin").mkdir(parents=True)
     (prefix / "bin" / "nvim").write_text("existing binary\n")
@@ -2280,7 +2286,7 @@ def test_install_neovim_fallback_no_baseline_skips_when_prefix_exists(
     install._install_neovim_fallback(ctx)
 
     out = capsys.readouterr().out
-    assert "no departure baseline available" in out
+    assert "no uninstall baseline available" in out
     assert ctx.neovim_fallback_failure is not None
     assert (prefix / "bin" / "nvim").read_text() == "existing binary\n"
     assert any(argv[0] == "curl" for argv in calls)  # tmp_dir cleanup still ran
@@ -2291,11 +2297,11 @@ def test_install_neovim_fallback_no_baseline_proceeds_when_prefix_absent(
 ):
     """The no-baseline check must never fire when there's nothing at prefix
     to protect -- a clean install proceeds regardless of
-    ctx.departure_baseline. This is the case an earlier draft of this fix
+    ctx.uninstall_baseline. This is the case an earlier draft of this fix
     got wrong (gated the whole function on the baseline instead of just
     the removal decision)."""
     ctx = make_ctx(home)
-    assert ctx.departure_baseline is None
+    assert ctx.uninstall_baseline is None
     prefix = home / ".local" / "opt" / "neovim"
     assert not prefix.exists()
 
@@ -2352,85 +2358,85 @@ def test_context_display_shortens_home(home):
     assert ctx.display(Path("/etc/hosts")) == "/etc/hosts"
 
 
-# ── departure baseline capture ──────────────────────────────────────────────
+# ── uninstall baseline capture ──────────────────────────────────────────────
 
 
-def test_capture_departure_baseline_noop_on_mac(home, links):
+def test_capture_uninstall_baseline_noop_on_mac(home, links):
     ctx = make_ctx(home, system="Darwin")
-    install.capture_departure_baseline(ctx, links)
-    assert not depart.baseline_path(ctx.state_dir).exists()
+    install.capture_uninstall_baseline(ctx, links)
+    assert not uninstall_state.baseline_path(ctx.state_dir).exists()
 
 
-def test_capture_departure_baseline_noop_on_dry_run(home, links):
+def test_capture_uninstall_baseline_noop_on_dry_run(home, links):
     ctx = make_ctx(home, dry_run=True)
-    install.capture_departure_baseline(ctx, links)
-    assert not depart.baseline_path(ctx.state_dir).exists()
+    install.capture_uninstall_baseline(ctx, links)
+    assert not uninstall_state.baseline_path(ctx.state_dir).exists()
 
 
-def test_capture_departure_baseline_captures_rc_files_with_blobs(home, links):
+def test_capture_uninstall_baseline_captures_rc_files_with_blobs(home, links):
     (home / ".zshrc").write_text("original zshrc\n")
     ctx = make_ctx(home)
-    install.capture_departure_baseline(ctx, links)
+    install.capture_uninstall_baseline(ctx, links)
 
-    baseline = depart.load_baseline(ctx.state_dir)
+    baseline = uninstall_state.load_baseline(ctx.state_dir)
     assert baseline is not None
-    record = baseline.value_for(depart.file_key(home / ".zshrc"))
+    record = baseline.value_for(uninstall_state.file_key(home / ".zshrc"))
     assert record["state"] == "present"
-    assert depart.read_blob(ctx.state_dir, record["blob"]) == b"original zshrc\n"
+    assert uninstall_state.read_blob(ctx.state_dir, record["blob"]) == b"original zshrc\n"
 
-    assert baseline.value_for(depart.file_key(home / ".bashrc")) == {"state": "absent"}
+    assert baseline.value_for(uninstall_state.file_key(home / ".bashrc")) == {"state": "absent"}
 
 
-def test_capture_departure_baseline_captures_link_destination_and_bak(home, links):
+def test_capture_uninstall_baseline_captures_link_destination_and_bak(home, links):
     ctx = make_ctx(home, harnesses=("claude",))
-    install.capture_departure_baseline(ctx, links)
-    baseline = depart.load_baseline(ctx.state_dir)
+    install.capture_uninstall_baseline(ctx, links)
+    baseline = uninstall_state.load_baseline(ctx.state_dir)
 
     dest = home / ".vimrc"
-    assert baseline.value_for(depart.file_key(dest)) == {"state": "absent"}
-    assert baseline.value_for(depart.symlink_key(dest)) == {"state": "absent"}
-    assert baseline.value_for(depart.file_key(dest.with_name(dest.name + ".bak"))) == {
+    assert baseline.value_for(uninstall_state.file_key(dest)) == {"state": "absent"}
+    assert baseline.value_for(uninstall_state.symlink_key(dest)) == {"state": "absent"}
+    assert baseline.value_for(uninstall_state.file_key(dest.with_name(dest.name + ".bak"))) == {
         "state": "absent"
     }
 
 
-def test_capture_departure_baseline_captures_ancestor_directories(home, links):
+def test_capture_uninstall_baseline_captures_ancestor_directories(home, links):
     ctx = make_ctx(home, harnesses=("claude",))
-    install.capture_departure_baseline(ctx, links)
-    baseline = depart.load_baseline(ctx.state_dir)
+    install.capture_uninstall_baseline(ctx, links)
+    baseline = uninstall_state.load_baseline(ctx.state_dir)
     # ~/.local/bin is an ancestor of the uv/oh-my-posh/shim destinations.
-    assert baseline.value_for(depart.directory_key(home / ".local" / "bin")) == {
+    assert baseline.value_for(uninstall_state.directory_key(home / ".local" / "bin")) == {
         "state": "absent"
     }
 
 
-def test_capture_departure_baseline_never_captures_claude_settings(home, links):
+def test_capture_uninstall_baseline_never_captures_claude_settings(home, links):
     """dotfiles no longer owns ~/.claude/settings.json (agent-toolkit's
-    domain now) -- the departure baseline never tracks it, regardless of
+    domain now) -- the uninstall baseline never tracks it, regardless of
     harness selection. Supersedes two separate captures/skips tests that
     used to document a real contrast here; there's no "captures" case left."""
     for i, harnesses in enumerate((("claude",), ("opencode",))):
-        # A fresh home per case -- capture_departure_baseline loads any
+        # A fresh home per case -- capture_uninstall_baseline loads any
         # existing baseline first, so reusing one home/state_dir across
         # cases would build on prior state instead of two clean captures.
         case_home = home.parent / f"home{i}"
         case_home.mkdir()
         ctx = make_ctx(case_home, harnesses=harnesses)
-        install.capture_departure_baseline(ctx, links)
-        baseline = depart.load_baseline(ctx.state_dir)
+        install.capture_uninstall_baseline(ctx, links)
+        baseline = uninstall_state.load_baseline(ctx.state_dir)
         dest = case_home / ".claude" / "settings.json"
-        assert baseline.value_for(depart.file_key(dest)) is None
+        assert baseline.value_for(uninstall_state.file_key(dest)) is None
 
 
-def test_capture_departure_baseline_captures_vscode_files_when_discoverable(
+def test_capture_uninstall_baseline_captures_vscode_files_when_discoverable(
     home, links, monkeypatch
 ):
     vscode_dir = home / "winappdata"
     vscode_dir.mkdir()
     monkeypatch.setattr(install, "_vscode_wsl_user_dir", lambda: vscode_dir)
     ctx = make_ctx(home, is_wsl=True)
-    install.capture_departure_baseline(ctx, links)
-    baseline = depart.load_baseline(ctx.state_dir)
+    install.capture_uninstall_baseline(ctx, links)
+    baseline = uninstall_state.load_baseline(ctx.state_dir)
 
     for name in (
         "settings.json",
@@ -2438,76 +2444,76 @@ def test_capture_departure_baseline_captures_vscode_files_when_discoverable(
         "settings.json.bak",
         "keybindings.json.bak",
     ):
-        record = baseline.value_for(depart.file_key(vscode_dir / name))
+        record = baseline.value_for(uninstall_state.file_key(vscode_dir / name))
         assert record == {"state": "absent", "needs_vscode_guard": True}
 
 
-def test_capture_departure_baseline_skips_vscode_files_without_discovery(
+def test_capture_uninstall_baseline_skips_vscode_files_without_discovery(
     home, links, monkeypatch
 ):
     monkeypatch.setattr(install, "_vscode_wsl_user_dir", lambda: None)
     ctx = make_ctx(home, is_wsl=True)
-    install.capture_departure_baseline(ctx, links)
-    baseline = depart.load_baseline(ctx.state_dir)
+    install.capture_uninstall_baseline(ctx, links)
+    baseline = uninstall_state.load_baseline(ctx.state_dir)
 
     for name in ("settings.json", "keybindings.json"):
-        assert baseline.value_for(depart.file_key(home / name)) is None
+        assert baseline.value_for(uninstall_state.file_key(home / name)) is None
 
 
-def test_capture_departure_baseline_tree_manifests_font_and_neovim_prefix(home, links):
+def test_capture_uninstall_baseline_tree_manifests_font_and_neovim_prefix(home, links):
     ctx = make_ctx(home)
-    install.capture_departure_baseline(ctx, links)
-    baseline = depart.load_baseline(ctx.state_dir)
+    install.capture_uninstall_baseline(ctx, links)
+    baseline = uninstall_state.load_baseline(ctx.state_dir)
     font_dir = home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont"
     neovim_prefix = home / ".local" / "opt" / "neovim"
-    assert baseline.value_for(depart.directory_key(font_dir)) == {"state": "absent"}
-    assert baseline.value_for(depart.directory_key(neovim_prefix)) == {
+    assert baseline.value_for(uninstall_state.directory_key(font_dir)) == {"state": "absent"}
+    assert baseline.value_for(uninstall_state.directory_key(neovim_prefix)) == {
         "state": "absent"
     }
 
 
-def test_capture_departure_baseline_captures_shared_nvim_dirs(home, links):
+def test_capture_uninstall_baseline_captures_shared_nvim_dirs(home, links):
     ctx = make_ctx(home)
-    install.capture_departure_baseline(ctx, links)
-    baseline = depart.load_baseline(ctx.state_dir)
-    for parts in depart.SHARED_NEOVIM_DIRS:
-        key = depart.directory_key(home.joinpath(*parts))
+    install.capture_uninstall_baseline(ctx, links)
+    baseline = uninstall_state.load_baseline(ctx.state_dir)
+    for parts in uninstall_state.SHARED_NEOVIM_DIRS:
+        key = uninstall_state.directory_key(home.joinpath(*parts))
         assert baseline.value_for(key) == {"state": "absent"}
 
 
-def test_capture_departure_baseline_captures_runtime_nvm(home, links):
+def test_capture_uninstall_baseline_captures_runtime_nvm(home, links):
     ctx = make_ctx(home)
-    install.capture_departure_baseline(ctx, links)
-    baseline = depart.load_baseline(ctx.state_dir)
-    assert baseline.value_for(depart.runtime_key(home / ".nvm")) == {"state": "absent"}
+    install.capture_uninstall_baseline(ctx, links)
+    baseline = uninstall_state.load_baseline(ctx.state_dir)
+    assert baseline.value_for(uninstall_state.runtime_key(home / ".nvm")) == {"state": "absent"}
 
 
-def test_capture_departure_baseline_first_layer_is_immutable_across_runs(home, links):
+def test_capture_uninstall_baseline_first_layer_is_immutable_across_runs(home, links):
     ctx = make_ctx(home)
-    install.capture_departure_baseline(ctx, links)  # first run: rc absent
+    install.capture_uninstall_baseline(ctx, links)  # first run: rc absent
 
     (home / ".zshrc").write_text("added after baseline was captured")
-    install.capture_departure_baseline(ctx, links)  # second run
+    install.capture_uninstall_baseline(ctx, links)  # second run
 
-    baseline = depart.load_baseline(ctx.state_dir)
+    baseline = uninstall_state.load_baseline(ctx.state_dir)
     # Still recorded as absent from the first (immutable) layer — a
     # later-observed present value must never overwrite it.
-    assert baseline.value_for(depart.file_key(home / ".zshrc")) == {"state": "absent"}
+    assert baseline.value_for(uninstall_state.file_key(home / ".zshrc")) == {"state": "absent"}
     assert len(baseline.layers) == 1  # nothing genuinely unrecorded to add
 
 
-def test_capture_departure_baseline_runs_via_run_install(home, links, offline_install):
+def test_capture_uninstall_baseline_runs_via_run_install(home, links, offline_install):
     ctx = make_ctx(home, harnesses=("claude",))
     install.run_install(ctx, links)
-    assert depart.baseline_path(ctx.state_dir).is_file()
+    assert uninstall_state.baseline_path(ctx.state_dir).is_file()
 
 
-def test_preflight_sees_harness_gated_files_despite_depart_having_no_harness(
+def test_preflight_sees_harness_gated_files_despite_uninstall_having_no_harness(
     home, links, offline_install
 ):
-    """Regression test for a real bug caught only by a container run: --depart
+    """Regression test for a real bug caught only by a container run: --uninstall
     is standalone (parse_args rejects --harness alongside it), so
-    ctx.opts.harnesses is always empty at departure time. build_preflight_report
+    ctx.opts.harnesses is always empty at uninstall time. build_preflight_report
     must never re-derive "applicable" links.toml destinations from that empty
     selection — every fast test happened to capture and recapture with the
     same harness, so this was invisible until a real Ubuntu container showed
@@ -2518,12 +2524,12 @@ def test_preflight_sees_harness_gated_files_despite_depart_having_no_harness(
     ctx = make_ctx(home, harnesses=("claude",))
     install.run_install(ctx, links)
 
-    # The real CLI shape: a --depart Options has no harnesses at all.
-    depart_ctx = make_ctx(home, harnesses=())
-    assert depart_ctx.opts.harnesses == ()
+    # The real CLI shape: a --uninstall Options has no harnesses at all.
+    uninstall_ctx = make_ctx(home, harnesses=())
+    assert uninstall_ctx.opts.harnesses == ()
 
-    report = install.build_preflight_report(depart_ctx)
-    claude_md_key = depart.symlink_key(home / ".claude" / "CLAUDE.md")
+    report = install.build_preflight_report(uninstall_ctx)
+    claude_md_key = uninstall_state.symlink_key(home / ".claude" / "CLAUDE.md")
 
     assert claude_md_key in report
     assert report[claude_md_key].bucket == "owned"
@@ -2550,7 +2556,7 @@ def test_preflight_reclassifies_appended_rc_file_as_owned_restore(
     zshrc.write_text("original zshrc content\nexport NVM_DIR=...\n")
 
     report = install.build_preflight_report(make_ctx(home))
-    c = report[depart.file_key(zshrc)]
+    c = report[uninstall_state.file_key(zshrc)]
     assert c.bucket == "owned"
     assert c.action == "restore"
 
@@ -2570,7 +2576,7 @@ def test_preflight_leaves_edited_rc_file_unresolved(home, links, offline_install
     zshrc.write_text("completely different content\n")
 
     report = install.build_preflight_report(make_ctx(home))
-    c = report[depart.file_key(zshrc)]
+    c = report[uninstall_state.file_key(zshrc)]
     assert c.bucket == "unresolved"
 
 
@@ -2588,27 +2594,27 @@ def test_preflight_reclassifies_backed_up_then_symlinked_pair(
     assert backup.read_text() == "my own vimrc\n"
 
     report = install.build_preflight_report(make_ctx(home))
-    file_c = report[depart.file_key(dest)]
-    symlink_c = report[depart.symlink_key(dest)]
+    file_c = report[uninstall_state.file_key(dest)]
+    symlink_c = report[uninstall_state.symlink_key(dest)]
     assert file_c.bucket == "owned"
     assert file_c.action == "restore"
     assert symlink_c.bucket == "owned"
     assert symlink_c.action == "remove"
 
 
-# ── rollback deletes departure state ────────────────────────────────────────
+# ── rollback deletes uninstall state ────────────────────────────────────────
 
 
 def test_real_rollback_deletes_baseline_and_blobs(home, links, offline_install):
     (home / ".zshrc").write_text("x")
     ctx = make_ctx(home, harnesses=("claude",))
     install.run_install(ctx, links)
-    assert depart.baseline_path(ctx.state_dir).is_file()
+    assert uninstall_state.baseline_path(ctx.state_dir).is_file()
     assert list(ctx.state_dir.glob("baseline-snapshot-*.blob"))
 
     install.do_rollback(make_ctx(home))
 
-    assert not depart.baseline_path(ctx.state_dir).exists()
+    assert not uninstall_state.baseline_path(ctx.state_dir).exists()
     assert not list(ctx.state_dir.glob("baseline-snapshot-*.blob"))
 
 
@@ -2624,16 +2630,16 @@ def test_real_rollback_deletes_blobs_even_with_unparseable_baseline_json(
     install.run_install(ctx, links)
     assert list(ctx.state_dir.glob("baseline-snapshot-*.blob"))
 
-    depart.baseline_path(ctx.state_dir).write_text("not valid json{")
-    assert depart.load_baseline(ctx.state_dir) is None  # confirms it's unparseable
+    uninstall_state.baseline_path(ctx.state_dir).write_text("not valid json{")
+    assert uninstall_state.load_baseline(ctx.state_dir) is None  # confirms it's unparseable
 
     install.do_rollback(make_ctx(home))
 
-    assert not depart.baseline_path(ctx.state_dir).exists()
+    assert not uninstall_state.baseline_path(ctx.state_dir).exists()
     assert not list(ctx.state_dir.glob("baseline-snapshot-*.blob"))
 
 
-def test_rollback_wipe_dry_run_preview_excludes_departure_state(
+def test_rollback_wipe_dry_run_preview_excludes_uninstall_state(
     home, links, offline_install, monkeypatch, capsys
 ):
     (home / ".zshrc").write_text("x")
@@ -2659,17 +2665,17 @@ def _vscode_guard_baseline_and_report(guarded_paths, unguarded_path):
     """A baseline + preflight report with guarded and unguarded owned/remove
     file: keys, for exercising execute_file_symlink_phase's guard directly
     without a full install/capture pass."""
-    baseline = depart.Baseline()
+    baseline = uninstall_state.Baseline()
     records = {}
     for p in (*guarded_paths, unguarded_path):
-        records[depart.file_key(p)] = {"state": "absent"}
+        records[uninstall_state.file_key(p)] = {"state": "absent"}
     for p in guarded_paths:
-        records[depart.file_key(p)]["needs_vscode_guard"] = True
+        records[uninstall_state.file_key(p)]["needs_vscode_guard"] = True
     baseline.add_layer("2024-01-01T00:00:00+00:00", records)
 
     report = {
-        depart.file_key(p): depart.Classification(
-            depart.BUCKET_OWNED, depart.ACTION_REMOVE, "absent at baseline, now present"
+        uninstall_state.file_key(p): uninstall_state.Classification(
+            uninstall_state.BUCKET_OWNED, uninstall_state.ACTION_REMOVE, "absent at baseline, now present"
         )
         for p in (*guarded_paths, unguarded_path)
     }
@@ -2684,7 +2690,7 @@ def test_execute_file_symlink_phase_removes_guarded_key_when_not_running(
     unguarded = home / ".vimrc"
     unguarded.write_text("y")
     baseline, report = _vscode_guard_baseline_and_report([guarded], unguarded)
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(home / "state"))
 
     monkeypatch.setattr(
         settings_seed_drift_check, "_vscode_process_running", lambda: False
@@ -2694,7 +2700,7 @@ def test_execute_file_symlink_phase_removes_guarded_key_when_not_running(
     assert not guarded.exists()
     assert not unguarded.exists()
     outcomes = {e["key"]: e["outcome"] for e in ledger.entries()}
-    assert outcomes[depart.file_key(guarded)] == "ok"
+    assert outcomes[uninstall_state.file_key(guarded)] == "ok"
 
 
 @pytest.mark.parametrize("running_value", [True, None])
@@ -2706,7 +2712,7 @@ def test_execute_file_symlink_phase_leaves_guarded_key_unresolved_when_running_o
     unguarded = home / ".vimrc"
     unguarded.write_text("y")
     baseline, report = _vscode_guard_baseline_and_report([guarded], unguarded)
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(home / "state"))
 
     monkeypatch.setattr(
         settings_seed_drift_check, "_vscode_process_running", lambda: running_value
@@ -2716,11 +2722,11 @@ def test_execute_file_symlink_phase_leaves_guarded_key_unresolved_when_running_o
     assert guarded.exists()  # left alone
     assert not unguarded.exists()  # unaffected — still removed
     outcomes = {e["key"]: e["outcome"] for e in ledger.entries()}
-    assert outcomes[depart.file_key(guarded)].startswith(
+    assert outcomes[uninstall_state.file_key(guarded)].startswith(
         install._VSCODE_GUARD_UNRESOLVED_PREFIX
     )
-    assert "VS Code" in outcomes[depart.file_key(guarded)]
-    assert outcomes[depart.file_key(unguarded)] == "ok"
+    assert "VS Code" in outcomes[uninstall_state.file_key(guarded)]
+    assert outcomes[uninstall_state.file_key(unguarded)] == "ok"
 
 
 def test_execute_file_symlink_phase_checks_process_running_exactly_once(
@@ -2740,7 +2746,7 @@ def test_execute_file_symlink_phase_checks_process_running_exactly_once(
     unguarded = home / ".vimrc"
     unguarded.write_text("y")
     baseline, report = _vscode_guard_baseline_and_report(guarded_paths, unguarded)
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(home / "state"))
 
     calls = []
 
@@ -2762,7 +2768,7 @@ def test_execute_file_symlink_phase_never_checks_process_running_when_no_guarded
     unguarded = home / ".vimrc"
     unguarded.write_text("y")
     baseline, report = _vscode_guard_baseline_and_report([], unguarded)
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(home / "state"))
 
     def _forbidden():
         raise AssertionError("process check should not run without guarded keys")
@@ -2777,14 +2783,14 @@ def test_execute_file_symlink_phase_never_checks_process_running_when_no_guarded
 def _vscode_guard_solo_baseline_and_report(guarded):
     """A baseline + report for a single guarded owned/remove file: key,
     for the retry-boundary tests below -- no unguarded companion key."""
-    baseline = depart.Baseline()
+    baseline = uninstall_state.Baseline()
     baseline.add_layer(
         "2024-01-01T00:00:00+00:00",
-        {depart.file_key(guarded): {"state": "absent", "needs_vscode_guard": True}},
+        {uninstall_state.file_key(guarded): {"state": "absent", "needs_vscode_guard": True}},
     )
     report = {
-        depart.file_key(guarded): depart.Classification(
-            depart.BUCKET_OWNED, depart.ACTION_REMOVE, "absent at baseline, now present"
+        uninstall_state.file_key(guarded): uninstall_state.Classification(
+            uninstall_state.BUCKET_OWNED, uninstall_state.ACTION_REMOVE, "absent at baseline, now present"
         )
     }
     return baseline, report
@@ -2794,7 +2800,7 @@ def test_execute_file_symlink_phase_retries_guarded_key_after_close(home, monkey
     guarded = home / "settings.json"
     guarded.write_text("x")
     baseline, report = _vscode_guard_solo_baseline_and_report(guarded)
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(home / "state"))
     ctx = make_ctx(home)
     calls: list[bool | None] = []
 
@@ -2808,7 +2814,7 @@ def test_execute_file_symlink_phase_retries_guarded_key_after_close(home, monkey
     )
     install.execute_file_symlink_phase(ctx, baseline, report, ledger)
     assert guarded.exists()
-    assert depart.file_key(guarded) in ledger.completed_keys()
+    assert uninstall_state.file_key(guarded) in ledger.completed_keys()
 
     install.execute_file_symlink_phase(ctx, baseline, report, ledger)
     assert not guarded.exists()
@@ -2821,13 +2827,13 @@ def test_execute_file_symlink_phase_does_not_retry_guarded_key_after_unrelated_f
     guarded = home / "settings.json"
     guarded.write_text("x")
     baseline, report = _vscode_guard_solo_baseline_and_report(guarded)
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(home / "state"))
     # Simulate a prior attempt that failed for a reason that has nothing to
     # do with the VS Code guard (matches install._execute_remove_file's own
     # OSError-outcome shape), not the guard's message.
     ledger.record(
-        depart.file_key(guarded),
-        depart.ACTION_REMOVE,
+        uninstall_state.file_key(guarded),
+        uninstall_state.ACTION_REMOVE,
         "unresolved: could not remove file (mock)",
     )
 
@@ -2844,18 +2850,18 @@ def test_execute_file_symlink_phase_stays_retryable_after_guard_then_unrelated_f
     guarded = home / "settings.json"
     guarded.write_text("x")
     baseline, report = _vscode_guard_solo_baseline_and_report(guarded)
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(home / "state"))
     # A guard block, then a later unrelated failure -- both recorded,
     # oldest first, matching the ledger's append-only history.
     ledger.record(
-        depart.file_key(guarded),
-        depart.ACTION_REMOVE,
+        uninstall_state.file_key(guarded),
+        uninstall_state.ACTION_REMOVE,
         "unresolved [vscode-guard-blocked]: Windows VS Code is running (or "
-        "could not be verified) — close it first, then re-run --depart",
+        "could not be verified) — close it first, then re-run --uninstall",
     )
     ledger.record(
-        depart.file_key(guarded),
-        depart.ACTION_REMOVE,
+        uninstall_state.file_key(guarded),
+        uninstall_state.ACTION_REMOVE,
         "unresolved: could not remove file (mock)",
     )
 
@@ -2874,15 +2880,15 @@ def test_vscode_guard_preflight_annotation_present_when_running_or_unknown(
 ):
     guarded = home / "settings.json"
     ctx = make_ctx(home)
-    baseline = depart.Baseline()
+    baseline = uninstall_state.Baseline()
     baseline.add_layer(
         "2024-01-01T00:00:00+00:00",
-        {depart.file_key(guarded): {"state": "absent", "needs_vscode_guard": True}},
+        {uninstall_state.file_key(guarded): {"state": "absent", "needs_vscode_guard": True}},
     )
-    depart.save_baseline(ctx.state_dir, baseline)
+    uninstall_state.save_baseline(ctx.state_dir, baseline)
     report = {
-        depart.file_key(guarded): depart.Classification(
-            depart.BUCKET_OWNED, depart.ACTION_REMOVE, "absent at baseline, now present"
+        uninstall_state.file_key(guarded): uninstall_state.Classification(
+            uninstall_state.BUCKET_OWNED, uninstall_state.ACTION_REMOVE, "absent at baseline, now present"
         )
     }
 
@@ -2891,25 +2897,25 @@ def test_vscode_guard_preflight_annotation_present_when_running_or_unknown(
     )
     annotations = install._vscode_guard_preflight_annotations(ctx, report)
 
-    assert depart.file_key(guarded) in annotations
+    assert uninstall_state.file_key(guarded) in annotations
     # Purely display-only: the stored Classification is untouched.
-    assert report[depart.file_key(guarded)] == depart.Classification(
-        depart.BUCKET_OWNED, depart.ACTION_REMOVE, "absent at baseline, now present"
+    assert report[uninstall_state.file_key(guarded)] == uninstall_state.Classification(
+        uninstall_state.BUCKET_OWNED, uninstall_state.ACTION_REMOVE, "absent at baseline, now present"
     )
 
 
 def test_vscode_guard_preflight_annotation_absent_when_not_running(home, monkeypatch):
     guarded = home / "settings.json"
     ctx = make_ctx(home)
-    baseline = depart.Baseline()
+    baseline = uninstall_state.Baseline()
     baseline.add_layer(
         "2024-01-01T00:00:00+00:00",
-        {depart.file_key(guarded): {"state": "absent", "needs_vscode_guard": True}},
+        {uninstall_state.file_key(guarded): {"state": "absent", "needs_vscode_guard": True}},
     )
-    depart.save_baseline(ctx.state_dir, baseline)
+    uninstall_state.save_baseline(ctx.state_dir, baseline)
     report = {
-        depart.file_key(guarded): depart.Classification(
-            depart.BUCKET_OWNED, depart.ACTION_REMOVE, "absent at baseline, now present"
+        uninstall_state.file_key(guarded): uninstall_state.Classification(
+            uninstall_state.BUCKET_OWNED, uninstall_state.ACTION_REMOVE, "absent at baseline, now present"
         )
     }
 
@@ -2921,7 +2927,7 @@ def test_vscode_guard_preflight_annotation_absent_when_not_running(home, monkeyp
     assert annotations == {}
 
 
-# ── do_depart: zero-evidence refusal, preflight, confirmation ──────────────
+# ── do_uninstall: zero-evidence refusal, preflight, confirmation ──────────────
 
 
 class _FakeStdin:
@@ -2938,27 +2944,27 @@ class _FakeStdin:
         return self._lines.readline()
 
 
-def test_do_depart_zero_evidence_refusal_exits_2(home, capsys):
-    code = install.do_depart(make_ctx(home))
+def test_do_uninstall_zero_evidence_refusal_exits_2(home, capsys):
+    code = install.do_uninstall(make_ctx(home))
     assert code == 2
     assert "no baseline" in capsys.readouterr().err
 
 
-def test_do_depart_dry_run_prints_preflight_and_exits_0(
+def test_do_uninstall_dry_run_prints_preflight_and_exits_0(
     home, links, offline_install, capsys
 ):
     ctx = make_ctx(home, harnesses=("claude",))
     install.run_install(ctx, links)
 
-    code = install.do_depart(make_ctx(home, dry_run=True))
+    code = install.do_uninstall(make_ctx(home, dry_run=True))
     out = capsys.readouterr().out
 
     assert code == 0
-    assert "Departure preflight" in out
+    assert "Uninstall preflight" in out
     assert "owned" in out
 
 
-def test_do_depart_dry_run_never_touches_stdin(
+def test_do_uninstall_dry_run_never_touches_stdin(
     home, links, offline_install, monkeypatch
 ):
     """--dry-run always exits 0 regardless of TTY status and never prompts."""
@@ -2970,23 +2976,23 @@ def test_do_depart_dry_run_never_touches_stdin(
 
     monkeypatch.setattr(sys, "stdin", _FakeStdin(False))
     monkeypatch.setattr(sys.stdin, "isatty", _boom)
-    code = install.do_depart(make_ctx(home, dry_run=True))
+    code = install.do_uninstall(make_ctx(home, dry_run=True))
     assert code == 0
 
 
-def test_do_depart_non_tty_real_run_without_yes_exits_2(
+def test_do_uninstall_non_tty_real_run_without_yes_exits_2(
     home, links, offline_install, monkeypatch, capsys
 ):
     ctx = make_ctx(home, harnesses=("claude",))
     install.run_install(ctx, links)
 
     monkeypatch.setattr(sys, "stdin", _FakeStdin(False))
-    code = install.do_depart(make_ctx(home))
+    code = install.do_uninstall(make_ctx(home))
     assert code == 2
     assert "non-interactive" in capsys.readouterr().err
 
 
-def test_do_depart_non_tty_real_run_without_yes_skips_preflight_dump(
+def test_do_uninstall_non_tty_real_run_without_yes_skips_preflight_dump(
     home, links, offline_install, monkeypatch, capsys
 ):
     """A guaranteed-refusal run shouldn't bury the error under a preflight
@@ -2996,14 +3002,14 @@ def test_do_depart_non_tty_real_run_without_yes_skips_preflight_dump(
     install.run_install(ctx, links)
 
     monkeypatch.setattr(sys, "stdin", _FakeStdin(False))
-    code = install.do_depart(make_ctx(home))
+    code = install.do_uninstall(make_ctx(home))
     assert code == 2
     out = capsys.readouterr().out
     assert "owned (" not in out
     assert "preserved (" not in out
 
 
-def test_do_depart_yes_bypasses_prompt_entirely(
+def test_do_uninstall_yes_bypasses_prompt_entirely(
     home, links, offline_install, monkeypatch, capsys
 ):
     ctx = make_ctx(home, harnesses=("claude",))
@@ -3014,31 +3020,31 @@ def test_do_depart_yes_bypasses_prompt_entirely(
 
     monkeypatch.setattr(sys, "stdin", _FakeStdin(False))
     monkeypatch.setattr(sys.stdin, "isatty", _boom)
-    code = install.do_depart(make_ctx(home, yes=True))
+    code = install.do_uninstall(make_ctx(home, yes=True))
     out = capsys.readouterr().out
     # Everything this fresh install created is absent-at-baseline, so a
-    # full departure succeeds and leaves no trace.
+    # full uninstall succeeds and leaves no trace.
     assert code == 0
-    assert "Departure complete" in out
+    assert "Uninstall complete" in out
     assert not any(home.iterdir())
 
 
-def test_do_depart_correct_token_proceeds_past_confirmation(
+def test_do_uninstall_correct_token_proceeds_past_confirmation(
     home, links, offline_install, monkeypatch, capsys
 ):
     ctx = make_ctx(home, harnesses=("claude",))
     install.run_install(ctx, links)
 
-    monkeypatch.setattr(sys, "stdin", _FakeStdin(True, "DEPART\n"))
-    code = install.do_depart(make_ctx(home))
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(True, "UNINSTALL\n"))
+    code = install.do_uninstall(make_ctx(home))
     out = capsys.readouterr().out
     assert code == 0
-    assert "Departure complete" in out
+    assert "Uninstall complete" in out
     assert not any(home.iterdir())
 
 
-@pytest.mark.parametrize("token", ["nope\n", " DEPART \n", "depart\n", ""])
-def test_do_depart_bad_token_exits_2(
+@pytest.mark.parametrize("token", ["nope\n", " UNINSTALL \n", "uninstall\n", ""])
+def test_do_uninstall_bad_token_exits_2(
     home, links, offline_install, monkeypatch, capsys, token
 ):
     """Wrong token, surrounding whitespace, wrong case, or EOF all refuse."""
@@ -3046,27 +3052,27 @@ def test_do_depart_bad_token_exits_2(
     install.run_install(ctx, links)
 
     monkeypatch.setattr(sys, "stdin", _FakeStdin(True, token))
-    code = install.do_depart(make_ctx(home))
+    code = install.do_uninstall(make_ctx(home))
     assert code == 2
     assert "confirmation not received" in capsys.readouterr().err
 
 
-def test_do_depart_token_without_trailing_newline_still_matches(
+def test_do_uninstall_token_without_trailing_newline_still_matches(
     home, links, offline_install, monkeypatch, capsys
 ):
     """Nothing to strip when input has no trailing LF at all — still a match."""
     ctx = make_ctx(home, harnesses=("claude",))
     install.run_install(ctx, links)
 
-    monkeypatch.setattr(sys, "stdin", _FakeStdin(True, "DEPART"))
-    code = install.do_depart(make_ctx(home))
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(True, "UNINSTALL"))
+    code = install.do_uninstall(make_ctx(home))
     assert code == 0
 
 
-# ── do_depart execution: the two named restore cases, end to end ──────────
+# ── do_uninstall execution: the two named restore cases, end to end ──────────
 
 
-def test_depart_restores_backed_up_then_symlinked_destination(
+def test_uninstall_restores_backed_up_then_symlinked_destination(
     home, links, offline_install
 ):
     dest = home / ".vimrc"
@@ -3076,7 +3082,7 @@ def test_depart_restores_backed_up_then_symlinked_destination(
     install.run_install(ctx, links)
     assert dest.is_symlink()
 
-    code = install.do_depart(make_ctx(home, yes=True))
+    code = install.do_uninstall(make_ctx(home, yes=True))
 
     assert code == 0
     assert dest.is_file() and not dest.is_symlink()
@@ -3084,7 +3090,7 @@ def test_depart_restores_backed_up_then_symlinked_destination(
     assert not dest.with_name(dest.name + ".bak").exists()
 
 
-def test_depart_restores_appended_rc_file(home, links, offline_install):
+def test_uninstall_restores_appended_rc_file(home, links, offline_install):
     zshrc = home / ".zshrc"
     zshrc.write_text("original zshrc content\n")
     ctx = make_ctx(home, harnesses=("claude",))
@@ -3097,19 +3103,19 @@ def test_depart_restores_appended_rc_file(home, links, offline_install):
     zshrc.unlink()
     zshrc.write_text("original zshrc content\nexport NVM_DIR=...\n")
 
-    code = install.do_depart(make_ctx(home, yes=True))
+    code = install.do_uninstall(make_ctx(home, yes=True))
 
     assert code == 0
     assert zshrc.read_text() == "original zshrc content\n"
 
 
-def test_depart_leaves_unrelated_files_untouched(home, links, offline_install):
+def test_uninstall_leaves_unrelated_files_untouched(home, links, offline_install):
     unrelated = home / "my-notes.txt"
     unrelated.write_text("keep me\n")
     ctx = make_ctx(home, harnesses=("claude",))
     install.run_install(ctx, links)
 
-    code = install.do_depart(make_ctx(home, yes=True))
+    code = install.do_uninstall(make_ctx(home, yes=True))
 
     assert code == 0
     assert unrelated.read_text() == "keep me\n"
@@ -3130,27 +3136,27 @@ def _seed_installed_font_tree(home, *, record: bool):
     (font_dir / "JetBrainsMono-Regular.ttf").write_bytes(b"installer font")
     (font_dir / ".nerd-fonts-version").write_text("3.4.0\n")
 
-    baseline = depart.load_baseline(home / ".local" / "state" / "dotfiles") or (
-        depart.Baseline()
+    baseline = uninstall_state.load_baseline(home / ".local" / "state" / "dotfiles") or (
+        uninstall_state.Baseline()
     )
     if record:
-        depart.record_installed_tree(baseline, font_dir)
-    depart.save_baseline(home / ".local" / "state" / "dotfiles", baseline)
+        uninstall_state.record_installed_tree(baseline, font_dir)
+    uninstall_state.save_baseline(home / ".local" / "state" / "dotfiles", baseline)
     return font_dir
 
 
-def test_depart_removes_an_untouched_font_tree_wholesale(home, links, offline_install):
+def test_uninstall_removes_an_untouched_font_tree_wholesale(home, links, offline_install):
     ctx = make_ctx(home, harnesses=("claude",))
     install.run_install(ctx, links)
     font_dir = _seed_installed_font_tree(home, record=True)
 
-    code = install.do_depart(make_ctx(home, yes=True))
+    code = install.do_uninstall(make_ctx(home, yes=True))
 
     assert code == 0
     assert not font_dir.exists()
 
 
-def test_depart_preserves_a_font_tree_the_user_added_to(
+def test_uninstall_preserves_a_font_tree_the_user_added_to(
     home, links, offline_install, capsys
 ):
     """The data-loss regression: a font added after install must survive."""
@@ -3161,7 +3167,7 @@ def test_depart_preserves_a_font_tree_the_user_added_to(
     mine = font_dir / "MyOwnFont.ttf"
     mine.write_bytes(b"do not delete me")
 
-    code = install.do_depart(make_ctx(home, yes=True))
+    code = install.do_uninstall(make_ctx(home, yes=True))
     out = capsys.readouterr().out
 
     assert code == 1
@@ -3170,7 +3176,7 @@ def test_depart_preserves_a_font_tree_the_user_added_to(
     assert "tree changed since install" in out
 
 
-def test_depart_preserves_a_font_tree_with_no_recorded_manifest(
+def test_uninstall_preserves_a_font_tree_with_no_recorded_manifest(
     home, links, offline_install, capsys
 ):
     """An older baseline cannot prove the tree is untouched, so keep it."""
@@ -3178,7 +3184,7 @@ def test_depart_preserves_a_font_tree_with_no_recorded_manifest(
     install.run_install(ctx, links)
     font_dir = _seed_installed_font_tree(home, record=False)
 
-    code = install.do_depart(make_ctx(home, yes=True))
+    code = install.do_uninstall(make_ctx(home, yes=True))
     out = capsys.readouterr().out
 
     assert code == 1
@@ -3189,7 +3195,7 @@ def test_depart_preserves_a_font_tree_with_no_recorded_manifest(
 def test_install_records_the_font_tree_manifest(home, links, monkeypatch):
     """_install_nerd_font must snapshot what it produced."""
     ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
+    ctx.uninstall_baseline = uninstall_state.Baseline()
     font_dir = home / ".local" / "share" / "fonts" / "JetBrainsMonoNerdFont"
 
     def fake_run(cmd, **kwargs):
@@ -3204,21 +3210,21 @@ def test_install_records_the_font_tree_manifest(home, links, monkeypatch):
     monkeypatch.setattr(install, "run_command", fake_run)
     install._install_nerd_font(ctx)
 
-    assert str(font_dir) in ctx.departure_baseline.installed_trees
-    assert depart.installed_tree_verdict(ctx.departure_baseline, font_dir) == (
-        depart.TREE_UNCHANGED
+    assert str(font_dir) in ctx.uninstall_baseline.installed_trees
+    assert uninstall_state.installed_tree_verdict(ctx.uninstall_baseline, font_dir) == (
+        uninstall_state.TREE_UNCHANGED
     )
 
 
-def test_depart_retry_skips_already_ledger_completed_actions(
+def test_uninstall_retry_skips_already_ledger_completed_actions(
     home, links, offline_install, monkeypatch
 ):
     ctx = make_ctx(home, harnesses=("claude",))
     install.run_install(ctx, links)
 
-    baseline = depart.load_baseline(ctx.state_dir)
+    baseline = uninstall_state.load_baseline(ctx.state_dir)
     report = install.build_preflight_report(make_ctx(home))
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(ctx.state_dir))
     install.execute_file_symlink_phase(make_ctx(home), baseline, report, ledger)
     completed_after_first_pass = ledger.completed_keys()
     assert completed_after_first_pass  # the fresh install created plenty to remove
@@ -3236,21 +3242,21 @@ def test_depart_retry_skips_already_ledger_completed_actions(
     assert calls == []  # nothing already in the ledger was re-attempted
 
 
-def test_depart_second_lock_acquisition_refuses_while_first_is_live(
+def test_uninstall_second_lock_acquisition_refuses_while_first_is_live(
     home, links, offline_install, monkeypatch
 ):
     ctx = make_ctx(home, harnesses=("claude",))
     install.run_install(ctx, links)
 
-    acquired, _ = depart.acquire_departure_lock(
-        ctx.state_dir, pid=os.getpid(), start_time_fn=depart.process_start_time
+    acquired, _ = uninstall_state.acquire_uninstall_lock(
+        ctx.state_dir, pid=os.getpid(), start_time_fn=uninstall_state.process_start_time
     )
     assert acquired is True
     try:
-        code = install.do_depart(make_ctx(home, yes=True))
+        code = install.do_uninstall(make_ctx(home, yes=True))
         assert code == 2
     finally:
-        depart.release_departure_lock(ctx.state_dir, pid=os.getpid())
+        uninstall_state.release_uninstall_lock(ctx.state_dir, pid=os.getpid())
 
 
 # ── package transaction recording (step 2 live wiring) ─────────────────────
@@ -3258,7 +3264,7 @@ def test_depart_second_lock_acquisition_refuses_while_first_is_live(
 
 def test_install_linux_packages_one_by_one_records_transactions(home, monkeypatch):
     ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
+    ctx.uninstall_baseline = uninstall_state.Baseline()
     live_versions: dict[str, str] = {}
 
     def run(cmd, **kwargs):
@@ -3273,7 +3279,7 @@ def test_install_linux_packages_one_by_one_records_transactions(home, monkeypatc
     monkeypatch.setattr(install, "run_command", run)
     install._install_linux_packages_one_by_one(ctx, "apt", epoch={})
 
-    txns = ctx.departure_baseline.transactions
+    txns = ctx.uninstall_baseline.transactions
     assert len(txns) == len(install.LINUX_PACKAGES)
     first = txns[0]
     assert first["manager"] == "apt"
@@ -3293,7 +3299,7 @@ def test_install_linux_packages_one_by_one_chains_snapshots_across_packages(
     "before" instead of a fresh dpkg-query probe -- one probe per package
     installed, not two."""
     ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
+    ctx.uninstall_baseline = uninstall_state.Baseline()
     live_versions: dict[str, str] = {}
     probe_calls = 0
 
@@ -3316,7 +3322,7 @@ def test_install_linux_packages_one_by_one_chains_snapshots_across_packages(
 
 def test_install_linux_packages_dry_run_records_no_transactions(home, monkeypatch):
     ctx = make_ctx(home, dry_run=True)
-    ctx.departure_baseline = depart.Baseline()
+    ctx.uninstall_baseline = uninstall_state.Baseline()
 
     def run(cmd, **kwargs):
         raise AssertionError("dry-run must never shell out")
@@ -3324,13 +3330,13 @@ def test_install_linux_packages_dry_run_records_no_transactions(home, monkeypatc
     monkeypatch.setattr(install, "run_command", run)
     install._install_linux_packages_one_by_one(ctx, "apt", epoch={})
 
-    assert ctx.departure_baseline.transactions == []
+    assert ctx.uninstall_baseline.transactions == []
 
 
-def test_install_linux_packages_no_departure_baseline_skips_probes(home, monkeypatch):
+def test_install_linux_packages_no_uninstall_baseline_skips_probes(home, monkeypatch):
     """When not tracking (e.g. macOS, or dry-run upstream), no probe calls happen."""
     ctx = make_ctx(home)
-    assert ctx.departure_baseline is None
+    assert ctx.uninstall_baseline is None
 
     def run(cmd, **kwargs):
         if cmd[0] == "dpkg-query":
@@ -3345,7 +3351,7 @@ def test_install_linux_packages_no_departure_baseline_skips_probes(home, monkeyp
 
 def test_install_ruff_uv_tool_records_transaction(home, monkeypatch):
     ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
+    ctx.uninstall_baseline = uninstall_state.Baseline()
     live: dict[str, str] = {}
 
     def run(cmd, **kwargs):
@@ -3361,7 +3367,7 @@ def test_install_ruff_uv_tool_records_transaction(home, monkeypatch):
     monkeypatch.setattr(install, "run_command", run)
     install._install_ruff_uv_tool(ctx)
 
-    txns = ctx.departure_baseline.transactions
+    txns = ctx.uninstall_baseline.transactions
     assert len(txns) == 1
     assert txns[0]["manager"] == "uv-tool"
     assert txns[0]["requested"] == ["ruff"]
@@ -3373,7 +3379,7 @@ def test_install_ruff_uv_tool_records_transaction(home, monkeypatch):
 
 def test_install_linux_packages_skips_already_installed(home, monkeypatch):
     ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
+    ctx.uninstall_baseline = uninstall_state.Baseline()
     # Assume tmux and ripgrep are already installed
     live_versions = {"tmux": "3.3a", "ripgrep": "14.1.0"}
     installed_cmds: list[list[str]] = []
@@ -3399,7 +3405,7 @@ def test_install_linux_packages_skips_already_installed(home, monkeypatch):
     assert len(installed_pkgs) == len(install.LINUX_PACKAGES) - 2
 
     # Manifest and transactions should only record the newly installed packages
-    txns = ctx.departure_baseline.transactions
+    txns = ctx.uninstall_baseline.transactions
     assert len(txns) == len(install.LINUX_PACKAGES) - 2
     assert not any(t["requested"] == ["tmux"] for t in txns)
     assert not any(t["requested"] == ["ripgrep"] for t in txns)
@@ -3495,7 +3501,7 @@ def test_install_mac_packages_skips_completely_when_all_installed(home, monkeypa
 
 def test_install_ruff_uv_tool_skips_when_already_installed(home, monkeypatch):
     ctx = make_ctx(home)
-    ctx.departure_baseline = depart.Baseline()
+    ctx.uninstall_baseline = uninstall_state.Baseline()
     calls: list[list[str]] = []
 
     def run(cmd, **kwargs):
@@ -3509,7 +3515,7 @@ def test_install_ruff_uv_tool_skips_when_already_installed(home, monkeypatch):
     install._install_ruff_uv_tool(ctx)
 
     assert calls == [["uv", "tool", "list"]]
-    assert ctx.departure_baseline.transactions == []
+    assert ctx.uninstall_baseline.transactions == []
     assert kinds(ctx, "package-installed") == []
 
 
@@ -3539,9 +3545,9 @@ def test_install_nerd_font_skips_when_fc_list_detects_font(home, monkeypatch):
 
 
 def _package_baseline(*transactions):
-    baseline = depart.Baseline()
+    baseline = uninstall_state.Baseline()
     for kwargs in transactions:
-        depart.record_transaction(baseline, **kwargs)
+        uninstall_state.record_transaction(baseline, **kwargs)
     return baseline
 
 
@@ -3556,7 +3562,7 @@ def test_execute_package_phase_removes_freshly_installed_package(home, monkeypat
             "epoch": {},
         }
     )
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(home / "state"))
     removed = []
 
     def run(cmd, **kwargs):
@@ -3588,7 +3594,7 @@ def test_execute_package_phase_never_touches_already_absent_package(home, monkey
             "epoch": {},
         }
     )
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(home / "state"))
 
     def run(cmd, **kwargs):
         if cmd[0] == "dpkg-query":
@@ -3613,7 +3619,7 @@ def test_execute_package_phase_removes_introduced_dependency_when_probe_empty(
             "epoch": {},
         }
     )
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(home / "state"))
     calls = []
 
     def run(cmd, **kwargs):
@@ -3629,7 +3635,7 @@ def test_execute_package_phase_removes_introduced_dependency_when_probe_empty(
     monkeypatch.setattr(install, "run_command", run)
     install.execute_package_phase(make_ctx(home), baseline, ledger)
 
-    assert depart.package_key("apt", "libgit2") in ledger.completed_keys()
+    assert uninstall_state.package_key("apt", "libgit2") in ledger.completed_keys()
     libgit2_entry = next(
         e for e in ledger.entries() if e["key"] == "package:apt/libgit2"
     )
@@ -3650,7 +3656,7 @@ def test_execute_package_phase_blocks_introduced_dependency_when_still_needed(
             "epoch": {},
         }
     )
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(home / "state"))
 
     def run(cmd, **kwargs):
         if cmd[0] == "dpkg-query":
@@ -3683,7 +3689,7 @@ def test_execute_package_phase_blocks_dependency_removal_on_failed_probe(
             "epoch": {},
         }
     )
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(home / "state"))
 
     def run(cmd, **kwargs):
         if cmd[0] == "dpkg-query":
@@ -3714,7 +3720,7 @@ def test_execute_package_phase_downgrades_an_upgraded_package(home, monkeypatch)
             "epoch": {"neovim": "0.9.0-1"},
         }
     )
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(home / "state"))
     live = {"neovim": "0.10.0-1"}
 
     def run(cmd, **kwargs):
@@ -3757,7 +3763,7 @@ def test_execute_package_phase_halts_on_changed_state_then_failed_downgrade(
             "captured_at": "t2",
         },
     )
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(home / "state"))
     live = {"neovim": "0.10.0-1", "tmux": "3.4-1"}
 
     def run(cmd, **kwargs):
@@ -3794,7 +3800,7 @@ def test_execute_package_phase_skips_already_ledger_completed(home, monkeypatch)
             "epoch": {},
         }
     )
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(home / "state"))
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(home / "state"))
     ledger.record("package:apt/eza", "remove", "ok")
 
     def run(cmd, **kwargs):
@@ -3804,7 +3810,7 @@ def test_execute_package_phase_skips_already_ledger_completed(home, monkeypatch)
     install.execute_package_phase(make_ctx(home), baseline, ledger)
 
 
-def test_execute_departure_skips_runtime_phase_after_package_halt(home, monkeypatch):
+def test_execute_uninstall_skips_runtime_phase_after_package_halt(home, monkeypatch):
     baseline = _package_baseline(
         {
             "manager": "apt",
@@ -3816,10 +3822,10 @@ def test_execute_departure_skips_runtime_phase_after_package_halt(home, monkeypa
         }
     )
     ctx = make_ctx(home)
-    runtime_key = depart.runtime_key(ctx.home / ".nvm")
+    runtime_key = uninstall_state.runtime_key(ctx.home / ".nvm")
     report = {
-        runtime_key: depart.Classification(
-            depart.BUCKET_OWNED, depart.ACTION_REMOVE, "absent at baseline, now present"
+        runtime_key: uninstall_state.Classification(
+            uninstall_state.BUCKET_OWNED, uninstall_state.ACTION_REMOVE, "absent at baseline, now present"
         )
     }
 
@@ -3836,12 +3842,12 @@ def test_execute_departure_skips_runtime_phase_after_package_halt(home, monkeypa
         )
 
     monkeypatch.setattr(install, "run_command", run)
-    ledger = install.execute_departure(ctx, baseline, report)
+    ledger = install.execute_uninstall(ctx, baseline, report)
 
     assert runtime_key not in ledger.completed_keys()
 
 
-# ── service/linger execution, end to end through do_depart ─────────────────
+# ── service/linger execution, end to end through do_uninstall ─────────────────
 
 
 def _fresh_managed_services_live(*, linger=False):
@@ -3924,7 +3930,7 @@ def _watchcommit_run_command(live, *, other_enabled_units=""):
     return run
 
 
-def test_depart_disables_both_managed_services_and_restores_linger(
+def test_uninstall_disables_both_managed_services_and_restores_linger(
     home, links, monkeypatch, capsys
 ):
     for name in (
@@ -3958,7 +3964,7 @@ def test_depart_disables_both_managed_services_and_restores_linger(
         return real_run(cmd, **kwargs)
 
     monkeypatch.setattr(install, "run_command", counting_run)
-    code = install.do_depart(make_ctx(home, yes=True))
+    code = install.do_uninstall(make_ctx(home, yes=True))
 
     assert code == 0
     assert all(
@@ -3967,13 +3973,13 @@ def test_depart_disables_both_managed_services_and_restores_linger(
     assert live["linger"] is False
     assert calls.count(["loginctl", "disable-linger", "testuser"]) == 1
 
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(ctx.state_dir))
     assert not any(
         str(e.get("outcome", "")).startswith("unresolved") for e in ledger.entries()
     )
 
 
-def test_depart_preserves_linger_when_other_units_depend_on_it(
+def test_uninstall_preserves_linger_when_other_units_depend_on_it(
     home, links, monkeypatch, capsys
 ):
     for name in (
@@ -4000,41 +4006,41 @@ def test_depart_preserves_linger_when_other_units_depend_on_it(
     ctx = make_ctx(home, harnesses=("claude",))
     install.run_install(ctx, links)
 
-    code = install.do_depart(make_ctx(home, yes=True))
+    code = install.do_uninstall(make_ctx(home, yes=True))
 
-    # Both units are still fully departed (linger is a separate, decoupled
+    # Both units are still fully uninstalled (linger is a separate, decoupled
     # concern — see install-multi-service-depart-adopt-spec.md's Design
     # decision): the "other unit depends on linger" case is advisory-only
-    # now, not a ledger-tainting failure, so depart still reports success.
+    # now, not a ledger-tainting failure, so uninstall still reports success.
     assert code == 0
     assert all(
         not unit["enabled"] and not unit["active"] for unit in live["units"].values()
     )
     assert live["linger"] is True  # linger correctly preserved
 
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(ctx.state_dir))
     assert not any(
         str(e.get("outcome", "")).startswith("unresolved") for e in ledger.entries()
     )
 
 
-def test_reconcile_linger_self_heals_on_a_later_depart_after_a_transient_failure(
+def test_reconcile_linger_self_heals_on_a_later_uninstall_after_a_transient_failure(
     home, links, monkeypatch, capsys
 ):
-    """A failed loginctl disable-linger on one --depart run must not
+    """A failed loginctl disable-linger on one --uninstall run must not
     permanently strand linger enabled: _reconcile_linger recomputes its
     eligibility from live state on every call, not from what this run's
-    per-service loop did, so a later --depart run with nothing new to
+    per-service loop did, so a later --uninstall run with nothing new to
     disable (both units' ledger keys already complete) still retries and
     succeeds once the underlying problem clears.
 
-    A departure with *nothing else* left unresolved finalizes and deletes
-    the baseline/ledger entirely (do_depart's _finalize_departure_state) —
+    A uninstall with *nothing else* left unresolved finalizes and deletes
+    the baseline/ledger entirely (do_uninstall's _finalize_uninstall_state) —
     correct behavior, not a bug — which would leave no state for a second
-    --depart call to retry against at all. This test pre-seeds one
+    --uninstall call to retry against at all. This test pre-seeds one
     unrelated, permanently-unresolved ledger entry (standing in for any
     real unresolved item — a font-tree conflict, a guarded VS Code file,
-    etc.) purely to keep the baseline alive across two --depart
+    etc.) purely to keep the baseline alive across two --uninstall
     invocations, so the *services'* own self-healing retry behavior can
     actually be observed independent of that unrelated item's fate.
     """
@@ -4069,10 +4075,10 @@ def test_reconcile_linger_self_heals_on_a_later_depart_after_a_transient_failure
     ctx = make_ctx(home, harnesses=("claude",))
     install.run_install(ctx, links)
 
-    ledger = depart.DepartureLedger(depart.departure_ledger_path(ctx.state_dir))
+    ledger = uninstall_state.UninstallLedger(uninstall_state.uninstall_ledger_path(ctx.state_dir))
     ledger.record("contrived:unrelated", "noop", "unresolved: kept alive for this test")
 
-    first_code = install.do_depart(make_ctx(home, yes=True))
+    first_code = install.do_uninstall(make_ctx(home, yes=True))
     assert first_code == 1  # the contrived unrelated item keeps this incomplete
     assert all(
         not unit["enabled"] and not unit["active"] for unit in live["units"].values()
@@ -4084,7 +4090,7 @@ def test_reconcile_linger_self_heals_on_a_later_depart_after_a_transient_failure
         if e.get("key") != "contrived:unrelated"
     )  # both services still recorded "ok" despite the linger failure
 
-    second_code = install.do_depart(make_ctx(home, yes=True))
+    second_code = install.do_uninstall(make_ctx(home, yes=True))
     assert second_code == 1  # the contrived item is permanently stuck, by design
     assert live["linger"] is False  # but linger self-healed: retried and succeeded
     assert disable_linger_calls["count"] == 2
@@ -4473,11 +4479,11 @@ def test_check_links_rejects_mutating_flags(argv, capsys):
     assert "--check-links must be used alone, apart from --harness and --profile" in err
 
 
-def test_depart_takes_precedence_over_check_links(capsys):
-    """--depart --check-links names the --depart conflict, matching --rollback."""
-    code, err = parse_error(["--depart", "--check-links"], capsys)
+def test_uninstall_takes_precedence_over_check_links(capsys):
+    """--uninstall --check-links names the --uninstall conflict, matching --rollback."""
+    code, err = parse_error(["--uninstall", "--check-links"], capsys)
     assert code == 2
-    assert "--depart must be used alone" in err
+    assert "--uninstall must be used alone" in err
 
 
 def test_usage_documents_check_links(capsys):

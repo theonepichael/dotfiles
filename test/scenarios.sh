@@ -220,7 +220,7 @@ help_code=$?
 check "--help exits 0" bash -c "[[ $help_code -eq 0 ]]"
 check "--help prints usage" grep -q "^usage:" /tmp/help.out
 check "--help documents --wipe" grep -q -- "--wipe" /tmp/help.out
-check "--help documents --depart" grep -q -- "--depart" /tmp/help.out
+check "--help documents --uninstall" grep -q -- "--uninstall" /tmp/help.out
 check "--help documents --check-links" grep -q -- "--check-links" /tmp/help.out
 
 ./install.sh >/tmp/noharness.out 2>&1
@@ -500,23 +500,23 @@ check "wipe with nothing left reports the plain nothing-to-roll-back error" \
   grep -q "nothing to roll back" /tmp/wipe-truly-empty.out
 
 echo ""
-echo "=== 14. --depart with no baseline refuses cleanly ==="
+echo "=== 14. --uninstall with no baseline refuses cleanly ==="
 # The rollback in section 13 already deleted baseline.json along with
 # everything else, so this container has no baseline at all right now.
-./install.sh --depart --yes >/tmp/depart-nobaseline.out 2>&1
-depart_none_code=$?
-cat /tmp/depart-nobaseline.out
-check "depart with no baseline exits 2" bash -c "[[ $depart_none_code -eq 2 ]]"
-check "depart with no baseline names nothing-to-depart-from" \
-  grep -q "nothing to depart from" /tmp/depart-nobaseline.out
+./install.sh --uninstall --yes >/tmp/uninstall-nobaseline.out 2>&1
+uninstall_none_code=$?
+cat /tmp/uninstall-nobaseline.out
+check "uninstall with no baseline exits 2" bash -c "[[ $uninstall_none_code -eq 2 ]]"
+check "uninstall with no baseline names nothing-to-uninstall-from" \
+  grep -q "nothing to uninstall from" /tmp/uninstall-nobaseline.out
 
 echo ""
-echo "=== 15. --depart: install departs back to a clean baseline ==="
+echo "=== 15. --uninstall: install uninstalls back to a clean baseline ==="
 # NOTE: by this point in the suite, apt packages and the Nerd Font were
 # already installed by earlier sections and never rolled back (--rollback
 # never touches packages) — so this "install" mostly re-confirms already-
 # present state rather than creating everything fresh. That's realistic
-# (a --depart on a machine that's been through several install.sh runs)
+# (a --uninstall on a machine that's been through several install.sh runs)
 # and is accounted for below: already-installed-unchanged packages and the
 # pre-existing Nerd Font directory are correctly *preserved*, not owned.
 #
@@ -525,94 +525,94 @@ echo "=== 15. --depart: install departs back to a clean baseline ==="
 # explicitly here to match realistic usage for the probes below.
 export PATH="$HOME/.local/bin:$PATH"
 
-./install.sh --harness=claude >/tmp/depart-install.out 2>&1
-depart_install_code=$?
-cat /tmp/depart-install.out
-check "install for departure test exits 0 or 1" \
-  bash -c "[[ $depart_install_code -eq 0 || $depart_install_code -eq 1 ]]"
+./install.sh --harness=claude >/tmp/uninstall-install.out 2>&1
+uninstall_install_code=$?
+cat /tmp/uninstall-install.out
+check "install for uninstall test exits 0 or 1" \
+  bash -c "[[ $uninstall_install_code -eq 0 || $uninstall_install_code -eq 1 ]]"
 check "baseline.json captured" bash -c '[[ -f "'"$STATE_DIR"'/baseline.json" ]]'
 
 # An artifact this installer never touched, planted after install — must
-# survive departure untouched (Completion Gate: "unrelated post-install
+# survive uninstall untouched (Completion Gate: "unrelated post-install
 # artifacts survive").
 echo "unrelated content" >~/my-own-notes.txt
 # An unrelated package, installed the same way a user would — must also
-# survive, since departure only ever acts on what its own transactions
+# survive, since uninstall only ever acts on what its own transactions
 # recorded.
 if command -v apt-get >/dev/null 2>&1; then
   UNRELATED_PKG=sl
   # shellcheck disable=SC2024 # Redirect is to /tmp in the test container; parent shell owns the fd intentionally.
-  sudo apt-get install -y -qq "$UNRELATED_PKG" >/tmp/depart-unrelated-pkg.out 2>&1
+  sudo apt-get install -y -qq "$UNRELATED_PKG" >/tmp/uninstall-unrelated-pkg.out 2>&1
 else
   UNRELATED_PKG=cowsay
   # shellcheck disable=SC2024 # Redirect is to /tmp in the test container; parent shell owns the fd intentionally.
-  sudo dnf install -y -q "$UNRELATED_PKG" >/tmp/depart-unrelated-pkg.out 2>&1
+  sudo dnf install -y -q "$UNRELATED_PKG" >/tmp/uninstall-unrelated-pkg.out 2>&1
 fi
 
-./install.sh --depart --dry-run >/tmp/depart-dry.out 2>&1
-depart_dry_code=$?
-cat /tmp/depart-dry.out
-check "depart --dry-run exits 0 regardless of what's unresolved" \
-  bash -c "[[ $depart_dry_code -eq 0 ]]"
-check "depart --dry-run preflight lists owned items" grep -q "owned" /tmp/depart-dry.out
-check "depart --dry-run changed nothing (vimrc symlink still present)" \
+./install.sh --uninstall --dry-run >/tmp/uninstall-dry.out 2>&1
+uninstall_dry_code=$?
+cat /tmp/uninstall-dry.out
+check "uninstall --dry-run exits 0 regardless of what's unresolved" \
+  bash -c "[[ $uninstall_dry_code -eq 0 ]]"
+check "uninstall --dry-run preflight lists owned items" grep -q "owned" /tmp/uninstall-dry.out
+check "uninstall --dry-run changed nothing (vimrc symlink still present)" \
   bash -c '[[ -L ~/.vimrc ]]'
 
-./install.sh --depart --yes >/tmp/depart-real.out 2>&1
-depart_real_code=$?
-cat /tmp/depart-real.out
+./install.sh --uninstall --yes >/tmp/uninstall-real.out 2>&1
+uninstall_real_code=$?
+cat /tmp/uninstall-real.out
 # This container has no systemd (no systemctl on PATH), so every managed
-# service's probe always comes back "unknown" and the departure always
+# service's probe always comes back "unknown" and the uninstall always
 # finishes with those services unresolved — exit 1, not 0. That's the
 # correct, specified behavior (systemd --user unavailable marks
 # service/linger unresolved, never treated as already-clean), not a test
 # bug: verify it's *specifically* the watchcommit systemd service key,
 # nothing else — update this count if a future service joins
 # MANAGED_SERVICES.
-check "depart exits 1 (only the systemd-unavailable service keys unresolved)" \
-  bash -c "[[ $depart_real_code -eq 1 ]]"
+check "uninstall exits 1 (only the systemd-unavailable service keys unresolved)" \
+  bash -c "[[ $uninstall_real_code -eq 1 ]]"
 check "preflight reports exactly one unresolved item" \
-  grep -q "unresolved (1):" /tmp/depart-real.out
-check "depart's unresolved item is the watchcommit systemd service key" bash -c \
-  'grep -A1 "unresolved (1):" /tmp/depart-real.out | grep -q "service:systemd/watchcommit"'
-check "depart removed the vimrc symlink" bash -c '[[ ! -e ~/.vimrc ]]'
-check "depart removed the zshrc symlink" bash -c '[[ ! -e ~/.zshrc ]]'
-check "depart removed the watchcommit shim symlink" bash -c '[[ ! -e ~/.local/bin/watchcommit ]]'
+  grep -q "unresolved (1):" /tmp/uninstall-real.out
+check "uninstall's unresolved item is the watchcommit systemd service key" bash -c \
+  'grep -A1 "unresolved (1):" /tmp/uninstall-real.out | grep -q "service:systemd/watchcommit"'
+check "uninstall removed the vimrc symlink" bash -c '[[ ! -e ~/.vimrc ]]'
+check "uninstall removed the zshrc symlink" bash -c '[[ ! -e ~/.zshrc ]]'
+check "uninstall removed the watchcommit shim symlink" bash -c '[[ ! -e ~/.local/bin/watchcommit ]]'
 check "pre-existing Nerd Font directory survives (preserved, not owned — it predates this install)" \
   bash -c '[[ -e ~/.local/share/fonts/JetBrainsMonoNerdFont ]]'
-check "unrelated file survives departure" bash -c '[[ -f ~/my-own-notes.txt ]]'
+check "unrelated file survives uninstall" bash -c '[[ -f ~/my-own-notes.txt ]]'
 if command -v dpkg-query >/dev/null 2>&1; then
-  check "unrelated package survives departure" dpkg-query -W "$UNRELATED_PKG"
+  check "unrelated package survives uninstall" dpkg-query -W "$UNRELATED_PKG"
 else
-  check "unrelated package survives departure" rpm -q "$UNRELATED_PKG"
+  check "unrelated package survives uninstall" rpm -q "$UNRELATED_PKG"
 fi
-check "baseline.json and blobs are retained (departure was incomplete)" \
+check "baseline.json and blobs are retained (uninstall was incomplete)" \
   bash -c '[[ -f "'"$STATE_DIR"'/baseline.json" ]]'
 
 echo ""
-echo "=== 15b. Retrying --depart with the two unresolved items still there is a no-op ==="
+echo "=== 15b. Retrying --uninstall with the two unresolved items still there is a no-op ==="
 # Nothing left for the file/directory/package/runtime phases to do (the
 # ledger already marked every actionable item complete on the previous
 # run) — this should re-report the exact same two unresolved items
 # without erroring or re-attempting anything already done.
-./install.sh --depart --yes >/tmp/depart-retry.out 2>&1
-depart_retry_code=$?
-cat /tmp/depart-retry.out
-check "depart retry still exits 1 (same unresolved service keys)" \
-  bash -c "[[ $depart_retry_code -eq 1 ]]"
-check "depart retry reports exactly two unresolved items, same as before" \
-  grep -q "unresolved (2):" /tmp/depart-retry.out
-check "depart retry's owned bucket never re-lists the already-removed vimrc symlink" bash -c \
-  "! awk '/^  owned \\(/{f=1;next} /^  [a-z]+ \\(/{f=0} f' /tmp/depart-retry.out | grep -q vimrc"
+./install.sh --uninstall --yes >/tmp/uninstall-retry.out 2>&1
+uninstall_retry_code=$?
+cat /tmp/uninstall-retry.out
+check "uninstall retry still exits 1 (same unresolved service keys)" \
+  bash -c "[[ $uninstall_retry_code -eq 1 ]]"
+check "uninstall retry reports exactly two unresolved items, same as before" \
+  grep -q "unresolved (2):" /tmp/uninstall-retry.out
+check "uninstall retry's owned bucket never re-lists the already-removed vimrc symlink" bash -c \
+  "! awk '/^  owned \\(/{f=1;next} /^  [a-z]+ \\(/{f=0} f' /tmp/uninstall-retry.out | grep -q vimrc"
 
 echo ""
-echo "=== 16. --depart: Windows-side VS Code guard (mocked /mnt/c + tasklist.exe) ==="
+echo "=== 16. --uninstall: Windows-side VS Code guard (mocked /mnt/c + tasklist.exe) ==="
 # Self-contained: real WSL interop isn't available in this container, so
 # /mnt/c, the Windows-side `code` CLI, and tasklist.exe are all stubbed.
 # Runs after the full 1-15b lifecycle, on a container that already has one
 # permanently-unresolved item (the systemd watchcommit service key) and a
 # retained baseline.json from
-# section 15's incomplete departure -- this section adds
+# section 15's incomplete uninstall -- this section adds
 # to that state rather than assuming a clean machine.
 WIN_USER="$(id -un)"
 FAKE_MNT_C="/mnt/c"
@@ -652,7 +652,7 @@ check "fake code shim resolves on PATH" bash -c 'command -v code >/dev/null'
 check "fake tasklist.exe resolves on PATH" bash -c 'command -v tasklist.exe >/dev/null'
 
 # 16b. Re-run install so seed_vscode_settings seeds both files under the
-# fake Windows user dir and capture_departure_baseline tags them guarded.
+# fake Windows user dir and capture_uninstall_baseline tags them guarded.
 ./install.sh --harness=claude >/tmp/vscode-guard-install.out 2>&1
 vscode_install_code=$?
 cat /tmp/vscode-guard-install.out
@@ -669,27 +669,27 @@ check "baseline tags keybindings.json as VS Code guarded" \
 
 # 16c. Dry-run preflight while tasklist.exe reports Code.exe running.
 export FAKE_TASKLIST_CODE_RUNNING=1
-./install.sh --depart --dry-run >/tmp/vscode-guard-dry.out 2>&1
+./install.sh --uninstall --dry-run >/tmp/vscode-guard-dry.out 2>&1
 vscode_dry_code=$?
 cat /tmp/vscode-guard-dry.out
-check "depart --dry-run with VS Code running exits 0" \
+check "uninstall --dry-run with VS Code running exits 0" \
   bash -c "[[ $vscode_dry_code -eq 0 ]]"
 check "dry-run preflight flags settings.json as guarded" bash -c \
   'grep "User/settings.json" /tmp/vscode-guard-dry.out | grep -Fq "Windows VS Code is running"'
 check "dry-run preflight flags keybindings.json as guarded" bash -c \
   'grep "User/keybindings.json" /tmp/vscode-guard-dry.out | grep -Fq "Windows VS Code is running"'
 
-# 16d. Real depart while still "running" -- guard blocks removal.
-./install.sh --depart --yes >/tmp/vscode-guard-real1.out 2>&1
+# 16d. Real uninstall while still "running" -- guard blocks removal.
+./install.sh --uninstall --yes >/tmp/vscode-guard-real1.out 2>&1
 vscode_real1_code=$?
 cat /tmp/vscode-guard-real1.out
-check "depart --yes with VS Code running exits 1 (guard blocks removal)" \
+check "uninstall --yes with VS Code running exits 1 (guard blocks removal)" \
   bash -c "[[ $vscode_real1_code -eq 1 ]]"
 check "settings.json still present (guard blocked removal)" \
   bash -c '[[ -f "'"$VSCODE_USER_DIR"'/settings.json" ]]'
 check "keybindings.json still present (guard blocked removal)" \
   bash -c '[[ -f "'"$VSCODE_USER_DIR"'/keybindings.json" ]]'
-# do_depart's "attempted but not completed" listing strips the "unresolved: "
+# do_uninstall's "attempted but not completed" listing strips the "unresolved: "
 # prefix off the ledger outcome before printing it (partition(": ")[2]) --
 # assert on the reason text as actually printed, not the raw ledger string.
 check "attempted-but-not-completed lists settings.json as guard-unresolved" bash -c \
@@ -698,7 +698,7 @@ check "attempted-but-not-completed lists keybindings.json as guard-unresolved" b
   'grep "User/keybindings.json" /tmp/vscode-guard-real1.out | grep -Fq "Windows VS Code is running"'
 
 # 16e. Flip to "not running". The dry-run directly confirms the guard
-# condition itself is now clear (annotation gone). A real `--depart --yes`
+# condition itself is now clear (annotation gone). A real `--uninstall --yes`
 # retry now also picks this up: execute_file_symlink_phase re-evaluates
 # any key whose ledger history shows a VS-Code-guard-block outcome,
 # regardless of the ledger's general done-state exclusion, so this is a
@@ -706,26 +706,26 @@ check "attempted-but-not-completed lists keybindings.json as guard-unresolved" b
 # one, which is what this section used to do before the guard's retry
 # behavior was fixed.
 unset FAKE_TASKLIST_CODE_RUNNING
-./install.sh --depart --dry-run >/tmp/vscode-guard-dry2.out 2>&1
+./install.sh --uninstall --dry-run >/tmp/vscode-guard-dry2.out 2>&1
 vscode_dry2_code=$?
 cat /tmp/vscode-guard-dry2.out
-check "depart --dry-run with VS Code not running exits 0" \
+check "uninstall --dry-run with VS Code not running exits 0" \
   bash -c "[[ $vscode_dry2_code -eq 0 ]]"
 check "dry-run preflight no longer flags settings.json" bash -c \
   '! grep "User/settings.json" /tmp/vscode-guard-dry2.out | grep -Fq "Windows VS Code is running"'
 check "dry-run preflight no longer flags keybindings.json" bash -c \
   '! grep "User/keybindings.json" /tmp/vscode-guard-dry2.out | grep -Fq "Windows VS Code is running"'
 
-./install.sh --depart --yes >/tmp/vscode-guard-real2.out 2>&1
+./install.sh --uninstall --yes >/tmp/vscode-guard-real2.out 2>&1
 vscode_real2_code=$?
 cat /tmp/vscode-guard-real2.out
-check "depart --yes with VS Code not running (real retry) still exits 1 (systemd item still unresolved)" \
+check "uninstall --yes with VS Code not running (real retry) still exits 1 (systemd item still unresolved)" \
   bash -c "[[ $vscode_real2_code -eq 1 ]]"
 check "settings.json removed once the guard genuinely allows it" \
   bash -c '[[ ! -e "'"$VSCODE_USER_DIR"'/settings.json" ]]'
 check "keybindings.json removed once the guard genuinely allows it" \
   bash -c '[[ ! -e "'"$VSCODE_USER_DIR"'/keybindings.json" ]]'
-check "baseline.json still retained (departure remains incomplete)" \
+check "baseline.json still retained (uninstall remains incomplete)" \
   bash -c '[[ -f "'"$STATE_DIR"'/baseline.json" ]]'
 
 # Restore PATH/env so nothing from this section leaks into whatever runs

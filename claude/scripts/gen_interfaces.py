@@ -85,7 +85,7 @@ import dotfiles_cli_common as cli_common
 
 HARNESS_DIRS = ("claude", "copilot", "opencode", "agy", "pi")
 SCRIPTS_DIR = "claude/scripts"
-ROOT_ENTRYPOINTS = ("install.py", "depart.py")
+ROOT_ENTRYPOINTS = ("install.py", "uninstall_state.py")
 OUTPUT_NAME = "INTERFACES.md"
 
 PREAMBLE = """\

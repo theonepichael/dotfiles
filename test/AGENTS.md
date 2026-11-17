@@ -35,7 +35,7 @@ back for that test. It is not just a write permit.
 ## Two tiers, and they are not interchangeable
 
 - **`test/`** — pytest. Covers the top-level tooling: the installer,
-  departure mode, lint gates, and the cross-harness guards.
+  uninstall mode, lint gates, and the cross-harness guards.
 - **`claude/scripts/test_*.py`** — standard library `unittest`, colocated
   with the scripts they cover and deliberately dependency-free, so those
   tools stay runnable on a machine that has never run `uv sync`. Keep them

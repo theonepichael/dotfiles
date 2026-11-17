@@ -155,17 +155,17 @@ Reported categories:
 - **orphaned**: Live symlink recorded by a previous install that is no longer in `links.toml`. (Normal install runs remove orphans automatically; `--check-links` only reports them).
 - **unmanaged**: Files in directories marked exclusive via `[[managed_dir]]` not produced by any link.
 
-## Departure mode (`--depart`)
+## Uninstall mode (`--uninstall`)
 
-`--depart` removes or restores everything installed on Ubuntu/WSL (apt) or Fedora (dnf), leaving no local trace that `install.sh` was run:
+`--uninstall` removes or restores everything installed on Ubuntu/WSL (apt) or Fedora (dnf), leaving no local trace that `install.sh` was run:
 
 ```sh
-./install.sh --depart              # interactive confirmation
-./install.sh --depart --dry-run    # preview only
-./install.sh --depart --yes        # non-interactive
+./install.sh --uninstall              # interactive confirmation
+./install.sh --uninstall --dry-run    # preview only
+./install.sh --uninstall --yes        # non-interactive
 ```
 
-Operates strictly from a baseline snapshot captured at install time (`~/.local/state/dotfiles/departure.jsonl`). See [Nuclear reset (WSL)](#nuclear-reset-wsl) if full image re-creation is required.
+Operates strictly from a baseline snapshot captured at install time (`~/.local/state/dotfiles/baseline.json`). See [Nuclear reset (WSL)](#nuclear-reset-wsl) if full image re-creation is required.
 
 ## Nuclear reset (WSL)
 

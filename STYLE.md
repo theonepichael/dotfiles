@@ -38,7 +38,7 @@ Logging & output
 
 Tests & CI
 - Two intentional test tiers; keep new tests in whichever tier matches the code under test.
-- test/ — pytest suites covering the top-level tooling: the installer and departure mode, the lint gates, and the cross-harness invariant guards. Run with `uv run pytest test/`.
+- test/ — pytest suites covering the top-level tooling: the installer and uninstall mode, the lint gates, and the cross-harness invariant guards. Run with `uv run pytest test/`.
 - claude/scripts/test_*.py — standard library unittest, colocated with the scripts they cover and deliberately dependency-free so those tools stay runnable without a `uv sync`. Runnable directly as `python3 test_X.py` from claude/scripts/, and also collected by `uv run pytest` from the repo root, since `testpaths` in pyproject.toml is `["test", "claude/scripts"]`.
 - The repo-root conftest.py sandboxes `HOME` and blocks unmarked real subprocess calls and production-path writes, for the whole suite. A test that needs either must opt in with a marker, and the failure when it does not is a RuntimeError that reads like broken code rather than a missing marker — read test/AGENTS.md before writing one. (Marker names live there, not here, so there is only one place to update if they change.)
 - Dev tooling is declared in the `dev` dependency group in pyproject.toml (pytest and ruff, both pinned) and managed with uv; uv.lock is committed and CI installs from it.

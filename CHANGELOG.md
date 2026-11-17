@@ -3,6 +3,22 @@
 This repo's internal tooling changes are logged here. Breaking changes to
 harness CLIs, flags, or behavior get an entry going forward.
 
+## 2026-11-17
+
+### Changed
+
+- **`--depart` renamed to `--uninstall` (`depart.py` → `uninstall_state.py`):**
+  clean-break rename matching `agent-toolkit` `release-4`. `install.py` now
+  exposes `--uninstall` with confirmation token `UNINSTALL` (`--depart` exits 2
+  with no CLI alias), `scripts/install-with-agent-toolkit.sh` refuses
+  `--uninstall` in `REFUSED_FLAGS`, and transient per-run state paths moved from
+  `departure.jsonl` / `departure.lock` to `uninstall.jsonl` / `uninstall.lock`
+  with no behavior change. Before running `--uninstall`, check
+  `~/.local/state/dotfiles/` for any leftover `departure.jsonl` /
+  `departure.lock`, verify no live process holds `departure.lock` and that the
+  ledger is stale residue (not an in-flight `--depart` run to finish first), and
+  delete after confirming.
+
 ## 2026-10-13
 
 ### Changed

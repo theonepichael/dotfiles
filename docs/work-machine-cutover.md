@@ -151,6 +151,6 @@ after — re-run step 4.
 ## If something's wrong
 
 Both repos support `--rollback` (reverses every mutation either installer
-has ever recorded) and `--depart` (removes everything a specific run owns,
+has ever recorded) and `--uninstall` (removes everything a specific run owns,
 with a preflight report). Run either directly in the repo you mean — there
 is no wrapper in play here to route it for you.
