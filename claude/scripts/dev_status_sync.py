@@ -87,7 +87,10 @@ import agent_toolkit_paths  # noqa: E402
 import dev_status  # noqa: E402
 import dotfiles_cli_common as cli_common  # noqa: E402
 
-PROTOCOL_VERSION = 4
+# 5: payloads carry the items-archive store. A version-4 peer would sync an
+# archived item as deleted and drop its archive copy, so the versions refuse
+# each other rather than lose items.
+PROTOCOL_VERSION = 5
 
 # The one directory this feature ever touches: the grill/ tree under a home
 # prefix (e.g. /home/yanil/.agent-toolkit/data/grill). Every artifact-collection and
@@ -212,6 +215,15 @@ def _read_store_file(path: Path) -> tuple[list[dict[str, object]], object]:
     return cast(list[dict[str, object]], data.get("items", [])), data.get(
         "schema_version"
     )
+
+
+def _load_archive() -> list[dict[str, object]]:
+    items, _ = _read_store_file(dev_status.ARCHIVE_FILE)
+    return items
+
+
+def _save_archive(items: list[dict[str, object]]) -> None:
+    dev_status.save_archive(cast(list[dev_status.BacklogItem], items))
 
 
 def load_sync_base(
@@ -965,13 +977,59 @@ class SyncComputation:
     merged_items: list[dict[str, object]]
     merged_pending: list[dict[str, object]]
     merged_runs: list[dict[str, object]] = field(default_factory=list)
+    merged_archive: list[dict[str, object]] = field(default_factory=list)
     conflicts: list[dict[str, object]] = field(default_factory=list)
     needs_local_items_write: bool = False
     needs_local_pending_write: bool = False
     needs_local_runs_write: bool = False
+    needs_local_archive_write: bool = False
     needs_remote_items_write: bool = False
     needs_remote_pending_write: bool = False
     needs_remote_runs_write: bool = False
+    needs_remote_archive_write: bool = False
+
+
+def archive_rows(rows: list[object]) -> list[dict[str, object]]:
+    """The well-formed rows of an archive list: dicts with a non-empty string ``id``."""
+    return [
+        row
+        for row in rows
+        if isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"]
+    ]
+
+
+def _archive_version(row: dict[str, object]) -> tuple[str, str]:
+    """Order rows by ``updated``, then by content, so a tie has one winner."""
+    return str(row.get("updated", "")), json.dumps(row, sort_keys=True)
+
+
+def merge_archive(
+    local_archive: list[dict[str, object]],
+    remote_archive: list[dict[str, object]],
+    *,
+    live_ids: set[str],
+) -> list[dict[str, object]]:
+    """Union two archive lists by ``id``, newer updated date winning on collision.
+
+    Malformed rows are dropped. An equal-``updated`` collision is broken by
+    content, so the result does not depend on which side is passed first
+    (import passes them in the opposite order from :func:`compute_sync`).
+    Preserves local order, appending remote-only items in remote order. Rows
+    whose id is in ``live_ids`` are dropped: the live store shadows the
+    archive, and a reopened item's old archive copy on either machine is
+    stale. Unlike run evidence, archive rows are mutable (reopen deletes
+    them), so a plain union would resurrect them.
+    """
+    seen: dict[str, dict[str, object]] = {}
+    ordered_ids: list[str] = []
+    for item in archive_rows([*local_archive, *remote_archive]):
+        item_id = cast(str, item["id"])
+        if item_id not in seen:
+            seen[item_id] = dict(item)
+            ordered_ids.append(item_id)
+        elif _archive_version(item) > _archive_version(seen[item_id]):
+            seen[item_id] = dict(item)
+    return [seen[item_id] for item_id in ordered_ids if item_id not in live_ids]
 
 
 def merge_runs(
@@ -1012,6 +1070,8 @@ def compute_sync(
     *,
     local_runs: list[dict[str, object]] | None = None,
     remote_runs: list[dict[str, object]] | None = None,
+    local_archive: list[dict[str, object]] | None = None,
+    remote_archive: list[dict[str, object]] | None = None,
 ) -> SyncComputation:
     """Run the full merge: per-store 3-way merge, then graph integrity, then write-need.
 
@@ -1033,6 +1093,14 @@ def compute_sync(
     local_runs = local_runs or []
     remote_runs = remote_runs or []
     merged_runs = merge_runs(local_runs, remote_runs)
+
+    local_archive = local_archive or []
+    remote_archive = remote_archive or []
+    merged_archive = merge_archive(
+        local_archive,
+        remote_archive,
+        live_ids={cast(str, i["id"]) for i in merged_items},
+    )
 
     all_prior_ids = (
         {i["id"] for i in (base_items or [])}
@@ -1061,13 +1129,18 @@ def compute_sync(
         merged_items=merged_items,
         merged_pending=merged_pending,
         merged_runs=merged_runs,
+        merged_archive=merged_archive,
         conflicts=[*item_conflicts, *pending_conflicts, *cycle_conflicts],
         needs_local_items_write=by_id(local_items) != by_id(merged_items),
         needs_local_pending_write=by_id(local_pending) != by_id(merged_pending),
         needs_local_runs_write=merged_runs != local_runs,
+        # Compared raw, not by id: an unchanged merge still rewrites a stored
+        # archive that held malformed or duplicate rows, cleaning it.
+        needs_local_archive_write=local_archive != merged_archive,
         needs_remote_items_write=by_id(remote_items) != by_id(merged_items),
         needs_remote_pending_write=by_id(remote_pending) != by_id(merged_pending),
         needs_remote_runs_write=merged_runs != remote_runs,
+        needs_remote_archive_write=remote_archive != merged_archive,
     )
 
 
@@ -1125,6 +1198,8 @@ def local_commit(
     # forever against its own outer lock.
     if result.needs_local_runs_write:
         dev_status.write_runs_file(cast(list[dev_status.RunRecord], result.merged_runs))
+    if result.needs_local_archive_write:
+        _save_archive(result.merged_archive)
 
     if result.conflicts:
         _append_conflict_log(result.conflicts)
@@ -1279,6 +1354,7 @@ def ssh_import(
     schema: dict[str, object],
     if_rev: int,
     expected_remote_state: dict[str, object] | None = None,
+    archive: list[dict[str, object]] | None = None,
 ) -> None:
     payload = {
         "protocol_version": PROTOCOL_VERSION,
@@ -1287,6 +1363,7 @@ def ssh_import(
         "items": items,
         "pending_items": pending,
         "runs": runs,
+        "archive": archive or [],
     }
     nonce = secrets.token_hex(8)
     framed = (
@@ -1408,6 +1485,7 @@ def cmd_export(args: argparse.Namespace) -> None:
         pending, pending_schema = _read_store_file(dev_status.PENDING_FILE)
         rev = dev_status.load_rev()
         runs = dev_status.load_runs()
+        archive = _load_archive()
 
     payload = {
         "protocol_version": PROTOCOL_VERSION,
@@ -1417,6 +1495,7 @@ def cmd_export(args: argparse.Namespace) -> None:
         "items": items,
         "pending_items": pending,
         "runs": runs,
+        "archive": archive,
     }
     nonce = secrets.token_hex(8)
     print(f"==={_FRAME_MARK}_START:{nonce}===")
@@ -1471,6 +1550,16 @@ def cmd_import(args: argparse.Namespace) -> None:
                 dev_status.write_runs_file(
                     cast(list[dev_status.RunRecord], merged_runs)
                 )
+        payload_archive = payload.get("archive")
+        if isinstance(payload_archive, list):
+            existing_archive = _load_archive()
+            merged_archive = merge_archive(
+                existing_archive,
+                payload_archive,
+                live_ids={cast(str, i["id"]) for i in payload["items"]},
+            )
+            if merged_archive != existing_archive:
+                _save_archive(merged_archive)
         new_rev = dev_status.bump_rev()
 
     cli_common.vprint(
@@ -1627,7 +1716,17 @@ def cmd_sync(args: argparse.Namespace) -> None:
                     remote_runs=cast(
                         list[dict[str, object]], remote_payload.get("runs", [])
                     ),
+                    local_archive=_load_archive(),
+                    remote_archive=rewrite_paths_list(
+                        archive_rows(remote_payload.get("archive", [])),
+                        remote_home,
+                        local_home,
+                        inbound_roots,
+                    ),
                 )
+                # Archived items' grill artifacts travel too, so reopening one on
+                # either machine finds its files.
+                artifact_items = [*result.merged_items, *result.merged_archive]
 
                 if args.dry_run:
                     cli_common.qprint(
@@ -1648,7 +1747,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
                     )
                     if not args.no_artifacts:
                         artifact_preview(
-                            result.merged_items,
+                            artifact_items,
                             local_home,
                             remote_home,
                             args.host,
@@ -1659,15 +1758,15 @@ def cmd_sync(args: argparse.Namespace) -> None:
                     return
 
                 # Artifact path-form contract (regression guard) + escape warning.
-                assert_artifact_contract(result.merged_items, local_home, local_root)
-                warn_nonlocal_related_paths(result.merged_items, local_home, local_root)
+                assert_artifact_contract(artifact_items, local_home, local_root)
+                warn_nonlocal_related_paths(artifact_items, local_home, local_root)
 
                 # Artifact transfer is decoupled from the JSON-dirty gate: it runs
                 # whenever there are collectable grill paths and --no-artifacts is
                 # unset. Push FIRST — if it fails, abort before ssh_import so the
                 # remote metadata never references an absent file.
                 if not args.no_artifacts and collect_artifact_paths(
-                    result.merged_items, local_home, local_root
+                    artifact_items, local_home, local_root
                 ):
                     if shutil.which("rsync") is None or not remote_has_rsync(
                         args.host, args.ssh_timeout
@@ -1679,7 +1778,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
                         )
                     push_attempted, _ = push_artifacts(
                         args.host,
-                        result.merged_items,
+                        artifact_items,
                         local_home,
                         remote_home,
                         args.ssh_timeout,
@@ -1695,12 +1794,16 @@ def cmd_sync(args: argparse.Namespace) -> None:
                     result.needs_remote_items_write
                     or result.needs_remote_pending_write
                     or result.needs_remote_runs_write
+                    or result.needs_remote_archive_write
                 ):
                     outbound_items = rewrite_paths_list(
                         result.merged_items, local_home, remote_home, outbound_roots
                     )
                     outbound_pending = rewrite_paths_list(
                         result.merged_pending, local_home, remote_home, outbound_roots
+                    )
+                    outbound_archive = rewrite_paths_list(
+                        result.merged_archive, local_home, remote_home, outbound_roots
                     )
                     ssh_import(
                         args.host,
@@ -1714,16 +1817,17 @@ def cmd_sync(args: argparse.Namespace) -> None:
                         {
                             "decisions_root": remote_state.get("decisions_root"),
                         },
+                        archive=outbound_archive,
                     )
 
                 # Pull (remote -> local) so remote-created/edited files exist
                 # before the local metadata commit.
                 if not args.no_artifacts and collect_artifact_paths(
-                    result.merged_items, local_home, local_root
+                    artifact_items, local_home, local_root
                 ):
                     pull_attempted, _ = pull_artifacts(
                         args.host,
-                        result.merged_items,
+                        artifact_items,
                         local_home,
                         remote_home,
                         args.ssh_timeout,
@@ -1785,7 +1889,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
                 quiet=getattr(args, "quiet", False),
             )
             artifact_preview(
-                result.merged_items,
+                artifact_items,
                 local_home,
                 remote_home,
                 args.host,

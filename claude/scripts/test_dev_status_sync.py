@@ -1062,6 +1062,118 @@ class RunsSyncTests(SyncTestCase):
         self.assertEqual(run_ids, ["local-one", "remote-one"])
 
 
+class MergeArchiveTests(unittest.TestCase):
+    def test_merge_archive_union_and_dedupe(self):
+        a = {"id": "a", "updated": "2026-01-01", "summary": "old a"}
+        b = {"id": "b", "updated": "2026-01-01", "summary": "b"}
+        c = {"id": "c", "updated": "2026-01-01", "summary": "c"}
+        a_newer = {"id": "a", "updated": "2026-02-01", "summary": "newer a"}
+
+        merged = sync.merge_archive([a, b], [c, a_newer], live_ids=set())
+        self.assertEqual([i["id"] for i in merged], ["a", "b", "c"])
+        self.assertEqual(merged[0]["summary"], "newer a")
+
+    def test_both_empty(self):
+        self.assertEqual(sync.merge_archive([], [], live_ids=set()), [])
+
+    def test_equal_date_versions_merge_the_same_from_both_sides(self):
+        # Import passes the sides in the opposite order from compute_sync; the
+        # winner of an equal-`updated` tie must not depend on that order.
+        x = {"id": "a", "updated": "2026-01-01", "summary": "one"}
+        y = {"id": "a", "updated": "2026-01-01", "summary": "two"}
+        self.assertEqual(
+            sync.merge_archive([x], [y], live_ids=set()),
+            sync.merge_archive([y], [x], live_ids=set()),
+        )
+
+    def test_rows_for_live_items_are_dropped(self):
+        # A reopened item lives in the live store again; an archive copy of it
+        # from either side is stale and must not come back.
+        a = {"id": "a", "updated": "2026-01-01"}
+        b = {"id": "b", "updated": "2026-01-01"}
+        merged = sync.merge_archive([a], [b], live_ids={"a"})
+        self.assertEqual(merged, [b])
+
+    def test_malformed_rows_dropped(self):
+        good = {"id": "a", "updated": "2026-01-01"}
+        merged = sync.merge_archive(
+            [good, "garbage", {"updated": "x"}, {"id": ""}], [], live_ids=set()
+        )
+        self.assertEqual(merged, [good])
+
+
+class ArchiveSyncTests(SyncTestCase):
+    def _args(self, **overrides):
+        ns = argparse.Namespace(lock_timeout=5.0, if_rev=None)
+        for k, v in overrides.items():
+            setattr(ns, k, v)
+        return ns
+
+    def test_compute_sync_flags_archive_write_needs(self):
+        local_archive = [{"id": "a", "updated": "2026-01-01"}]
+        remote_archive = [{"id": "b", "updated": "2026-01-01"}]
+        result = sync.compute_sync(
+            None,
+            None,
+            [],
+            [],
+            [],
+            [],
+            local_archive=local_archive,
+            remote_archive=remote_archive,
+        )
+        self.assertEqual([i["id"] for i in result.merged_archive], ["a", "b"])
+        self.assertTrue(result.needs_local_archive_write)
+        self.assertTrue(result.needs_remote_archive_write)
+
+    def test_stale_replica_does_not_resurrect_a_reopened_item(self):
+        live = [{"id": "a", "status": "open", "updated": "2026-02-01"}]
+        stale = [{"id": "a", "status": "done", "updated": "2026-01-01"}]
+        result = sync.compute_sync(
+            live,
+            [],
+            live,
+            [],
+            live,
+            [],
+            local_archive=[],
+            remote_archive=stale,
+        )
+        self.assertEqual(result.merged_archive, [])
+        self.assertEqual([i["id"] for i in result.merged_items], ["a"])
+
+    def test_compute_sync_tolerates_malformed_archive_rows(self):
+        result = sync.compute_sync(
+            None,
+            None,
+            [],
+            [],
+            [],
+            [],
+            local_archive=[{"id": "a", "updated": "2026-01-01"}, "garbage", {"x": 1}],
+            remote_archive=[],
+        )
+        self.assertEqual([i["id"] for i in result.merged_archive], ["a"])
+        # The stored archive held junk, so it is rewritten clean.
+        self.assertTrue(result.needs_local_archive_write)
+
+    def test_local_commit_writes_merged_archive(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        sync._save_archive([{"id": "local-a", "updated": "2026-01-01"}])
+        result = sync.SyncComputation(
+            merged_items=[],
+            merged_pending=[],
+            merged_archive=[
+                {"id": "local-a", "updated": "2026-01-01"},
+                {"id": "remote-b", "updated": "2026-01-01"},
+            ],
+            needs_local_archive_write=True,
+        )
+        sync.local_commit({}, result, [], [], None, None)
+        loaded = sync._load_archive()
+        self.assertEqual([i["id"] for i in loaded], ["local-a", "remote-b"])
+
+
 class ParserVerbosityTests(unittest.TestCase):
     def test_flags_parse_after_every_leaf_subcommand(self):
         # A leaf added later without an entry here silently loses coverage.
@@ -1670,6 +1782,7 @@ class ExportImportGuardTests(SyncTestCase):
                 "items",
                 "pending_items",
                 "runs",
+                "archive",
             },
         )
         self.assertEqual(set(payload["machine_state"]), {"decisions_root"})
@@ -1824,6 +1937,32 @@ class FinalRemoteStateTests(SyncTestCase):
 
     def test_an_unchanged_remote_state_commits(self):
         self.assertEqual(self._run(lambda s: dict(s)), [1])
+
+    def test_remote_archive_paths_arrive_in_local_form(self):
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        dev_status.save_items([])
+        exported = sync.machine_state()
+        row = make_item("old-a", updated="2026-02-01")
+        row["related_files"] = [{"path": "/R/Workspace/repo/file.py", "note": ""}]
+        payload = {
+            "protocol_version": sync.PROTOCOL_VERSION,
+            "machine_state": exported,
+            "schema_version": {"items": 2, "pending_items": 1},
+            "items": [],
+            "pending_items": [],
+            "archive": [row],
+            "rev": 0,
+        }
+        results = []
+        with (
+            patch.object(sync, "ssh_export", lambda *a, **k: payload),
+            patch.object(sync, "ssh_import", lambda *a, **k: None),
+            patch.object(sync, "ssh_state", lambda *a, **k: dict(exported)),
+            patch.object(sync, "local_commit", lambda _s, result, *a, **k: results.append(result)),
+        ):
+            sync.cmd_sync(self._args())
+        paths = [rf["path"] for rf in results[0].merged_archive[0]["related_files"]]
+        self.assertEqual(paths, ["/L/Workspace/repo/file.py"])
 
     def test_a_remote_that_changed_grill_root_during_the_sync_is_not_committed_over(
         self,
