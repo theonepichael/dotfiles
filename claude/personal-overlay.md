@@ -49,6 +49,19 @@ skip, and `--rsync-io-timeout` to bound each rsync call.
 ("redeploy dev_status_sync.py there"): update that machine's dotfiles
 checkout and rerun. Don't work around these refusals.
 
+### Installing agent-toolkit changes on this machine
+
+Where agent-toolkit's docs or skills say to run `./install.sh` or
+`python3 install.py` (e.g. after merging a skill change), run
+`~/dotfiles/scripts/install-with-agent-toolkit.sh` instead. Run directly,
+agent-toolkit's installer skips the core-instructions links while
+`~/dotfiles` is present; the wrapper runs both installers in order and
+recomposes this overlay into every harness. Never set
+`AGENT_TOOLKIT_INSTALL_WRAPPER=1` yourself to get past that skip. The
+wrapper refuses `--rollback`, `--check-links`, `--uninstall`, `--wipe` and
+the other uninstall flags; for those, run the one repo's `install.py` you
+mean directly.
+
 ### Git: personal-project bundling preference
 
 For the user's own personal projects only (this dotfiles repo, personal
