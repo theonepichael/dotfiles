@@ -540,6 +540,9 @@ used for backlog capture.
 - Committing itself always needs its own explicit confirmation — never
   commit, in any repo or worktree, without asking first and getting a yes,
   no exceptions for being mid-pipeline or in auto-mode.
+  Exception: reviewed herdr/swarm worker output on personal-project items
+  (not `work-`) may be committed, merged, pushed, and cleaned up without
+  asking, once it passes the review bar; report the sha afterward.
 
 ## Test Hygiene
 
