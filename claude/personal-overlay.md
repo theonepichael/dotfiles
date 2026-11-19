@@ -53,8 +53,8 @@ checkout and rerun. Don't work around these refusals.
 
 Where agent-toolkit's docs or skills say to run `./install.sh` or
 `python3 install.py` (e.g. after merging a skill change), run
-`~/dotfiles/scripts/install-with-agent-toolkit.sh` instead. Run directly,
-agent-toolkit's installer skips the core-instructions links while
+`~/dotfiles/scripts/install-with-agent-toolkit.sh --harness=all` instead.
+Run directly, agent-toolkit's installer skips the core-instructions links while
 `~/dotfiles` is present; the wrapper runs both installers in order and
 recomposes this overlay into every harness. Never set
 `AGENT_TOOLKIT_INSTALL_WRAPPER=1` yourself to get past that skip. The

@@ -128,7 +128,7 @@ CAPS_LOCK_TO_ESCAPE = [
 ]
 
 USAGE = """\
-usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--no-nvim-pin] [--reseed | --adopt] [--quiet | --verbose]
+usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...]|all [--profile=personal|work] [--rollback] [--wipe] [--force] [--dry-run] [--no-nvim-pin] [--reseed | --adopt] [--quiet | --verbose]
        ./install.sh --uninstall [--yes] [--dry-run] [--quiet | --verbose]
        ./install.sh --check-links [--harness=...] [--profile=personal|work] [--quiet | --verbose]
 
@@ -138,8 +138,9 @@ usage: ./install.sh --harness=<claude,copilot,opencode,agy,pi,codex>[,...] [--pr
               actions (--rollback, --uninstall, --check-links), though
               --check-links accepts it to scope which entries apply.
               Comma-separated, at least one of:
-              claude, copilot, opencode, agy, pi, codex. No default — every run must
-              state its intent explicitly. Purely additive: omitting a harness
+              claude, copilot, opencode, agy, pi, codex. Or all, alone: every
+              harness (--profile=work leaves out opencode). No default — every
+              run must state its intent explicitly. Purely additive: omitting a harness
               you previously selected does NOT uninstall or clean it up,
               it just skips re-provisioning it this run. Removal is a
               --rollback concern (reverses every run recorded in the
@@ -262,6 +263,7 @@ Examples:
   ./install.sh --profile=work --harness=copilot
   ./install.sh --harness=claude,opencode
   ./install.sh --harness=claude,agy
+  ./install.sh --harness=all            # every harness
   ./install.sh --dry-run --harness=claude
   ./install.sh --dry-run --rollback
   ./install.sh --rollback --wipe        # full rollback to a blank slate
@@ -681,7 +683,16 @@ def parse_args(argv: Sequence[str]) -> Options:
     parser.add_argument("--profile", default="personal")
     # append, not store: --harness=claude --harness=copilot must accumulate
     # both, not silently drop the first on the second flag.
-    parser.add_argument("--harness", action="append", default=[])
+    parser.add_argument(
+        "--harness",
+        action="append",
+        default=[],
+        help=(
+            "comma-separated harnesses to provision (claude, copilot, opencode, "
+            "agy, pi, codex), or all: every harness, minus opencode under "
+            "--profile=work"
+        ),
+    )
     parser.add_argument("--rollback", action="store_true")
     parser.add_argument("--wipe", action="store_true")
     parser.add_argument("--force", action="store_true")
@@ -724,17 +735,31 @@ def parse_args(argv: Sequence[str]) -> Options:
         if not harness:
             _fail("--harness has an empty value — check for a stray comma")
 
+    # `all` stands alone: checked before the unknown-name loop so all,bogus
+    # names the mix, while all,all is still just all. Unlike agent-toolkit's
+    # installer, this one has no CLI check, so `all` is every harness.
+    harness_all = "all" in harnesses
+    if harness_all and any(harness != "all" for harness in harnesses):
+        _fail("--harness=all cannot be combined with other harness names")
+
     for harness in harnesses:
-        if harness not in VALID_HARNESSES:
+        if harness != "all" and harness not in VALID_HARNESSES:
             _fail(
                 f"unknown harness: {harness} "
-                "(must be claude, copilot, opencode, agy, pi, and/or codex)"
+                "(must be claude, copilot, opencode, agy, pi, and/or codex, or all)"
             )
 
     # opencode never belongs on a work machine, full stop — not "tightened
-    # settings," excluded entirely, the same way watchcommit is.
+    # settings," excluded entirely, the same way watchcommit is. Naming it is
+    # refused; `all` just leaves it out.
     if args.profile == "work" and "opencode" in harnesses:
         _fail("--harness=opencode is not allowed with --profile=work")
+    if harness_all:
+        harnesses = [
+            harness
+            for harness in VALID_HARNESSES
+            if not (args.profile == "work" and harness == "opencode")
+        ]
 
     if args.adopt and args.reseed:
         _fail("--adopt and --reseed cannot be used together")
@@ -806,7 +831,7 @@ def parse_args(argv: Sequence[str]) -> Options:
     ):
         _fail(
             "no --harness specified — pass at least one of: "
-            "claude, copilot, opencode, agy, pi, codex",
+            "claude, copilot, opencode, agy, pi, codex, or all",
             show_usage=True,
         )
 

@@ -325,7 +325,7 @@ install.py — dotfiles + AI-harness provisioner for macOS and Linux/WSL.
   - `--quiet/-q`
   - `--verbose/-v`
   - `--profile` (default: personal)
-  - `--harness`
+  - `--harness` — comma-separated harnesses to provision (claude, copilot, opencode, agy, pi, codex), or all: every harness, minus opencode under --profile=work
   - `--rollback`
   - `--wipe`
   - `--force`

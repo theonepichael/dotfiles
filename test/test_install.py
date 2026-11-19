@@ -208,6 +208,14 @@ def parse_error(argv, capsys):
         (["--rollback", "--uninstall"], "--uninstall must be used alone"),
         (["--yes"], "--yes can only be used with --uninstall"),
         (["--yes", "--harness=claude"], "--yes can only be used with --uninstall"),
+        (["--harness=all,claude"], "--harness=all cannot be combined"),
+        (["--harness=all", "--harness=claude"], "--harness=all cannot be combined"),
+        # The mix is reported ahead of the unknown name.
+        (["--harness=all,bogus"], "--harness=all cannot be combined"),
+        (["--harness=all,"], "empty value"),
+        (["--harness=ALL"], "unknown harness: ALL"),
+        (["--rollback", "--harness=all"], "must be used alone"),
+        (["--uninstall", "--harness=all"], "--uninstall must be used alone"),
     ],
 )
 def test_argument_errors_exit_2(argv, expected, capsys):
@@ -238,6 +246,30 @@ def test_repeated_harness_flags_accumulate():
 def test_comma_separated_harnesses():
     opts = install.parse_args(["--harness=claude,opencode,agy"])
     assert opts.harnesses == ("claude", "opencode", "agy")
+
+
+def test_harness_all_selects_every_harness_in_order(monkeypatch):
+    """No CLI check here: all is every harness even with nothing on PATH."""
+    monkeypatch.setenv("PATH", "")
+    opts = install.parse_args(["--harness=all"])
+    assert opts.harnesses == ("claude", "copilot", "opencode", "agy", "pi", "codex")
+
+
+def test_repeated_harness_all_collapses():
+    opts = install.parse_args(["--harness=all,all", "--harness=all"])
+    assert opts.harnesses == ("claude", "copilot", "opencode", "agy", "pi", "codex")
+
+
+def test_harness_all_under_work_profile_leaves_out_opencode():
+    opts = install.parse_args(["--profile=work", "--harness=all"])
+    assert opts.harnesses == ("claude", "copilot", "agy", "pi", "codex")
+
+
+def test_error_messages_name_all(capsys):
+    _, err = parse_error(["--harness=bogus"], capsys)
+    assert "or all" in err
+    _, err = parse_error([], capsys)
+    assert "or all" in err
 
 
 def test_uninstall_alone_parses():

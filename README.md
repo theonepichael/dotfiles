@@ -25,7 +25,7 @@ Claude Code and opencode config (`~/.claude/settings.json`, `~/.config/opencode/
 > On any machine that has both repositories checked out, **always install via the wrapper script**:
 >
 > ```sh
-> ./scripts/install-with-agent-toolkit.sh --harness=claude,copilot,opencode,agy,pi,codex
+> ./scripts/install-with-agent-toolkit.sh --harness=all
 > ```
 >
 > The wrapper guarantees the correct installation order: it runs `agent-toolkit`'s installer first, then immediately runs `dotfiles`' installer second to reassert the composed personal overlay.
@@ -47,6 +47,7 @@ chmod +x install.sh
 ./install.sh --harness=claude                        # personal machine, Claude Code overlay
 ./install.sh --profile=work --harness=copilot         # work machine, Copilot overlay
 ./install.sh --harness=claude,opencode                # multiple harnesses
+./install.sh --harness=all                            # every harness (work: all but opencode)
 ./install.sh --dry-run --harness=claude               # preview only, nothing written
 ```
 
@@ -54,7 +55,7 @@ chmod +x install.sh
 
 The symlink table lives in **`links.toml`** at the repo root. Each entry can be gated on `harness`, `platform`, `wsl`, and `profile_exclude`. Copy-once seed files (Pi's `settings.json` and WSL VS Code settings) are handled directly by `install.py`. Claude Code and opencode config are seeded by `agent-toolkit`'s installer instead — see [Dual-repo machines](#dual-repo-machines-installation-ordering).
 
-`--harness` is required on an install run: choose any combination of `claude`, `copilot`, `opencode`, `agy`, `pi`, `codex` (comma-separated). In `dotfiles`, this controls which harness personal overlays and Pi/VS Code settings seeds are wired up.
+`--harness` is required on an install run: choose any combination of `claude`, `copilot`, `opencode`, `agy`, `pi`, `codex` (comma-separated), or `all` on its own for every harness (`--profile=work` leaves out `opencode`). In `dotfiles`, this controls which harness personal overlays and Pi/VS Code settings seeds are wired up.
 
 `--profile` controls machine-level concerns (`personal` by default). `--profile=work` excludes `watchcommit` and rejects `opencode`. See [Work profile](#work-profile) below.
 
