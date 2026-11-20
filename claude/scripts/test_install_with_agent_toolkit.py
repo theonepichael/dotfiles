@@ -896,5 +896,147 @@ class FlagTableDriftTestCase(unittest.TestCase):
                 self.assertNotEqual(drift_problems(self.table, self.dotfiles, at), [])
 
 
+class PostMergeOptInTestCase(_WrapperTreeTestCase):
+    """The wrapper opts agent-toolkit's checkout into its post-merge install."""
+
+    OPT_IN = "agent-toolkit.postMergeInstall"
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.agent_toolkit_dir / "githooks").mkdir()
+        self._git_config("core.hooksPath", "githooks")
+
+    def _git_config(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(self.agent_toolkit_dir), "config", "--local", *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def _opted_in(self) -> bool:
+        return self._git_config("--get", self.OPT_IN).stdout.strip() == "true"
+
+    def test_real_personal_install_opts_in(self) -> None:
+        self._write_both()
+
+        result = self._run(["--harness=claude"])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self._opted_in())
+        self.assertNotIn("post-merge install will not run", result.stderr)
+
+    def test_an_ordinary_skip_still_opts_in(self) -> None:
+        """Exit 1 is an installer's normal "something was skipped", not a refusal."""
+        for agent_toolkit_exit, dotfiles_exit in ((1, 0), (0, 1)):
+            with self.subTest(agent_toolkit=agent_toolkit_exit, dotfiles=dotfiles_exit):
+                self._git_config("--unset", self.OPT_IN)
+                self._write_fake_install(
+                    self.agent_toolkit_dir,
+                    marker="AGENT_TOOLKIT_RAN",
+                    exit_code=agent_toolkit_exit,
+                )
+                self._write_fake_install(
+                    self.dotfiles_dir, marker="DOTFILES_RAN", exit_code=dotfiles_exit
+                )
+
+                self._run(["--harness=claude"])
+
+                self.assertTrue(self._opted_in())
+
+    def test_global_hooks_path_counts_as_wired(self) -> None:
+        """git honours a global setting; so must the warning."""
+        self._git_config("--unset", "core.hooksPath")
+        (self.home / ".gitconfig").write_text(
+            f"[core]\n\thooksPath = {self.agent_toolkit_dir / 'githooks'}\n"
+        )
+        self._write_both()
+
+        result = self._run(["--harness=claude"])
+
+        self.assertNotIn("post-merge install will not run", result.stderr)
+
+    def test_runs_that_must_not_opt_in(self) -> None:
+        for args in (
+            ["--harness=claude", "--dry-run"],
+            ["--harness=claude", "--profile=work"],
+            ["--harness=claude", "--profile", "work"],
+            ["--help"],
+        ):
+            with self.subTest(args=args):
+                self._git_config("--unset", self.OPT_IN)
+                self._write_both()
+
+                result = self._run(args)
+
+                # Both installers ran, so the wrapper reached the opt-in step.
+                self.assertIn("DOTFILES_RAN", result.stdout, result.stderr)
+                self.assertFalse(self._opted_in())
+
+    def test_refused_installer_run_does_not_opt_in(self) -> None:
+        for agent_toolkit_exit, dotfiles_exit in ((2, 0), (0, 2)):
+            with self.subTest(agent_toolkit=agent_toolkit_exit, dotfiles=dotfiles_exit):
+                self._write_fake_install(
+                    self.agent_toolkit_dir,
+                    marker="AGENT_TOOLKIT_RAN",
+                    exit_code=agent_toolkit_exit,
+                )
+                self._write_fake_install(
+                    self.dotfiles_dir, marker="DOTFILES_RAN", exit_code=dotfiles_exit
+                )
+
+                result = self._run(["--harness=claude"])
+
+                self.assertIn("DOTFILES_RAN", result.stdout, result.stderr)
+                self.assertFalse(self._opted_in())
+
+    def test_hooks_path_warning_follows_where_git_looks(self) -> None:
+        (self.agent_toolkit_dir / "elsewhere").mkdir()
+        cases = (
+            ("githooks", False),
+            ("./githooks", False),
+            ("githooks/", False),
+            (str(self.agent_toolkit_dir / "githooks"), False),
+            ("elsewhere", True),
+        )
+        for value, warns in cases:
+            with self.subTest(value=value):
+                self._git_config("core.hooksPath", value)
+                self._write_both()
+
+                result = self._run(["--harness=claude"])
+
+                self.assertEqual(
+                    "post-merge install will not run" in result.stderr,
+                    warns,
+                    result.stderr,
+                )
+
+    def test_unwired_hooks_path_warns_without_failing(self) -> None:
+        self._git_config("--unset", "core.hooksPath")
+        self._write_both()
+
+        result = self._run(["--harness=claude"])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self._opted_in())
+        self.assertIn("post-merge install will not run", result.stderr)
+
+    def test_failed_opt_in_write_warns_and_continues(self) -> None:
+        lock = self.agent_toolkit_dir / ".git" / "config.lock"
+        lock.write_text("")
+        self.addCleanup(lock.unlink, missing_ok=True)
+        self._write_both()
+
+        result = self._run(["--harness=claude"])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "could not enable agent-toolkit's post-merge install", result.stderr
+        )
+        # The wrapper carried on to its last step.
+        self.assertTrue(self.composed.read_text().startswith(CORE_TEXT))
+
+
 if __name__ == "__main__":
     unittest.main()

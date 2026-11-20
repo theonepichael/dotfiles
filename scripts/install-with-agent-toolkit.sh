@@ -152,6 +152,46 @@ for flag in "$@"; do
     --dry-run) [ "$compose_mode" = skip ] || compose_mode=check ;;
   esac
 done
+
+# Opt this machine's agent-toolkit checkout into its post-merge hook running
+# the installer after a merge that changes what it links (new skills land as
+# new links.toml rows). Only on a real personal install that neither
+# installer refused (exit 2+): a work machine never opts in, and
+# --dry-run/--help change nothing. The hook runs agent-toolkit's installer alone, never this
+# wrapper (whose dotfiles half installs packages and can prompt for sudo).
+profile="personal"
+previous=""
+for flag in "$@"; do
+  case "$flag" in
+    --profile=*) profile="${flag#--profile=}" ;;
+  esac
+  [ "$previous" = "--profile" ] && profile="$flag"
+  previous="$flag"
+done
+if [ "$compose_mode" = write ] && [ "$profile" = personal ] &&
+  [ "$agent_toolkit_status" -le 1 ] && [ "$dotfiles_status" -le 1 ]; then
+  if ! git -C "$AGENT_TOOLKIT_DIR" config --local agent-toolkit.postMergeInstall true 2>/dev/null; then
+    echo "install-with-agent-toolkit.sh: warning: could not enable agent-toolkit's post-merge install in $AGENT_TOOLKIT_DIR" >&2
+  else
+    # git's own answer for where it looks for hooks, honouring every config
+    # level; a relative answer is relative to the checkout.
+    hooks_dir="$(git -C "$AGENT_TOOLKIT_DIR" rev-parse --git-path hooks 2>/dev/null || true)"
+    case "$hooks_dir" in
+      "" | /*) ;;
+      *) hooks_dir="$AGENT_TOOLKIT_DIR/$hooks_dir" ;;
+    esac
+    hooks_real=""
+    if [ -n "$hooks_dir" ]; then
+      hooks_real="$(cd "$hooks_dir" 2>/dev/null && pwd -P || true)"
+    fi
+    expected_real="$(cd "$AGENT_TOOLKIT_DIR/githooks" 2>/dev/null && pwd -P || true)"
+    if [ -z "$hooks_real" ] || [ "$hooks_real" != "$expected_real" ]; then
+      echo "install-with-agent-toolkit.sh: warning: $AGENT_TOOLKIT_DIR does not use its githooks/ directory, so its post-merge install will not run;" >&2
+      echo "  fix with: git -C $AGENT_TOOLKIT_DIR config core.hooksPath githooks" >&2
+    fi
+  fi
+fi
+
 if [ "$compose_mode" = write ] && [ "$dotfiles_status" -gt 1 ]; then
   compose_mode=skip
   echo "" >&2
