@@ -68,7 +68,7 @@ longer has.
 That check is a string comparison, not a reading. A flag can keep its name
 while its behaviour changes underneath, and every doc naming it still
 passes. No skill or command doc naming anything in this directory is left
-in this repo — the swarm command and its `herdr_delegate.py` launcher were
+in this repo — the swarm command and its `herdr_queue_runner.py` launcher were
 the last, and the source-of-truth verdict moved both to agent-toolkit
 (`claude/commands/swarm.md` is generated there from `templates/swarm.md.tmpl`);
 after changing a script's behaviour there, the docs to re-read live on that
